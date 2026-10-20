@@ -4,7 +4,7 @@
 	--document-highlight-trigger-selected: color-mix(in srgb, var(--color-success) 28%, transparent);
 	--document-highlight-revision-added: #dcf1b9;
 	--document-highlight-revision-removed: #e5e7eb;
-	--document-highlight-selection: #d2e3fc;
+	--document-highlight-selection: var(--color-accent-soft);
 	--document-highlight-search-match: rgba(250, 204, 21, 0.38);
 	--document-highlight-search-active: rgba(249, 115, 22, 0.72);
 }

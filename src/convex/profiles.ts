@@ -1,7 +1,7 @@
 import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { v, ConvexError } from 'convex/values';
 import { query, mutation } from './_generated/server';
-import { requireMembership, verifiedIdentity, liveProfile } from './auth';
+import { requireMembership, verifiedIdentity, liveProfile, companyDeletion } from './auth';
 import { permissions, permissionsForRole, role } from './permissions';
 export const profileView = v.object({
 	id: v.id('profiles'),
@@ -31,7 +31,8 @@ export const viewer = query({
 					id: v.id('company'),
 					name: v.string(),
 					avatarUrl: v.union(v.string(), v.null()),
-					approvalEmail: v.union(v.string(), v.null())
+					approvalEmail: v.union(v.string(), v.null()),
+					deletionPending: v.boolean()
 				})
 			),
 			needsInitialization: v.boolean(),
@@ -79,7 +80,8 @@ export const viewer = query({
 						id: company._id,
 						name: company.name,
 						avatarUrl: company.avatarId ? await ctx.storage.getUrl(company.avatarId) : null,
-						approvalEmail: company.approvalEmail ?? null
+						approvalEmail: company.approvalEmail ?? null,
+						deletionPending: Boolean(await companyDeletion(ctx, company._id))
 					}
 				: null,
 			permissions: permissionsForRole(membership && company ? profile.role : 'rep', isOwner),

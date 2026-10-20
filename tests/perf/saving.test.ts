@@ -38,10 +38,10 @@ async function fixture(selected = false) {
 			lastOperationId: 'previous-operation',
 			selectedConcessions: selected ? choices : {}
 		});
-		await db.insert('templateVersionBlocks', { versionId, block });
+		await db.insert('templateVersionBlocks', { companyId, versionId, block });
 		for (const itemId of [first, second]) {
 			const document = (await db.get('playbookItems', itemId))!;
-			await db.insert('templateVersionItems', { versionId, itemId, item: document });
+			await db.insert('templateVersionItems', { companyId, versionId, itemId, item: document });
 		}
 		return { id, first, second, foreign, choices };
 	});

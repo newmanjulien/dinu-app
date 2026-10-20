@@ -7,11 +7,10 @@
 	type Props = {
 		children: Snippet;
 		footer?: Snippet;
-		accent?: 'info' | 'link';
 		showFooter?: boolean;
 	};
 
-	let { children, footer, accent = 'info', showFooter = Boolean(footer) }: Props = $props();
+	let { children, footer, showFooter = Boolean(footer) }: Props = $props();
 
 	const quote = {
 		text: 'Overbase increased partnership revenue by 20% in the divisions we deployed it to',
@@ -20,47 +19,99 @@
 		avatarSrc: '/wsp.jpeg',
 		avatarAlt: "Alexandre L'Heureux"
 	} satisfies AuthQuote;
-	const accentStyle = $derived(
-		[
-			`--auth-accent-200: var(--${accent}-200)`,
-			`--auth-accent-400: var(--${accent}-400, var(--${accent}-500))`,
-			`--auth-accent-500: var(--${accent}-500)`,
-			`--auth-accent-600: var(--${accent}-600)`
-		].join('; ')
-	);
 </script>
 
 <section
 	data-sveltekit-preload-data="off"
 	data-sveltekit-preload-code="off"
-	class="relative min-h-dvh overflow-auto bg-[#fafafa] p-0 text-[#202124] sm:p-2 lg:overflow-hidden"
-	style={accentStyle}
+	class="entry-shell"
 >
-	<AuthPatternLayer />
-
-	<div
-		class="relative z-[1] block min-h-dvh sm:min-h-[calc(100dvh-16px)] lg:grid lg:grid-cols-[minmax(0,50.2%)_minmax(0,1fr)]"
-	>
-		<section
-			class="box-border flex min-h-dvh flex-col bg-white px-6 pt-12 pb-8 sm:min-h-[calc(100dvh-16px)] sm:rounded-xl sm:border sm:border-black/[0.04] lg:px-[clamp(40px,8.55vw,248px)] lg:pt-[clamp(56px,8.6vh,138px)] lg:pb-7"
-			aria-label="Agreed account entry"
-		>
-			<div class="m-auto w-full max-w-85">
+	<div class="entry-layout">
+		<main class="entry-panel" aria-label="Agreed account entry">
+			<div class="entry-content">
 				{@render children()}
 			</div>
 
 			{#if footer && showFooter}
-				<footer class="w-full border-t border-[#eceef1] pt-4">
+				<footer class="entry-footer">
 					{@render footer()}
 				</footer>
 			{/if}
-		</section>
+		</main>
 
-		<aside
-			class="relative hidden min-h-[calc(100dvh-16px)] overflow-hidden bg-transparent lg:block"
-			aria-label="Customer quote"
-		>
+		<aside class="entry-testimonial" aria-label="Customer quote">
+			<AuthPatternLayer />
 			<AuthQuotePanel {quote} />
 		</aside>
 	</div>
 </section>
+
+<style>
+	.entry-shell {
+		min-height: 100dvh;
+		background: #fafafa;
+		color: #202124;
+	}
+
+	.entry-layout {
+		min-height: 100dvh;
+	}
+
+	.entry-panel {
+		box-sizing: border-box;
+		display: flex;
+		min-height: 100dvh;
+		flex-direction: column;
+		padding: 48px 24px 32px;
+		background: white;
+	}
+
+	.entry-content {
+		width: 100%;
+		max-width: 340px;
+		margin: auto;
+	}
+
+	.entry-footer {
+		width: 100%;
+		border-top: 1px solid #eceef1;
+		padding-top: 16px;
+	}
+
+	.entry-testimonial {
+		display: none;
+	}
+
+	@media (min-width: 640px) {
+		.entry-shell {
+			padding: 8px;
+		}
+
+		.entry-layout,
+		.entry-panel {
+			min-height: calc(100dvh - 16px);
+		}
+
+		.entry-panel {
+			border: 1px solid rgb(0 0 0 / 4%);
+			border-radius: 12px;
+		}
+	}
+
+	@media (min-width: 1024px) {
+		.entry-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 50.2%) minmax(0, 1fr);
+		}
+
+		.entry-panel {
+			padding: clamp(56px, 8.6vh, 138px) clamp(40px, 8.55vw, 248px) 28px;
+		}
+
+		.entry-testimonial {
+			position: relative;
+			display: block;
+			overflow: hidden;
+		}
+	}
+</style>

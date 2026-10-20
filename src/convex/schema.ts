@@ -80,6 +80,40 @@ export default defineSchema({
 		.index('by_issuer_and_clerkId', ['issuer', 'clerkId'])
 		.index('by_profileId', ['profileId'])
 		.index('by_complete', ['complete']),
+	companyDeletions: defineTable({
+		companyId: v.id('company'),
+		issuer: v.string(),
+		clerkId: v.string(),
+		attemptId: v.string(),
+		requestedAt: v.number(),
+		status: v.union(
+			v.literal('prepared'),
+			v.literal('dispatched'),
+			v.literal('cleaning'),
+			v.literal('complete')
+		),
+		phase: v.union(
+			v.literal('invitations'),
+			v.literal('approvals'),
+			v.literal('decisions'),
+			v.literal('contracts'),
+			v.literal('blocks'),
+			v.literal('items'),
+			v.literal('snapshotBlocks'),
+			v.literal('snapshotItems'),
+			v.literal('itemReceipts'),
+			v.literal('contractReceipts'),
+			v.literal('versions'),
+			v.literal('pointer'),
+			v.literal('memberships'),
+			v.literal('company')
+		),
+		cleanupJobId: v.optional(v.id('_scheduled_functions')),
+		cleanupGeneration: v.optional(v.number())
+	})
+		.index('by_companyId', ['companyId'])
+		.index('by_issuer_and_clerkId', ['issuer', 'clerkId'])
+		.index('by_status', ['status']),
 	contractBlocks: defineTable(
 		v.union(...baselineBlock.members.map((member) => member.extend({ companyId: v.id('company') })))
 	).index('by_companyId_and_order', ['companyId', 'order']),
@@ -96,20 +130,26 @@ export default defineSchema({
 		versionId: v.optional(v.id('templateVersions')),
 		maintenance: v.boolean(),
 		importKey: v.optional(v.string()),
+		baselineFingerprint: v.optional(v.string()),
 		importBlockCount: v.optional(v.number()),
 		importItemCount: v.optional(v.number())
 	}).index('by_companyId', ['companyId']),
 	templateVersionBlocks: defineTable({
+		companyId: v.id('company'),
 		versionId: v.id('templateVersions'),
 		block: baselineBlock
-	}).index('by_versionId', ['versionId']),
+	})
+		.index('by_versionId', ['versionId'])
+		.index('by_companyId', ['companyId']),
 	templateVersionItems: defineTable({
+		companyId: v.id('company'),
 		versionId: v.id('templateVersions'),
 		itemId: v.id('playbookItems'),
 		// Keep the original identity even after the live playbook item is deleted.
 		item: docValidator('playbookItems', playbookItems)
 	})
 		.index('by_versionId', ['versionId'])
+		.index('by_companyId', ['companyId'])
 		.index('by_versionId_and_itemId', ['versionId', 'itemId']),
 	savedContracts: defineTable({
 		companyId: v.id('company'),
@@ -148,12 +188,18 @@ export default defineSchema({
 		.index('by_companyId', ['companyId']),
 	// Receipts survive contract deletion so a creation retry cannot resurrect it.
 	contractCreationReceipts: defineTable({
+		companyId: v.id('company'),
 		operationId: v.string(),
 		contractId: v.id('savedContracts')
-	}).index('by_operationId', ['operationId']),
+	})
+		.index('by_operationId', ['operationId'])
+		.index('by_companyId', ['companyId']),
 	// Transport receipts survive deletion; retry must never recreate a deleted item.
-	creationReceipts: defineTable({ operationId: v.string(), itemId: v.id('playbookItems') }).index(
-		'by_operationId',
-		['operationId']
-	)
+	creationReceipts: defineTable({
+		companyId: v.id('company'),
+		operationId: v.string(),
+		itemId: v.id('playbookItems')
+	})
+		.index('by_operationId', ['operationId'])
+		.index('by_companyId', ['companyId'])
 });

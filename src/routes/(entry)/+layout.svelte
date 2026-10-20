@@ -9,7 +9,6 @@
 </script>
 
 <AuthEntryShell
-	accent="link"
 	showFooter={presentation.showFooter && Boolean(presentation.footer || account?.())}
 >
 	{#snippet footer()}

@@ -186,6 +186,7 @@ export const create = mutation({
 			templateVersionId: version._id
 		});
 		await ctx.db.insert('contractCreationReceipts', {
+			companyId: profile.companyId,
 			operationId: scopedOperation(profile, args.operationId),
 			contractId: id
 		});

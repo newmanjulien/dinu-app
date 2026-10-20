@@ -394,8 +394,9 @@ export class ContractCompositionEngine {
 				generatedOffset: 0
 			};
 		}
-		const separator = (owner: Annotation): ResolvedRun => ({
+		const separator = (owner: Annotation, marks?: ResolvedRun['marks']): ResolvedRun => ({
 			text: ' ',
+			...(marks !== undefined ? { marks } : {}),
 			...owner,
 			generated: 'separator'
 		});
@@ -410,7 +411,7 @@ export class ContractCompositionEngine {
 				const run: ResolvedRun = {
 					text,
 					generated: 'replacement',
-					...(atom.kind === 'text' && atom.marks !== undefined ? { marks: atom.marks } : {}),
+					...(atom.marks !== undefined ? { marks: atom.marks } : {}),
 					...owner,
 					generatedOffset: offset,
 					...(view === 'redline' ? { revision: 'added' as const } : {})
@@ -452,14 +453,16 @@ export class ContractCompositionEngine {
 							? patchAnnotation(activation)
 							: { annotations: sourceMemberships };
 					const sourceAtom = atomsByKey.get(unit.sourceKey);
+					const marks =
+						unit.kind === 'number'
+							? index.blocks.get(unit.blockKey)?.numbering?.marks
+							: sourceAtom?.marks;
 					const base: Omit<ResolvedRun, 'text'> = {
 						...(unit.kind === 'number' && activation && !removed
 							? { generated: 'activation-number' as const }
 							: { source }),
 						sourceKind: unit.kind,
-						...(sourceAtom?.kind === 'text' && sourceAtom.marks !== undefined
-							? { marks: sourceAtom.marks }
-							: {}),
+						...(marks !== undefined ? { marks } : {}),
 						...owner
 					};
 					if (unit.kind === 'text') {
@@ -496,12 +499,12 @@ export class ContractCompositionEngine {
 									text: before,
 									revision: 'removed'
 								},
-								...(unit.kind === 'number' ? [separator(owner)] : [])
+								...(unit.kind === 'number' ? [separator(owner, marks)] : [])
 							);
 						result.push({ ...base, text, revision: 'added' });
 					} else result.push({ ...base, text });
 					if (unit.kind === 'number' && (!removed || end > unit.position + unit.length))
-						result.push(separator(owner));
+						result.push(separator(owner, marks));
 				}
 			}
 			return result;
@@ -515,7 +518,7 @@ export class ContractCompositionEngine {
 			if (
 				!unitsInRange(index, change.range).every((unit) => unit.kind === 'text') ||
 				!change.replacement.every((atom) => atom.kind === 'text') ||
-				change.replacement.some((atom) => atom.kind === 'text' && atom.marks !== undefined)
+				change.replacement.some((atom) => atom.marks !== undefined)
 			)
 				return null;
 			const before = rangeText(index, change.range);

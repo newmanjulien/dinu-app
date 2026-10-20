@@ -269,6 +269,7 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 }
 
 export function getErrorMessage(error: unknown, fallback: string) {
+	if (isRecord(error) && typeof error.data === 'string') return error.data;
 	const clerkError = getClerkErrors(error)[0];
 	const topLevelError = getClerkErrorLike(error);
 

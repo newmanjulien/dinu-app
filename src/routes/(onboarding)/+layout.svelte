@@ -1,0 +1,11 @@
+<script lang="ts">
+	let { children } = $props();
+</script>
+
+<main
+	class="flex min-h-dvh flex-col justify-center bg-[#fafafa] px-6 py-8 text-[#202124] sm:py-12"
+	data-sveltekit-preload-data="off"
+	data-sveltekit-preload-code="off"
+>
+	{@render children()}
+</main>

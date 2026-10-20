@@ -808,7 +808,7 @@
 		}
 	}
 	const actionButtonClass =
-		'cursor-pointer rounded-lg border border-accent/90 bg-accent/90 px-5 py-2.5 font-normal text-sm text-surface enabled:hover:border-accent-hover enabled:hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-accent disabled:cursor-default disabled:border-line disabled:bg-control-fill disabled:text-ink-muted';
+		'cursor-pointer rounded-lg border border-accent bg-accent px-5 py-2.5 font-normal text-sm text-surface enabled:hover:border-accent-hover enabled:hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-accent disabled:cursor-default disabled:border-line disabled:bg-control-fill disabled:text-ink-muted';
 </script>
 
 <BoxDismissal owner={interactionOwner} active={Boolean(item)} onDismiss={close} />

@@ -7,7 +7,7 @@ export async function preloadDestination(pathname: string) {
 		pathname === '/invitation'
 			? import('./InvitationLink.svelte')
 			: pathname === '/onboarding'
-				? import('./CompanyOnboarding.svelte')
+				? import('./onboarding/OnboardingFlow.svelte')
 				: import('./Workspace.svelte'),
 		pathname === '/' ? loadHome() : undefined,
 		/^\/(admin|contracts)(\/|$)/.test(pathname) ? import('./DocumentHost.svelte') : undefined

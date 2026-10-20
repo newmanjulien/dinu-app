@@ -15,6 +15,7 @@ import type * as approvals from "../approvals.js";
 import type * as auth from "../auth.js";
 import type * as clerk from "../clerk.js";
 import type * as companies from "../companies.js";
+import type * as companyDeletion from "../companyDeletion.js";
 import type * as companyInvitations from "../companyInvitations.js";
 import type * as companyTemplateImport from "../companyTemplateImport.js";
 import type * as contract from "../contract.js";
@@ -48,6 +49,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   clerk: typeof clerk;
   companies: typeof companies;
+  companyDeletion: typeof companyDeletion;
   companyInvitations: typeof companyInvitations;
   companyTemplateImport: typeof companyTemplateImport;
   contract: typeof contract;

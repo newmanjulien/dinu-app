@@ -1,4 +1,4 @@
-import { requireMembership, accessibleContract, scopedOperation } from './auth';
+import { requireMembership, accessibleContract, scopedOperation, availableCompany } from './auth';
 import {
 	approvalCoversPending,
 	legacyLifecycle,
@@ -180,6 +180,7 @@ export const forSend = internalQuery({
 			return null;
 		const contract = await ctx.db.get('savedContracts', id);
 		if (!contract || contract.companyId !== request.companyId) return null;
+		if (!(await availableCompany(ctx, request.companyId))) return null;
 		await snapshotReader(ctx, contract);
 		return {
 			companyName: request.companyName,
@@ -231,6 +232,7 @@ export const startDispatch = internalMutation({
 			return false;
 		const contract = await ctx.db.get('savedContracts', id);
 		if (!contract?.companyId || contract.companyId !== request.companyId) return false;
+		if (!(await availableCompany(ctx, request.companyId))) return false;
 		await ctx.db.patch('approvalRequests', request._id, { dispatchStarted: true });
 		return true;
 	}

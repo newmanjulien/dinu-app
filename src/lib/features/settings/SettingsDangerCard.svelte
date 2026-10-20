@@ -15,16 +15,14 @@
 	}
 </script>
 
-<SettingsCard
-	title="Delete account"
-	description="Permanently remove your account and the contracts you created"
->
+<SettingsCard title="Delete account" description="Permanently remove your account">
 	<div
 		class="mt-4 flex min-h-9 items-center gap-2 rounded-button-lg bg-stone-100 px-3 text-[0.74rem] leading-5 text-stone-600"
 	>
 		<InfoIcon size={15} weight="regular" class="shrink-0 text-stone-500" />
 		<p>
-			Deleting your account permanently deletes your contracts, including assigned legacy contracts
+			If you are the last member, deleting your account also deletes your company and all its data.
+			Otherwise, company contracts remain available to your colleagues.
 		</p>
 	</div>
 

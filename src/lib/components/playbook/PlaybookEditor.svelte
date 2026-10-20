@@ -56,7 +56,7 @@
 
 	const creationConcession = $derived(flow.creationConcession);
 	const actionButtonClass =
-		'cursor-pointer rounded-button-lg border border-line bg-surface px-3 py-2 text-ink/80 text-[14px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#3563ff]';
+		'cursor-pointer rounded-button-lg border border-line bg-surface px-3 py-2 text-ink/80 text-[14px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent';
 	const stepTitle = $derived(
 		step === 'concession' ? 'Add a concession your reps can make' : 'Other part of contract'
 	);

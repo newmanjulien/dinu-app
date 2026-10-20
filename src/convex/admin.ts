@@ -85,10 +85,11 @@ export const savePlaybookItem = mutation({
 			if (rejection) return rejection;
 			const newId = await ctx.db.insert('playbookItems', created);
 			await ctx.db.insert('creationReceipts', {
+				companyId: profile.companyId,
 				operationId: scopedOperation(profile, operationId),
 				itemId: newId
 			});
-			await publishTemplate(ctx, profile.companyId);
+			await publishTemplate(ctx, profile.company);
 			return { status: 'saved' as const, item: (await ctx.db.get('playbookItems', newId))! };
 		}
 		const current = await ctx.db.get('playbookItems', id);
@@ -107,7 +108,7 @@ export const savePlaybookItem = mutation({
 			lastOperationCaller: profile._id,
 			lastOperationId: operationId
 		});
-		await publishTemplate(ctx, profile.companyId);
+		await publishTemplate(ctx, profile.company);
 		return { status: 'saved' as const, item: (await ctx.db.get('playbookItems', id))! };
 	}
 });
@@ -129,7 +130,7 @@ export const deletePlaybookItem = mutation({
 		if (current) {
 			await assertAuthoringAvailable(ctx, profile.companyId);
 			await ctx.db.delete('playbookItems', id);
-			await publishTemplate(ctx, profile.companyId);
+			await publishTemplate(ctx, profile.company);
 		}
 		return { status: 'deleted' as const };
 	}

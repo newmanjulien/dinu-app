@@ -1,17 +1,18 @@
 # Account entry and workspace routes
 
-Updated October 9, 2026. This describes the current route and session architecture. Route groups do not change public URLs.
+Updated October 10, 2026. This describes the current route and session architecture. Route groups do not change public URLs.
 
 ## Route ownership
 
-| Layer                 | Owns                                                                                                                        |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Root layout           | Clerk readiness, persistent session controller, startup preparation, lazy authenticated account host                        |
-| Authenticated account | Convex transport, live account viewer, missing-profile initialization, recovery, account and membership cache identity      |
-| `(entry)`             | Shared login presentation for `/login`, `/join`, `/invitation`, and `/onboarding`; signed-in identity and account switching |
-| `(workspace)`         | Membership admission, document and editor resources, app header and workspace routes                                        |
+| Layer                 | Owns                                                                                                                   |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Root layout           | Clerk readiness, persistent session controller, startup preparation, lazy authenticated account host                   |
+| Authenticated account | Convex transport, live account viewer, missing-profile initialization, recovery, account and membership cache identity |
+| `(entry)`             | Shared login presentation for `/login`, `/join`, and `/invitation`; signed-in identity and account switching           |
+| `(onboarding)`        | Grey full-page presentation for `/onboarding`; account authentication without workspace chrome                         |
+| `(workspace)`         | Membership admission, document and editor resources, app header and workspace routes                                   |
 
-Account authentication and company membership are separate requirements. The root does not render an app header. Entry screens use the same responsive shell whether the visitor is signed out or already authenticated. Entry components do not import the workspace to hide its chrome.
+Account authentication and company membership are separate requirements. The root does not render an app header. Login and invitation screens use the same responsive shell whether the visitor is signed out or already authenticated. Onboarding has its own presentation and uses the same root account/session providers. These screens do not import the workspace to hide its chrome.
 
 The authenticated account host mounts after Clerk supplies an identity. It remains mounted when moving between invitation/onboarding and workspace routes for the same session. Switching sessions destroys the old account host. The root session controller persists across those route changes and coordinates recovery, logout, account deletion, and registered editor/resources without importing workspace caches into the initial login graph.
 
@@ -20,6 +21,18 @@ The authenticated account host mounts after Clerk supplies an identity. It remai
 `AccountGate` sets the cache identity from the confirmed viewer before workspace children mount. Account or membership changes release the old snapshot cache and discard its persistent namespace. The root session owns cache cleanup on logout, account switching, and teardown; its resource registration survives route changes. Navigation to entry screens preserves confirmed snapshots and opening history.
 
 `WorkspaceBoundary` requires a live profile, membership, and company. `WorkspaceScope` is keyed by profile and membership and supplies only viewer context. Each workspace captures its own cache instance, cancels its pending reads, and destroys its document resources on teardown; an old workspace cannot cancel a replacement's cache. Membership loss clears the previous membership's draft journal and removes the workspace. Role changes preserve its identity and mounted drafts.
+
+## Entry presentation and onboarding
+
+`(entry)/+layout.svelte` owns the shared `AuthEntryShell` and signed-in footer for login, signup, and invitation. The shell owns the responsive card, content width, footer placement, and testimonial background.
+
+`(onboarding)/+layout.svelte` owns onboarding's full-page grey background and blue button variables. The public URL remains `/onboarding`; its server authentication guard and private, uncached responses are preserved. The flow supplies the centered content, create-step Back action, and signed-in footer with Sign out disabled during a pending action or blocked session. `OnboardingStepFrame` supplies the shared heading and description spacing. Selection uses two illustrated white cards side by side on desktop and stacked on mobile. Create uses a narrow centered form; join uses white invitation cards and an empty-inbox invitation box, followed by Create a company instead. Shared entry inputs and buttons remain reusable, without return badges.
+
+`/onboarding` requires an admitted account and mounts `auth/onboarding/OnboardingFlow.svelte`. The flow owns the current step, retained company-name draft, mutation state, stale-session protection, and workspace completion navigation. `ChooseCompanyStep` and `CreateCompanyStep` render their fields and actions through callbacks. `JoinCompanyStep` owns its live inbox subscription, read deadline, and retry UI, so those resources exist only while that step is mounted.
+
+Confirmed live membership triggers completion after any pending mutation settles and while the session is ready. Each mounted flow attempts workspace navigation once; cancellation or failure does not trigger automatic retries. Mutation and navigation errors from blocked or replaced sessions are ignored.
+
+Today, creating or joining a company completes onboarding. Future setup steps, such as template upload, belong in this flow and can reuse the onboarding presentation. When a step must continue after membership is established, extend the flow's completion rule and the workspace admission rule together so reloads and direct workspace visits preserve that requirement. Template upload and persisted progress are not part of this change.
 
 ## Navigation
 
@@ -56,6 +69,12 @@ the route uses the shared account-loading recovery while Clerk initializes, so a
 failed initialization exposes the existing retry control.
 
 ## Verification
+
+The restored onboarding presentation passed `npm run build` with zero type errors or warnings, targeted formatting checks, and `git diff --check`. A local browser preview of the actual onboarding layout and components checked the illustrated choice cards, create and join steps at 1440px, 640px, 390px, and 320px without horizontal overflow. It confirmed retained company-name input across Back, the white empty-inbox box and invitation cards, Create a company instead, retry callbacks, and no inbox subscription before opening join. The browser reported no errors. Account, queries, mutations, and navigation used temporary fixtures; live authentication, company creation, and invitation acceptance remain unverified for this presentation restoration. No tests were added or expanded, and the performance suite was not rerun because saving, scheduling, and caching behavior did not change.
+
+The onboarding review fixes passed `npm run build` with zero type errors or warnings and targeted formatting checks. Isolated browser probes of the actual flow confirmed that pending writes defer membership navigation, cancelled navigation does not restart, blocked sessions prevent completion and stale errors, transport replacement ignores old mutation errors, active write failures clear pending state, and teardown ignores late completion. The probes used reactive account/session fixtures and controlled mutation/navigation promises; live authentication and server writes remain unverified. No tests were added or expanded, and the performance suite was not rerun for these navigation-only fixes.
+
+The onboarding presentation and component split passed `npm run build`, including type checking with zero errors or warnings, and all 24 existing performance tests via `npm run test:perf`. An isolated browser preview of the actual entry layout and flow checked the screenshot's desktop composition, 390px and 320px mobile layouts without horizontal overflow, retained company-name input across Back, inbox and error presentation, retry callbacks, and workspace return destinations. Its account, queries, mutations, and navigation were fixtures; live authentication, company creation, and invitation acceptance were not exercised for this change. No tests were added or expanded.
 
 `npm run verify` passed all 24 existing performance tests for saving, scheduling, caching, creation, and account preparation, followed by type checking with zero errors or warnings and the production build. The final dedicated invitation implementation also passed type checking and the production build. No tests were added or expanded for this flow. Earlier route-refactor runtime probes checked component retry, stale import results, loaded-module reuse, session timeout recovery, and resource clearing on account switching/logout.
 

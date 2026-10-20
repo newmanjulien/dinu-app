@@ -4,6 +4,7 @@ import { baselineBlock } from './sourceValidators';
 import { playbookItem } from './playbookValidators';
 import { currentPointer, publishTemplate } from './templates';
 import { paginationOptsValidator } from 'convex/server';
+import { requireCompany } from './auth';
 
 const scope = { companyId: v.id('company'), importKey: v.string() };
 const progress = v.object({ blockCount: v.number(), itemCount: v.number(), complete: v.boolean() });
@@ -14,7 +15,8 @@ export const begin = internalMutation({
 	args: scope,
 	returns: progress,
 	handler: async (ctx, args) => {
-		if (!(await ctx.db.get('company', args.companyId)) || !/^[a-f0-9]{64}$/.test(args.importKey))
+		await requireCompany(ctx, args.companyId);
+		if (!/^[a-f0-9]{64}$/.test(args.importKey))
 			throw new ConvexError('A company and SHA-256 content fingerprint are required.');
 		const pointer = await currentPointer(ctx, args.companyId);
 		if (pointer?.importKey === args.importKey)
@@ -57,6 +59,7 @@ export const append = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		await requireCompany(ctx, args.companyId);
 		const pointer = await currentPointer(ctx, args.companyId);
 		if (
 			!pointer?.maintenance ||
@@ -87,6 +90,7 @@ export const finish = internalMutation({
 	args: { ...scope, blockCount: v.number(), itemCount: v.number() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		const company = await requireCompany(ctx, args.companyId);
 		const pointer = await currentPointer(ctx, args.companyId);
 		if (
 			pointer?.importKey !== args.importKey ||
@@ -96,7 +100,7 @@ export const finish = internalMutation({
 			throw new ConvexError('Import is incomplete.');
 		if (pointer.versionId && !pointer.maintenance) return null;
 		if (!pointer.maintenance) throw new ConvexError('Import is not in maintenance.');
-		await publishTemplate(ctx, args.companyId);
+		await publishTemplate(ctx, company);
 		await ctx.db.patch('currentTemplate', pointer._id, { maintenance: false });
 		return null;
 	}
@@ -115,8 +119,7 @@ export const readPage = internalQuery({
 		done: v.boolean()
 	}),
 	handler: async (ctx, args) => {
-		if (!(await ctx.db.get('company', args.companyId)))
-			throw new ConvexError('Company is unavailable.');
+		await requireCompany(ctx, args.companyId);
 		const opts = {
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, 25),

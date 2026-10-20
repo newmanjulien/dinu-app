@@ -6,7 +6,8 @@ import {
 	requireMembership,
 	requirePermission,
 	creatorDeleted,
-	verifiedIdentity
+	verifiedIdentity,
+	requireCompany
 } from './auth';
 export const create = mutation({
 	args: { name: v.string() },
@@ -100,10 +101,9 @@ export const recoverOwner = internalMutation({
 	args: { companyId: v.id('company'), membershipId: v.id('memberships') },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const company = await ctx.db.get('company', args.companyId);
+		const company = await requireCompany(ctx, args.companyId);
 		const member = await ctx.db.get('memberships', args.membershipId);
 		if (
-			!company ||
 			company.ownerProfileId ||
 			!member ||
 			member.companyId !== company._id ||

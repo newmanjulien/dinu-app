@@ -89,6 +89,13 @@ export const invite = action({
 				let sent = false;
 				try {
 					if (timedOut) throw new Error('Invitation batch timed out.');
+					if (
+						!(await ctx.runQuery(internal.companyInvitations.canDeliver, {
+							id: invitation.id,
+							generation: invitation.generation
+						}))
+					)
+						throw new Error('This invitation is unavailable.');
 					const result = await transport.sendMail({
 						from: env.SMTP_USER,
 						to: invitation.email,

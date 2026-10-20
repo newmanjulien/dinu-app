@@ -1,10 +1,4 @@
-<script lang="ts">
-</script>
-
-<div
-	class="pointer-events-none absolute inset-y-0 right-0 left-[calc(8px+((100%-16px)*0.502)+6px)] hidden overflow-hidden lg:block"
-	aria-hidden="true"
->
+<div class="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
 	<svg class="block size-full" width="100%" height="100%" preserveAspectRatio="none">
 		<defs>
 			<pattern id="auth-light-grid" width="8" height="8" patternUnits="userSpaceOnUse">

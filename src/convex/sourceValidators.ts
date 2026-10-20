@@ -1,17 +1,43 @@
 import { v } from 'convex/values';
 
+// Literal text and counters stay distinct, including Word punctuation after %1.
+const numberPattern = v.union(
+	v.string(),
+	v.array(
+		v.union(
+			v.object({ text: v.string() }),
+			v.object({
+				level: v.number(),
+				case: v.optional(v.union(v.literal('upper'), v.literal('lower'))),
+				minimumDigits: v.optional(v.number())
+			})
+		)
+	)
+);
+
 // Immutable source coordinates, inline atoms, and baseline blocks.
 export const sourcePoint = v.object({ sourceKey: v.string(), offset: v.number() });
 export const sourceRange = v.object({ start: sourcePoint, end: sourcePoint });
-const referenceFields = {
-	kind: v.literal('reference'),
-	targetItemKey: v.string(),
-	endTargetItemKey: v.optional(v.string())
-};
 export const textMarks = v.object({
 	bold: v.optional(v.boolean()),
 	italic: v.optional(v.boolean())
 });
+const referenceFields = {
+	kind: v.literal('reference'),
+	targetItemKey: v.string(),
+	endTargetItemKey: v.optional(v.string()),
+	// Read compatibility for older stored references; new imports use display parts.
+	suffixLevels: v.optional(v.number()),
+	// Templates preserve the author's punctuation and casing while targets renumber.
+	display: v.optional(
+		v.object({
+			start: numberPattern,
+			end: v.optional(numberPattern),
+			separator: v.optional(v.string())
+		})
+	),
+	marks: v.optional(textMarks)
+};
 export const replacementAtom = v.union(
 	v.object({ kind: v.literal('text'), text: v.string(), marks: v.optional(textMarks) }),
 	v.object(referenceFields)
@@ -29,11 +55,18 @@ export const sourceNumbering = v.object({
 	itemKey: v.string(),
 	sequenceKey: v.string(),
 	parentItemKey: v.optional(v.string()),
+	start: v.optional(v.number()),
+	labelPattern: v.optional(numberPattern),
+	referencePattern: v.optional(numberPattern),
+	minimumDigits: v.optional(v.number()),
+	alphabeticStyle: v.optional(v.union(v.literal('sequential'), v.literal('repeated'))),
+	marks: v.optional(textMarks),
 	style: v.union(
 		v.literal('decimal'),
 		v.literal('lower-alpha'),
 		v.literal('lower-roman'),
-		v.literal('upper-alpha')
+		v.literal('upper-alpha'),
+		v.literal('upper-roman')
 	)
 });
 const base = { blockKey: v.string(), order: v.number(), numbering: v.optional(sourceNumbering) };

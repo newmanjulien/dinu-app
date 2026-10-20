@@ -24,7 +24,7 @@
 </svg>
 
 <div
-	class="relative z-[1] flex min-h-[calc(100dvh-16px)] flex-col items-center justify-center px-[clamp(72px,7.8vw,224px)] text-center"
+	class="relative z-[1] flex h-full min-h-[calc(100dvh-16px)] flex-col items-center justify-center px-[clamp(72px,7.8vw,224px)] text-center"
 >
 	<div
 		aria-hidden="true"

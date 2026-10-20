@@ -9,7 +9,13 @@ import { paginationOptsValidator, paginationResultValidator } from 'convex/serve
 import { ConvexError, v } from 'convex/values';
 import { query, mutation, internalMutation, internalQuery } from './_generated/server';
 import { internal } from './_generated/api';
-import { requireProfile, requirePermission, verifiedIdentity } from './auth';
+import {
+	requireProfile,
+	requirePermission,
+	verifiedIdentity,
+	availableCompany,
+	requireCompany
+} from './auth';
 const invitationView = v.object({
 	id: v.id('companyInvitations'),
 	email: v.string(),
@@ -69,7 +75,7 @@ export const inbox = query({
 		const result = await Promise.all(
 			invitations.map(async (i) => {
 				const [company, inviter] = await Promise.all([
-					ctx.db.get('company', i.companyId),
+					availableCompany(ctx, i.companyId),
 					ctx.db.get('profiles', i.inviterProfileId)
 				]);
 				return company
@@ -102,6 +108,7 @@ export const accept = mutation({
 			.query('memberships')
 			.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
 			.unique();
+		await requireCompany(ctx, invitation.companyId);
 		if (
 			invitation.status === 'accepted' &&
 			invitation.acceptedByProfileId === profile._id &&
@@ -114,8 +121,6 @@ export const accept = mutation({
 			);
 		if (membership)
 			throw new ConvexError('Leave your current company before accepting this invitation.');
-		if (!(await ctx.db.get('company', invitation.companyId)))
-			throw new ConvexError('This company is unavailable.');
 		const id = await ctx.db.insert('memberships', {
 			companyId: invitation.companyId,
 			profileId: profile._id
@@ -288,6 +293,20 @@ export const finishDelivery = internalMutation({
 		return null;
 	}
 });
+export const canDeliver = internalQuery({
+	args: { id: v.id('companyInvitations'), generation: v.number() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const invitation = await ctx.db.get('companyInvitations', args.id);
+		return Boolean(
+			invitation?.status === 'pending' &&
+			!invitation.expired &&
+			invitation.deliveryStatus === 'sending' &&
+			invitation.deliveryGeneration === args.generation &&
+			(await availableCompany(ctx, invitation.companyId))
+		);
+	}
+});
 
 // The random email token permits a minimal preview, never membership access.
 export const previewHash = internalQuery({
@@ -299,9 +318,9 @@ export const previewHash = internalQuery({
 			.withIndex('by_tokenHash', (q) => q.eq('tokenHash', args.tokenHash))
 			.unique();
 		if (!invitation) return { status: 'unavailable' };
-		if (invitation.status !== 'pending') return { status: invitation.status };
-		const company = await ctx.db.get('company', invitation.companyId);
+		const company = await availableCompany(ctx, invitation.companyId);
 		if (!company) return { status: 'unavailable' };
+		if (invitation.status !== 'pending') return { status: invitation.status };
 		return {
 			status: 'available',
 			companyName: company.name,
@@ -324,7 +343,7 @@ export const resolveHash = internalQuery({
 		if (!invitation) return { status: 'unavailable', companyName: null };
 		if (invitation.normalizedEmail !== emailAddress(identity.email!))
 			return { status: 'wrong-email', companyName: null };
-		const company = await ctx.db.get('company', invitation.companyId);
+		const company = await availableCompany(ctx, invitation.companyId);
 		if (!company) return { status: 'unavailable', companyName: null };
 		const companyName = company.name;
 		if (invitation.status === 'revoked') return { status: 'revoked', companyName };

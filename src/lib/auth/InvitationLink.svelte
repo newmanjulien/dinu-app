@@ -113,7 +113,7 @@
 	>
 		<a
 			href="/"
-			class="block rounded-button-lg bg-[var(--auth-accent-500)] px-4 py-3 text-center text-sm text-white"
+			class="block rounded-button-lg bg-accent px-4 py-3 text-center text-sm text-white"
 			>Open workspace</a
 		>
 		{#if error}<p role="alert" class="mt-3 text-sm text-danger">{error}</p>{/if}
@@ -146,7 +146,7 @@
 	>
 		<a
 			href={teamHref}
-			class="block rounded-button-lg bg-[var(--auth-accent-500)] px-4 py-3 text-center text-sm text-white"
+			class="block rounded-button-lg bg-accent px-4 py-3 text-center text-sm text-white"
 			>Manage current company</a
 		>
 		<p class="mt-3 text-center text-xs leading-5 text-stone-500">

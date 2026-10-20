@@ -8,6 +8,8 @@ import type {
 } from './model';
 import { newTriggerId } from './model';
 import { instructionsFields } from './instructions-fields';
+import { canonicalMarks } from '../contract/marks';
+import { canonicalNumberPattern } from '../contract/number-pattern';
 
 export type PlaybookDraft = PlaybookItem & {
 	instructions: Instructions;
@@ -38,21 +40,33 @@ export function semanticConcession({
 		...(after !== undefined ? { after } : {}),
 		changes: changes.map(({ range, replacement }) => ({
 			range: semanticRange(range),
-			replacement: replacement.map((atom) =>
-				atom.kind === 'text'
-					? {
-							kind: 'text',
-							text: atom.text,
-							...(atom.marks !== undefined ? { marks: { ...atom.marks } } : {})
-						}
+			replacement: replacement.map((atom) => {
+				const marks = canonicalMarks(atom.marks);
+				return atom.kind === 'text'
+					? { kind: 'text', text: atom.text, ...(marks ? { marks } : {}) }
 					: {
 							kind: 'reference',
 							targetItemKey: atom.targetItemKey,
+							...(atom.suffixLevels !== undefined ? { suffixLevels: atom.suffixLevels } : {}),
+							...(atom.display
+								? {
+										display: {
+											start: canonicalNumberPattern(atom.display.start),
+											...(atom.display.end !== undefined
+												? { end: canonicalNumberPattern(atom.display.end) }
+												: {}),
+											...(atom.display.separator !== undefined
+												? { separator: atom.display.separator }
+												: {})
+										}
+									}
+								: {}),
 							...(atom.endTargetItemKey !== undefined
 								? { endTargetItemKey: atom.endTargetItemKey }
-								: {})
-						}
-			)
+								: {}),
+							...(marks ? { marks } : {})
+						};
+			})
 		}))
 	};
 }

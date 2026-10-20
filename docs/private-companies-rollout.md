@@ -8,7 +8,9 @@ join. Creating a company makes the creator its owner and an admin atomically.
 
 Admins invite colleagues, remove members, and edit company settings. Every user selects their own Rep or Admin role in Settings; Admin grants these
 permissions immediately without approval. Only the owner can transfer ownership. An owner must transfer
-ownership before leaving or using Agreed's account deletion flow. New profiles default to Rep. Invitations preserve the user’s chosen personal role. Existing playbook authoring
+ownership before leaving, or before deleting their account while another live
+colleague remains. The last live member can delete their account and company.
+New profiles default to Rep. Invitations preserve the user’s chosen personal role. Existing playbook authoring
 access is preserved; this change does not introduce an authoring capability policy.
 
 Creating a company makes account setup ready immediately. Template readiness is
@@ -44,8 +46,10 @@ not redirect an already queued request. Companies configure their approval recip
 Public company operations require the caller's stable `membershipId`, resolve it
 from authenticated identity, and compare it with the current membership before
 accessing records. An old membership cannot operate in a newly joined company.
-Contract snapshots and template children inherit scope through their authorized
-parent. Parent company checks happen before reading children or returning avatar
+Contract snapshots and template children are accessed through their authorized
+parent. Immutable version blocks and items also require their own indexed company
+ID so cleanup can drain children before removing versions. Parent company checks
+happen before reading children or returning avatar
 URLs. Snapshot HTTP requests carry the cache instance's membership ID; one backend
 load validates that membership and reads the snapshot. Responses are authenticated
 and `private, no-store`.
@@ -53,7 +57,10 @@ Every saved contract requires `templateVersionId`. The fresh reset retired the
 per-contract snapshot tables and unused snapshot hashes; immutable version items
 retain their original playbook identities even after live-item deletion.
 Creation receipts include membership in their operation keys so retries cannot
-create data in a different company after membership changes.
+create data in a different company after membership changes. Item and contract
+receipts require an indexed company ID derived from authorized server context.
+They survive individual target deletion to preserve retry idempotency and are
+purged during explicit company deletion.
 
 Snapshot caches are scoped to profile and membership. Contract draft journals are
 scoped to deployment, Clerk user, membership, and contract. Authentication retries and personal role changes
@@ -65,11 +72,14 @@ Membership removal immediately denies subsequent backend operations and revokes
 pending invitations for the removed colleague's email in the same transaction.
 
 Contracts, immutable snapshots, receipts, and approval history belong to the
-company and survive a colleague leaving or deleting their account. Creator IDs
+company and survive a colleague leaving or deleting only their account. Creator IDs
 retain historical attribution. A creator who no longer has a live membership in
 that company is displayed as a former colleague without exposing their profile.
 Signed deletion markers immediately block the deleted identity. Cleanup removes
 its membership, profile, and personal avatar, preserving company business data.
+The last live member can explicitly consent to deleting both account and company;
+company cleanup starts only after Clerk deletion is confirmed. Preparation,
+dispatch, cleanup, and migration details are in [company deletion](company-deletion.md).
 
 External Clerk deletion of an owner selects the oldest live remaining membership,
 paging through at most 25 candidates per transaction. It updates ownership without
@@ -217,8 +227,9 @@ or snapshot leakage. Remove a colleague while they have an editor and upload ope
 confirm revocation, cache/journal cleanup, and retention of their company contracts.
 Select Admin as a Rep and verify immediate UI and backend access; switch back and
 verify denial. Confirm users cannot set another profile’s role. Check owner-to-Rep,
-role-preserving ownership transfer, owner/self removal protections, owner self-deletion
-denial, external deletion, successor paging, and internal ownerless recovery. Repeat import after
+role-preserving ownership transfer, owner/self removal protections, owner deletion
+with and without live colleagues, external deletion, successor paging, and internal
+ownerless recovery. Repeat import after
 interrupting batches and confirm counts and original records remain stable.
 
 Check authentication retry, logout save/cancel/discard, leaving with pending saves,

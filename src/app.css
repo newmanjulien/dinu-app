@@ -13,7 +13,7 @@
 	--color-ink-secondary: #3c4043;
 	--color-ink-muted: #5f6368;
 
-	--color-line: #dadce0;
+	--color-line: rgb(218 220 224 / 60%);
 	--color-line-strong: #9aa0a6;
 
 	--color-control-fill: #e3e6e8;
@@ -21,6 +21,7 @@
 
 	--color-accent: #2563eb;
 	--color-accent-hover: #1d4ed8;
+	--color-accent-soft: color-mix(in srgb, var(--color-accent) 20%, white);
 	--color-success: #078647;
 	--color-danger: #d92525;
 	--color-danger-hover: #bc2020;
@@ -49,16 +50,6 @@ html {
 	scrollbar-gutter: stable;
 }
 
-:root {
-	--info-200: #bfd4de;
-	--info-400: #7898a6;
-	--info-500: #5d7f90;
-	--info-600: #4d6d7c;
-	--link-200: #a7d9ff;
-	--link-400: #0087e8;
-	--link-500: #0087e8;
-	--link-600: #006ec0;
-}
 .font-quote {
 	font-family: Newsreader, 'Times New Roman', serif;
 }

@@ -52,7 +52,7 @@
 										{step.description.slice(0, highlightStart)}<span
 											class="rounded-[3px] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]"
 											style:background={highlight.color === 'blue'
-												? 'var(--document-highlight-selection, #d2e3fc)'
+												? 'var(--document-highlight-selection, var(--color-accent-soft))'
 												: 'var(--document-highlight-trigger, color-mix(in srgb, var(--color-success) 16%, transparent))'}
 										>
 											{highlight.text}

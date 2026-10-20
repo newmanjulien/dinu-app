@@ -34,8 +34,7 @@ export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id
 		.unique();
 	if (!membership || (expectedMembershipId && membership._id !== expectedMembershipId))
 		throw new ConvexError('Your company access has changed. Reload to continue.');
-	const company = await ctx.db.get('company', membership.companyId);
-	if (!company) throw new ConvexError('This company is unavailable.');
+	const company = await requireCompany(ctx, membership.companyId);
 	return {
 		...profile,
 		membership,
@@ -44,6 +43,31 @@ export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id
 		membershipId: membership._id,
 		isOwner: company.ownerProfileId === profile._id
 	};
+}
+export function companyDeletion(ctx: QueryCtx, companyId: Id<'company'>) {
+	return ctx.db
+		.query('companyDeletions')
+		.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+		.unique();
+}
+export async function availableCompany(ctx: QueryCtx, companyId: Id<'company'>) {
+	const [company, deletion] = await Promise.all([
+		ctx.db.get('company', companyId),
+		companyDeletion(ctx, companyId)
+	]);
+	return deletion ? null : company;
+}
+export async function requireCompany(ctx: QueryCtx, companyId: Id<'company'>) {
+	const [company, deletion] = await Promise.all([
+		ctx.db.get('company', companyId),
+		companyDeletion(ctx, companyId)
+	]);
+	if (!company) throw new ConvexError('This company is unavailable.');
+	if (deletion)
+		throw new ConvexError(
+			'Company activity is paused while account deletion is confirmed. Open Settings to finish or cancel deletion.'
+		);
+	return company;
 }
 export type CompanyAccess = Awaited<ReturnType<typeof requireMembership>>;
 export async function requirePermission(

@@ -10,6 +10,7 @@
 	import { api } from '../../../convex/_generated/api';
 	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
 	import ContractCard from '$lib/components/contracts/ContractCard.svelte';
+	import InfoBar from '$lib/components/ui/InfoBar.svelte';
 	import CompanyNameDialog from '$lib/components/ui/modal/CompanyNameDialog.svelte';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { saveError } from '$lib/contract/saved';
@@ -221,11 +222,16 @@
 				>
 			{:else}<button
 					disabled
-					title="Your company’s contract template is being prepared."
+					title="An admin must upload your company’s baseline contract."
 					class="flex h-9 shrink-0 items-center gap-1.5 rounded-button-lg bg-[#171717] px-3 text-[13px] font-normal text-white opacity-40"
 					><PlusIcon size={15} aria-hidden="true" />Add New</button
 				>{/if}
 		</div>
+		{#if !viewer().templateReady}<p class="mb-5 text-[13px] text-ink-muted">
+				Your company needs a baseline contract. <a class="underline text-accent" href="/admin"
+					>Set up contract</a
+				>
+			</p>{/if}
 		<div class="mb-3 flex items-center gap-3">
 			<h1 class="text-sm font-medium">Contracts</h1>
 			{#if waiting && cards.length}<LoadingWheel label="Refreshing contracts" />{/if}
@@ -257,13 +263,33 @@
 					<button onclick={() => (search = '')} class="mt-4 text-[13px] underline"
 						>Clear search</button
 					>
-				{:else}<h2 class="text-[13px] font-medium">No contracts yet</h2>
+				{:else}<h2 class="text-[13.5px] font-medium">
+						{viewer().templateReady ? 'No contracts yet' : 'No baseline contract'}
+					</h2>
 					<p class="mt-2 text-[13px] text-ink-muted">
 						{viewer().templateReady
 							? 'Select Add New to start your first contract.'
-							: 'Your company’s contract template is being prepared. You can invite colleagues from Team while you wait.'}
+							: viewer().profile.role === 'admin'
+								? 'This is where reps create contracts for customers. But first, you need to set up your company’s baseline contract.'
+								: 'This is where reps create contracts for customers. But first, an admin needs to set up your company’s baseline contract.'}
 					</p>{/if}
 			</div>
+			{#if !query}
+				<InfoBar
+					class="mt-4"
+					label={viewer().profile.role === 'admin'
+						? 'Set up baseline contract.'
+						: 'Contact an admin.'}
+				>
+					{#if viewer().profile.role === 'admin'}
+						Click on "Set up contract" to upload your standard contract and define the changes your
+						reps can offer.
+					{:else}
+						Ask them to upload your company’s standard contract and configure the changes you can
+						offer customers.
+					{/if}
+				</InfoBar>
+			{/if}
 		{:else if cards.length}
 			<div class="cards">
 				{#each cards as contract (contract._id)}

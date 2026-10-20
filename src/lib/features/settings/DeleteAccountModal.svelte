@@ -3,8 +3,10 @@
 	import { onDestroy } from 'svelte';
 	import type { SessionResource, UserResource } from '@clerk/shared/types';
 	import { useClerkContext } from 'svelte-clerk';
-	import { useConvexClient } from 'convex-svelte';
+	import { useConvexClient, useQuery } from 'convex-svelte';
+	import type { FunctionReturnType } from 'convex/server';
 	import { api } from '../../../convex/_generated/api';
+	import type { Id } from '../../../convex/_generated/dataModel';
 	import {
 		createClerkSessionVerification,
 		type ClerkSessionVerificationFactor,
@@ -13,8 +15,6 @@
 	} from '$lib/auth/clerk-session-verification.svelte';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { Button, destructiveButtonClass, ModalShell } from '$lib/ui';
-
-	const CONFIRMATION_TEXT = 'delete my account';
 
 	type ModalStep = 'confirmDeletion' | 'verifyIdentity';
 
@@ -27,6 +27,12 @@
 	const clerk = useClerkContext();
 	const client = useConvexClient();
 	const viewerSession = useViewerSession();
+	const options = useQuery(api.accountDeletion.options, () => (open ? {} : 'skip'));
+	const combined = $derived(options.data?.mode === 'accountAndCompany');
+	const confirmationPhrase = $derived(
+		combined ? 'delete my account and company' : 'delete my account'
+	);
+	const deletionTitle = $derived(combined ? 'Delete account and company' : 'Delete account');
 	const verification = createClerkSessionVerification({
 		isCurrent: (session) =>
 			attempt !== null && attempt.sessionId === session.id && isCurrent(attempt),
@@ -41,6 +47,11 @@
 		userId: string;
 		sessionId: string;
 		generation: number;
+		mode: 'account' | 'accountAndCompany';
+		companyId: Id<'company'> | null;
+		confirmation: string;
+		attemptId: string;
+		request: FunctionReturnType<typeof api.accountDeletion.prepare>;
 	};
 	let attempt: Attempt | null = null;
 	let generation = 0;
@@ -58,8 +69,18 @@
 	let lastOpen = $state(false);
 
 	const trimmedConfirmationText = $derived(confirmationText.trim());
-	const canDeleteAccount = $derived(trimmedConfirmationText === CONFIRMATION_TEXT);
-	const errorText = $derived(step === 'confirmDeletion' ? deleteErrorText : verification.errorText);
+	const canDeleteAccount = $derived(
+		Boolean(options.data && options.data.mode !== 'transferOwnership') &&
+			trimmedConfirmationText === confirmationPhrase
+	);
+	const errorText = $derived(
+		step === 'confirmDeletion'
+			? (deleteErrorText ??
+					(options.error
+						? getErrorMessage(options.error, 'Unable to check company membership.')
+						: null))
+			: verification.errorText
+	);
 	const verificationTitle = $derived(getVerificationTitle(verification.factor));
 	const verificationDescription = $derived(getVerificationDescription(verification.factor));
 	const verificationInputType = $derived(
@@ -87,6 +108,8 @@
 	});
 
 	function resetModalState() {
+		const old = attempt;
+		if (old?.request?.status === 'prepared') void cancelPreparation(old).catch(() => {});
 		generation++;
 		attempt = null;
 		confirmationText = '';
@@ -96,11 +119,35 @@
 		verification.reset();
 	}
 
-	function closeDeleteModal() {
+	async function closeDeleteModal() {
 		if (deleting) {
 			return;
 		}
 
+		const context = {
+			generation,
+			userId: clerk.user?.id ?? '',
+			sessionId: clerk.session?.id ?? ''
+		};
+		if (options.data?.pending || attempt?.request) {
+			deleting = true;
+			try {
+				// Explicit cancellation revokes the current preparation across tabs.
+				const outcome = await client.mutation(api.accountDeletion.cancel, {});
+				if (!isCurrent(context)) return;
+				if (outcome === 'dispatched')
+					throw new Error(
+						'Account deletion has already been dispatched. Retry deletion to finish.'
+					);
+			} catch (error) {
+				if (!isCurrent(context)) return;
+				returnToConfirmationWithError(
+					getErrorMessage(error, 'Unable to cancel company deletion. Try again.')
+				);
+				deleting = false;
+				return;
+			}
+		}
 		onClose();
 		resetModalState();
 	}
@@ -174,7 +221,7 @@
 			: 'Verify and delete';
 	}
 
-	function isCurrent(a: Attempt) {
+	function isCurrent(a: Pick<Attempt, 'generation' | 'userId' | 'sessionId'>) {
 		return (
 			alive &&
 			open &&
@@ -214,13 +261,39 @@
 		verification.reset();
 		deleteErrorText = message;
 	}
+	async function cancelPreparation(a: Attempt) {
+		const request = a.request;
+		if (request?.status !== 'prepared') return;
+		const outcome = await client.mutation(api.accountDeletion.cancel, {
+			request: { id: request.id, attemptId: request.attemptId }
+		});
+		if (outcome === 'cancelled' || outcome === 'none') a.request = null;
+	}
 
 	async function executeDeletion(a: Attempt, afterVerification = false) {
 		if (!isCurrent(a)) return;
 		deleteErrorText = null;
 		deleting = true;
 		try {
-			await client.query(api.accountDeletion.authorize, {});
+			if (a.mode === 'accountAndCompany')
+				a.request = await client.mutation(api.accountDeletion.prepare, {
+					protocol: 'dispatch',
+					mode: a.mode,
+					companyId: a.companyId,
+					confirmation: a.confirmation,
+					attemptId: a.request?.attemptId ?? a.attemptId
+				});
+			if (!isCurrent(a)) {
+				await cancelPreparation(a);
+				return;
+			}
+			a.request = await client.mutation(api.accountDeletion.dispatch, {
+				mode: a.mode,
+				companyId: a.companyId,
+				confirmation: a.confirmation,
+				attemptId: a.request?.attemptId ?? a.attemptId,
+				requestId: a.request?.id ?? null
+			});
 			if (!isCurrent(a)) return;
 			await a.user.delete();
 			viewerSession.completeAccountDeletion({ sessionId: a.sessionId, userId: a.userId });
@@ -228,9 +301,16 @@
 			onClose();
 			resetModalState();
 		} catch (error) {
+			const needsVerification = isReverificationRequiredError(error);
+			// Conditional cancellation cannot revoke a dispatch whose reply was lost.
+			// Verification and uncertain Clerk failures retain dispatched consent.
+			try {
+				await cancelPreparation(a);
+			} catch {
+				/* Unused preparations expire. */
+			}
 			if (!isCurrent(a)) return;
 			deleting = false;
-			const needsVerification = isReverificationRequiredError(error);
 			if (needsVerification && !afterVerification) {
 				step = 'verifyIdentity';
 				await verification.start(a.session);
@@ -253,36 +333,66 @@
 			returnToConfirmationWithError(context.errorText);
 			return;
 		}
-		attempt = context;
-		await executeDeletion(context);
+		const selection = options.data;
+		if (!selection || selection.mode === 'transferOwnership') return;
+		attempt = {
+			...context,
+			mode: selection.mode,
+			companyId: selection.companyId,
+			confirmation: trimmedConfirmationText,
+			attemptId: crypto.randomUUID(),
+			request: null
+		};
+		await executeDeletion(attempt);
 	}
 </script>
 
-<ModalShell {open} title="Delete account" onClose={closeDeleteModal}>
+<ModalShell {open} title={deletionTitle} onClose={closeDeleteModal}>
 	<div class="space-y-4">
 		{#if step === 'confirmDeletion'}
-			<p class="text-sm leading-6 text-stone-700">
-				This permanently deletes your account and every contract you created, including any existing
-				contracts assigned to you when the workspace was initialized. Your colleagues and their
-				contracts remain.
-			</p>
-
-			<div>
-				<label for="delete-account-confirmation" class="block text-xs text-stone-950">
-					Type <strong>"delete my account"</strong> to continue
-				</label>
-				<input
-					id="delete-account-confirmation"
-					type="text"
-					bind:value={confirmationText}
-					autocomplete="off"
-					class={`${fieldClass} mt-2 h-9`}
-					disabled={deleting}
-					oninput={() => {
-						deleteErrorText = null;
-					}}
-				/>
-			</div>
+			{#if !options.data && !options.error}
+				<p class="text-sm leading-6 text-stone-700">Checking company membership...</p>
+			{:else if options.data?.mode === 'transferOwnership'}
+				<p class="text-sm leading-6 text-stone-700">
+					Transfer ownership of {options.data.companyName ?? 'your company'} to a colleague before deleting
+					your account.
+					<a href="/team" class="underline" onclick={() => onClose()}>Open the team page</a>
+				</p>
+			{:else if options.data}
+				<p class="text-sm leading-6 text-stone-700">
+					{#if combined}
+						You are the last member of <strong>{options.data.companyName}</strong>. This permanently
+						deletes your account and company, including all contracts, the playbook, templates and
+						their history, approval records, invitations, and the company avatar. This cannot be
+						undone.
+					{:else}
+						This permanently deletes your account. Company contracts and other shared data remain
+						available to your colleagues.
+					{/if}
+				</p>
+				{#if options.data.pending}
+					<p class="text-sm leading-6 text-stone-700">
+						Company activity is paused while account deletion is confirmed. You can retry deletion
+						or cancel it here.
+					</p>
+				{/if}
+				<div>
+					<label for="delete-account-confirmation" class="block text-xs text-stone-950">
+						Type <strong>"{confirmationPhrase}"</strong> to continue
+					</label>
+					<input
+						id="delete-account-confirmation"
+						type="text"
+						bind:value={confirmationText}
+						autocomplete="off"
+						class={`${fieldClass} mt-2 h-9`}
+						disabled={deleting}
+						oninput={() => {
+							deleteErrorText = null;
+						}}
+					/>
+				</div>
+			{/if}
 		{:else}
 			<div>
 				<h3 class="text-sm leading-tight font-medium text-stone-950">
@@ -333,7 +443,7 @@
 				class={destructiveButtonClass}
 				onclick={deleteAccount}
 			>
-				{deleting ? 'Deleting...' : 'Delete account'}
+				{deleting ? 'Deleting...' : deletionTitle}
 			</Button>
 		{:else}
 			<Button variant="secondary" disabled={deleting} onclick={closeDeleteModal}>Cancel</Button>

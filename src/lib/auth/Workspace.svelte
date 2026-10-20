@@ -1,6 +1,6 @@
 <script lang="ts">
 	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
-	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
+	import BaselineSetup from '$lib/components/template/BaselineSetup.svelte';
 	import { page } from '$app/state';
 	import { useViewer, useViewerSession } from './viewer-session.svelte';
 	import { DocumentResources, setDocumentResources } from '$lib/document/runtime/resources.svelte';
@@ -26,8 +26,10 @@
 	const viewer = useViewer();
 	const cache = getContractSnapshotCache();
 	onMount(() => interactions.mount());
+	let navigationIntent = 0;
 
 	beforeNavigate((navigation) => {
+		navigationIntent++;
 		if (navigation.to) recordDocumentNavigation(navigation.to.url.pathname);
 	});
 	afterNavigate((navigation) => {
@@ -50,10 +52,12 @@
 		!viewer().templateReady && ['/admin', '/contracts/new'].includes(page.url.pathname)
 	);
 	const documentRoute = $derived(/^\/(admin|contracts)(\/|$)/.test(page.url.pathname));
-	const needsDocumentHost = $derived(documentRoute && !templatePending);
+	const deletionPending = $derived(Boolean(viewer().company.deletionPending));
+	const needsDocumentHost = $derived(documentRoute && !templatePending && !deletionPending);
 	const host = loadComponent(
 		() => import('./DocumentHost.svelte'),
-		() => needsDocumentHost || Boolean(resources?.preparationCandidates.length),
+		() =>
+			!deletionPending && (needsDocumentHost || Boolean(resources?.preparationCandidates.length)),
 		() => session.transportGeneration,
 		(module) => {
 			if (resources) resources.createWorkspace = module.createContractWorkspace;
@@ -66,6 +70,7 @@
 			untrack(() => recordStartup('usable'));
 	});
 	onNavigate(({ to }) => {
+		if (deletionPending) return;
 		const path = to?.url.pathname;
 		const id = path === '/admin' ? 'admin' : path?.match(/^\/contracts\/([^/]+)\/?$/)?.[1];
 		if (id && id !== 'admin' && id !== 'new') void cache.load(id);
@@ -81,22 +86,31 @@
 			: undefined
 	);
 	onDestroy(() => {
+		navigationIntent++;
 		cache.cancelPending();
 		resources?.destroy();
 		layoutProfiles?.scheduler.destroy();
 	});
+	$effect(() => {
+		if (deletionPending) {
+			cache.cancelPending();
+			resources?.candidates([]);
+		}
+	});
 </script>
 
-{#if templatePending}
-	<AppHeader />
-	<main class="mx-auto max-w-xl px-6 py-16">
-		<h1 class="text-xl font-medium">Your company’s contract template is being prepared</h1>
-		<p class="mt-3 text-sm leading-6 text-ink-muted">
-			You can invite colleagues and set up your company while your baseline contract and playbook
-			are prepared. Contract creation will become available here when they’re ready.
-		</p>
-		<a href="/team" class="mt-6 inline-block text-sm underline">Go to company team</a>
-	</main>
+{#if deletionPending}
+	<div role="status" class="bg-stone-100 px-6 py-4 text-sm leading-6 text-stone-700">
+		Company activity is paused while account deletion is confirmed.
+		<a href="/settings" class="underline">Open Settings to finish or cancel deletion.</a>
+	</div>
+{/if}
+{#if deletionPending && page.url.pathname !== '/settings'}
+	<div class="p-6 text-sm text-stone-700">
+		Your company data will be removed after account deletion is confirmed.
+	</div>
+{:else if templatePending}
+	<BaselineSetup getNavigationIntent={() => navigationIntent} />
 {:else if !documentRoute || DocumentHost}{@render children()}
 {:else if !hostError}<div class="flex justify-center py-16">
 		<LoadingWheel label="Loading document viewer" />
@@ -104,4 +118,4 @@
 {#if needsDocumentHost && hostError}<p role="alert" class="p-4 text-sm">
 		{hostError} <button class="underline" onclick={host.retry}>Try again</button>
 	</p>{/if}
-{#if DocumentHost}<DocumentHost profiles={layoutProfiles} {resources} />{/if}
+{#if DocumentHost && !deletionPending}<DocumentHost profiles={layoutProfiles} {resources} />{/if}

@@ -127,7 +127,7 @@ describe('immutable template creation', () => {
 							}
 						}
 					},
-					companyId
+					(await ctx.db.get('company', companyId))!
 				);
 			})
 		).rejects.toThrow('transaction capacity');
@@ -216,7 +216,7 @@ describe('immutable template creation', () => {
 			t.mutation(api.admin.deletePlaybookItem, { membershipId, id: itemId, expectedRevision: 0 })
 		).rejects.toThrow('maintenance');
 		await t.run(async (ctx) => {
-			await publishTemplate(ctx, companyId);
+			await publishTemplate(ctx, (await ctx.db.get('company', companyId))!);
 			const pointer = (await currentPointer(ctx, companyId))!;
 			await ctx.db.patch('currentTemplate', pointer._id, { maintenance: false });
 		});

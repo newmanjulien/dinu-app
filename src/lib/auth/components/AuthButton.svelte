@@ -8,6 +8,7 @@
 		disabled?: boolean;
 		children: Snippet;
 		onclick?: () => void;
+		variant?: 'primary' | 'secondary';
 	};
 
 	let {
@@ -15,6 +16,7 @@
 		disabled = false,
 		children,
 		onclick,
+		variant = 'primary',
 		'aria-keyshortcuts': ariaKeyshortcuts
 	}: Props = $props();
 </script>
@@ -23,8 +25,14 @@
 	{type}
 	{disabled}
 	{onclick}
+	{variant}
 	aria-keyshortcuts={ariaKeyshortcuts}
-	class="relative w-full bg-[var(--auth-accent-500)] hover:bg-[var(--auth-accent-600)] focus-visible:outline-[var(--auth-accent-200)] disabled:bg-[var(--auth-accent-200)] disabled:text-white disabled:hover:bg-[var(--auth-accent-200)] data-[disabled]:bg-[var(--auth-accent-200)] data-[disabled]:text-white"
+	class={[
+		'relative w-full',
+		variant === 'primary'
+			? 'bg-accent hover:bg-accent-hover disabled:bg-accent-soft disabled:text-white disabled:hover:bg-accent-soft data-[disabled]:bg-accent-soft data-[disabled]:text-white'
+			: 'h-auto border-stone-200 py-3 text-sm hover:bg-stone-50'
+	]}
 >
 	{@render children()}
 </Button>

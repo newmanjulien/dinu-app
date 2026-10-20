@@ -70,7 +70,7 @@
 				label="Your account"
 			>
 				{#snippet children(close)}
-					{#each [{ label: 'Settings', href: '/settings' }, { label: 'Company team', href: '/team' }] as item}
+					{#each [{ label: 'Settings', href: '/settings' }, { label: 'Manage team', href: '/team' }] as item}
 						<button
 							role="menuitem"
 							class="block w-full cursor-pointer rounded-button-lg px-3 py-2 text-left text-[13px] text-ink-secondary hover:bg-[#f3f3f3] focus-visible:bg-[#f3f3f3] focus-visible:outline-2 focus-visible:outline-accent"

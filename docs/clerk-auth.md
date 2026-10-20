@@ -78,7 +78,9 @@ Admin grants company name, approval recipient, company avatar, invitation, and
 member removal permissions. Admins can remove any colleague except the owner or
 themselves; self-removal uses Leave company. Company ownership is independent of
 role. Only the owner transfers ownership, including when they choose Rep. Owners
-must transfer before leaving or deleting their account. Transfers and owner
+must transfer before leaving, or before deleting their account when another live
+colleague remains. The last live member can delete their account and company.
+Transfers and owner
 recovery never change personal roles. Playbook and contract authoring retain their
 existing access.
 
@@ -223,35 +225,53 @@ and seed the actual company ID. Follow [the reset runbook](private-companies-rol
 
 ## Deletion and recovery
 
-Owners must transfer ownership before Agreed allows account deletion. Settings
-requires the phrase **delete my account**. A server-side ownership check runs
-before each Clerk deletion attempt, including retries after reverification.
-Clerk then deletes the account. A Clerk rejection leaves Convex data
-intact. Successful deletion clears local state and redirects directly to `/login`
+An owner with another live colleague must transfer ownership before account
+deletion. Other members use **delete my account** and retain company data. The last
+live member uses **delete my account and company** to delete both. Invitations and
+members already marked deleted do not count as live colleagues. The server checks
+current identity, membership, eligibility, and the exact phrase before every Clerk
+deletion attempt, including retries after reverification.
+
+Combined deletion first prepares a durable request, then dispatches that exact
+request before the existing client `user.delete()` call. A preparation can be
+cancelled and expires after 15 minutes. Dispatch preserves consent across Clerk
+errors, reverification, modal replacement, and retries; it cannot be cancelled or
+expired. Neither preparation nor dispatch deletes company data. Only a verified
+deletion webhook or a complete, successful Clerk lookup establishing the account's
+absence starts cleanup. Account-only deletion creates no company request.
+
+Successful deletion clears local state and redirects directly to `/login`
 from the persistent auth bridge, even if session loss has already removed the
 deletion modal. It does not wait for a redundant sign-out request or Convex cleanup.
 Protected routes also redirect when Clerk finishes loading without a session.
 
 The verified webhook records an issuer-qualified deletion marker and queues
 cleanup. That marker immediately denies the deleted identity. Cleanup removes its
-membership, personal avatar, and profile; it retains the company, contracts,
+membership, personal avatar, and profile. Account-only cleanup retains the company, contracts,
 snapshots, approval records, and receipts. Former creators display as former
 colleagues without disclosing their profile. Company contracts remain accessible
 to current colleagues and queued approvals retain their company recipient.
+Confirmed combined deletion also drains company business records, snapshot children,
+creation receipts, memberships, and the company avatar before completing a permanent
+company deletion marker. See [company deletion](company-deletion.md) for the lifecycle,
+cleanup order, recovery, and migration procedure.
 
 External owner deletion transfers ownership to the oldest live remaining membership
 using bounded pagination, without role preference or changing the successor’s role. If no successor
 exists, the company becomes ownerless and requires internal operator recovery;
 there is no public company claim flow. Details are in the company runbook.
 
-Every 15 minutes reconciliation checks registered profiles against Clerk with one
-batch lookup per 25-profile page and resumes unfinished jobs. Only an account
+Every 15 minutes reconciliation checks registered profiles and dispatched company
+requests against Clerk with one batch lookup per 25-record page and resumes
+unfinished jobs. The company request scan works after the profile is gone. Only an account
 missing from a complete, successful batch response records a deletion; network
 errors and incomplete responses retain the account. Each deletion marker tracks
 one cleanup job chain; repeated webhooks reuse an active chain, and stale jobs
-do no work. Inspect `deletedUsers.complete` and scheduled-function failures to
-diagnose incomplete cleanup. Fix the cause and run the internal
-`accountDeletion.resume` mutation to resume work; keep deletion markers permanently.
+do no work. Recovery isolates individual failures and advances through all pages.
+Inspect `deletedUsers.complete`, `companyDeletions.status`, and scheduled-function
+failures to diagnose incomplete cleanup. Fix the cause and run the internal
+`accountDeletion.resume` and `companyDeletion.resume` mutations as appropriate;
+keep completed deletion markers permanently.
 
 ## Verification before rollout
 
@@ -264,7 +284,7 @@ Live configuration and browser checks need development Clerk keys and SMTP setup
 Use accounts in two companies plus an unaffiliated account. Verify email codes,
 signup/login, explicit invitation acceptance, wrong-email and rotated/revoked links,
 create/wait onboarding, role and ownership changes, company/personal avatar saves,
-and owner deletion restrictions. Confirm companies never appear from domain matching.
+and owner deletion eligibility. Confirm companies never appear from domain matching.
 
 Call company APIs with another company's record IDs and stale membership IDs and
 confirm rejection. Remove a colleague with a contract and upload open; confirm
@@ -276,7 +296,10 @@ On disposable development data, interrupt and resume the company seed import.
 Delete an owner externally, redeliver signed webhooks, and simulate a missed webhook
 through reconciliation. Check live successor selection and ownerless recovery.
 Compare scoped counts, snapshot links, historical creator IDs and selections.
-Confirm a failed Clerk request never deletes data. The local suite/build does not
+Confirm failed or incomplete Clerk lookups never start deletion, and an uncertain
+client deletion result preserves dispatched consent. Exercise the deletion races
+listed in [the deletion runbook](company-deletion.md#manual-verification).
+The local suite/build does not
 certify these live authorization and reset checks.
 
 Exercise session transitions: interrupt selection saves, retry authentication with

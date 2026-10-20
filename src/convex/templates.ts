@@ -1,7 +1,17 @@
-import { requireMembership } from './auth';
+import { requireMembership, requireCompany } from './auth';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { baselineBlock } from './sourceValidators';
+import { validateBaseline } from '../lib/contract/validate-source';
+import { BASELINE_MAX_BLOCKS, BASELINE_MAX_BYTES } from '../lib/contract/import/limits';
 import { ConvexError, v, type Infer } from 'convex/values';
 import type { Doc, Id } from './_generated/dataModel';
-import { internalMutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
+import {
+	internalMutation,
+	mutation,
+	query,
+	type MutationCtx,
+	type QueryCtx
+} from './_generated/server';
 import { snapshot } from './savedContractValidators';
 import { selections } from './contractValidators';
 import { MAX_SELECTED_CONCESSIONS } from '../lib/contract/selection-limits';
@@ -48,7 +58,8 @@ export async function readLiveSnapshot(ctx: QueryCtx, companyId: Id<'company'>) 
 }
 
 /** Publication and its authoring change commit together, or neither commits. */
-export async function publishTemplate(ctx: MutationCtx, companyId: Id<'company'>) {
+export async function publishTemplate(ctx: MutationCtx, company: Doc<'company'>) {
+	const companyId = company._id;
 	const captured = await readLiveSnapshot(ctx, companyId);
 	const bytes = new TextEncoder().encode(JSON.stringify(captured)).byteLength;
 	if (bytes > 8_000_000) throw publicationRejected('Contract snapshot exceeds supported size.');
@@ -58,7 +69,18 @@ export async function publishTemplate(ctx: MutationCtx, companyId: Id<'company'>
 		if (error instanceof PlaybookValidationError) throw publicationRejected(error.message);
 		throw error;
 	}
-	const pointer = await currentPointer(ctx, companyId);
+	return publishSnapshot(ctx, companyId, captured, bytes, await currentPointer(ctx, companyId));
+}
+
+/** Receives an already validated, captured snapshot; never rereads live content. */
+async function publishSnapshot(
+	ctx: MutationCtx,
+	companyId: Id<'company'>,
+	captured: Awaited<ReturnType<typeof readLiveSnapshot>>,
+	bytes: number,
+	pointer: Doc<'currentTemplate'> | null,
+	baselineFingerprint?: string
+) {
 	// Reserve metadata/pointer and table wrappers up front. Recheck once after
 	// copying to reject capacity exhaustion before exposing the new version.
 	const capacity = async (documents: number, bytes: number) => {
@@ -82,18 +104,23 @@ export async function publishTemplate(ctx: MutationCtx, companyId: Id<'company'>
 		snapshotBytes: bytes
 	});
 	for (const block of captured.blocks) {
-		await ctx.db.insert('templateVersionBlocks', { versionId, block });
+		await ctx.db.insert('templateVersionBlocks', { companyId, versionId, block });
 	}
 	for (const item of captured.items) {
-		await ctx.db.insert('templateVersionItems', { versionId, itemId: item._id, item });
+		await ctx.db.insert('templateVersionItems', { companyId, versionId, itemId: item._id, item });
 	}
 	await capacity(1, 0);
-	if (pointer) await ctx.db.patch('currentTemplate', pointer._id, { versionId });
+	if (pointer)
+		await ctx.db.patch('currentTemplate', pointer._id, {
+			versionId,
+			...(baselineFingerprint ? { baselineFingerprint } : {})
+		});
 	else
 		await ctx.db.insert('currentTemplate', {
 			companyId,
 			versionId,
-			maintenance: false
+			maintenance: false,
+			...(baselineFingerprint ? { baselineFingerprint } : {})
 		});
 	return versionId;
 }
@@ -130,10 +157,11 @@ export const initialize = internalMutation({
 	args: { companyId: v.id('company') },
 	returns: v.id('templateVersions'),
 	handler: async (ctx, { companyId }) => {
+		const company = await requireCompany(ctx, companyId);
 		const pointer = await currentPointer(ctx, companyId);
 		if (pointer?.maintenance)
 			throw new ConvexError('Finish template maintenance before initialization.');
-		return pointer?.versionId ?? (await publishTemplate(ctx, companyId));
+		return pointer?.versionId ?? (await publishTemplate(ctx, company));
 	}
 });
 // Callers authorize the company or contract first. Validate the immutable parent
@@ -203,3 +231,78 @@ async function versionReader(
 		}
 	};
 }
+
+/** One permanent baseline; playbook publication can still create later versions. */
+export const publishBaseline = mutation({
+	args: { membershipId: v.id('memberships'), blocks: v.array(baselineBlock) },
+	returns: v.id('templateVersions'),
+	handler: async (ctx, { membershipId, blocks }) => {
+		const access = await requireMembership(ctx, membershipId);
+		if (access.role !== 'admin')
+			throw new ConvexError('Only an admin can publish the company baseline.');
+		if (!blocks.length || blocks.length > BASELINE_MAX_BLOCKS)
+			throw publicationRejected('The baseline must contain between 1 and 400 blocks.');
+		function canonical(value: unknown): unknown {
+			if (Array.isArray(value)) return value.map(canonical);
+			if (value && typeof value === 'object')
+				return Object.fromEntries(
+					Object.entries(value)
+						.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+						.map(([k, v]) => [k, canonical(v)])
+				);
+			return value;
+		}
+		const encoded = new TextEncoder().encode(JSON.stringify(canonical(blocks)));
+		if (encoded.byteLength > BASELINE_MAX_BYTES)
+			throw publicationRejected('The baseline exceeds 512 KB.');
+		try {
+			validateBaseline(blocks);
+		} catch (error) {
+			if (error instanceof PlaybookValidationError) throw publicationRejected(error.message);
+			throw error;
+		}
+		const fingerprint = Array.from(sha256(encoded), (b) => b.toString(16).padStart(2, '0')).join(
+			''
+		);
+		const pointer = await currentPointer(ctx, access.companyId);
+		if (pointer?.versionId && !pointer.maintenance && pointer.baselineFingerprint === fingerprint)
+			return pointer.versionId;
+		const [existing, items, versions] = await Promise.all([
+			ctx.db
+				.query('contractBlocks')
+				.withIndex('by_companyId_and_order', (q) => q.eq('companyId', access.companyId))
+				.take(1),
+			ctx.db
+				.query('playbookItems')
+				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
+				.take(1),
+			ctx.db
+				.query('templateVersions')
+				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
+				.take(1)
+		]);
+		if (pointer || existing.length || items.length || versions.length)
+			throw publicationRejected(
+				'This company already has a baseline or an import in progress. Its baseline cannot be replaced.'
+			);
+		const metrics = await ctx.meta.getTransactionMetrics();
+		if (
+			metrics.documentsWritten.remaining < blocks.length * 2 + 3 ||
+			metrics.bytesWritten.remaining < encoded.byteLength * 2 + blocks.length * 1024 + 65536 ||
+			metrics.databaseQueries.remaining < blocks.length * 2 + 10
+		)
+			throw publicationRejected(
+				'The baseline exceeds transaction capacity. Shorten it before publishing.'
+			);
+		for (const block of blocks)
+			await ctx.db.insert('contractBlocks', { ...block, companyId: access.companyId });
+		return publishSnapshot(
+			ctx,
+			access.companyId,
+			{ blocks, items: [] },
+			new TextEncoder().encode(JSON.stringify({ blocks, items: [] })).length,
+			null,
+			fingerprint
+		);
+	}
+});

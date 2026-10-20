@@ -1,4 +1,5 @@
 import { PlaybookValidationError } from './validation-error';
+import { validateStorageArrays } from '../contract/storage-limits';
 export { PlaybookValidationError } from './validation-error';
 
 import type { SourceIndex } from '../contract/source-index';
@@ -73,6 +74,7 @@ export function validateChangeGeometry(
 
 /** Source-independent checks shared by structural validation and instructions-only saves. */
 export function validatePlaybookItemContent(item: PlaybookItem): void {
+	validateStorageArrays(item);
 	if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_PLAYBOOK_ITEM_BYTES)
 		throw new PlaybookValidationError('Playbook Item exceeds 500 KB');
 	if (!item.triggers.length)
