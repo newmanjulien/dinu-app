@@ -1,17 +1,14 @@
 import { v } from 'convex/values';
 
 // Literal text and counters stay distinct, including Word punctuation after %1.
-const numberPattern = v.union(
-	v.string(),
-	v.array(
-		v.union(
-			v.object({ text: v.string() }),
-			v.object({
-				level: v.number(),
-				case: v.optional(v.union(v.literal('upper'), v.literal('lower'))),
-				minimumDigits: v.optional(v.number())
-			})
-		)
+const numberPattern = v.array(
+	v.union(
+		v.object({ text: v.string() }),
+		v.object({
+			level: v.number(),
+			case: v.optional(v.union(v.literal('upper'), v.literal('lower'))),
+			minimumDigits: v.optional(v.number())
+		})
 	)
 );
 
@@ -26,16 +23,12 @@ const referenceFields = {
 	kind: v.literal('reference'),
 	targetItemKey: v.string(),
 	endTargetItemKey: v.optional(v.string()),
-	// Read compatibility for older stored references; new imports use display parts.
-	suffixLevels: v.optional(v.number()),
 	// Templates preserve the author's punctuation and casing while targets renumber.
-	display: v.optional(
-		v.object({
-			start: numberPattern,
-			end: v.optional(numberPattern),
-			separator: v.optional(v.string())
-		})
-	),
+	display: v.object({
+		start: numberPattern,
+		end: v.optional(numberPattern),
+		separator: v.optional(v.string())
+	}),
 	marks: v.optional(textMarks)
 };
 export const replacementAtom = v.union(
@@ -56,7 +49,7 @@ export const sourceNumbering = v.object({
 	sequenceKey: v.string(),
 	parentItemKey: v.optional(v.string()),
 	start: v.optional(v.number()),
-	labelPattern: v.optional(numberPattern),
+	labelPattern: numberPattern,
 	referencePattern: v.optional(numberPattern),
 	minimumDigits: v.optional(v.number()),
 	alphabeticStyle: v.optional(v.union(v.literal('sequential'), v.literal('repeated'))),

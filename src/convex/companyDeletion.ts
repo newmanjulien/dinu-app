@@ -3,21 +3,32 @@ import { internalMutation, internalQuery } from './_generated/server';
 import type { MutationCtx } from './_generated/server';
 import type { Doc, TableNames } from './_generated/dataModel';
 import { internal } from './_generated/api';
+import { cancelDelivery, cancelJob } from './emailDeliveries';
+import { deleteSelections } from './emailSnapshots';
 
 export const PREPARATION_TTL = 15 * 60_000;
 const phases = [
 	'invitations',
 	'approvals',
+	'notifications',
+	'deliveries',
+	'emailSnapshots',
+	'reviewAttributions',
 	'decisions',
 	'contracts',
+	'contractDirectory',
 	'blocks',
 	'items',
-	'snapshotBlocks',
 	'snapshotItems',
 	'itemReceipts',
 	'contractReceipts',
 	'versions',
 	'pointer',
+	'baselines',
+	'itemRevisions',
+	'delegationAttachments',
+	'delegationRequests',
+	'delegationCancellations',
 	'memberships',
 	'company'
 ] as const satisfies readonly Doc<'companyDeletions'>['phase'][];
@@ -159,11 +170,11 @@ export const clean = internalMutation({
 			// approval cancellation, progress, and the single continuation.
 			return (
 				count >= 100 ||
-				metrics.bytesRead.remaining < 2_000_000 ||
-				metrics.bytesWritten.remaining < 2_000_000 ||
-				metrics.databaseQueries.remaining < 16 ||
-				metrics.documentsRead.remaining < 16 ||
-				metrics.documentsWritten.remaining < 16 ||
+				metrics.bytesRead.remaining < 4_000_000 ||
+				metrics.bytesWritten.remaining < 4_000_000 ||
+				metrics.databaseQueries.remaining < 64 ||
+				metrics.documentsRead.remaining < 64 ||
+				metrics.documentsWritten.remaining < 64 ||
 				metrics.functionsScheduled.remaining < 1
 			);
 		};
@@ -189,7 +200,8 @@ export const clean = internalMutation({
 						'companyInvitations',
 						ctx.db
 							.query('companyInvitations')
-							.withIndex('by_companyId_and_status', (q) => q.eq('companyId', companyId))
+							.withIndex('by_companyId_and_status', (q) => q.eq('companyId', companyId)),
+						(row) => cancelJob(ctx, row.expiryJobId)
 					);
 					break;
 				case 'approvals':
@@ -199,10 +211,48 @@ export const clean = internalMutation({
 							.query('approvalRequests')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
 						async (row) => {
-							const job = await ctx.db.system.get('_scheduled_functions', row.sendJobId);
-							if (job?.state.kind === 'pending' || job?.state.kind === 'inProgress')
-								await ctx.scheduler.cancel(row.sendJobId);
+							if (!('deliveryId' in row)) await cancelJob(ctx, row.sendJobId);
 						}
+					);
+					break;
+				case 'notifications':
+					drained = await drain(
+						'decisionNotifications',
+						ctx.db
+							.query('decisionNotifications')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						async (row) => {
+							await cancelJob(ctx, row.sendJobId);
+							await cancelJob(ctx, row.recoveryJobId);
+						}
+					);
+					break;
+				case 'deliveries':
+					drained = await drain(
+						'emailDeliveries',
+						ctx.db
+							.query('emailDeliveries')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						async (row) => {
+							await cancelDelivery(ctx, row);
+							await deleteSelections(ctx, row._id);
+						}
+					);
+					break;
+				case 'emailSnapshots':
+					drained = await drain(
+						'emailSnapshots',
+						ctx.db
+							.query('emailSnapshots')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'reviewAttributions':
+					drained = await drain(
+						'reviewAttributions',
+						ctx.db
+							.query('reviewAttributions')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
 				case 'decisions':
@@ -221,12 +271,24 @@ export const clean = internalMutation({
 							.withIndex('by_companyId_and_savedAt', (q) => q.eq('companyId', companyId))
 					);
 					break;
+				case 'contractDirectory':
+					drained = await drain(
+						'contractDirectory',
+						ctx.db
+							.query('contractDirectory')
+							.withIndex('by_companyId_and_savedAt_and_createdAt', (q) =>
+								q.eq('companyId', companyId)
+							)
+					);
+					break;
 				case 'blocks':
 					drained = await drain(
 						'contractBlocks',
 						ctx.db
 							.query('contractBlocks')
-							.withIndex('by_companyId_and_order', (q) => q.eq('companyId', companyId))
+							.withIndex('by_companyId_and_baselineId_and_order', (q) =>
+								q.eq('companyId', companyId)
+							)
 					);
 					break;
 				case 'items':
@@ -234,14 +296,6 @@ export const clean = internalMutation({
 						'playbookItems',
 						ctx.db
 							.query('playbookItems')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'snapshotBlocks':
-					drained = await drain(
-						'templateVersionBlocks',
-						ctx.db
-							.query('templateVersionBlocks')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
@@ -282,6 +336,52 @@ export const clean = internalMutation({
 						'currentTemplate',
 						ctx.db
 							.query('currentTemplate')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'baselines':
+					drained = await drain(
+						'baselines',
+						ctx.db
+							.query('baselines')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						async (row) => {
+							if (row.originalFileId) await ctx.storage.delete(row.originalFileId);
+						}
+					);
+					break;
+				case 'itemRevisions':
+					drained = await drain(
+						'playbookItemRevisions',
+						ctx.db
+							.query('playbookItemRevisions')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'delegationAttachments':
+					drained = await drain(
+						'delegationAttachments',
+						ctx.db
+							.query('delegationAttachments')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						async (row) => {
+							await ctx.storage.delete(row.storageId);
+						}
+					);
+					break;
+				case 'delegationRequests':
+					drained = await drain(
+						'delegationRequests',
+						ctx.db
+							.query('delegationRequests')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'delegationCancellations':
+					drained = await drain(
+						'delegationCancellations',
+						ctx.db
+							.query('delegationCancellations')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;

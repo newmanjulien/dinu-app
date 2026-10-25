@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
-	import FullHeightModalShell from './FullHeightModalShell.svelte';
+	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import { helpContent, type HelpVariant } from './help-content';
 	import { isHelpHidden, setHelpHidden } from './help-storage';
 
@@ -24,7 +24,7 @@
 	}
 </script>
 
-<FullHeightModalShell title={content.title} {onClose}>
+<ModalShell variant="panel" title={content.title} {onClose}>
 	<div class="flex min-h-full flex-col justify-between gap-6 pt-1">
 		<div class="space-y-6">
 			<p class="text-[14px] leading-[1.5] text-ink-muted">
@@ -37,10 +37,10 @@
 						{@const highlight = 'highlight' in step ? step.highlight : undefined}
 						{@const highlightStart = highlight ? step.description.indexOf(highlight.text) : -1}
 						<li
-							class="relative grid grid-cols-[2rem_1fr] gap-x-3 after:absolute after:top-8 after:bottom-0 after:left-[calc(1rem-0.5px)] after:w-px after:bg-line after:content-[''] last:after:hidden"
+							class="relative grid grid-cols-[1.5rem_1fr] gap-x-3 after:absolute after:top-6 after:bottom-0 after:left-[calc(0.75rem-0.5px)] after:w-px after:bg-line after:content-[''] last:after:hidden"
 						>
 							<span
-								class="z-1 flex size-8 items-center justify-center rounded-full border border-line bg-canvas text-sm leading-none text-ink-muted"
+								class="z-1 flex size-6 items-center justify-center rounded-full border border-line bg-canvas text-[12px] leading-none font-light text-ink-muted"
 								aria-hidden="true">{index + 1}</span
 							>
 
@@ -76,4 +76,4 @@
 			</div>
 		</div>
 	</div>
-</FullHeightModalShell>
+</ModalShell>

@@ -5,10 +5,12 @@
 	import { useViewerSession } from './viewer-session.svelte';
 	import { loadComponent } from './component-loader.svelte';
 	import { preloadDestination } from './destination-code';
+	import { useStartupPreparation } from './startup-preparation';
 	import type { Snippet } from 'svelte';
 	let { children }: { children: Snippet } = $props();
 	const session = useViewerSession();
 	const clerk = useClerkContext();
+	const preparation = useStartupPreparation();
 	const identity = $derived(clerk.auth.sessionId ?? clerk.session?.id);
 	const required = $derived(!['/login', '/join'].includes(page.url.pathname));
 	const workspaceRoute = $derived(page.route.id?.startsWith('/(workspace)') ?? false);
@@ -18,6 +20,11 @@
 		() => session.transportGeneration
 	);
 	const AuthenticatedAccount = $derived(account.component);
+	$effect(() => {
+		if (!browser) return;
+		if (account.failed || (clerk.isLoaded && !identity)) preparation.cancel();
+		else if (workspaceRoute && !AuthenticatedAccount) preparation.warm();
+	});
 	$effect(() => {
 		if (browser && required && (workspaceRoute || identity))
 			void preloadDestination(page.url.pathname).catch(() => {});

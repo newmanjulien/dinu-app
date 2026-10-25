@@ -5,7 +5,7 @@ import { getContext, setContext } from 'svelte';
 
 const key = Symbol('startupPreparation');
 
-/** Open an unused connection during email verification, then give it to the session. */
+/** Open a connection during sign-in restoration or verification, then hand it to the session. */
 class StartupPreparation {
 	private client: ConvexClient | undefined;
 	private pending: Promise<void> | undefined;

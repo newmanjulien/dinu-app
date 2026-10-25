@@ -14,7 +14,7 @@ No tests were added or expanded; no Playwright or test suite was run.
    only the four original Acme prefix rows.
 5. Cleanup returned `{ deleted: 4, isDone: true }`, then
    `{ deleted: 0, isDone: true }` on a second invocation.
-6. Separately deployed removal of the legacy schema, indexes, and cleanup function.
+6. Separately deployed removal of the obsolete prefix schema, indexes, and cleanup function.
    Deleted the confirmed-empty physical table with Convex's dashboard API (HTTP 200).
    The company search index remained enabled with backfill state `done`.
 

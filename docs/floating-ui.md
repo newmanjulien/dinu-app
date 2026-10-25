@@ -9,8 +9,24 @@ box can close, as described in [lifecycle.md](lifecycle.md). Nothing in this lay
 `FloatingSurface` uses a manual native popover in the browser top layer. It stays in its
 logical DOM location, preserving Svelte context and disabled fieldsets. Do not add a
 portal, local z-index fix, or absolute floating coordinates. Native modal dialogs keep
-`showModal()`; opening Help closes transient surfaces, and a modal blocks workspace
+`showModal()`; opening a workspace modal closes transient surfaces, and a modal blocks workspace
 dismissal and shortcuts.
+
+All modals use `$lib/ui/ModalShell.svelte`. Its `dialog` variant centers a
+content-height surface; its `panel` variant fills the available height and supports
+right alignment. The shared `--radius-modal` and `--spacing-modal` tokens define
+outer corners and default header/body/footer padding. Callers can set `maxWidth`
+and `contentPadding`; full-screen mobile panels use square corners. Only the body
+scrolls, keeping the header and optional footer visible.
+
+Modal owners control `open` or conditionally mount the shell. Escape, backdrop
+clicks, and the close button request `onClose`; the shell stays open until the
+owner accepts closure. Use `dismissible` to block these requests while busy,
+`showCloseButton` to omit the close control, and `closeOnBackdrop` to keep outside
+clicks from dismissing a dialog. `onOpen` can focus and select a form field. Native
+dialogs provide background inertness and focus containment; the shared behavior
+locks body scrolling and restores available focus without taking it from another
+active modal. Company naming and session status retain their dismissal restrictions.
 
 `floating.ts` is the only positioning implementation. Floating UI measures the invisible
 top-layer surface before revealing it, uses fixed coordinates, applies an offset, flips
@@ -30,9 +46,14 @@ interactive controls. Each has its own semantics and focus behavior:
   focuses its content. The standalone info button also toggles on touch. A custom
   trigger receives the snippet's description ID for `aria-describedby` and supplies
   its element reference. Escape suppresses reopening until activation ends.
-- `Menu` focuses the first enabled `role="menuitem"` button and handles arrows,
+- `Menu` focuses the checked item or the first enabled item and handles arrows,
   Home/End, and native Enter/Space activation. Call the child snippet's `activate`
   callback when completing an action. Tab dismisses after normal focus traversal.
+  Render actions with `MenuItem` to share spacing, hover, keyboard focus, and disabled
+  styles. Pass `checked` for a radio decision with a saved-selection checkmark, or
+  `danger` for a destructive action. Pointer opening does not highlight the focused
+  item; keyboard focus uses a background and outline via `:focus-visible`. Status
+  colors on review tags and active navigation underlines belong to their features.
 - `Popover` contains normal controls, such as checkboxes. Pass `keyboard` when opened
   by keyboard to focus its first enabled control; pointer opening leaves trigger focus
   intact. Changes inside it do not dismiss it.

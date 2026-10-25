@@ -1,22 +1,19 @@
 <script lang="ts">
 	import { documentAnnotations } from '$lib/playbook/document-overlay';
 	import { onDestroy, onMount, untrack } from 'svelte';
-	import { beforeNavigate, goto } from '$app/navigation';
 	import { navigating, page } from '$app/state';
-	import type { BeforeNavigate } from '@sveltejs/kit';
 	import { useAuth, useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
-	import type { Doc, Id } from '../../../convex/_generated/dataModel';
-	import type { ContractSnapshot, ContractState } from '$lib/contract/saved';
-	import { ContractPersistence } from '$lib/contract/persistence.svelte';
-	import { DraftJournal } from '$lib/contract/draft-recovery.svelte';
+	import type { Id } from '../../../convex/_generated/dataModel';
+	import type { ContractSnapshot } from '$lib/contract/saved';
+	import type { ContractSession } from '$lib/contract/sessions.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { recordOpening } from '$lib/contract/browser-storage';
-	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
 	import { createContractWorkspace, setContractWorkspace } from '$lib/document/runtime/context';
 	import { conflictsForConcession } from '$lib/playbook/selection-conflicts';
 	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
+	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import DocumentViewerSlot from '$lib/components/document/DocumentViewerSlot.svelte';
 	import LoadingPagination from '$lib/components/document/LoadingPagination.svelte';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
@@ -25,12 +22,11 @@
 	import { recordContractInput } from '$lib/document/runtime/render-perf';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import { sameSelection } from '$lib/playbook/model';
-	import type { ConcessionSelection, ContractRenderSource } from '$lib/document/runtime/types';
-	import { composeExport } from '$lib/contract/export/content';
-	import { downloadWord, prepareWord, retireWordUrl } from '$lib/contract/export/word';
+	import { downloadWord } from '$lib/contract/export/download';
+	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 	import {
 		approvalCoversPending,
-		legacyLifecycle,
+		savedReviews,
 		reviewStatus,
 		type ReviewTag,
 		type ReviewDecision,
@@ -39,17 +35,26 @@
 	import { saveError } from '$lib/contract/saved';
 	let {
 		snapshot,
-		initialContract,
-		metadata,
+		session: contractSession,
 		onVisible,
 		onFailure
 	}: {
 		snapshot: ContractSnapshot;
-		initialContract: Doc<'savedContracts'>;
-		metadata: { readonly data: ContractState | null | undefined; readonly error?: unknown };
+		session: ContractSession;
 		onVisible?: () => void;
 		onFailure?: () => void;
 	} = $props();
+	const initialContract = untrack(() => contractSession.metadata!);
+	const persistence = untrack(() => contractSession.persistence!);
+	const metadata = {
+		get data() {
+			return contractSession.metadata;
+		},
+		get error() {
+			return contractSession.error;
+		}
+	};
+	const runtime = getWorkspaceRuntime();
 	const resources = getDocumentResources();
 	const resource = resources
 		? untrack(() =>
@@ -57,14 +62,18 @@
 					id: initialContract._id,
 					status: 'ready',
 					snapshot,
-					contract: initialContract
+					contract: {
+						...initialContract,
+						lastOperationId: initialContract.lastOperationId ?? undefined
+					}
 				})
 			)
 		: undefined;
-	if (resource && resources) untrack(() => resources.activate(resource));
-	onDestroy(() => {
-		if (resource && resources) resources.deactivate(resource);
-	});
+	const attachment =
+		resource && resources
+			? untrack(() => resources.activate(resource, persistence.choices))
+			: undefined;
+	onDestroy(() => attachment?.release());
 	const interactionOwner = setInteractionOwner(resource?.owner ?? Symbol('rep-workspace'));
 	const workspace = setContractWorkspace(
 		resource?.workspace ??
@@ -83,87 +92,14 @@
 	const accountViewer = useViewer();
 	const membershipId = accountViewer().membership.id;
 	const contractId = untrack(() => initialContract._id);
-	const journal = untrack(() => new DraftJournal(session.userId!, contractId, membershipId));
 	let mounted = $state(false);
 	const approvalQuery = useQuery(api.approvals.latest, () =>
-		mounted && auth.isAuthenticated ? { membershipId, id: contractId } : 'skip'
+		mounted && auth.isAuthenticated && !runtime.paused ? { membershipId, id: contractId } : 'skip'
 	);
 	let requestingApproval = $state(false);
 	let approvalError = $state<string | null>(null);
 	const latestApproval = $derived(approvalQuery.data);
-	const persistence = untrack(
-		() =>
-			new ContractPersistence(
-				contractId,
-				{
-					companyName: initialContract.companyName,
-					selectedConcessions: initialContract.selectedConcessions,
-					revision: initialContract.revision ?? 0,
-					lastOperationId: initialContract.lastOperationId ?? null,
-					reviews: initialContract.reviews ?? {}
-				},
-				(request) => client.mutation(api.savedContracts.saveChoices, { ...request, membershipId }),
-				(draft) => journal.write(draft),
-				journal.read(),
-				new Set(
-					snapshot.items
-						.filter((i) => i.instructions?.changesNeedApproval?.trim())
-						.map((i) => i._id)
-				)
-			)
-	);
-	function resumeSaving() {
-		if (
-			auth.isAuthenticated &&
-			metadata.data &&
-			!metadata.error &&
-			['ready', 'saving-before-logout'].includes(session.phase)
-		)
-			persistence.resume();
-	}
-	onMount(() =>
-		session.registerEditor({
-			get pending() {
-				return persistence.pending;
-			},
-			flush: () => persistence.flush(),
-			retry: () => persistence.retry(),
-			suspend: () => persistence.pause(),
-			resume: resumeSaving,
-			freeze: (frozen) => persistence.freeze(frozen),
-			discard: () => persistence.discard(),
-			restartTransport: () => persistence.restartTransport()
-		})
-	);
-	$effect(() => {
-		const ready = Boolean(auth.isAuthenticated && metadata.data && !metadata.error);
-		const phase = session.phase;
-		untrack(() => {
-			if (ready && ['ready', 'saving-before-logout'].includes(phase)) resumeSaving();
-			else persistence.pause();
-		});
-	});
-	$effect(() => {
-		const next = metadata.data;
-		if (!auth.isAuthenticated) return;
-		if (next === null) {
-			getContractSnapshotCache().remove(contractId);
-		}
-		if (next !== undefined) untrack(() => persistence.accept(next));
-	});
-	$effect(() => {
-		if (persistence.deleted) {
-			getContractSnapshotCache().remove(contractId);
-		}
-	});
-	$effect(() => {
-		const confirmed = persistence.confirmed;
-		untrack(() => getContractSnapshotCache().updateState(contractId, confirmed));
-	});
-	$effect(() => {
-		const choices = persistence.choices;
-		if (resource && resources) resources.update(resource, choices);
-	});
+	$effect(() => attachment?.update(persistence.choices));
 	let notifiedVisible = $state(false);
 	let recordedOpening = false;
 	const displayedStateReconciled = $derived.by(() => {
@@ -177,9 +113,7 @@
 			displayed === workspace.renderer.snapshot &&
 			displayed.source === source.renderSource &&
 			!displayed.previewChanges.length &&
-			sameSelection(displayed.concessions, persistence.choices) &&
-			(persistence.conflict ||
-				sameSelection(displayed.concessions, persistence.confirmed.selectedConcessions))
+			sameSelection(displayed.concessions, persistence.choices)
 		);
 	});
 	$effect(() => {
@@ -224,7 +158,6 @@
 	});
 	let connected = $state(false);
 	let active = true;
-	const historyEvents = new AbortController();
 	onMount(() => {
 		mounted = true;
 	});
@@ -237,177 +170,29 @@
 	});
 	onDestroy(() => {
 		active = false;
-		historyEvents.abort();
-		invalidateWord();
-		persistence.destroy();
+		wordAttempt?.abort();
 	});
-	let leaving = $state(false);
-	let allowNavigation = false;
-	type Departure = { url: string } | { url: string; delta: number; restored: Promise<void> };
-	let destination = $state.raw<Departure | null>(null);
-	let historyCompletion: ((navigation: BeforeNavigate) => void) | null = null;
-	let navigationError = $state<string | null>(null);
-	let navigationAttempt = 0;
 	const stateReconciled = $derived(
 		Boolean(
 			auth.isAuthenticated &&
+			!runtime.paused &&
 			metadata.data &&
 			!metadata.error &&
 			persistence.confirmed.revision >= metadata.data.revision
 		)
 	);
-	const editable = $derived(persistence.editable && !leaving && stateReconciled && notifiedVisible);
-	let changesSaved = $state(false);
-	let savingOperation: string | null = null;
-	$effect(() => {
-		const operationId = persistence.request?.operationId;
-		const pending = persistence.pending;
-		const confirmedOperation = persistence.confirmed.lastOperationId;
-		changesSaved = false;
-		if (persistence.conflict || persistence.deleted) {
-			savingOperation = null;
-			return;
-		}
-		if (pending) {
-			if (operationId) savingOperation = operationId;
-			return;
-		}
-		if (persistence.error || !savingOperation || savingOperation !== confirmedOperation) return;
-		savingOperation = null;
-		changesSaved = true;
-		const timer = setTimeout(() => {
-			changesSaved = false;
-		}, 2500);
-		return () => clearTimeout(timer);
-	});
-	const feedback = $derived.by<OperationStatus | null>(() => {
-		if (persistence.deleted) return null;
-		if (persistence.conflict) return null;
-		const departure = destination
-			? [{ label: 'Leave and discard changes', run: () => void depart(true) }]
-			: [];
-		if (persistence.error)
-			return {
-				message: persistence.error,
-				urgent: true,
-				actions: [{ label: 'Retry', run: retrySave }, ...departure]
-			};
-		if (persistence.selectionLimitError)
-			return { message: persistence.selectionLimitError, urgent: true, actions: departure };
-		if (metadata.error)
-			return {
-				message: 'We couldn’t check the latest contract state. Your changes are still here.',
-				urgent: true,
-				actions: departure
-			};
-		if (navigationError)
-			return {
-				message: navigationError,
-				urgent: true,
-				actions: [
-					{ label: 'Retry', run: () => void (destination ? depart() : loadLatest()) },
-					...departure
-				]
-			};
-		if (!connected)
-			return {
-				message: persistence.pending
-					? 'Connection interrupted. Your changes are still here and will save when reconnected.'
-					: 'Connection interrupted. Waiting to reconnect.',
-				actions: departure
-			};
-		if (leaving) return { message: 'Saving changes before leaving…', actions: departure };
-		return changesSaved ? { message: 'Changes saved' } : null;
-	});
-	function retrySave() {
-		persistence.retry();
-		if (destination) void depart();
-	}
-	async function depart(discard = false) {
-		if (!destination) return;
-		const attempt = ++navigationAttempt;
-		const target = destination;
-		leaving = true;
-		navigationError = null;
-		if (discard) {
-			persistence.pause();
-			persistence.discard();
-		}
-		if (!discard && !(await persistence.flush())) {
-			if (active && attempt === navigationAttempt) leaving = false;
-			return;
-		}
-		if (!active || attempt !== navigationAttempt) return;
-		try {
-			if ('delta' in target) {
-				// SvelteKit reverses a cancelled popstate asynchronously. Wait for that
-				// reversal before replaying the original movement through history.
-				await target.restored;
-				if (!active || attempt !== navigationAttempt) return;
-				allowNavigation = true;
-				await new Promise<void>((resolve, reject) => {
-					historyCompletion = (navigation) => {
-						historyCompletion = null;
-						navigation.complete.then(resolve, reject);
-					};
-					window.history.go(target.delta);
-				});
-			} else {
-				allowNavigation = true;
-				await goto(target.url);
-			}
-		} catch {
-			if (active && attempt === navigationAttempt)
-				navigationError = 'We couldn’t open that page. Try again.';
-		} finally {
-			if (active && attempt === navigationAttempt) {
-				allowNavigation = false;
-				leaving = false;
-				resumeSaving();
-			}
-		}
-	}
+	const editable = $derived(persistence.editable && stateReconciled && notifiedVisible);
+	let resolutionError = $state<string | null>(null);
+	const feedback = $derived<OperationStatus | null>(
+		persistence.selectionLimitError || resolutionError
+			? { message: persistence.selectionLimitError ?? resolutionError!, urgent: true }
+			: null
+	);
 	async function loadLatest() {
-		const attempt = ++navigationAttempt;
-		destination = null;
-		navigationError = null;
-		leaving = false;
-		if (!(await persistence.loadLatest()) && active && attempt === navigationAttempt)
-			navigationError = 'We couldn’t load the latest contract state. Your changes are still here.';
-	}
-	beforeNavigate((navigation) => {
-		if (session.closing) return;
-		if (session.blocked && !navigation.willUnload) {
-			navigation.cancel();
-			return;
-		}
-		if (allowNavigation) {
-			historyCompletion?.(navigation);
-			return;
-		}
-		if (persistence.deleted || !persistence.pending) return;
-		// The browser's beforeunload warning handles refresh, closure and external links.
-		if (navigation.willUnload || !navigation.to) return;
-		const url = navigation.to.url.href;
-		if (navigation.type === 'popstate' && navigation.from) {
-			const from = navigation.from.url.href;
-			const restored = new Promise<void>((resolve) => {
-				const onRestore = () => {
-					if (window.location.href !== from) return;
-					window.removeEventListener('popstate', onRestore);
-					resolve();
-				};
-				window.addEventListener('popstate', onRestore, { signal: historyEvents.signal });
-			});
-			destination = { url, delta: navigation.delta, restored };
-		} else destination = { url };
-		navigation.cancel();
-		void depart();
-	});
-	function warnBeforeUnload(event: BeforeUnloadEvent) {
-		if (!persistence.pending || persistence.deleted || allowNavigation || session.closing) return;
-		event.preventDefault();
-		event.returnValue = '';
+		if (runtime.paused || session.blocked || !stateReconciled) return;
+		resolutionError = null;
+		if (!(await persistence.loadLatest()) && active)
+			resolutionError = 'We couldn’t load the latest contract state. Your changes are still here.';
 	}
 	let selectedItemId = $state<string | null>(null),
 		selectedAnnotationId = $state<string | null>(null);
@@ -512,8 +297,7 @@
 			const lifecycle = persistence.lifecycles[item._id];
 			const saved =
 				persistence.confirmed.selectedConcessions[item._id] === concession.id &&
-				(persistence.confirmed.reviews?.[item._id]?.lifecycle ??
-					legacyLifecycle(item._id, concession.id)) === lifecycle;
+				persistence.confirmed.reviews[item._id]?.lifecycle === lifecycle;
 			return {
 				itemId: item._id,
 				concessionId: concession.id,
@@ -530,8 +314,11 @@
 			};
 		})
 	);
-	const approvalCount = $derived(reviewTags.filter((t) => t.status !== 'approved').length);
-	const pendingApprovalCount = $derived(reviewTags.filter((t) => t.status === 'pending').length);
+	const savedReviewTags = $derived(savedReviews(snapshot.items, persistence.confirmed));
+	const approvalCount = $derived(savedReviewTags.filter((t) => t.status !== 'approved').length);
+	const pendingApprovalCount = $derived(
+		savedReviewTags.filter((t) => t.status === 'pending').length
+	);
 	const approvalNeeded = $derived(approvalCount > 0);
 	$effect(() => {
 		if (pendingApprovalCount) reviewLinkMessage = null;
@@ -557,8 +344,7 @@
 		const confirmed = persistence.confirmed;
 		return (
 			confirmed.selectedConcessions[itemId as Id<'playbookItems'>] !== attempt.concessionId ||
-			(confirmed.reviews?.[itemId as Id<'playbookItems'>]?.lifecycle ??
-				legacyLifecycle(itemId, attempt.concessionId)) !== attempt.lifecycle ||
+			confirmed.reviews[itemId as Id<'playbookItems'>]?.lifecycle !== attempt.lifecycle ||
 			(changesStatus &&
 				reviewStatus(confirmed, itemId, attempt.concessionId, attempt.lifecycle) === attempt.status)
 		);
@@ -631,7 +417,7 @@
 	const matchingApproval = $derived(
 		latestApproval &&
 			approvalCoversPending(
-				reviewTags.filter((t) => t.status === 'pending'),
+				savedReviewTags.filter((t) => t.status === 'pending'),
 				latestApproval.selectedConcessions
 			)
 			? latestApproval
@@ -639,6 +425,33 @@
 	);
 	const approvalSending = $derived(requestingApproval || latestApproval?.status === 'sending');
 	const approvalRequested = $derived(matchingApproval?.status === 'sent');
+	const approvalButtonLabel = $derived.by(() => {
+		if (approvalSending) return 'Sending approval request…';
+		if (approvalRequested) return 'Approval requested';
+		if (latestApproval?.status === 'uncertain' && !latestApproval.retryEligible)
+			return 'Approval delivery uncertain';
+		if (latestApproval?.status === 'uncertain' || matchingApproval?.status === 'failed')
+			return 'Retry approval request';
+		return 'Ask for approval';
+	});
+	const approvalErrorMessage = $derived.by(() => {
+		if (approvalError) return approvalError;
+		if (approvalQuery.error)
+			return 'We couldn’t check approval request status. Reconnect or reload to try again.';
+		if (approvalSending) return null;
+		if (latestApproval?.status === 'uncertain')
+			return latestApproval.retryEligible
+				? 'Gmail delivery could not be confirmed. You can retry now; another request may deliver a duplicate email.'
+				: latestApproval.error;
+		return matchingApproval?.status === 'failed' ? matchingApproval.error : null;
+	});
+	const approvalMessage = $derived(
+		!approvalSending && approvalRequested
+			? 'Approval request sent.'
+			: approvalNeeded
+				? `${approvalCount === 1 ? 'This concession requires' : 'These concessions require'} approval before download.`
+				: null
+	);
 	const approvalRetryBlocked = $derived(
 		latestApproval &&
 			['failed', 'uncertain'].includes(latestApproval.status) &&
@@ -650,59 +463,24 @@
 		approvalError = null;
 	});
 	let exportError = $state<string | null>(null);
-	type WordInput = {
-		source: ContractRenderSource;
-		concessions: ConcessionSelection;
-		companyName: string;
-	};
-	let wordInput: WordInput | null = null;
-	let wordAttempted = false;
-	let wordAttempt = $state.raw<{ input: WordInput; controller: AbortController } | null>(null);
+	let wordAttempt = $state.raw<ReadAttempt | null>(null);
 	const preparingWord = $derived(wordAttempt !== null);
-	let preparedWord = $state.raw<{ input: WordInput; url: string } | null>(null);
-	const savedExportInput = $derived.by<WordInput | null>(() => {
-		if (persistence.pending || persistence.deleted || !source.renderSource) return null;
-		return {
-			source: source.renderSource,
-			concessions: Object.freeze({ ...persistence.confirmed.selectedConcessions }),
-			companyName: persistence.confirmed.companyName
-		};
-	});
-	// Eligibility is independent of export activity so preparation cannot cancel itself.
-	const eligibleExportSnapshot = $derived.by(() => {
-		const rendered = viewer.displayedSnapshot;
-		if (
-			persistence.pending ||
-			persistence.error ||
-			persistence.conflict ||
-			persistence.deleted ||
-			!stateReconciled ||
-			metadata.error ||
-			!connected ||
-			source.issue ||
-			workspace.renderer.pending ||
-			workspace.renderer.error ||
-			viewer.preparationBlocked ||
-			!viewer.ready ||
-			!viewer.visible ||
-			leaving ||
-			destination ||
-			navigationError ||
-			navigating.to ||
-			!rendered ||
-			!rendered.pages.length ||
-			rendered !== workspace.renderer.snapshot ||
-			rendered.source !== source.renderSource ||
-			rendered.previewChanges.length ||
-			!sameSelection(rendered.concessions, persistence.confirmed.selectedConcessions)
-		)
-			return null;
-		return rendered;
-	});
-	const exportSnapshot = $derived(preparingWord || approvalNeeded ? null : eligibleExportSnapshot);
+	const savedStateReady = $derived(
+		!persistence.pending &&
+			!persistence.error &&
+			!persistence.conflict &&
+			!persistence.deleted &&
+			stateReconciled &&
+			!metadata.error &&
+			connected &&
+			!session.blocked &&
+			!navigating.to
+	);
+	const exportReady = $derived(savedStateReady && !approvalNeeded);
+	const canExport = $derived(exportReady && !preparingWord);
 	const canRequestApproval = $derived(
 		pendingApprovalCount > 0 &&
-			Boolean(eligibleExportSnapshot) &&
+			savedStateReady &&
 			approvalQuery.data !== undefined &&
 			!approvalQuery.error &&
 			!approvalSending &&
@@ -725,86 +503,54 @@
 			if (active) requestingApproval = false;
 		}
 	}
-	function sameWordInput(a: WordInput | null, b: WordInput | null): boolean {
-		return (
-			a === b ||
-			Boolean(
-				a &&
-				b &&
-				a.source === b.source &&
-				a.companyName === b.companyName &&
-				sameSelection(a.concessions, b.concessions)
-			)
-		);
-	}
-	function invalidateWord() {
-		const attempt = wordAttempt;
-		wordAttempt = null;
-		attempt?.controller.abort();
-		if (preparedWord) retireWordUrl(preparedWord.url);
-		preparedWord = null;
-	}
 	$effect(() => {
-		const input = savedExportInput;
-		const rendered = eligibleExportSnapshot;
+		const revision = persistence.confirmed.revision;
+		const generation = session.transportGeneration;
+		const ready = exportReady;
 		untrack(() => {
-			if (!sameWordInput(wordInput, input)) {
-				invalidateWord();
-				wordInput = input;
-				wordAttempted = false;
-				exportError = null;
+			exportError = null;
+			if (wordAttempt && (!ready || revision !== wordRevision || generation !== wordGeneration)) {
+				wordAttempt.abort();
+				wordAttempt = null;
 			}
-			// Pagination and temporary viewer guards do not change the attempt identity.
-			if (input && rendered && !wordAttempted) void prepareWordDownload(rendered, input);
 		});
 	});
-	async function prepareWordDownload(
-		captured: NonNullable<typeof eligibleExportSnapshot>,
-		input: WordInput
-	) {
-		if (!active || preparingWord) return;
-		const attempt = { input, controller: new AbortController() };
-		wordInput = input;
-		wordAttempted = true;
+	let wordRevision = 0;
+	let wordGeneration = 0;
+	async function downloadSavedWord() {
+		if (!active || !canExport) return;
+		const attempt = new ReadAttempt(30_000);
+		wordRevision = persistence.confirmed.revision;
+		wordGeneration = session.transportGeneration;
 		wordAttempt = attempt;
 		exportError = null;
 		try {
-			const blob = await prepareWord(
-				composeExport(captured),
-				input.companyName,
-				attempt.controller.signal
+			const result = await waitForRead(
+				client.action(api.wordExport.generate, {
+					membershipId,
+					id: contractId,
+					expectedRevision: wordRevision
+				}),
+				attempt.signal
 			);
-			if (!active || wordAttempt !== attempt || !sameWordInput(input, savedExportInput)) return;
-			const url = URL.createObjectURL(blob);
-			if (preparedWord) retireWordUrl(preparedWord.url);
-			preparedWord = { input, url };
-		} catch {
+			const response = await fetch(result.url, { signal: attempt.signal, cache: 'no-store' });
+			if (!response.ok) throw new Error('Download failed.');
+			const blob = await waitForRead(response.blob(), attempt.signal);
 			if (
-				active &&
-				wordAttempt === attempt &&
-				!attempt.controller.signal.aborted &&
-				sameWordInput(input, savedExportInput)
+				!active ||
+				wordAttempt !== attempt ||
+				!exportReady ||
+				persistence.confirmed.revision !== wordRevision ||
+				session.transportGeneration !== wordGeneration
 			)
-				exportError = 'We couldn’t prepare this download. Try again.';
+				return;
+			downloadWord(blob, result.filename);
+		} catch (error) {
+			if (active && wordAttempt === attempt)
+				exportError = saveError(error, 'We couldn’t prepare this download. Try again.');
 		} finally {
+			attempt.complete();
 			if (wordAttempt === attempt) wordAttempt = null;
-		}
-	}
-	function downloadPreparedWord() {
-		const captured = exportSnapshot;
-		const input = savedExportInput;
-		if (!active || !captured || !input) return;
-		if (!preparedWord || !sameWordInput(preparedWord.input, input)) {
-			// Explicit retry only prepares the file; a separate click downloads it.
-			if (!sameWordInput(wordInput, input)) invalidateWord();
-			void prepareWordDownload(captured, input);
-			return;
-		}
-		try {
-			downloadWord(preparedWord.url, input.companyName);
-			exportError = null;
-		} catch {
-			exportError = 'We couldn’t prepare this download. Try again.';
 		}
 	}
 	const actionButtonClass =
@@ -813,15 +559,7 @@
 
 <BoxDismissal owner={interactionOwner} active={Boolean(item)} onDismiss={close} />
 
-<svelte:window onbeforeunload={warnBeforeUnload} />
-<WorkspaceChrome {feedback} {isAdmin} />
-{#if journal.memoryOnly && persistence.pending}<p
-		role="alert"
-		class="mx-auto mt-4 max-w-3xl rounded-md border border-line bg-surface p-3 text-sm"
-	>
-		Browser storage is unavailable. Your unsaved selections can be recovered while this page stays
-		open; reloading or closing it may lose them.
-	</p>{/if}
+{#if !runtime.paused}<WorkspaceChrome {feedback} />{/if}
 {#if persistence.deleted}<p
 		role="alert"
 		class="mx-auto mt-4 max-w-3xl rounded-md border border-line bg-surface p-3 text-sm"
@@ -833,15 +571,18 @@
 		class="mx-auto mt-4 max-w-3xl rounded-md border border-line bg-surface p-3 text-sm"
 	>
 		This contract changed elsewhere. Choose which selections to keep.
-		<button class="ml-2 underline" onclick={() => void loadLatest()}
-			>Use latest saved version</button
+		<button
+			class="ml-2 underline disabled:opacity-50"
+			disabled={session.blocked || !stateReconciled}
+			onclick={() => void loadLatest()}>Use latest saved version</button
 		>
-		<button class="ml-2 underline" onclick={() => persistence.applyRecovered()}
-			>Apply my selections</button
+		<button
+			class="ml-2 underline disabled:opacity-50"
+			disabled={session.blocked || !stateReconciled}
+			onclick={() => {
+				if (!session.blocked && stateReconciled) persistence.applyRecovered();
+			}}>Apply my selections</button
 		>
-		{#if destination}<button class="ml-2 underline" onclick={() => void depart(true)}
-				>Leave and discard changes</button
-			>{/if}
 	</div>{/if}
 {#if reviewLinkMessage}<p
 		class="mx-auto mt-4 max-w-3xl text-center text-sm text-ink-muted"
@@ -850,13 +591,10 @@
 		{reviewLinkMessage}
 	</p>{/if}
 {#if source.renderSource && !persistence.deleted}
-	<main
-		onclickcapture={recordContractInput}
-		class="pt-14 pb-16 min-[1000px]:pt-6"
-		aria-label="Contract document"
-	>
+	<main onclickcapture={recordContractInput} aria-label="Contract document">
 		{#snippet panelContent()}{#if item}<RepPlaybookPanel
 					{item}
+					{isAdmin}
 					selected={persistence.choices[item._id]}
 					disabled={!editable}
 					conflicts={reasons}
@@ -878,45 +616,23 @@
 						aria-live="polite"
 						onclick={askForApproval}
 					>
-						{approvalSending
-							? 'Sending approval request…'
-							: approvalRequested
-								? 'Approval requested'
-								: latestApproval?.status === 'uncertain'
-									? latestApproval.retryEligible
-										? 'Retry approval request'
-										: 'Approval delivery uncertain'
-									: matchingApproval?.status === 'failed'
-										? 'Retry approval request'
-										: 'Ask for approval'}
+						{approvalButtonLabel}
 					</button>
 					<button
 						type="button"
 						class={actionButtonClass}
-						disabled={!exportSnapshot}
-						onclick={downloadPreparedWord}>Download as .docx</button
+						disabled={!canExport}
+						onclick={() => void downloadSavedWord()}>Download as .docx</button
 					>
 				</div>
-				{#if approvalError || approvalQuery.error || (!approvalSending && (matchingApproval?.status === 'failed' || latestApproval?.status === 'uncertain'))}
+				{#if approvalErrorMessage}
 					<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
-						{approvalError ??
-							(approvalQuery.error
-								? 'We couldn’t check approval request status. Reconnect or reload to try again.'
-								: latestApproval?.status === 'uncertain'
-									? latestApproval.retryEligible
-										? 'Gmail delivery could not be confirmed. You can retry now; another request may deliver a duplicate email.'
-										: latestApproval.error
-									: matchingApproval?.error)}
-					</p>
-				{:else if !approvalSending && approvalRequested}
-					<p class="mt-3 text-center text-sm text-ink-muted/60" role="status">
-						Approval request sent.
+						{approvalErrorMessage}
 					</p>
 				{/if}
-				{#if approvalNeeded}
-					<p class="mt-3 text-center text-sm text-ink-muted">
-						{approvalCount === 1 ? 'This concession requires' : 'These concessions require'} approval
-						before download.
+				{#if approvalMessage}
+					<p class="mt-3 text-center text-sm text-ink-muted" role="status">
+						{approvalMessage}
 					</p>
 				{/if}
 
@@ -933,7 +649,10 @@
 			</div>
 		{/snippet}
 		<DocumentViewerSlot
+			{attachment}
 			entry={resource}
+			active={!runtime.paused}
+			prepare={!runtime.paused}
 			interactive={stateReconciled && (notifiedVisible || Boolean(workspace.renderer.error))}
 			hasPanel={Boolean(item)}
 			{panelContent}
@@ -958,4 +677,22 @@
 	</main>
 {:else if source.issue && !persistence.deleted}<p role="alert">
 		We couldn’t load this contract. Please refresh to try again.
-	</p>{:else if !persistence.deleted}<LoadingPagination label="Loading contract" />{/if}
+	</p>{:else if !persistence.deleted}<LoadingPagination
+		label="Loading contract"
+		chrome={false}
+	/>{/if}
+
+<style>
+	main {
+		--document-padding-top: calc(var(--spacing) * 14);
+		--document-padding-bottom: calc(var(--spacing) * 16);
+		--workspace-loading-inset: calc(var(--document-padding-top) + var(--document-padding-bottom));
+		padding-block: var(--document-padding-top) var(--document-padding-bottom);
+	}
+
+	@media (min-width: 1000px) {
+		main {
+			--document-padding-top: calc(var(--spacing) * 6);
+		}
+	}
+</style>

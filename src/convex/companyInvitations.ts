@@ -10,6 +10,13 @@ import { ConvexError, v } from 'convex/values';
 import { query, mutation, internalMutation, internalQuery } from './_generated/server';
 import { internal } from './_generated/api';
 import {
+	createDelivery,
+	activeDelivery,
+	removeDelivery,
+	cancelDelivery,
+	cancelJob
+} from './emailDeliveries';
+import {
 	requireProfile,
 	requirePermission,
 	verifiedIdentity,
@@ -121,6 +128,11 @@ export const accept = mutation({
 			);
 		if (membership)
 			throw new ConvexError('Leave your current company before accepting this invitation.');
+		await cancelJob(ctx, invitation.expiryJobId);
+		if (invitation.deliveryId) {
+			const delivery = await ctx.db.get('emailDeliveries', invitation.deliveryId);
+			if (delivery) await cancelDelivery(ctx, delivery);
+		}
 		const id = await ctx.db.insert('memberships', {
 			companyId: invitation.companyId,
 			profileId: profile._id
@@ -141,11 +153,17 @@ export const revoke = mutation({
 		const invitation = await ctx.db.get('companyInvitations', args.invitationId);
 		if (!invitation || invitation.companyId !== access.companyId)
 			throw new ConvexError('This invitation is unavailable.');
-		if (invitation.status === 'pending')
+		if (invitation.status === 'pending') {
+			await cancelJob(ctx, invitation.expiryJobId);
+			if (invitation.deliveryId) {
+				const delivery = await ctx.db.get('emailDeliveries', invitation.deliveryId);
+				if (delivery) await cancelDelivery(ctx, delivery);
+			}
 			await ctx.db.patch('companyInvitations', invitation._id, {
 				status: 'revoked',
 				deliveryGeneration: invitation.deliveryGeneration + 1
 			});
+		}
 		return null;
 	}
 });
@@ -154,13 +172,13 @@ export const prepareDelivery = internalMutation({
 		membershipId: v.id('memberships'),
 		email: v.string(),
 		tokenHash: v.string(),
-		resend: v.boolean()
+		resend: v.boolean(),
+		inlineDeadline: v.number()
 	},
 	returns: v.union(
 		v.null(),
 		v.object({
-			id: v.id('companyInvitations'),
-			generation: v.number(),
+			deliveryId: v.id('emailDeliveries'),
 			email: v.string(),
 			companyName: v.string(),
 			inviterName: v.string()
@@ -169,26 +187,44 @@ export const prepareDelivery = internalMutation({
 	handler: async (ctx, args) => {
 		const access = await requirePermission(ctx, 'manageMembers', args.membershipId);
 		const email = emailAddress(args.email);
+		if (
+			!Number.isSafeInteger(args.inlineDeadline) ||
+			args.inlineDeadline <= Date.now() ||
+			args.inlineDeadline > Date.now() + 4 * 60_000
+		)
+			throw new ConvexError('Invitation sending timed out. Please try again.');
 		const profiles = await ctx.db
 			.query('profiles')
 			.withIndex('by_email', (q) => q.eq('email', email))
 			.take(101);
 		if (profiles.length > 100) throw new ConvexError('Unable to verify this email address.');
-		for (const profile of profiles) {
-			const member = await ctx.db
-				.query('memberships')
-				.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
-				.unique();
-			if (member?.companyId === access.companyId)
-				throw new ConvexError('This colleague already belongs to your company.');
-		}
+		const memberships = await Promise.all(
+			profiles.map((profile) =>
+				ctx.db
+					.query('memberships')
+					.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
+					.unique()
+			)
+		);
+		if (memberships.some((member) => member?.companyId === access.companyId))
+			throw new ConvexError('This colleague already belongs to your company.');
 		const existing = await ctx.db
 			.query('companyInvitations')
 			.withIndex('by_companyId_and_normalizedEmail_and_status', (q) =>
 				q.eq('companyId', access.companyId).eq('normalizedEmail', email).eq('status', 'pending')
 			)
 			.unique();
-		if (existing && (existing.deliveryStartedAt ?? 0) > Date.now() - 120_000)
+		const oldDelivery = existing?.deliveryId
+			? await ctx.db.get('emailDeliveries', existing.deliveryId)
+			: null;
+		if (
+			existing &&
+			((existing.deliveryStartedAt ?? 0) > Date.now() - 120_000 ||
+				(oldDelivery && (await activeDelivery(ctx, oldDelivery))) ||
+				(!existing.deliveryId &&
+					existing.deliveryStatus === 'sending' &&
+					(existing.deliveryStartedAt ?? 0) > Date.now() - 11 * 60_000))
+		)
 			throw new ConvexError('An invitation is already being sent. Please wait.');
 		if (
 			existing &&
@@ -197,6 +233,8 @@ export const prepareDelivery = internalMutation({
 			existing.expiresAt > Date.now()
 		)
 			return null;
+		if (oldDelivery) await removeDelivery(ctx, oldDelivery);
+		await cancelJob(ctx, existing?.expiryJobId);
 		const generation = (existing?.deliveryGeneration ?? 0) + 1;
 		const data = {
 			inviterProfileId: access._id,
@@ -218,19 +256,20 @@ export const prepareDelivery = internalMutation({
 				normalizedEmail: email,
 				status: 'pending'
 			});
-		// Commit the timeout with preparation so an interrupted action cannot strand delivery.
-		await ctx.scheduler.runAfter(120_000, internal.companyInvitations.finishDelivery, {
-			id,
-			generation,
-			sent: false
+		const deliveryId = await createDelivery(ctx, {
+			companyId: access.companyId,
+			recipientEmail: email,
+			inlineDeadline: args.inlineDeadline,
+			event: { kind: 'invitation', invitationId: id, generation }
 		});
-		await ctx.scheduler.runAt(data.expiresAt, internal.companyInvitations.expire, {
-			id,
-			expiresAt: data.expiresAt
-		});
+		const expiryJobId = await ctx.scheduler.runAt(
+			data.expiresAt,
+			internal.companyInvitations.expire,
+			{ id, expiresAt: data.expiresAt }
+		);
+		await ctx.db.patch('companyInvitations', id, { deliveryId, expiryJobId });
 		return {
-			id,
-			generation,
+			deliveryId,
 			email,
 			companyName: access.company.name,
 			inviterName: access.name || access.email
@@ -264,11 +303,14 @@ export const initializeExpiration = internalMutation({
 			if (invitation.status !== 'pending' || invitation.expired !== undefined) continue;
 			const expired = invitation.expiresAt <= Date.now();
 			await ctx.db.patch('companyInvitations', invitation._id, { expired });
-			if (!expired)
-				await ctx.scheduler.runAt(invitation.expiresAt, internal.companyInvitations.expire, {
-					id: invitation._id,
-					expiresAt: invitation.expiresAt
-				});
+			if (!expired) {
+				const expiryJobId = await ctx.scheduler.runAt(
+					invitation.expiresAt,
+					internal.companyInvitations.expire,
+					{ id: invitation._id, expiresAt: invitation.expiresAt }
+				);
+				await ctx.db.patch('companyInvitations', invitation._id, { expiryJobId });
+			}
 		}
 		if (!result.isDone)
 			await ctx.scheduler.runAfter(0, internal.companyInvitations.initializeExpiration, {
@@ -277,6 +319,8 @@ export const initializeExpiration = internalMutation({
 		return null;
 	}
 });
+// Old scheduled timeout callbacks can outlive an upgrade. They cannot finish a
+// new delivery or expire a running legacy SMTP exchange before its action ends.
 export const finishDelivery = internalMutation({
 	args: { id: v.id('companyInvitations'), generation: v.number(), sent: v.boolean() },
 	returns: v.null(),
@@ -284,27 +328,12 @@ export const finishDelivery = internalMutation({
 		const invitation = await ctx.db.get('companyInvitations', args.id);
 		if (
 			invitation?.status === 'pending' &&
+			!invitation.deliveryId &&
 			invitation.deliveryGeneration === args.generation &&
-			(args.sent || invitation.deliveryStatus === 'sending')
+			args.sent
 		)
-			await ctx.db.patch('companyInvitations', invitation._id, {
-				deliveryStatus: args.sent ? 'sent' : 'failed'
-			});
+			await ctx.db.patch('companyInvitations', invitation._id, { deliveryStatus: 'sent' });
 		return null;
-	}
-});
-export const canDeliver = internalQuery({
-	args: { id: v.id('companyInvitations'), generation: v.number() },
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		const invitation = await ctx.db.get('companyInvitations', args.id);
-		return Boolean(
-			invitation?.status === 'pending' &&
-			!invitation.expired &&
-			invitation.deliveryStatus === 'sending' &&
-			invitation.deliveryGeneration === args.generation &&
-			(await availableCompany(ctx, invitation.companyId))
-		);
 	}
 });
 

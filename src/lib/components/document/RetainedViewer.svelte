@@ -4,7 +4,7 @@
 	import type { DocumentResource } from '$lib/document/runtime/resources.svelte';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import ContractViewer from './ContractViewer.svelte';
-	let { entry }: { entry: DocumentResource } = $props();
+	let { entry, paused = false }: { entry: DocumentResource; paused?: boolean } = $props();
 	setContractWorkspace(untrack(() => entry.workspace));
 	setInteractionOwner(untrack(() => entry.owner));
 	let element = $state<HTMLDivElement>();
@@ -19,7 +19,9 @@
 	});
 	const bindings = $derived(entry.bindings);
 	// Reparenting the same wrapper preserves every DocumentPage and annotation owner.
-	const readyToShow = $derived(entry.active || entry.draftOwned);
+	const readyToShow = $derived(
+		!paused && ((entry.active && (bindings?.active ?? true)) || entry.draftOwned)
+	);
 </script>
 
 <div bind:this={parking} class="document-parking" inert aria-hidden="true">
@@ -32,9 +34,9 @@
 	>
 		<ContractViewer
 			active={readyToShow}
-			interactive={entry.active && (bindings?.interactive ?? true)}
+			interactive={!paused && entry.active && (bindings?.interactive ?? true)}
 			retained
-			prepare={entry.allowed}
+			prepare={!paused && entry.allowed && (bindings?.prepare ?? true)}
 			priority={entry.priority}
 			selectedConcessions={bindings?.selectedConcessions ?? entry.choices}
 			previewChanges={bindings?.previewChanges}

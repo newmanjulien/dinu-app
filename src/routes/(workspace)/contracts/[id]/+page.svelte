@@ -1,1 +1,1 @@
-<svelte:head><title>Contract | Agreed</title></svelte:head>
+<!-- Contract content is owned by the contracts layout. -->

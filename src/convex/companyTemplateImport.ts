@@ -2,7 +2,11 @@ import { ConvexError, v } from 'convex/values';
 import { internalMutation, internalQuery } from './_generated/server';
 import { baselineBlock } from './sourceValidators';
 import { playbookItem } from './playbookValidators';
-import { currentPointer, publishTemplate } from './templates';
+import { currentPointer, publishTemplate, readLiveSnapshot } from './templates';
+import { createAuthoringItem } from './playbookItemRevisions';
+import { canonicalBaselineFingerprint, stripStoredBlock, businessItem } from './baselineStorage';
+import { documentBytes, publicationCapacity } from './templateCapacity';
+import { MAX_CONTRACT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../lib/playbook/validation';
 import { paginationOptsValidator } from 'convex/server';
 import { requireCompany } from './auth';
 
@@ -19,27 +23,43 @@ export const begin = internalMutation({
 		if (!/^[a-f0-9]{64}$/.test(args.importKey))
 			throw new ConvexError('A company and SHA-256 content fingerprint are required.');
 		const pointer = await currentPointer(ctx, args.companyId);
-		if (pointer?.importKey === args.importKey)
+		if (pointer?.importKey === args.importKey) {
+			if (pointer.importBlockCount === undefined || pointer.importItemCount === undefined)
+				throw new ConvexError('Import progress is incomplete.');
 			return {
-				blockCount: pointer.importBlockCount ?? 0,
-				itemCount: pointer.importItemCount ?? 0,
+				blockCount: pointer.importBlockCount,
+				itemCount: pointer.importItemCount,
 				complete: Boolean(pointer.versionId && !pointer.maintenance)
 			};
+		}
 		if (
 			pointer ||
 			(await ctx.db
-				.query('contractBlocks')
-				.withIndex('by_companyId_and_order', (q) => q.eq('companyId', args.companyId))
+				.query('playbookItems')
+				.withIndex('by_companyId', (q) => q.eq('companyId', args.companyId))
 				.first()) ||
 			(await ctx.db
-				.query('playbookItems')
+				.query('templateVersions')
+				.withIndex('by_companyId', (q) => q.eq('companyId', args.companyId))
+				.first()) ||
+			(await ctx.db
+				.query('baselines')
 				.withIndex('by_companyId', (q) => q.eq('companyId', args.companyId))
 				.first())
 		)
 			throw new ConvexError(
 				'This company already has template data or another import. Refusing to overwrite it.'
 			);
+		const baselineId = await ctx.db.insert('baselines', {
+			companyId: args.companyId,
+			state: 'prepared',
+			source: 'seed',
+			fingerprint: args.importKey,
+			blockCount: 0,
+			issues: []
+		});
 		await ctx.db.insert('currentTemplate', {
+			baselineId,
 			companyId: args.companyId,
 			maintenance: true,
 			importKey: args.importKey,
@@ -75,10 +95,26 @@ export const append = internalMutation({
 				.byteLength > 2_000_000
 		)
 			throw new ConvexError('Import batches support at most four records and 2 MB.');
+		if (
+			args.expectedBlockCount + args.blocks.length > MAX_CONTRACT_BLOCKS ||
+			args.expectedItemCount + args.items.length > MAX_PLAYBOOK_ITEMS
+		)
+			throw new ConvexError('Import exceeds supported size.');
 		for (const item of args.items)
-			await ctx.db.insert('playbookItems', { ...item, companyId: args.companyId });
-		for (const block of args.blocks)
-			await ctx.db.insert('contractBlocks', { ...block, companyId: args.companyId });
+			await createAuthoringItem(ctx, { ...item, companyId: args.companyId });
+		const blocks = args.blocks.map((block) => ({
+			...block,
+			companyId: args.companyId,
+			baselineId: pointer.baselineId
+		}));
+		await publicationCapacity(ctx, {
+			documents: blocks.length,
+			bytes: blocks.reduce((sum, block) => sum + documentBytes(block), 0)
+		});
+		for (const block of blocks) await ctx.db.insert('contractBlocks', block);
+		await ctx.db.patch('baselines', pointer.baselineId, {
+			blockCount: args.expectedBlockCount + args.blocks.length
+		});
 		await ctx.db.patch('currentTemplate', pointer._id, {
 			importBlockCount: args.expectedBlockCount + args.blocks.length,
 			importItemCount: args.expectedItemCount + args.items.length
@@ -90,7 +126,7 @@ export const finish = internalMutation({
 	args: { ...scope, blockCount: v.number(), itemCount: v.number() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const company = await requireCompany(ctx, args.companyId);
+		await requireCompany(ctx, args.companyId);
 		const pointer = await currentPointer(ctx, args.companyId);
 		if (
 			pointer?.importKey !== args.importKey ||
@@ -100,8 +136,23 @@ export const finish = internalMutation({
 			throw new ConvexError('Import is incomplete.');
 		if (pointer.versionId && !pointer.maintenance) return null;
 		if (!pointer.maintenance) throw new ConvexError('Import is not in maintenance.');
-		await publishTemplate(ctx, company);
-		await ctx.db.patch('currentTemplate', pointer._id, { maintenance: false });
+		const captured = await readLiveSnapshot(ctx, args.companyId, pointer);
+		if (captured.blocks.length !== args.blockCount || captured.items.length !== args.itemCount)
+			throw new ConvexError('Import counts do not match stored content.');
+		const fingerprint = canonicalBaselineFingerprint(captured.blocks);
+		const publishedAt = Date.now();
+		await publicationCapacity(ctx, {
+			documents: 1,
+			bytes: documentBytes({ ...captured.baseline, state: 'published', fingerprint, publishedAt })
+		});
+		await ctx.db.patch('baselines', pointer.baselineId, {
+			state: 'published',
+			fingerprint,
+			publishedAt
+		});
+		captured.pointer = { ...pointer, maintenance: false, baselineFingerprint: fingerprint };
+		await publishTemplate(ctx, args.companyId, captured);
+		// publishTemplate writes the complete captured pointer in the same transaction.
 		return null;
 	}
 });
@@ -127,12 +178,16 @@ export const readPage = internalQuery({
 			maximumBytesRead: 2_000_000
 		};
 		if (args.table === 'blocks') {
+			const pointer = await currentPointer(ctx, args.companyId);
+			if (!pointer) return { page: [], cursor: '', done: true };
 			const result = await ctx.db
 				.query('contractBlocks')
-				.withIndex('by_companyId_and_order', (q) => q.eq('companyId', args.companyId))
+				.withIndex('by_companyId_and_baselineId_and_order', (q) =>
+					q.eq('companyId', args.companyId).eq('baselineId', pointer.baselineId)
+				)
 				.paginate(opts);
 			return {
-				page: result.page.map(({ _id, _creationTime, companyId, ...block }) => block),
+				page: result.page.map(stripStoredBlock),
 				cursor: result.continueCursor,
 				done: result.isDone
 			};
@@ -142,11 +197,7 @@ export const readPage = internalQuery({
 			.withIndex('by_companyId', (q) => q.eq('companyId', args.companyId))
 			.paginate(opts);
 		return {
-			page: result.page.map(({ triggers, instructions, concessions }) => ({
-				triggers,
-				...(instructions ? { instructions } : {}),
-				concessions
-			})),
+			page: result.page.map(businessItem),
 			cursor: result.continueCursor,
 			done: result.isDone
 		};

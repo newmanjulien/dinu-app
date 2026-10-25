@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { setAnnotationRegistry } from '$lib/document/annotation-registry';
+	import { restoreDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	import {
 		annotationOccurrence,
 		annotationAnchorBounds,
@@ -46,6 +47,7 @@
 	import DocumentPage from './DocumentPage.svelte';
 	import LayoutProfileSurface from './LayoutProfileSurface.svelte';
 	import LoadingPagination from './LoadingPagination.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import ContractWorkspaceLayout from './ContractWorkspaceLayout.svelte';
 	import '$lib/styles/document.css';
 	import ReviewTags from './ReviewTags.svelte';
@@ -99,6 +101,7 @@
 		onSelect: (itemId: string, annotationId: string) => boolean | void;
 	} = $props();
 	const { source, renderer, viewer } = getContractWorkspace();
+	restoreDocumentNavigation(viewer);
 	const interacting = $derived(active && interactive);
 	const snapshot = $derived(renderer.snapshot);
 	let activationComplete = $state(false);
@@ -806,18 +809,18 @@
 {/if}
 {#if !sharedProfiles}<LayoutProfileSurface bind:surface />{/if}
 {#if !pages.length && !renderer.error}
-	{#if !retained}<LoadingPagination />{/if}
+	{#if !retained}<LoadingPagination embedded {hasPanel} />{/if}
 {:else if !pages.length}
-	<div
-		class="flex min-h-[calc(100vh-100px)] flex-col items-center justify-center gap-1.5 text-center text-ink-secondary"
-		role="alert"
-	>
-		<strong>We couldn’t display this contract.</strong>
+	<LoadingState layout="workspace" class="gap-1.5 text-ink-secondary">
+		<strong role="alert" class="font-medium">We couldn’t display this contract.</strong>
 		<button type="button" class="underline" onclick={interacting ? retryRender : undefined}
 			>Retry</button
 		>
-	</div>
+	</LoadingState>
 {:else}
+	{#if !retained && active && !viewer.visible && !renderer.error && !viewer.preparationBlocked}
+		<LoadingPagination embedded {hasPanel} />
+	{/if}
 	<div
 		class="viewer-root w-full"
 		class:awaiting-prepared={active && !viewer.visible}
@@ -868,7 +871,7 @@
 					{/each}
 					{#if incomplete}
 						<div
-							class="px-6 py-3 text-center text-ink-secondary"
+							class="px-6 py-3 text-center text-sm text-ink-secondary"
 							role={renderer.error ? 'alert' : 'status'}
 						>
 							{#if renderer.error}

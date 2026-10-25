@@ -29,3 +29,13 @@ export const playbookItem = v.object({
 	instructions: v.optional(instructions),
 	concessions: v.array(concession)
 });
+
+// Historical content retains the original authoring metadata, never its revision head.
+export const historicalItem = playbookItem.extend({
+	_id: v.id('playbookItems'),
+	_creationTime: v.number(),
+	companyId: v.id('company'),
+	revision: v.number(),
+	lastOperationId: v.optional(v.string()),
+	lastOperationCaller: v.optional(v.id('profiles'))
+});

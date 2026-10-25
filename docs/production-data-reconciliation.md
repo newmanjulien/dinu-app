@@ -48,7 +48,7 @@ The export contains `contractBlocks` (113), `clauseBoxes` (56), and `deletedClau
 | Preferred / rare arrays                         | One concession array with exact `tier`, preserving order within each tier                                                   |
 | `concessionKey`                                 | Same value under concession `id`                                                                                            |
 | `copy.before`                                   | Exact `description`                                                                                                         |
-| `copy.detail`, `copy.after`                     | Optional backwards-compatible `detail` and `after`; displayed in rep and admin panels and retained by saves                 |
+| `copy.detail`, `copy.after`                     | Optional business fields `detail` and `after`; displayed in rep and admin panels and retained by saves                      |
 | Replacement inline atoms                        | Exact `replacement` atoms, retaining reference targets                                                                      |
 | `numbering.activationProvisionKey`              | `optional: true` paragraph plus normal nonempty insertion; conditional numbering and subsequent references remain dynamic   |
 | `marks.bold`, `marks.italic`                    | Optional validated text marks carried through composition, tokens, layout cache identity, and visible/measurement DOM spans |
@@ -91,7 +91,7 @@ In total, 16 Playbook Item rows and 36 contract-block rows differ from the forme
 
 The 13 existing formatting failures are `src/convex/_generated/ai/ai-files.state.json`, `src/convex/_generated/ai/guidelines.md`, `src/convex/_generated/api.d.ts`, `src/convex/_generated/api.js`, `src/convex/_generated/dataModel.d.ts`, `src/convex/_generated/server.d.ts`, `src/convex/_generated/server.js`, `src/convex/tsconfig.json`, `src/lib/components/document/ContractViewer.svelte`, `src/lib/components/ui/modal/help-content.ts`, `src/lib/document/annotation-registry.ts`, `src/lib/document/runtime/source.svelte.ts`, and `src/lib/document/search/document-search.ts`.
 
-Before refreshing fixtures, the original seed passed all 48 original states under the updated backwards-compatible renderer. The restored seed then passed the independent old provision-rule oracle. Only after those checks were the hashes refreshed and 10 states added for the five restored concessions. Hash changes reflect the restored emphasis, source coordinates, trigger memberships, replacement rules, and effect provenance. Original hashes remain in `data/migration/prior-compositor.json`. `scripts/refresh-production-references.mjs` refuses to refresh unless source reconciliation and the independent output oracle pass; normal verification never updates hashes.
+Before refreshing fixtures, the original seed passed all 48 original states under the updated renderer. The restored seed then passed the independent old provision-rule oracle. Only after those checks were the hashes refreshed and 10 states added for the five restored concessions. Hash changes reflect the restored emphasis, source coordinates, trigger memberships, replacement rules, and effect provenance. Original hashes remain in `data/migration/prior-compositor.json`. `scripts/refresh-production-references.mjs` refuses to refresh unless source reconciliation and the independent output oracle pass; normal verification never updates hashes.
 
 ## Development rehearsal
 
@@ -117,34 +117,23 @@ The new `--seed` audit is read-only and compares exact business records against 
 
 `npm run seed:restore-export` regenerates local seed files and the logical mapping from `data/migration/source`; it never contacts a database. For a later export, replace the source fixture with that full export, regenerate, reconcile, review the diff, and rerun validation. Unexpected tables, fields, deletion history, or unsupported occurrence layouts deliberately fail instead of being silently discarded.
 
-## Production cutover requirements
+## Reset and reseed
 
-**There is no production reseed/import path in `npm run convex:seed`, and its guards have not been weakened.** A normal frontend deployment does not load seed data. The old and new `contractBlocks` document shapes are incompatible, so pushing the final schema over the old populated table is not a complete migration plan.
+`npm run convex:seed` remains development/local-only and refuses production targets.
+A frontend deployment does not load seed data. The current backend requires canonical
+structured patterns and revision links; it does not transform older database records.
+Follow the [fresh reset procedure](private-companies-rollout.md#fresh-development-reset),
+then create the company through normal onboarding, seed its actual ID, and run the
+read-only `--seed` audit before editing content.
 
-1. Rehearse the full procedure in development. Freeze writes during the eventual maintenance window, take a new complete production backup, and reconcile that export as well if production has changed since this supplied export. Retain the old code, data, and configuration for rollback.
-2. Prefer a separately provisioned **empty production target** when migrating the
-   historical contract-block format. Deploy compatible backend support and create
-   the intended company/memberships before loading its template. Initial imports
-   must supply company scope and use the bounded `companyTemplateImport` API with
-   fingerprint/progress checks and atomic publication. Directly importing these
-   unscoped JSONL fixtures is no longer a valid company bootstrap. Follow the
-   [private-company rollout runbook](private-companies-rollout.md), with fresh
-   production authorization, backup, and rehearsal before any live operation.
-3. If retaining the **same production deployment** with the historical block shape,
-   a separately reviewed transitional schema/data-load mechanism is required.
-   Accept both shapes while writes are frozen, deliberately transform/load the
-   scoped records, verify them, and then enforce the final source schema. The
-   application has removed its legacy private-company backfill in favor of a
-   fresh development reset; production needs its own reviewed procedure to
-   transform the older provision/block format. Archive obsolete tables for rollback. Do not
-   push a strict schema into incompatible data or use a development seed override.
-4. Audit the configured target with
-   `npm run db:audit -- --company-id COMPANY_ID --seed` and independently verify
-   memberships, owner, pointer/snapshot links, and historical contracts. Switch the
-   frontend URL and release maintenance only after those checks and rep/admin UX
-   checks pass. In-place rollback needs matching schema/code and the full backup.
+The generator retains the supplied archive as an offline input and emits only
+business fields. The scoped backend writer creates revision 1 and immutable heads;
+JSONL fingerprints and prefix comparisons exclude this generated metadata. An
+interrupted import resumes using the same content fingerprint and verified prefix.
+The historical output oracle is self-contained offline code, rather than a second
+persisted format supported by application readers.
 
-These are operator requirements; no production cutover or import was executed.
+No live reset, deployment, or seed import was performed during this cleanup.
 
 ## Exact-preservation limits and omissions
 

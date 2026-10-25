@@ -2,7 +2,8 @@ import { browser } from '$app/environment';
 import { env } from '$env/dynamic/public';
 import type { SavedContractCard } from './card';
 import type { Id } from '../../convex/_generated/dataModel';
-export let CACHE_NAMESPACE = `agreed:v2:${env.PUBLIC_CONVEX_URL ?? ''}:anonymous`;
+const deployment = env.PUBLIC_CONVEX_URL ?? '';
+export let CACHE_NAMESPACE = `agreed:v3:${deployment}:anonymous`;
 export let CACHE_MEMBERSHIP_ID: Id<'memberships'> | null = null;
 const openingsKey = () => `${CACHE_NAMESPACE}:openings`;
 type Opening = { id: string; openedAt: number };
@@ -67,26 +68,60 @@ export function rankCards(
 		.map(({ card }) => card._id);
 }
 
+function clearNamespace(namespace: string) {
+	try {
+		localStorage.removeItem(`${namespace}:cards`);
+		localStorage.removeItem(`${namespace}:openings`);
+	} catch {
+		/* Optional cache. */
+	}
+	try {
+		indexedDB.deleteDatabase(`${namespace}:snapshots`);
+	} catch {
+		/* Optional cache. */
+	}
+}
+function clearObsoleteNamespaces(next: string) {
+	const old = `agreed:v1:${deployment}`;
+	const prefix = `agreed:v2:${deployment}:`;
+	const namespaces = new Set([
+		old,
+		`${prefix}anonymous`,
+		CACHE_NAMESPACE.replace('agreed:v3:', 'agreed:v2:'),
+		next.replace('agreed:v3:', 'agreed:v2:')
+	]);
+	try {
+		for (const key of Object.keys(localStorage))
+			if (key.startsWith(prefix) && /:(cards|openings)$/.test(key))
+				namespaces.add(key.replace(/:(cards|openings)$/, ''));
+	} catch {
+		/* Optional cache. */
+	}
+	for (const namespace of namespaces) clearNamespace(namespace);
+	try {
+		void indexedDB
+			.databases?.()
+			.then((databases) => {
+				for (const { name } of databases)
+					if (
+						name?.endsWith(':snapshots') &&
+						(name === `${old}:snapshots` || name.startsWith(prefix))
+					)
+						clearNamespace(name.slice(0, -':snapshots'.length));
+			})
+			.catch(() => {});
+	} catch {
+		/* Optional cache. */
+	}
+}
 export function setCacheIdentity(
 	identity: { profileId: Id<'profiles'>; membershipId: Id<'memberships'> } | null
 ) {
-	const next = `agreed:v2:${env.PUBLIC_CONVEX_URL ?? ''}:${identity ? `${identity.profileId}:${identity.membershipId}` : 'anonymous'}`;
+	const next = `agreed:v3:${deployment}:${identity ? `${identity.profileId}:${identity.membershipId}` : 'anonymous'}`;
 	CACHE_MEMBERSHIP_ID = identity?.membershipId ?? null;
+	if (browser) clearObsoleteNamespaces(next);
 	if (next === CACHE_NAMESPACE) return;
-	if (browser) {
-		try {
-			localStorage.removeItem(`${CACHE_NAMESPACE}:cards`);
-			localStorage.removeItem(openingsKey());
-			// Discard the former anonymous caches as well as the previous session.
-			const old = `agreed:v1:${env.PUBLIC_CONVEX_URL ?? ''}`;
-			localStorage.removeItem(`${old}:cards`);
-			localStorage.removeItem(`${old}:openings`);
-			indexedDB.deleteDatabase(`${old}:snapshots`);
-			indexedDB.deleteDatabase(`${CACHE_NAMESPACE}:snapshots`);
-		} catch {
-			/* Optional cache. */
-		}
-	}
+	if (browser) clearNamespace(CACHE_NAMESPACE);
 	openings = undefined;
 	CACHE_NAMESPACE = next;
 }

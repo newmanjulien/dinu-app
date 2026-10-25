@@ -53,7 +53,9 @@ the membership, profile, and personal avatar. Without company consent it retains
 business data and transfers an externally deleted owner's company to the oldest
 live remaining member, or leaves it ownerless for internal recovery.
 
-Company cleanup drains invitations, approvals, decisions, contracts, live blocks,
+Company cleanup drains invitations, approvals, legacy notifications, shared email
+deliveries and snapshots, current reviewer attribution, decisions, contracts, compact
+contract-directory entries, live blocks,
 live items, immutable snapshot blocks, immutable snapshot items, item receipts,
 contract receipts, versions, the current-template pointer, memberships, and finally
 the company and its avatar. Snapshot children have required indexed `companyId`
@@ -66,7 +68,9 @@ remaining read/write bytes, document/query limits, and scheduling capacity. It
 reserves room for the next full-size row, approval job cancellation, progress,
 and one continuation. Memberships and the company remain until business cleanup
 finishes. Every continuation uses a generation; superseded jobs do no work.
-Approval cleanup cancels pending or running send jobs before removing their rows.
+Email cleanup cancels tracked dispatch, recovery, and invitation expiry jobs before
+removing delivery records and bounded snapshots. Already dispatched SMTP cannot
+be recalled.
 
 Every 15 minutes Clerk reconciliation scans profiles and dispatched company
 requests independently, in pages of 25 identities. The company scan recovers
@@ -83,50 +87,13 @@ failure. Fix the cause, then run internal `accountDeletion:resume` or
 delete dispatched consent to clear an error. Keep completed account and company
 markers to deny deleted identities and delayed internal work.
 
-## Migration to required company scope
+## Schema reset
 
-The final backend has required scope, no legacy request state, and no migration
-gate or helper. An existing deployment with unscoped records must use the compatible
-backend before this strict schema. Retain that backend and its internal migration
-module with the deployment's snapshot; do not push the strict schema first.
-
-1. Identify and announce the exact deployment. Export all data with storage and
-   retain matching code/configuration privately. Production changes require their
-   own authorization and a rehearsal on a snapshot-seeded nonproduction deployment.
-2. Set `COMPANY_DELETION_MIGRATION=paused`, then deploy the compatible backend with
-   optional company IDs and their indexes. It pauses combined preparation,
-   dispatch from preparation, and company cleanup. Account-only deletion remains
-   available; already dispatched consent remains durable.
-3. Run internal `companyDeletionMigration:backfill` for `templateVersionBlocks`,
-   `templateVersionItems`, `creationReceipts`, and `contractCreationReceipts` until
-   each returns zero processed records. Each transaction handles at most four
-   full-size records plus parents and resumes through the missing-scope index.
-4. Snapshot children derive company scope from their version. A missing version or
-   an embedded item disagreeing with its version stops migration. Receipts derive
-   scope from the live target or the originating membership encoded in the
-   operation key. Conflicting scope or a malformed membership ID stops migration.
-   A receipt is removed only when both its target and originating membership are
-   gone; an individual target deletion alone does not justify removing it.
-5. Page through `companyDeletionMigration:restart`. Conservatively convert legacy
-   `awaitingAccountDeletion` requests to `dispatched` because historical data cannot
-   prove Clerk was never called. Cancel active cleaning jobs, increment their
-   generation, clear their job IDs, and restart their phase at `invitations` so
-   newly scoped children and receipts cannot be skipped.
-6. Require an empty `companyDeletionMigration:remaining` result. Export and audit
-   snapshot-parent and receipt-target/membership scope, retained record counts,
-   and unchanged business content. Resolve conflicts before proceeding.
-7. Make all four company IDs required, remove the legacy state, migration helper,
-   and gate, regenerate types, and deploy the final backend. Remove the temporary
-   environment variable and resume company cleanup. Archive the migration results.
-
-The October 9, 2026 development migration targeted `scrupulous-squirrel-986` in
-`agreed-feedback`. Its private snapshot with storage and compatible backend are
-retained in the directory recorded by `/tmp/agreed-company-deletion-backup-path`.
-The backfill scoped 113 snapshot blocks, 56 snapshot items, and three contract
-receipts without removing records. Snapshot-parent and receipt scope audits passed;
-all business records and storage were unchanged. The final strict schema is deployed,
-the temporary environment variable is removed, and the cleanup recovery sweep has
-run. Production was not changed.
+Company scope is required on snapshot manifests, immutable revisions, and operation
+receipts. Company deletion uses only the canonical storage model. There is no
+backfill helper, migration gate, or conversion phase. Before deploying over
+incompatible records, follow the
+[fresh reset procedure](private-companies-rollout.md#fresh-development-reset).
 
 ## Manual verification
 
@@ -151,4 +118,4 @@ by the existing performance suite:
 `npm run verify` checks the existing saving, conflict, retry, creation, publication,
 scheduling, and cache guarantees, Svelte types, and the production build. Convex
 backend type checking and strict-schema deployment check backend integration and
-migrated record shape. These do not certify live Clerk or browser races.
+canonical record shape. These do not certify live Clerk or browser races.

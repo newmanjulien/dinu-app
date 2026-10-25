@@ -2,32 +2,10 @@ import { PlaybookValidationError } from '../playbook/validation-error';
 
 export type NumberPatternPart =
 	{ text: string } | { level: number; case?: 'upper' | 'lower'; minimumDigits?: number };
-export type NumberPattern = string | NumberPatternPart[];
-
-/** Strings are the legacy persisted format. New imports always emit explicit parts. */
-export function patternParts(pattern: NumberPattern): NumberPatternPart[] {
-	if (typeof pattern !== 'string') return pattern;
-	const parts: NumberPatternPart[] = [];
-	let cursor = 0;
-	for (const match of pattern.matchAll(/%([1-9])(?::(upper|lower|[1-9]))?/gu)) {
-		if (match.index > cursor) parts.push({ text: pattern.slice(cursor, match.index) });
-		const transform = match[2];
-		parts.push({
-			level: Number(match[1]),
-			...(transform === 'upper' || transform === 'lower'
-				? { case: transform }
-				: transform
-					? { minimumDigits: Number(transform) }
-					: {})
-		});
-		cursor = match.index + match[0].length;
-	}
-	if (cursor < pattern.length) parts.push({ text: pattern.slice(cursor) });
-	return parts;
-}
+export type NumberPattern = NumberPatternPart[];
 
 export function validateNumberPattern(pattern: NumberPattern, depth = 9, requireLeaf = false) {
-	const parts = patternParts(pattern);
+	const parts = pattern;
 	let length = 0,
 		leaf = false;
 	if (!parts.length || parts.length > 80)
@@ -89,13 +67,13 @@ export function wordNumberPattern(text: string): NumberPatternPart[] {
 }
 
 export function shiftNumberPattern(pattern: NumberPattern, offset: number): NumberPatternPart[] {
-	return patternParts(pattern).map((part) =>
+	return pattern.map((part) =>
 		'text' in part ? { ...part } : { ...part, level: part.level + offset }
 	);
 }
 
 export function addressPattern(pattern: NumberPattern): NumberPatternPart[] {
-	const parts = patternParts(pattern).map((part) => ({ ...part }));
+	const parts = pattern.map((part) => ({ ...part }));
 	const last = parts.at(-1);
 	if (last && 'text' in last) {
 		last.text = last.text.replace(/[.\s]+$/u, '');
@@ -106,7 +84,7 @@ export function addressPattern(pattern: NumberPattern): NumberPatternPart[] {
 
 /** Select semantic fields in a stable order, excluding editor metadata. */
 export function canonicalNumberPattern(pattern: NumberPattern): NumberPatternPart[] {
-	return patternParts(pattern).map((part) =>
+	return pattern.map((part) =>
 		'text' in part
 			? { text: part.text }
 			: {

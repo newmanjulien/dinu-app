@@ -27,6 +27,50 @@ function fields(value, allowed, label) {
 		assert.ok(allowed.includes(key), `Unmapped ${label}.${key}`);
 }
 const length = (atom) => (atom.kind === 'text' ? atom.text.length : 1);
+// Canonical metadata for this exported source. Counters remain dynamic after concessions.
+function canonicalMetadata(blocks, items) {
+	const addresses = new Map();
+	for (const block of blocks) {
+		const numbering = block.numbering;
+		if (!numbering) continue;
+		const parent = numbering.parentItemKey ? addresses.get(numbering.parentItemKey) : undefined;
+		assert.ok(!numbering.parentItemKey || parent, 'Missing numbering parent');
+		const level = (parent?.depth ?? 0) + 1;
+		const decimal = numbering.style === 'decimal';
+		numbering.labelPattern = decimal
+			? [{ level }, { text: '.' }]
+			: [{ text: '(' }, { level }, { text: ')' }];
+		if (numbering.style.includes('alpha')) numbering.alphabeticStyle = 'sequential';
+		const local = decimal && !parent ? [{ level }] : [{ text: '(' }, { level }, { text: ')' }];
+		numbering.referencePattern = [...(parent?.pattern ?? []), ...local];
+		addresses.set(numbering.itemKey, {
+			depth: level,
+			pattern: numbering.referencePattern,
+			parent: numbering.parentItemKey
+		});
+	}
+	function canonicalAtom(atom) {
+		if (atom.kind !== 'reference') return { ...atom };
+		const first = addresses.get(atom.targetItemKey);
+		const last = atom.endTargetItemKey ? addresses.get(atom.endTargetItemKey) : undefined;
+		assert.ok(first && (!atom.endTargetItemKey || last), 'Missing reference target');
+		const end =
+			last && first.parent && first.parent === last.parent
+				? [{ text: '(' }, { level: last.depth }, { text: ')' }]
+				: last?.pattern;
+		return { ...atom, display: { start: first.pattern, ...(end ? { end, separator: '-' } : {}) } };
+	}
+	for (const block of blocks) {
+		if (block.kind === 'table')
+			for (const row of block.rows)
+				for (const cell of row) cell.content = cell.content.map(canonicalAtom);
+		else block.content = block.content.map(canonicalAtom);
+	}
+	for (const item of items)
+		for (const concession of item.concessions)
+			for (const change of concession.changes)
+				change.replacement = change.replacement.map(canonicalAtom);
+}
 export function transformExport(source) {
 	const occurrences = new Map(),
 		provisions = new Map(),
@@ -205,6 +249,7 @@ export function transformExport(source) {
 			source.boxes.some((b) => b.clauseKey === o.clauseKey),
 			`Orphan clause ${o.clauseKey}`
 		);
+	canonicalMetadata(blocks, items);
 	return { blocks, items, manifest };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

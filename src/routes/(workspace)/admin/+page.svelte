@@ -1,6 +1,7 @@
 <script lang="ts">
-	import AdminWorkspace from '$lib/components/workspace/AdminWorkspace.svelte';
+	import DocumentBody from '$lib/auth/DocumentBody.svelte';
 </script>
 
-<svelte:head><title>Edit contract instructions | Agreed</title></svelte:head>
-<AdminWorkspace />
+<DocumentBody requiresBaseline
+	><!-- The membership-scoped Admin session is hosted by Workspace. --></DocumentBody
+>

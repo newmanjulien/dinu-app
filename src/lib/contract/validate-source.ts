@@ -64,10 +64,10 @@ export function validateBaseline(blocks: readonly BaselineBlock[]) {
 					item.minimumDigits > 9)
 			)
 				throw new PlaybookValidationError('Invalid decimal padding.');
-			if (item.alphabeticStyle !== undefined && !item.style.includes('alpha'))
+			if (item.style.includes('alpha') ? !item.alphabeticStyle : item.alphabeticStyle !== undefined)
 				throw new PlaybookValidationError('Invalid alphabetic numbering.');
-			for (const pattern of [item.labelPattern, item.referencePattern])
-				if (pattern !== undefined) validateNumberPattern(pattern, depth, true);
+			validateNumberPattern(item.labelPattern, depth, true);
+			if (item.referencePattern) validateNumberPattern(item.referencePattern, depth, true);
 
 			if (items.has(item.itemKey) || block.kind === 'table')
 				throw new PlaybookValidationError(`Invalid numbering item: ${item.itemKey}`);

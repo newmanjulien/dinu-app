@@ -9,9 +9,17 @@
 	import type { DocumentResources } from '$lib/document/runtime/resources.svelte';
 	let {
 		profiles,
-		resources
-	}: { profiles?: ContractLayoutProfiles; resources?: DocumentResources } = $props();
+		resources,
+		paused = false
+	}: {
+		profiles?: ContractLayoutProfiles;
+		resources?: DocumentResources;
+		paused?: boolean;
+	} = $props();
 </script>
 
 {#if profiles}<LayoutProfileSurface bind:surface={profiles.surface} />{/if}
-{#if resources}{#each resources.entries as entry (entry)}<RetainedViewer {entry} />{/each}{/if}
+{#if resources}{#each resources.entries as entry (entry)}<RetainedViewer
+			{entry}
+			{paused}
+		/>{/each}{/if}

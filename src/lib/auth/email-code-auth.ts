@@ -12,6 +12,7 @@ export type ClerkEmailCodeAuthController = {
 	sendLoginCode(email: string): Promise<void>;
 	sendInvitationCode(email: string): Promise<void>;
 	acceptTicket(ticket: string): Promise<void>;
+	acceptSignInTicket(ticket: string): Promise<void>;
 	verifyCode(code: string): Promise<void>;
 	resendCode(): Promise<void>;
 	reset(): void;
@@ -174,11 +175,22 @@ export function createClerkEmailCodeAuthController({
 		});
 	}
 
+	function acceptSignInTicket(ticket: string) {
+		reset();
+		return run(async (current) => {
+			await mutate(current, requireResource(getSignIn()).ticket({ ticket }));
+			const signIn = requireResource(getSignIn());
+			assertSignInComplete(signIn);
+			await mutate(current, signIn.finalize());
+		});
+	}
+
 	return {
 		sendJoinCode: (email) => begin(email, 'signUp'),
 		sendLoginCode: (email) => begin(email, 'signIn'),
 		sendInvitationCode: (email) => begin(email, 'invitation'),
 		acceptTicket,
+		acceptSignInTicket,
 		verifyCode,
 		resendCode,
 		reset,

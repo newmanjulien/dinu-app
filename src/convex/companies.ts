@@ -26,6 +26,7 @@ export const create = mutation({
 			throw new ConvexError('Enter a company name of 120 characters or fewer.');
 		const companyId = await ctx.db.insert('company', {
 			name,
+			contractDirectoryReady: true,
 			ownerProfileId: profile._id,
 			approvalEmail: (await verifiedIdentity(ctx)).email!.trim().toLowerCase()
 		});

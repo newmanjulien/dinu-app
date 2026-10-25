@@ -32,14 +32,14 @@
 	></div>
 
 	<blockquote
-		class="font-quote m-0 max-w-[560px] text-[clamp(25px,1.4vw,38px)] font-medium leading-[1.16] tracking-normal text-[#1c1917]"
+		class="font-quote m-0 max-w-[560px] text-[clamp(22px,1.2vw,32px)] font-normal leading-[1.16] tracking-normal text-[#1c1917]"
 	>
 		"{quote.text}"
 	</blockquote>
 
-	<div class="mt-10 inline-flex items-center gap-3.5 text-left">
+	<div class="mt-8 inline-flex items-center gap-3 text-left">
 		<div
-			class="relative size-14 shrink-0 overflow-hidden rounded-full bg-gray-100 shadow-[0_0_0_1px_rgb(0_0_0_/_10%)]"
+			class="relative size-10 shrink-0 overflow-hidden rounded-full bg-gray-100 shadow-[0_0_0_1px_rgb(0_0_0_/_10%)]"
 		>
 			<img
 				src={quote.avatarSrc}
@@ -48,8 +48,8 @@
 			/>
 		</div>
 		<div>
-			<p class="m-0 text-sm font-medium leading-[1.18] text-[#202124]">{quote.personName}</p>
-			<p class="mt-1 mb-0 text-sm leading-[1.18] text-[#8c8f94]">
+			<p class="m-0 text-xs font-medium leading-[1.18] text-[#202124]">{quote.personName}</p>
+			<p class="mt-1 mb-0 text-xs leading-[1.18] text-[#8c8f94]">
 				{quote.personTitle}
 			</p>
 		</div>

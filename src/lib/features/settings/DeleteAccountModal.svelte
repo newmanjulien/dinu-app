@@ -347,7 +347,7 @@
 	}
 </script>
 
-<ModalShell {open} title={deletionTitle} onClose={closeDeleteModal}>
+<ModalShell {open} title={deletionTitle} dismissible={!deleting} onClose={closeDeleteModal}>
 	<div class="space-y-4">
 		{#if step === 'confirmDeletion'}
 			{#if !options.data && !options.error}

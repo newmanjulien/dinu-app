@@ -1,4 +1,5 @@
 <script lang="ts">
+	import '$lib/styles/document-workspace-geometry.css';
 	import type { Snippet } from 'svelte';
 	import { protectedInteraction } from '$lib/components/ui/interactions';
 	const protect = protectedInteraction();
@@ -32,10 +33,9 @@
 </script>
 
 <div
-	class="contract-workspace-layout relative w-full @container"
+	class="document-workspace-geometry relative w-full @container"
 	bind:this={layoutElement}
 	style:--page-width={`${displayedPageWidth}px`}
-	style:--page-half-width={`${displayedPageWidth / 2}px`}
 	style:--panel-top={`${panelTop}px`}
 	style:--rail-safe-gutter={`${RAIL_SAFE_GUTTER}px`}
 	style:--panel-min-width={`${PANEL_MIN_WIDTH}px`}
@@ -95,23 +95,6 @@
 			overflow-y: auto;
 			overscroll-behavior: contain;
 		}
-	}
-
-	.contract-workspace-layout {
-		--panel-max-width: 480px;
-		--panel-width: clamp(
-			var(--panel-min-width),
-			calc(
-				100cqw - var(--rail-safe-gutter) - var(--page-width) - var(--panel-gap) -
-					var(--right-gutter)
-			),
-			var(--panel-max-width)
-		);
-		--centered-page-left: calc(50cqw - var(--page-half-width));
-		--right-anchored-page-left: calc(
-			100cqw - var(--right-gutter) - var(--panel-width) - var(--panel-gap) - var(--page-width)
-		);
-		--page-left: min(var(--centered-page-left), var(--right-anchored-page-left));
 	}
 
 	@keyframes -global-panel-in {

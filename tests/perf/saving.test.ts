@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../src/convex/_generated/api';
 import type { MutationCtx } from '../../src/convex/_generated/server';
 import schema from '../../src/convex/schema';
+import { canonicalBaselineFingerprint } from '../../src/convex/baselineStorage';
+import { storeItemRevision } from '../../src/convex/playbookItemRevisions';
 import { saveChoices } from '../../src/convex/savedContracts';
+import { writeDirectory } from '../../src/convex/contractDirectory';
 import { CompiledContract } from '../../src/lib/contract/compiled-contract';
 import { block, item, identity, initializeViewer } from './fixtures';
 
@@ -16,17 +19,28 @@ const modules = import.meta.glob('../../src/convex/**/*.*s');
 async function fixture(selected = false) {
 	const t = convexTest(schema, modules).withIdentity(identity);
 	const { profileId, companyId, membershipId } = await t.run(initializeViewer);
-	const ids = await t.run(async ({ db }) => {
-		const first = await db.insert('playbookItems', { ...item, companyId });
-		const second = await db.insert('playbookItems', { ...item, companyId });
-		const foreign = await db.insert('playbookItems', { ...item, companyId });
+	const ids = await t.run(async (ctx) => {
+		const { db } = ctx;
+		await db.patch('company', companyId, { contractDirectoryReady: true });
+		const baselineId = await db.insert('baselines', {
+			companyId,
+			state: 'published',
+			source: 'seed',
+			fingerprint: canonicalBaselineFingerprint([block]),
+			issues: [],
+			blockCount: 1
+		});
+		const first = await db.insert('playbookItems', { ...item, companyId, revision: 1 });
+		const second = await db.insert('playbookItems', { ...item, companyId, revision: 1 });
+		const foreign = await db.insert('playbookItems', { ...item, companyId, revision: 1 });
 		const choices = { [first]: 'preferred', [second]: 'preferred' };
 		const versionId = await db.insert('templateVersions', {
 			companyId,
 			publishedAt: 123,
 			blockCount: 1,
 			itemCount: 2,
-			snapshotBytes: 0
+			snapshotBytes: 0,
+			baselineId
 		});
 		const id = await db.insert('savedContracts', {
 			companyName: 'Synthetic Buyer',
@@ -36,12 +50,19 @@ async function fixture(selected = false) {
 			savedAt: 123,
 			revision: 7,
 			lastOperationId: 'previous-operation',
+			reviews: {},
 			selectedConcessions: selected ? choices : {}
 		});
-		await db.insert('templateVersionBlocks', { companyId, versionId, block });
+		await db.insert('contractBlocks', { companyId, baselineId, ...block });
+		await writeDirectory(ctx, (await db.get('savedContracts', id))!);
 		for (const itemId of [first, second]) {
 			const document = (await db.get('playbookItems', itemId))!;
-			await db.insert('templateVersionItems', { companyId, versionId, itemId, item: document });
+			await db.insert('templateVersionItems', {
+				companyId,
+				versionId,
+				itemId,
+				revisionId: await storeItemRevision(ctx, document)
+			});
 		}
 		return { id, first, second, foreign, choices };
 	});
@@ -59,7 +80,7 @@ const handler = (
 	}
 )._handler;
 function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs) {
-	const counts = { snapshotItems: 0, snapshotBlocks: 0, writes: 0 };
+	const counts = { snapshotItems: 0, snapshotBlocks: 0, writes: 0, directoryWrites: 0 };
 	const result = t.run((ctx) => {
 		// Delegate every operation to convex-test; only count this handler's DB calls.
 		const db = new Proxy(ctx.db, {
@@ -67,13 +88,16 @@ function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs
 				if (key === 'query')
 					return (table: Parameters<MutationCtx['db']['query']>[0]) => {
 						if (table === 'templateVersionItems') counts.snapshotItems++;
-						if (table === 'templateVersionBlocks') counts.snapshotBlocks++;
+						if (table === 'contractBlocks') counts.snapshotBlocks++;
 						return target.query(table);
 					};
 				const value = Reflect.get(target, key, receiver);
 				if (typeof value !== 'function') return value;
 				return (...values: unknown[]) => {
-					if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) counts.writes++;
+					if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
+						if (values[0] === 'contractDirectory') counts.directoryWrites++;
+						else counts.writes++;
+					}
 					return value.apply(target, values);
 				};
 			}
@@ -97,6 +121,7 @@ describe('saving work', () => {
 			membershipId,
 			id,
 			selectedConcessions: { [second]: 'preferred', [first]: 'preferred' },
+			selectionLifecycles: {},
 			expectedRevision: 7,
 			operationId: 'unchanged-operation'
 		};
@@ -111,7 +136,7 @@ describe('saving work', () => {
 				lastOperationId: 'previous-operation'
 			}
 		});
-		expect(counts).toEqual({ snapshotItems: 0, snapshotBlocks: 0, writes: 0 });
+		expect(counts).toEqual({ snapshotItems: 0, snapshotBlocks: 0, writes: 0, directoryWrites: 0 });
 		expect(CompiledContract).not.toHaveBeenCalled();
 		// Public call and retry preserve the whole persisted document, including savedAt.
 		expect(await t.mutation(api.savedContracts.saveChoices, args)).toEqual(await result);
@@ -136,6 +161,7 @@ describe('saving work', () => {
 				membershipId,
 				id,
 				selectedConcessions,
+				selectionLifecycles: {},
 				expectedRevision: 7,
 				operationId: 'changed-operation'
 			});
@@ -147,7 +173,12 @@ describe('saving work', () => {
 					lastOperationId: 'changed-operation'
 				}
 			});
-			expect(counts).toEqual({ snapshotItems: size, snapshotBlocks: 0, writes: 1 });
+			expect(counts).toEqual({
+				snapshotItems: size,
+				snapshotBlocks: 0,
+				writes: 1,
+				directoryWrites: 1
+			});
 			expect(CompiledContract).not.toHaveBeenCalled();
 			const stored = await t.run(({ db }) => db.get('savedContracts', id));
 			expect(stored).toMatchObject({
@@ -165,11 +196,12 @@ describe('saving work', () => {
 			membershipId,
 			id,
 			selectedConcessions: choices,
+			selectionLifecycles: {},
 			expectedRevision: 7,
 			operationId: 'two-choices'
 		});
 		expect(await result).toMatchObject({ status: 'saved', state: { revision: 8 } });
-		expect(counts).toEqual({ snapshotItems: 2, snapshotBlocks: 1, writes: 1 });
+		expect(counts).toEqual({ snapshotItems: 2, snapshotBlocks: 1, writes: 1, directoryWrites: 1 });
 		expect(CompiledContract).toHaveBeenCalledTimes(1);
 	});
 
@@ -182,6 +214,7 @@ describe('saving work', () => {
 					membershipId,
 					id,
 					selectedConcessions,
+					selectionLifecycles: {},
 					expectedRevision: 7,
 					operationId: 'invalid-choice'
 				})
@@ -197,6 +230,7 @@ describe('saving work', () => {
 			membershipId,
 			id,
 			selectedConcessions: { [first]: 'preferred' },
+			selectionLifecycles: {},
 			expectedRevision: 7,
 			operationId: 'save'
 		};
@@ -204,7 +238,12 @@ describe('saving work', () => {
 		const before = await t.run(({ db }) => db.get('savedContracts', id));
 		const replay = observeSave(t, args);
 		expect(await replay.result).toEqual(saved);
-		expect(replay.counts).toEqual({ snapshotItems: 0, snapshotBlocks: 0, writes: 0 });
+		expect(replay.counts).toEqual({
+			snapshotItems: 0,
+			snapshotBlocks: 0,
+			writes: 0,
+			directoryWrites: 0
+		});
 		expect(await t.mutation(api.savedContracts.saveChoices, args)).toEqual(saved);
 		expect(
 			await t.mutation(api.savedContracts.saveChoices, { ...args, operationId: 'stale' })
@@ -218,6 +257,7 @@ describe('saving work', () => {
 			membershipId,
 			id,
 			selectedConcessions: {},
+			selectionLifecycles: {},
 			expectedRevision: 7,
 			operationId: 'noop'
 		};

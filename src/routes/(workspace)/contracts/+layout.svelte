@@ -1,9 +1,12 @@
 <script lang="ts">
-	import { page } from '$app/state';
 	import type { Snippet } from 'svelte';
+	import type { LayoutData } from './$types';
 	import ContractRoute from '$lib/components/workspace/ContractRoute.svelte';
-	let { children }: { children: Snippet } = $props();
+	import DocumentBody from '$lib/auth/DocumentBody.svelte';
+	let { data, children }: { data: LayoutData; children: Snippet } = $props();
 </script>
 
-{#if page.data.contractRoute}<ContractRoute data={page.data.contractRoute} />{/if}
+<DocumentBody requiresBaseline={data.contractDestination.kind === 'new'} requiresDocument={false}>
+	<ContractRoute data={data.contractDestination} />
+</DocumentBody>
 {@render children()}

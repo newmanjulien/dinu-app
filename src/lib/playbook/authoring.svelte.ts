@@ -42,7 +42,7 @@ export class AuthoringDraft {
 		this.confirmed = confirmed;
 	}
 }
-const revision = (record: PlaybookItemRecord | null) => record?.revision ?? 0;
+const revision = (record: PlaybookItemRecord | null) => (record ? record.revision : 0);
 
 /** Frozen operations stay isolated from reactive drafts and are reused verbatim on retry. */
 function immutable<T extends object>(value: T): T {

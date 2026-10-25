@@ -1,5 +1,5 @@
 import type { SourceRange } from './source-model';
-import type { ContractState } from './saved';
+import type { ContractSnapshot, ContractState } from './saved';
 import type { Id } from '../../convex/_generated/dataModel';
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
@@ -17,21 +17,40 @@ export type ReviewTag = {
 	disabled: boolean;
 };
 export type ReviewNavigation = { afterItemId?: string };
-export const legacyLifecycle = (itemId: string, concessionId: string) =>
-	JSON.stringify(['legacy', itemId, concessionId]);
-
+/** Business readiness uses saved choices and reviews, independently of document layout. */
+export function savedReviews(
+	items: ContractSnapshot['items'],
+	state: Pick<ContractState, 'selectedConcessions' | 'reviews'>
+) {
+	return items.flatMap((item) => {
+		const concessionId = state.selectedConcessions[item._id];
+		if (!concessionId || !item.instructions?.changesNeedApproval?.trim()) return [];
+		const review = state.reviews[item._id];
+		return [
+			{
+				itemId: item._id,
+				concessionId,
+				concessionPosition: item.concessions.findIndex(
+					(concession) => concession.id === concessionId
+				),
+				lifecycle: review?.concessionId === concessionId ? review.lifecycle : '',
+				status: review?.concessionId === concessionId ? review.status : ('pending' as const)
+			}
+		];
+	});
+}
 /** Approval metadata never contributes to document or Word content identity. */
 export function selectionLifecycles(state: ContractState, required: ReadonlySet<string>) {
 	if (!required.size) return {};
 	return Object.fromEntries(
 		Object.entries(state.selectedConcessions)
 			.filter(([id]) => required.has(id))
-			.map(([id, concessionId]) => [
-				id,
-				state.reviews?.[id as Id<'playbookItems'>]?.concessionId === concessionId
-					? state.reviews[id as Id<'playbookItems'>].lifecycle
-					: legacyLifecycle(id, concessionId)
-			])
+			.map(([id, concessionId]) => {
+				const review = state.reviews[id as Id<'playbookItems'>];
+				if (!review || review.concessionId !== concessionId)
+					throw new Error('Missing concession review metadata.');
+				return [id, review.lifecycle];
+			})
 	);
 }
 export function reviewStatus(
@@ -40,7 +59,7 @@ export function reviewStatus(
 	concessionId: string,
 	lifecycle: string
 ): ReviewStatus {
-	const review = state.reviews?.[itemId as Id<'playbookItems'>];
+	const review = state.reviews[itemId as Id<'playbookItems'>];
 	return review?.concessionId === concessionId && review.lifecycle === lifecycle
 		? review.status
 		: 'pending';
@@ -67,9 +86,8 @@ export function approvalCoversPending(
 		return (
 			old &&
 			old.concessionPosition === current.concessionPosition &&
-			(old.lifecycle ?? legacyLifecycle(current.itemId, current.concessionId)) ===
-				current.lifecycle &&
-			(old.reviewStatus ?? 'pending') === 'pending'
+			old.lifecycle === current.lifecycle &&
+			old.reviewStatus === 'pending'
 		);
 	});
 }

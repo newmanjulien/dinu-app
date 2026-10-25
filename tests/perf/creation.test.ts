@@ -3,9 +3,12 @@ import { convexTest } from 'convex-test';
 import { describe, expect, it, vi } from 'vitest';
 import { api, internal } from '../../src/convex/_generated/api';
 import schema from '../../src/convex/schema';
-import { currentPointer, publishTemplate } from '../../src/convex/templates';
+import { canonicalBaselineFingerprint } from '../../src/convex/baselineStorage';
+import { currentPointer, publishTemplate, readLiveSnapshot } from '../../src/convex/templates';
+import { storeItemRevision } from '../../src/convex/playbookItemRevisions';
 import { create } from '../../src/convex/savedContracts';
 import type { MutationCtx } from '../../src/convex/_generated/server';
+import type { Id } from '../../src/convex/_generated/dataModel';
 import { block, item as baseItem, identity, initializeViewer } from './fixtures';
 const item = {
 	...baseItem,
@@ -17,35 +20,81 @@ const item = {
 	]
 };
 
-vi.mock('../../src/convex/approvalEmail', () => ({ send: { _handler: vi.fn() } }));
+vi.mock('../../src/convex/approvalEmail', async () => {
+	const { internalAction } = await import('../../src/convex/_generated/server');
+	const { v } = await import('convex/values');
+	return {
+		send: internalAction({
+			args: { id: v.id('savedContracts'), requestId: v.string() },
+			returns: v.null(),
+			handler: async () => null
+		})
+	};
+});
 const modules = import.meta.glob('../../src/convex/**/*.*s');
+const importKey = 'a'.repeat(64);
 async function fixture() {
 	const t = convexTest(schema, modules).withIdentity(identity);
 	const { profileId, companyId, membershipId } = await t.run(initializeViewer);
-	const itemId = await t.run(async ({ db }) => {
-		await db.insert('contractBlocks', { ...block, companyId });
-		return db.insert('playbookItems', {
+	const itemId = await t.run(async (ctx) => {
+		const { db } = ctx;
+		await db.patch('company', companyId, { contractDirectoryReady: true });
+		const baselineId = await db.insert('baselines', {
+			companyId,
+			state: 'prepared',
+			source: 'seed',
+			fingerprint: canonicalBaselineFingerprint([block]),
+			issues: [],
+			blockCount: 1
+		});
+		await db.insert('contractBlocks', { ...block, companyId, baselineId });
+		await db.insert('currentTemplate', {
+			companyId,
+			baselineId,
+			maintenance: true,
+			importKey,
+			importBlockCount: 1,
+			importItemCount: 1
+		});
+		const id = await db.insert('playbookItems', {
 			...item,
+			revision: 1,
 			companyId,
 			instructions: { changesNeedApproval: 'Ask first.' }
 		});
+		await db.patch('playbookItems', id, {
+			publishedRevisionId: await storeItemRevision(ctx, (await db.get('playbookItems', id))!)
+		});
+		return id;
 	});
 	return { t, itemId, profileId, companyId, membershipId };
 }
+async function finishTemplate(
+	t: Awaited<ReturnType<typeof fixture>>['t'],
+	companyId: Id<'company'>
+) {
+	await t.mutation(internal.companyTemplateImport.finish, {
+		companyId,
+		importKey,
+		blockCount: 1,
+		itemCount: 1
+	});
+	return (await t.run((ctx) => currentPointer(ctx, companyId)))!.versionId!;
+}
 const operationId = '11111111-1111-1111-1111-111111111111';
 describe('immutable template creation', () => {
-	it('initializes atomically and concurrently without replacing the pointer', async () => {
+	it('finishes an import atomically and concurrently without replacing the pointer', async () => {
 		const { t, companyId, membershipId } = await fixture();
 		const [first, second] = await Promise.all([
-			t.mutation(internal.templates.initialize, { companyId }),
-			t.mutation(internal.templates.initialize, { companyId })
+			finishTemplate(t, companyId),
+			finishTemplate(t, companyId)
 		]);
 		expect(first).toBe(second);
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(1);
 	});
 	it('publishes instruction changes once and preserves old content and deleted receipts', async () => {
 		const { t, itemId, companyId, membershipId } = await fixture();
-		const first = await t.mutation(internal.templates.initialize, { companyId });
+		const first = await finishTemplate(t, companyId);
 		const created = await t.mutation(api.savedContracts.create, {
 			membershipId,
 			companyName: 'Buyer',
@@ -56,7 +105,7 @@ describe('immutable template creation', () => {
 			membershipId,
 			id: itemId,
 			item: { ...item, instructions: { changesNeedApproval: 'Different wording.' } },
-			expectedRevision: 0,
+			expectedRevision: 1,
 			operationId
 		});
 		expect(saved.status).toBe('saved');
@@ -64,11 +113,18 @@ describe('immutable template creation', () => {
 			membershipId,
 			id: itemId,
 			item,
-			expectedRevision: 0,
+			expectedRevision: 1,
 			operationId
 		});
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(2);
-		const loaded = await t.query(api.savedContracts.load, { membershipId, id: created.id });
+		const state = await t.query(api.savedContracts.state, { membershipId, id: created.id });
+		const loaded = state && {
+			contract: state,
+			snapshot: await t.query(api.templates.version, {
+				membershipId,
+				versionId: state.templateVersionId
+			})
+		};
 		expect(loaded?.snapshot.items[0].instructions?.changesNeedApproval).toBe('Ask first.');
 		expect(created.contract.templateVersionId).toBe(first);
 		const retry = await t.mutation(api.savedContracts.create, {
@@ -97,23 +153,34 @@ describe('immutable template creation', () => {
 		await t.mutation(api.admin.deletePlaybookItem, {
 			membershipId,
 			id: itemId,
-			expectedRevision: 1
+			expectedRevision: 2
 		});
 		await t.mutation(api.admin.deletePlaybookItem, {
 			membershipId,
 			id: itemId,
-			expectedRevision: 1
+			expectedRevision: 2
 		});
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(3);
 	});
-	it('rolls back authoring, partial copies and pointer on insufficient capacity', async () => {
+	it('rolls back authoring, revisions, receipts, manifest and pointer on insufficient capacity', async () => {
 		const { t, itemId, companyId, membershipId } = await fixture();
-		const first = await t.mutation(internal.templates.initialize, { companyId });
+		const first = await finishTemplate(t, companyId);
 		await expect(
 			t.run(async (ctx) => {
-				await ctx.db.patch('playbookItems', itemId, {
+				const captured = await readLiveSnapshot(ctx, companyId);
+				const current = (await ctx.db.get('playbookItems', itemId))!;
+				const { publishedRevisionId: oldHead, ...historical } = current;
+				const proposed = {
+					...historical,
+					revision: historical.revision + 1,
 					instructions: { changesNeedApproval: 'Uncommitted' }
-				});
+				};
+				const publishedRevisionId = await storeItemRevision(ctx, proposed);
+				const next = { ...proposed, publishedRevisionId };
+				const { _id, _creationTime, ...stored } = next;
+				await ctx.db.replace('playbookItems', itemId, stored);
+				await ctx.db.insert('creationReceipts', { companyId, operationId: 'uncommitted', itemId });
+				captured.items = [next];
 				let calls = 0;
 				await publishTemplate(
 					{
@@ -122,32 +189,39 @@ describe('immutable template creation', () => {
 							...ctx.meta,
 							getTransactionMetrics: async () => {
 								const metrics = await ctx.meta.getTransactionMetrics();
-								if (++calls > 1) metrics.documentsWritten.remaining = 0;
+								if (++calls > 2) metrics.documentsWritten.remaining = 0;
 								return metrics;
 							}
 						}
 					},
-					(await ctx.db.get('company', companyId))!
+					companyId,
+					captured
 				);
 			})
 		).rejects.toThrow('transaction capacity');
 		expect((await t.query(api.templates.current, { membershipId }))?.versionId).toBe(first);
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(1);
+		expect(await t.run(({ db }) => db.query('templateVersionItems').collect())).toHaveLength(1);
+		expect(await t.run(({ db }) => db.query('playbookItemRevisions').collect())).toHaveLength(1);
+		expect(await t.run(({ db }) => db.query('creationReceipts').collect())).toHaveLength(0);
 		expect(
 			(await t.run(({ db }) => db.get('playbookItems', itemId)))?.instructions?.changesNeedApproval
 		).toBe('Ask first.');
 	});
-	it('creates with two writes and no template-content reads or compilation', async () => {
+	it('creates with two contract/receipt writes, one directory write and no template-content reads or compilation', async () => {
 		const { t, companyId, membershipId } = await fixture();
-		await t.mutation(internal.templates.initialize, { companyId });
-		const counts = { writes: 0, content: 0 };
+		await finishTemplate(t, companyId);
+		const counts = { writes: 0, directoryWrites: 0, content: 0 };
 		await t.run((ctx) => {
 			const db = new Proxy(ctx.db, {
 				get(target, key) {
 					const value = Reflect.get(target, key);
 					if (typeof value !== 'function') return value;
 					return (...args: unknown[]) => {
-						if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) counts.writes++;
+						if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
+							if (args[0] === 'contractDirectory') counts.directoryWrites++;
+							else counts.writes++;
+						}
 						if (key === 'query' && /Blocks|Items/.test(String(args[0]))) counts.content++;
 						return value.apply(target, args);
 					};
@@ -162,11 +236,11 @@ describe('immutable template creation', () => {
 				}
 			)._handler({ ...ctx, db }, { membershipId, companyName: 'Buyer', operationId });
 		});
-		expect(counts).toEqual({ writes: 2, content: 0 });
+		expect(counts).toEqual({ writes: 2, directoryWrites: 1, content: 0 });
 	});
 	it('saves and reads approval descriptions from shared versions; blocks maintenance', async () => {
 		const { t, itemId, profileId, companyId, membershipId } = await fixture();
-		await t.mutation(internal.templates.initialize, { companyId });
+		await finishTemplate(t, companyId);
 		const created = await t.mutation(api.savedContracts.create, {
 			membershipId,
 			companyName: 'Buyer',
@@ -179,6 +253,7 @@ describe('immutable template creation', () => {
 			membershipId,
 			id: created.id,
 			selectedConcessions: { [itemId]: 'preferred' },
+			selectionLifecycles: { [itemId]: `save:${itemId}` },
 			expectedRevision: 0,
 			operationId: 'save'
 		});
@@ -187,16 +262,31 @@ describe('immutable template creation', () => {
 			id: created.id,
 			expectedRevision: 1
 		});
-		const delivery = await t.query(internal.approvals.forSend, {
-			id: created.id,
-			requestId: request.id
+		const stored = await t.run(({ db }) =>
+			db
+				.query('approvalRequests')
+				.withIndex('by_contractId', (q) => q.eq('contractId', created.id))
+				.unique()
+		);
+		if (!stored || stored.id !== request.id || !('deliveryId' in stored))
+			throw new Error('approval delivery missing');
+		const delivery = await t.mutation(internal.emailDeliveries.prepare, {
+			id: stored.deliveryId,
+			attempt: 1
 		});
 		if (!delivery) throw new Error('approval delivery unavailable');
+		const event = delivery.delivery.event;
+		if (event.kind !== 'approval') throw new Error('wrong delivery kind');
+		const descriptions = await t.query(internal.emailSnapshots.descriptions, {
+			templateVersionId: event.templateVersionId,
+			companyId: delivery.delivery.companyId,
+			selections: delivery.selections
+		});
 		expect(
-			await t.query(internal.approvals.descriptions, {
-				templateVersionId: delivery.templateVersionId,
-				selectedConcessions: delivery.selectedConcessions
-			})
+			descriptions.map((description, index) => ({
+				...description,
+				reviewStatus: delivery.selections[index].reviewStatus
+			}))
 		).toEqual([
 			{ description: 'Synthetic choice.', requiresApproval: true, reviewStatus: 'pending' }
 		]);
@@ -213,10 +303,10 @@ describe('immutable template creation', () => {
 			})
 		).rejects.toThrow('maintenance');
 		await expect(
-			t.mutation(api.admin.deletePlaybookItem, { membershipId, id: itemId, expectedRevision: 0 })
+			t.mutation(api.admin.deletePlaybookItem, { membershipId, id: itemId, expectedRevision: 1 })
 		).rejects.toThrow('maintenance');
 		await t.run(async (ctx) => {
-			await publishTemplate(ctx, (await ctx.db.get('company', companyId))!);
+			await publishTemplate(ctx, companyId, await readLiveSnapshot(ctx, companyId));
 			const pointer = (await currentPointer(ctx, companyId))!;
 			await ctx.db.patch('currentTemplate', pointer._id, { maintenance: false });
 		});
@@ -226,7 +316,7 @@ describe('immutable template creation', () => {
 	});
 	it('keeps saved versions readable for saving and approval after live item deletion', async () => {
 		const { t, itemId, profileId, companyId, membershipId } = await fixture();
-		await t.mutation(internal.templates.initialize, { companyId });
+		await finishTemplate(t, companyId);
 		const created = await t.mutation(api.savedContracts.create, {
 			membershipId,
 			companyName: 'Buyer',
@@ -237,10 +327,16 @@ describe('immutable template creation', () => {
 		await t.mutation(api.admin.deletePlaybookItem, {
 			membershipId,
 			id: itemId,
-			expectedRevision: 0
+			expectedRevision: 1
 		});
 		expect(
-			(await t.query(api.savedContracts.load, { membershipId, id }))?.snapshot.items[0]._id
+			(
+				await t.query(api.templates.version, {
+					membershipId,
+					versionId: (await t.query(api.savedContracts.state, { membershipId, id }))!
+						.templateVersionId
+				})
+			).items[0]._id
 		).toBe(itemId);
 		// Rep selections enter review; admin selections are automatically approved.
 		await t.run(({ db }) => db.patch('profiles', profileId, { role: 'rep' }));
@@ -248,6 +344,7 @@ describe('immutable template creation', () => {
 			membershipId,
 			id,
 			selectedConcessions: { [itemId]: 'preferred' },
+			selectionLifecycles: { [itemId]: `save:${itemId}` },
 			expectedRevision: 0,
 			operationId: 'save'
 		});
@@ -256,20 +353,38 @@ describe('immutable template creation', () => {
 			id,
 			expectedRevision: 1
 		});
-		const delivery = await t.query(internal.approvals.forSend, { id, requestId: request.id });
+		const stored = await t.run(({ db }) =>
+			db
+				.query('approvalRequests')
+				.withIndex('by_contractId', (q) => q.eq('contractId', id))
+				.unique()
+		);
+		if (!stored || stored.id !== request.id || !('deliveryId' in stored))
+			throw new Error('approval delivery missing');
+		const delivery = await t.mutation(internal.emailDeliveries.prepare, {
+			id: stored.deliveryId,
+			attempt: 1
+		});
 		if (!delivery) throw new Error('approval delivery unavailable');
+		const event = delivery.delivery.event;
+		if (event.kind !== 'approval') throw new Error('wrong delivery kind');
+		const descriptions = await t.query(internal.emailSnapshots.descriptions, {
+			templateVersionId: event.templateVersionId,
+			companyId: delivery.delivery.companyId,
+			selections: delivery.selections
+		});
 		expect(
-			await t.query(internal.approvals.descriptions, {
-				templateVersionId: delivery.templateVersionId,
-				selectedConcessions: delivery.selectedConcessions
-			})
+			descriptions.map((description, index) => ({
+				...description,
+				reviewStatus: delivery.selections[index].reviewStatus
+			}))
 		).toEqual([
 			{ description: 'Synthetic choice.', requiresApproval: true, reviewStatus: 'pending' }
 		]);
 	});
 	it('rejects invalid complete templates without publishing or changing live authoring', async () => {
 		const { t, itemId, companyId, membershipId } = await fixture();
-		const first = await t.mutation(internal.templates.initialize, { companyId });
+		const first = await finishTemplate(t, companyId);
 		await expect(
 			t.mutation(api.admin.savePlaybookItem, {
 				membershipId,
@@ -286,7 +401,7 @@ describe('immutable template creation', () => {
 						}
 					]
 				},
-				expectedRevision: 0,
+				expectedRevision: 1,
 				operationId
 			})
 		).rejects.toThrow();
@@ -296,20 +411,24 @@ describe('immutable template creation', () => {
 		);
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(1);
 	});
-	it('initialization cannot replace an admin publication in a race', async () => {
+	it('an import retry cannot replace an admin publication in a race', async () => {
 		const { t, itemId, companyId, membershipId } = await fixture();
+		await finishTemplate(t, companyId);
 		await Promise.all([
-			t.mutation(internal.templates.initialize, { companyId }),
+			finishTemplate(t, companyId),
 			t.mutation(api.admin.savePlaybookItem, {
 				membershipId,
 				id: itemId,
 				item: { ...item, instructions: { changesNeedApproval: 'Newest' } },
-				expectedRevision: 0,
+				expectedRevision: 1,
 				operationId
 			})
 		]);
 		const current = await t.query(api.templates.current, { membershipId });
-		expect(current?.snapshot.items[0].instructions?.changesNeedApproval).toBe('Newest');
-		expect(await t.mutation(internal.templates.initialize, { companyId })).toBe(current?.versionId);
+		expect(
+			(await t.query(api.templates.version, { membershipId, versionId: current!.versionId }))
+				.items[0].instructions?.changesNeedApproval
+		).toBe('Newest');
+		expect(await finishTemplate(t, companyId)).toBe(current?.versionId);
 	});
 });

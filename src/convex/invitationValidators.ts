@@ -1,11 +1,5 @@
-import { ConvexError, v, type Infer } from 'convex/values';
-
-export const emailAddress = (input: string) => {
-	const email = input.trim().toLowerCase();
-	if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-		throw new ConvexError('Enter a valid email address.');
-	return email;
-};
+import { v, type Infer } from 'convex/values';
+export { emailAddress } from './emailValidators';
 
 export const invitationDelivery = v.object({
 	email: v.string(),

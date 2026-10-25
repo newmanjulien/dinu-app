@@ -1,5 +1,4 @@
 import type { AuthObject } from '@clerk/backend';
-import type { ContractRouteData } from '$lib/contract/saved';
 
 declare global {
 	namespace App {
@@ -7,7 +6,7 @@ declare global {
 			auth?: () => AuthObject;
 		}
 		interface PageData {
-			contractRoute?: ContractRouteData;
+			startup?: Promise<import('$lib/auth/startup-data').StartupData | null> | null;
 		}
 	}
 }

@@ -1,33 +1,37 @@
 <script lang="ts">
-	import { env } from '$env/dynamic/public';
+	import '$lib/styles/contract-card-grid.css';
 	import { navigating } from '$app/state';
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import type { SavedContractCard } from '$lib/contract/card';
 	import { afterStartupPaint, recordStartup } from '$lib/auth/startup-perf';
+	import { useStartupData } from '$lib/auth/startup-data';
+	import { useWorkspaceReadiness } from '$lib/auth/workspace-readiness.svelte';
 	import { createVisibleContractWarming } from '$lib/contract/visible-contracts.svelte';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
 	import { useConvexClient, usePaginatedQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
-	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
 	import ContractCard from '$lib/components/contracts/ContractCard.svelte';
-	import InfoBar from '$lib/components/ui/InfoBar.svelte';
 	import CompanyNameDialog from '$lib/components/ui/modal/CompanyNameDialog.svelte';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { saveError } from '$lib/contract/saved';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import { ConnectionInterruptedError } from '$lib/auth/convex-session.svelte';
+	import { getContractSessions } from '$lib/contract/sessions.svelte';
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import HomeSkeleton from './HomeSkeleton.svelte';
 	import { getInteractionController, setInteractionOwner } from '$lib/components/ui/interactions';
 	setInteractionOwner(Symbol('home'));
 	const interactions = getInteractionController();
-	const client = env.PUBLIC_CONVEX_URL ? useConvexClient() : null;
-	const cache = getContractSnapshotCache();
+	const client = useConvexClient();
+	const cache = getContractSnapshotCache(client);
+	const saves = getContractSessions();
 	const session = useViewerSession();
 	const viewer = useViewer();
 	const membershipId = viewer().membership.id;
+	const startup = useStartupData();
+	const readiness = useWorkspaceReadiness();
 	let alive = true;
 	onDestroy(() => {
 		alive = false;
@@ -42,12 +46,30 @@
 	let actionError = $state<string | null>(null);
 	let busy = $state(false);
 	let deleting = $state<Id<'savedContracts'> | null>(null);
-	const contracts = client
-		? usePaginatedQuery(api.savedContracts.browse, () => ({ membershipId, search: query }), {
-				initialNumItems: 24,
-				keepPreviousData: true
-			})
-		: null;
+	const contracts = usePaginatedQuery(
+		api.savedContracts.browse,
+		() => ({
+			membershipId,
+			search: query,
+			directoryReady: viewer().company.contractDirectoryReady ?? false
+		}),
+		{ initialNumItems: 24 }
+	);
+	let receivedPage = $state(false);
+	const initialPage = $derived.by(() => {
+		const value = startup();
+		return !receivedPage &&
+			!search &&
+			!query &&
+			value?.viewer?.profile.id === viewer().profile.id &&
+			value.viewer.membership?.id === membershipId
+			? value.contracts
+			: null;
+	});
+	$effect(() => {
+		if (query || search || contracts.error || contracts.status !== 'LoadingFirstPage')
+			receivedPage = true;
+	});
 	$effect(() => {
 		const value = search.trim();
 		const timer = setTimeout(() => (query = value), 200);
@@ -87,8 +109,8 @@
 		return interactions.shortcut(handleTyping);
 	});
 	let listTimedOut = $state(false);
-	const listLoading = $derived(Boolean(contracts?.isLoading && !contracts.error));
-	const listError = $derived(listTimedOut || Boolean(contracts?.error));
+	const listLoading = $derived(Boolean(contracts.isLoading && !contracts.error));
+	const listError = $derived(listTimedOut || Boolean(contracts.error));
 	$effect(() => {
 		// Each search and recovered transport receives a fresh read budget.
 		void query;
@@ -102,19 +124,22 @@
 	const waiting = $derived(
 		pendingSearch ||
 			Boolean(
-				contracts &&
 				!listError &&
+				!initialPage &&
 				((contracts.isLoading && contracts.status !== 'LoadingMore') || settledQuery !== query)
 			)
 	);
 	const cards = $derived(retained);
 	$effect(() => {
-		if (
-			!contracts ||
-			(contracts.isLoading && contracts.status !== 'LoadingMore') ||
-			contracts.error
-		)
+		const initial = initialPage;
+		if (initial && contracts.status === 'LoadingFirstPage') {
+			untrack(() => {
+				retained = initial.page.filter((card) => !cache.isDeleted(card._id));
+				settledQuery = '';
+			});
 			return;
+		}
+		if ((contracts.isLoading && contracts.status !== 'LoadingMore') || contracts.error) return;
 		const results = contracts.results;
 		const currentQuery = query;
 		untrack(() => {
@@ -124,29 +149,33 @@
 	});
 	$effect(() => {
 		const pending =
-			listLoading || waiting || listError || session.blocked || Boolean(navigating.to);
+			Boolean(contracts.isLoading) ||
+			waiting ||
+			listError ||
+			session.blocked ||
+			Boolean(navigating.to);
 		untrack(() => warming.pending(pending));
 	});
 	let firstResult = $state(false);
 	$effect(() => {
-		const ready = Boolean(contracts && !listError && contracts.status !== 'LoadingFirstPage');
+		const ready = Boolean(initialPage || (!listError && contracts.status !== 'LoadingFirstPage'));
 		if (ready) firstResult = true;
 	});
 	$effect(() => {
 		if (!session.admitted || !firstResult) return;
-		return afterStartupPaint(() => recordStartup('dashboard-painted'));
+		return afterStartupPaint(() => {
+			readiness.painted = true;
+			recordStartup('dashboard-painted');
+		});
 	});
 	async function rename(name: string) {
-		if (!alive || session.blocked || !client || !renaming || busy) return;
+		if (!alive || session.blocked || !renaming || busy) return;
 		const id = renaming.id;
-		const generation = session.transportGeneration;
 		busy = true;
 		renameError = null;
 		try {
-			await client.mutation(api.savedContracts.rename, { membershipId, id, companyName: name });
+			await saves.rename(id, name);
 			if (!alive) return;
-			if (session.transportGeneration !== generation) throw new ConnectionInterruptedError();
-			cache.rename(id, name);
 			retained = retained.map((card) =>
 				card._id === id ? { ...card, companyName: name, savedAt: Date.now() } : card
 			);
@@ -158,8 +187,7 @@
 		}
 	}
 	async function remove(id: Id<'savedContracts'>, name: string) {
-		if (!alive || session.blocked || !client || deleting) return;
-		const generation = session.transportGeneration;
+		if (!alive || session.blocked || deleting) return;
 		if (
 			!window.confirm(
 				`Delete the contract for “${name}”? This permanently removes its saved choices and document snapshot.`
@@ -169,10 +197,8 @@
 		deleting = id;
 		actionError = null;
 		try {
-			await client.mutation(api.savedContracts.remove, { membershipId, id });
+			await saves.remove(id);
 			if (!alive) return;
-			if (session.transportGeneration !== generation) throw new ConnectionInterruptedError();
-			cache.remove(id);
 			retained = retained.filter((card) => card._id !== id);
 		} catch (error) {
 			if (alive) actionError = saveError(error, 'We couldn’t delete this contract. Try again.');
@@ -182,9 +208,8 @@
 	}
 </script>
 
-<AppHeader />
 <main
-	class="home min-h-[calc(100dvh-var(--app-header-height))] bg-[#fafafa] px-3 py-4 sm:px-4 md:px-5 md:py-5"
+	class="home min-h-[calc(100dvh-var(--app-header-height))] bg-page px-3 py-4 sm:px-4 md:px-5 md:py-5"
 >
 	<div class="mx-auto max-w-[1800px]">
 		<div class="mb-6 flex items-center gap-2">
@@ -217,13 +242,13 @@
 			</div>
 			{#if viewer().templateReady}<a
 					href="/contracts/new"
-					class="flex h-9 shrink-0 items-center gap-1.5 rounded-button-lg bg-[#171717] px-3 text-[13px] font-normal text-white hover:bg-[#303030]"
+					class="flex h-[38px] shrink-0 items-center gap-1.5 rounded-button-lg bg-[#171717] px-3.5 py-2 text-[12.5px] font-normal text-white hover:bg-[#303030]"
 					><PlusIcon size={15} aria-hidden="true" />Add New</a
 				>
 			{:else}<button
 					disabled
 					title="An admin must upload your company’s baseline contract."
-					class="flex h-9 shrink-0 items-center gap-1.5 rounded-button-lg bg-[#171717] px-3 text-[13px] font-normal text-white opacity-40"
+					class="flex h-[38px] shrink-0 items-center gap-1.5 rounded-button-lg bg-[#171717] px-3.5 py-2 text-[12.5px] font-normal text-white opacity-40"
 					><PlusIcon size={15} aria-hidden="true" />Add New</button
 				>{/if}
 		</div>
@@ -245,7 +270,7 @@
 			>
 				{actionError}
 			</p>{/if}
-		{#if (!contracts || listError) && cards.length === 0}
+		{#if listError && cards.length === 0}
 			<div class="state" role="alert">
 				<p>We couldn’t load your contracts.</p>
 				<button
@@ -255,8 +280,8 @@
 				>
 			</div>
 		{:else if waiting && cards.length === 0}
-			<div class="flex justify-center py-16"><LoadingWheel label="Loading contracts" /></div>
-		{:else if cards.length === 0 && !waiting && contracts?.status === 'Exhausted'}
+			<HomeSkeleton cardsOnly />
+		{:else if cards.length === 0 && !waiting && (contracts.status === 'Exhausted' || initialPage?.isDone)}
 			<div class="state" role="status">
 				{#if query}<h2 class="text-[13px] font-medium">No contracts found</h2>
 					<p class="mt-2 text-[13px] text-ink-muted">No company names match “{query}”.</p>
@@ -274,26 +299,11 @@
 								: 'This is where reps create contracts for customers. But first, an admin needs to set up your company’s baseline contract.'}
 					</p>{/if}
 			</div>
-			{#if !query}
-				<InfoBar
-					class="mt-4"
-					label={viewer().profile.role === 'admin'
-						? 'Set up baseline contract.'
-						: 'Contact an admin.'}
-				>
-					{#if viewer().profile.role === 'admin'}
-						Click on "Set up contract" to upload your standard contract and define the changes your
-						reps can offer.
-					{:else}
-						Ask them to upload your company’s standard contract and configure the changes you can
-						offer customers.
-					{/if}
-				</InfoBar>
-			{/if}
 		{:else if cards.length}
-			<div class="cards">
+			<div class="contract-card-grid">
 				{#each cards as contract (contract._id)}
 					<ContractCard
+						status={saves.statusFor(contract._id)}
 						{contract}
 						observe={warming.observe}
 						onWarm={() => warming.warm(contract._id)}
@@ -308,11 +318,14 @@
 				{/each}
 			</div>
 		{/if}
-		{#if contracts && (cards.length || contracts.status === 'CanLoadMore' || contracts.status === 'LoadingMore') && contracts.status !== 'Exhausted'}<div
+		{#if (cards.length || contracts.status === 'CanLoadMore' || contracts.status === 'LoadingMore') && contracts.status !== 'Exhausted'}<div
 				class="mt-6 flex justify-center"
 			>
 				<button
-					disabled={waiting || listError || contracts.status === 'LoadingMore'}
+					disabled={waiting ||
+						listError ||
+						contracts.status === 'LoadingFirstPage' ||
+						contracts.status === 'LoadingMore'}
 					onclick={() => contracts.loadMore(24)}
 					class="rounded-button-lg border border-[#e5e5e5] bg-white px-4 py-2 text-sm disabled:opacity-50"
 					>{contracts.status === 'LoadingMore' ? 'Loading…' : 'Load more'}</button
@@ -331,11 +344,6 @@
 	/>{/if}
 
 <style>
-	.cards {
-		display: grid;
-		grid-template-columns: 1fr;
-		gap: 12px;
-	}
 	.state {
 		border: 1px solid #e5e5e5;
 		border-radius: var(--radius-base);
@@ -343,15 +351,5 @@
 		padding: 36px 20px;
 		font-size: 14px;
 		text-align: center;
-	}
-	@media (min-width: 600px) {
-		.cards {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-	}
-	@media (min-width: 1000px) {
-		.cards {
-			grid-template-columns: repeat(4, minmax(0, 1fr));
-		}
 	}
 </style>

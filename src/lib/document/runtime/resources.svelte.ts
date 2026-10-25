@@ -2,7 +2,7 @@ import { getContext, setContext, untrack } from 'svelte';
 import type { Snippet } from 'svelte';
 import type { ReviewTag, ReviewDecision, ReviewNavigation } from '$lib/contract/approval';
 import type { ContractChange, SourcePoint, SourceRange } from '$lib/playbook/model';
-import type { ContractRouteData } from '$lib/contract/saved';
+import type { ContractSnapshotResult } from '$lib/contract/saved';
 import type { ContractSourceInput } from './source.svelte';
 import type { createContractWorkspace, ContractWorkspace } from './context';
 import type { ContractLayoutProfiles } from './layout-context.svelte';
@@ -12,6 +12,8 @@ import { sameSelection } from '$lib/playbook/model';
 import { type ConcessionSelection } from './types';
 
 export interface ViewerBindings {
+	active?: boolean;
+	prepare?: boolean;
 	reviewTags?: readonly ReviewTag[];
 	reviewNavigation?: ReviewNavigation;
 	onReviewDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
@@ -33,10 +35,16 @@ export interface ViewerBindings {
 	onRemoveConcession: (itemId: string) => void;
 	onSelect: (itemId: string, annotationId: string) => boolean | void;
 }
+export interface DocumentAttachment {
+	readonly entry: DocumentResource;
+	bind: (bindings: ViewerBindings, target?: HTMLElement) => () => void;
+	update: (choices: ConcessionSelection) => void;
+	release: () => void;
+}
 function sameOrder<T>(a: readonly T[], b: readonly T[]) {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
-export type ReadyContract = Extract<ContractRouteData, { status: 'ready' }>;
+export type ReadyContract = Extract<ContractSnapshotResult, { status: 'ready' }>;
 export class DocumentResource {
 	readonly owner = Symbol('document-resource');
 	readonly workspace: ContractWorkspace;
@@ -82,14 +90,17 @@ export class DocumentResources {
 	active = $state.raw<DocumentResource>();
 	warming = $state(true);
 	backgroundEnabled = $state(false);
+	paused = $state(false);
 	createWorkspace = $state.raw<typeof createContractWorkspace>();
 	#candidates = $state.raw<readonly string[]>([]);
 	#pending = $state.raw<readonly ReadyContract[]>([]);
 	#canConstruct = $state(false);
 	#rank: readonly string[] = [];
+	#preparationBudget = 0;
 	#failed = new Set<string>();
 	#clock = 0;
 	#destroyed = false;
+	#attachments = new Map<DocumentResource, DocumentAttachment>();
 	#release: () => void;
 	get preparationCandidates() {
 		return this.#candidates;
@@ -99,6 +110,7 @@ export class DocumentResources {
 			$effect(() => {
 				const profiler = profiles.profiler;
 				const backgroundEnabled = this.backgroundEnabled;
+				const paused = this.paused;
 				const createWorkspace = this.createWorkspace;
 				const states = this.entries.map((entry) => ({
 					entry,
@@ -154,15 +166,20 @@ export class DocumentResources {
 						);
 					for (const state of states) {
 						state.entry.allowed =
-							state.active ||
-							state.opening ||
-							state.draftOwned ||
-							(backgroundEnabled &&
-								state.entry.id !== 'admin' &&
-								(state.prepared || (!foregroundBusy && state.entry.id === nextId)));
+							!paused &&
+							(state.active ||
+								state.opening ||
+								state.draftOwned ||
+								(backgroundEnabled &&
+									state.entry.id !== 'admin' &&
+									(state.prepared || (!foregroundBusy && state.entry.id === nextId))));
 					}
 					this.#canConstruct =
-						Boolean(createWorkspace) && backgroundEnabled && !foregroundBusy && constructing;
+						Boolean(createWorkspace) &&
+						!paused &&
+						backgroundEnabled &&
+						!foregroundBusy &&
+						constructing;
 					this.warming = savedBusy;
 					this.#trim();
 				});
@@ -185,7 +202,7 @@ export class DocumentResources {
 									!this.#canConstruct ||
 									profiles.profiler !== profiler ||
 									!this.#pending.includes(data) ||
-									!this.#candidates.includes(data.id!)
+									!this.#candidates.includes(data.id)
 								)
 									return;
 								const entry = this.acquireContract(data);
@@ -228,7 +245,7 @@ export class DocumentResources {
 			blocks: { data: data.snapshot.blocks },
 			items: { data: data.snapshot.items }
 		});
-		entry.id = data.id!;
+		entry.id = data.id;
 		entry.confirmedChoices = data.contract.selectedConcessions;
 		this.update(entry, entry.confirmedChoices);
 		// The mounted viewer owns the render mode and its first-page paint handshake.
@@ -240,12 +257,12 @@ export class DocumentResources {
 		else this.#trim();
 	}
 	acquireContract(data: ReadyContract) {
-		const entry = this.acquire(data.id!, {
+		const entry = this.acquire(data.id, {
 			blocks: { data: data.snapshot.blocks },
 			items: { data: data.snapshot.items }
 		});
 		entry.confirmedChoices = data.contract.selectedConcessions;
-		this.update(entry, entry.confirmedChoices);
+		if (!entry.active) this.update(entry, entry.confirmedChoices);
 		return entry;
 	}
 	update(entry: DocumentResource, choices: ConcessionSelection) {
@@ -271,11 +288,43 @@ export class DocumentResources {
 			}
 		};
 	}
-	activate(entry: DocumentResource) {
-		if (this.active && this.active !== entry) this.deactivate(this.active);
+	activate(
+		entry: DocumentResource,
+		choices: ConcessionSelection = entry.choices
+	): DocumentAttachment {
+		const previous = this.active && this.#attachments.get(this.active);
+		const owns = () => !this.#destroyed && this.#attachments.get(entry) === attachment;
+		const attachment: DocumentAttachment = {
+			entry,
+			bind: (bindings, target) => {
+				if (!owns()) return () => {};
+				entry.bindings = bindings;
+				entry.target = target;
+				return () => {
+					if (!owns() || entry.bindings !== bindings) return;
+					entry.bindings = undefined;
+					if (entry.target === target) entry.target = undefined;
+				};
+			},
+			update: (next) => {
+				if (owns()) this.update(entry, next);
+			},
+			release: () => {
+				if (!owns()) return;
+				this.#attachments.delete(entry);
+				this.deactivate(entry);
+			}
+		};
+		this.#attachments.set(entry, attachment);
+		this.update(entry, choices);
 		this.active = entry;
 		entry.active = true;
 		entry.allowed = true;
+		// Protect the incoming owner before releasing an attachment that may trim resources.
+		// On the same entry, replacing the map token makes the old cleanup inert.
+		if (previous && previous.entry !== entry) previous.release();
+		entry.bindings = undefined;
+		entry.target = undefined;
 		entry.lastUsed = ++this.#clock;
 		this.#failed.delete(entry.id);
 		const profiler = this.profiles.profiler;
@@ -293,8 +342,9 @@ export class DocumentResources {
 		else recordColdStart('unprepared-document-acquired');
 		this.profiles.scheduler.wake();
 		this.#trim();
+		return attachment;
 	}
-	deactivate(entry: DocumentResource) {
+	private deactivate(entry: DocumentResource) {
 		entry.active = false;
 		if (entry.id === 'admin') entry.allowed = false;
 		entry.bindings = undefined;
@@ -305,8 +355,9 @@ export class DocumentResources {
 		this.update(entry, entry.id === 'admin' ? {} : entry.confirmedChoices);
 		this.#trim();
 	}
-	candidates(ranked: readonly string[]) {
-		this.#rank = [...ranked];
+	candidates(ranked: readonly string[], budget = this.#preparationBudget) {
+		if (!sameOrder(this.#rank, ranked)) this.#rank = [...ranked];
+		this.#preparationBudget = budget;
 		const recent = recentOpenings().find((opening) =>
 			this.entries.some((entry) => entry.id === opening.id)
 		)?.id;
@@ -317,15 +368,11 @@ export class DocumentResources {
 					(entry.active || entry.opening || entry.draftOwned || entry.id === recent)
 			)
 			.map((entry) => entry.id);
-		const selected = [
-			...reserved,
-			...ranked
-				.filter((id) => !reserved.includes(id) && !this.#failed.has(id))
-				.slice(0, Math.max(0, 4 - reserved.length))
-		];
-		const ids = ranked.filter((id) => selected.includes(id));
+		const ids = ranked
+			.filter((id) => !this.#failed.has(id) && (reserved.includes(id) || reserved.length < 4))
+			.slice(0, budget);
 		if (!sameOrder(this.#candidates, ids)) this.#candidates = [...ids];
-		const pending = this.#pending.filter((data) => ids.includes(data.id!));
+		const pending = this.#pending.filter((data) => ids.includes(data.id));
 		if (!sameOrder(this.#pending, pending)) this.#pending = pending;
 		for (const id of this.#failed)
 			if (id !== 'admin' && !ranked.includes(id)) this.#failed.delete(id);
@@ -359,7 +406,7 @@ export class DocumentResources {
 			if (!entry.active) this.update(entry, entry.confirmedChoices);
 			return;
 		}
-		if (this.#failed.has(data.id!) || !this.#candidates.includes(data.id!)) return;
+		if (this.#failed.has(data.id) || !this.#candidates.includes(data.id)) return;
 		const pending = this.#pending.find((pending) => pending.id === data.id);
 		if (pending === data) return;
 		if (pending) this.#pending = this.#pending.map((value) => (value === pending ? data : value));
@@ -384,6 +431,7 @@ export class DocumentResources {
 		this.entries = this.entries.filter((current) => current !== entry);
 		if (this.active === entry) this.active = undefined;
 		entry.destroy();
+		this.#attachments.delete(entry);
 		recordColdStart('document-resource-evicted');
 	}
 	#removable(saved: readonly DocumentResource[]) {
@@ -433,6 +481,7 @@ export class DocumentResources {
 		this.entries = [];
 		this.active = undefined;
 		this.#pending = [];
+		this.#attachments.clear();
 	}
 }
 export function setDocumentResources(resources: DocumentResources) {

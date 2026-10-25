@@ -1,21 +1,31 @@
 import { browser } from '$app/environment';
 import { preloadCode } from '$app/navigation';
 import { recordColdStart } from '$lib/document/runtime/render-perf';
-import { readContract } from './read';
+import type { Id } from '../../convex/_generated/dataModel';
+import { api } from '../../convex/_generated/api';
 import {
 	SnapshotStorage,
 	validSnapshot,
+	validTemplate,
 	SNAPSHOT_ENTRIES,
 	SNAPSHOT_BYTES
 } from './snapshot-storage';
-import type { SnapshotEntry, SnapshotSize } from './snapshot-storage';
+import type { SnapshotEntry, SnapshotMetadata } from './snapshot-storage';
 import { forgetOpening, CACHE_MEMBERSHIP_ID, setCacheIdentity } from './browser-storage';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
-import type { ContractRouteData, ContractState } from './saved';
+import type { ContractSnapshotResult, ContractState, ContractSnapshot } from './saved';
 
-type ReadyContract = Extract<ContractRouteData, { status: 'ready' }>;
+import { queryOnce, type SnapshotClient } from './query-once';
+export type { SnapshotClient } from './query-once';
+type VersionFlight = { result: Promise<ContractSnapshot>; attempt: ReadAttempt; consumers: number };
+
+type ReadyContract = Extract<ContractSnapshotResult, { status: 'ready' }>;
 type Entry = SnapshotEntry & { contractJson: string };
-type Flight = { result: Promise<ContractRouteData>; attempt: ReadAttempt; background: boolean };
+type Flight = {
+	result: Promise<ContractSnapshotResult>;
+	attempt: ReadAttempt;
+	background: boolean;
+};
 const MAX_ENTRIES = SNAPSHOT_ENTRIES;
 const MAX_BYTES = SNAPSHOT_BYTES;
 const BACKGROUND_CONCURRENCY = 2;
@@ -24,6 +34,8 @@ const BACKGROUND_CONCURRENCY = 2;
 class ContractSnapshotCache {
 	private readonly membershipId = CACHE_MEMBERSHIP_ID;
 	private disk = new SnapshotStorage();
+	private client: SnapshotClient | undefined;
+	private versionFlights = new Map<string, VersionFlight>();
 	private deleted = new Set<string>();
 	private entries = new Map<string, Entry>();
 	private versions = new Map<
@@ -63,7 +75,7 @@ class ContractSnapshotCache {
 
 	/** Seeds only a server-confirmed contract; snapshot identity survives the route handoff. */
 	seedConfirmed(data: ReadyContract): ReadyContract | undefined {
-		const id = data.id!;
+		const id = data.id;
 		if (this.deleted.has(id) || this.lifetime.signal.aborted || !validSnapshot(data, id)) return;
 		const existing = this.peek(id);
 		if (existing) {
@@ -71,7 +83,7 @@ class ContractSnapshotCache {
 			return (
 				this.updateState(id, {
 					...data.contract,
-					revision: data.contract.revision ?? 0,
+					revision: data.contract.revision,
 					lastOperationId: data.contract.lastOperationId ?? null
 				}) ?? existing
 			);
@@ -91,6 +103,7 @@ class ContractSnapshotCache {
 	}
 	pauseBackground() {
 		this.ready = false;
+		for (const [id, flight] of this.flights) if (flight.background) this.cancelFlight(id, false);
 	}
 
 	/** Fetch exactly the resources selected by the preparation policy, in priority order. */
@@ -124,7 +137,7 @@ class ContractSnapshotCache {
 			this.updateState(id, {
 				...entry.contract,
 				companyName,
-				revision: entry.contract.revision ?? 0,
+				revision: entry.contract.revision,
 				lastOperationId: entry.contract.lastOperationId ?? null
 			});
 	}
@@ -134,10 +147,7 @@ class ContractSnapshotCache {
 		this.bytes -= entry.bytes - entry.immutableBytes;
 		const versionId = entry.data.contract.templateVersionId;
 		const version = this.versions.get(versionId)!;
-		if (--version.references === 0) {
-			this.bytes -= version.bytes;
-			this.versions.delete(versionId);
-		}
+		version.references--;
 		this.entries.delete(id);
 	}
 	private evict(id: string) {
@@ -155,19 +165,114 @@ class ContractSnapshotCache {
 	}
 
 	private enforceLimits() {
-		while (this.entries.size > MAX_ENTRIES || this.bytes > MAX_BYTES) {
+		while (
+			this.entries.size > MAX_ENTRIES ||
+			this.versions.size > MAX_ENTRIES ||
+			this.bytes > MAX_BYTES
+		) {
+			const unused = [...this.versions].find(([, version]) => !version.references);
+			if (unused) {
+				this.versions.delete(unused[0]);
+				this.bytes -= unused[1].bytes;
+				continue;
+			}
 			const oldest = this.entries.keys().next().value;
 			if (oldest === undefined) break;
 			this.evict(oldest);
 		}
 	}
 
-	private remember(id: string, data: ReadyContract, size?: SnapshotSize) {
+	connect(client: SnapshotClient) {
+		this.client = client;
+	}
+
+	/** A single bounded, authenticated read per version, shared by all consumers. */
+	async loadVersion(
+		versionId: Id<'templateVersions'>,
+		companyId: Id<'company'>,
+		signal?: AbortSignal
+	): Promise<ContractSnapshot> {
+		signal?.throwIfAborted();
+		this.lifetime.signal.throwIfAborted();
+		const cached = this.versions.get(versionId);
+		if (cached) {
+			this.versions.delete(versionId);
+			this.versions.set(versionId, cached);
+			return cached.snapshot;
+		}
+		let flight = this.versionFlights.get(versionId);
+		if (!flight) {
+			const attempt = new ReadAttempt(15_000);
+			const readSignal = AbortSignal.any([this.lifetime.signal, attempt.signal]);
+			const work = Promise.resolve().then(async () => {
+				const diskAttempt = new ReadAttempt(250);
+				let persisted: ContractSnapshot | undefined;
+				try {
+					const diskSignal = AbortSignal.any([readSignal, diskAttempt.signal]);
+					persisted = await waitForRead(
+						this.disk.getVersion(versionId, companyId, diskSignal),
+						diskSignal
+					);
+				} catch {
+					readSignal.throwIfAborted();
+				} finally {
+					diskAttempt.complete();
+				}
+				readSignal.throwIfAborted();
+				if (!this.membershipId || !this.client) throw new Error('Company access is required.');
+				const snapshot =
+					persisted ??
+					(await queryOnce(
+						this.client,
+						api.templates.version,
+						{
+							membershipId: this.membershipId,
+							versionId
+						},
+						readSignal
+					));
+				readSignal.throwIfAborted();
+				if (!persisted && !validTemplate(snapshot, companyId)) throw new Error('Invalid template');
+				if (this.versionFlights.get(versionId) !== created)
+					throw new Error('The request was replaced.');
+				const bytes = JSON.stringify(snapshot).length * 2;
+				if (bytes <= MAX_BYTES && !this.versions.has(versionId)) {
+					this.versions.set(versionId, { snapshot, bytes, references: 0 });
+					this.bytes += bytes;
+					this.enforceLimits();
+				}
+				return this.versions.get(versionId)?.snapshot ?? snapshot;
+			});
+			const created: VersionFlight = {
+				attempt,
+				consumers: 0,
+				result: waitForRead(work, readSignal).finally(() => {
+					attempt.complete();
+					if (this.versionFlights.get(versionId) === created) this.versionFlights.delete(versionId);
+				})
+			};
+			this.versionFlights.set(versionId, created);
+			flight = created;
+		}
+		flight.consumers++;
+		try {
+			return await waitForRead(
+				flight.result,
+				signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal
+			);
+		} finally {
+			if (--flight.consumers === 0 && this.versionFlights.get(versionId) === flight) {
+				this.versionFlights.delete(versionId);
+				flight.attempt.abort();
+			}
+		}
+	}
+
+	private remember(id: string, data: ReadyContract) {
 		const versionId = data.contract.templateVersionId;
 		const shared = this.versions.get(versionId);
 		const contractJson = JSON.stringify(data.contract);
-		const immutableBytes =
-			shared?.bytes ?? size?.immutableBytes ?? JSON.stringify(data.snapshot).length * 2;
+		const immutableBytes = shared?.bytes ?? JSON.stringify(data.snapshot).length * 2;
 		const bytes = immutableBytes + contractJson.length * 2;
 		this.forgetEntry(id);
 		if (bytes > MAX_BYTES) return;
@@ -190,7 +295,7 @@ class ContractSnapshotCache {
 		const entry = this.entries.get(id);
 		if (!entry || this.deleted.has(id) || this.lifetime.signal.aborted) return;
 		const previous = entry.data.contract;
-		const revision = previous.revision ?? 0;
+		const revision = previous.revision;
 		if (state.revision < revision) return entry.data;
 		const { reviews: _reviews, ...contentState } = state;
 		const contract = {
@@ -230,9 +335,11 @@ class ContractSnapshotCache {
 		this.pauseBackground();
 		this.queued.clear();
 		for (const id of this.flights.keys()) this.cancelFlight(id);
+		for (const flight of this.versionFlights.values()) flight.attempt.abort();
+		this.versionFlights.clear();
 	}
 
-	private fetchFull(id: string, request: typeof fetch, background = false) {
+	private fetchFull(id: string, background = false) {
 		if (this.deleted.has(id)) return Promise.resolve({ id, status: 'missing' } as const);
 		if (this.lifetime.signal.aborted) return Promise.resolve({ id, status: 'error' } as const);
 		const existing = this.flights.get(id);
@@ -240,18 +347,13 @@ class ContractSnapshotCache {
 		this.queued.delete(id);
 		const attempt = new ReadAttempt(15_000);
 		const signal = AbortSignal.any([this.lifetime.signal, attempt.signal]);
-		const flight: Flight = {
-			attempt,
-			background,
-			result: Promise.resolve({ id, status: 'error' })
-		};
 		const work = Promise.resolve().then(async () => {
 			signal.throwIfAborted();
 			const diskAttempt = new ReadAttempt(250);
 			const diskSignal = AbortSignal.any([signal, diskAttempt.signal]);
-			let persisted: SnapshotEntry | undefined;
+			let persisted: SnapshotMetadata | undefined;
 			try {
-				persisted = await waitForRead(this.disk.get(id, diskSignal), diskSignal);
+				persisted = await waitForRead(this.disk.getMetadata(id, diskSignal), diskSignal);
 			} catch {
 				signal.throwIfAborted();
 				// IndexedDB is optional. A failed or stalled read falls through to the network.
@@ -262,12 +364,26 @@ class ContractSnapshotCache {
 			if (this.deleted.has(id)) return { id, status: 'missing' } as const;
 			recordColdStart(persisted ? 'contract-disk-cache-hit' : 'contract-snapshot-fetch-start');
 			if (!this.membershipId) throw new Error('Company access is required.');
-			const result =
-				persisted?.data ??
-				(await waitForRead(readContract(request, id, this.membershipId, signal), signal));
+			const state =
+				persisted?.contract ??
+				(this.client
+					? await queryOnce(
+							this.client,
+							api.savedContracts.state,
+							{ id, membershipId: this.membershipId },
+							signal
+						)
+					: undefined);
+			if (state === undefined) throw new Error('Contract client is unavailable.');
+			const result = state
+				? {
+						id,
+						status: 'ready' as const,
+						contract: { ...state, lastOperationId: state.lastOperationId ?? undefined },
+						snapshot: await this.loadVersion(state.templateVersionId, state.companyId, signal)
+					}
+				: { id, status: 'missing' as const };
 			signal.throwIfAborted();
-			if (!persisted && result.status === 'ready' && !validSnapshot(result, id))
-				throw new Error('Invalid snapshot');
 			if (this.flights.get(id) !== flight) throw new Error('The request was replaced.');
 			if (result.status === 'missing') {
 				this.flights.delete(id);
@@ -275,25 +391,28 @@ class ContractSnapshotCache {
 			}
 			if (result.status === 'ready') {
 				if (this.deleted.has(id)) return { id, status: 'missing' } as const;
-				const entry = this.remember(id, result, persisted);
-				if (!persisted && entry)
+				const entry = this.remember(id, result);
+				if (entry)
 					this.disk.put(entry, () => !this.deleted.has(id) && !this.lifetime.signal.aborted);
 				recordColdStart('contract-snapshot-cached');
 				for (const listener of this.listeners) listener(this.entries.get(id)?.data ?? result);
 			}
-			if (result.status === 'error') for (const listener of this.failures) listener(id);
 			return result.status === 'ready' ? (this.peek(id) ?? result) : result;
 		});
-		flight.result = waitForRead(work, signal)
-			.catch(() => {
-				if (this.flights.get(id) === flight) for (const listener of this.failures) listener(id);
-				return { id, status: 'error' } as const;
-			})
-			.finally(() => {
-				attempt.complete();
-				if (this.flights.get(id) === flight) this.flights.delete(id);
-				this.pump();
-			});
+		const flight: Flight = {
+			attempt,
+			background,
+			result: waitForRead(work, signal)
+				.catch(() => {
+					if (this.flights.get(id) === flight) for (const listener of this.failures) listener(id);
+					return { id, status: 'error' } as const;
+				})
+				.finally(() => {
+					attempt.complete();
+					if (this.flights.get(id) === flight) this.flights.delete(id);
+					this.pump();
+				})
+		};
 		this.flights.set(id, flight);
 		return flight.result;
 	}
@@ -312,23 +431,22 @@ class ContractSnapshotCache {
 			this.code ??= preloadCode(`/contracts/${id}`).catch(() => {
 				this.code = undefined;
 			});
-			void this.fetchFull(id, fetch, true);
+			void this.fetchFull(id, true);
 		}
 	}
 
 	load(
 		id: string,
-		request: typeof fetch = fetch,
+		client?: SnapshotClient,
 		options: { restart?: boolean } = {}
-	): Promise<ContractRouteData> {
-		this.pauseBackground();
-		this.queued.delete(id);
-		for (const [otherId, flight] of this.flights) {
-			if (otherId !== id && flight.background) this.cancelFlight(otherId);
-		}
-		if (options.restart) this.cancelFlight(id);
+	): Promise<ContractSnapshotResult> {
+		if (client) this.connect(client);
+		if (options.restart) this.cancelFlight(id, false);
+		// Claim the matching flight before pausing the other background reads.
 		const pending = this.flights.get(id);
 		if (pending) pending.background = false;
+		this.pauseBackground();
+		this.queued.delete(id);
 		if (this.deleted.has(id)) return Promise.resolve({ id, status: 'missing' });
 		const cached = this.touch(id);
 		if (cached) {
@@ -336,7 +454,7 @@ class ContractSnapshotCache {
 			return Promise.resolve(cached);
 		}
 		recordColdStart('contract-cache-miss');
-		return this.fetchFull(id, request);
+		return this.fetchFull(id);
 	}
 
 	destroy() {
@@ -347,6 +465,7 @@ class ContractSnapshotCache {
 		this.lifetime.abort();
 		this.disk.close();
 		this.flights.clear();
+		this.versionFlights.clear();
 		this.entries.clear();
 		this.versions.clear();
 		this.queued.clear();
@@ -355,9 +474,11 @@ class ContractSnapshotCache {
 }
 
 let cache: ContractSnapshotCache | undefined;
-export function getContractSnapshotCache() {
+export function getContractSnapshotCache(client?: SnapshotClient) {
 	if (!browser) throw new Error('Contract snapshot cache is browser-only.');
-	return (cache ??= new ContractSnapshotCache());
+	cache ??= new ContractSnapshotCache();
+	if (client) cache.connect(client);
+	return cache;
 }
 
 export function cancelPendingContractSnapshots() {

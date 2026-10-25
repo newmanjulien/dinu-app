@@ -8,19 +8,20 @@
 	--font-document: Arial, Helvetica, sans-serif;
 
 	--color-canvas: #f1f3f4;
+	--color-page: #fafafa;
 	--color-surface: #ffffff;
 	--color-ink: #202124;
 	--color-ink-secondary: #3c4043;
 	--color-ink-muted: #5f6368;
 
-	--color-line: rgb(218 220 224 / 60%);
+	--color-line: rgb(218 220 224 / 45%);
 	--color-line-strong: #9aa0a6;
 
 	--color-control-fill: #e3e6e8;
 	--color-fill-subtle: #e8eaed;
 
-	--color-accent: #2563eb;
-	--color-accent-hover: #1d4ed8;
+	--color-accent: #3f8ef7;
+	--color-accent-hover: #3278d6;
 	--color-accent-soft: color-mix(in srgb, var(--color-accent) 20%, white);
 	--color-success: #078647;
 	--color-danger: #d92525;
@@ -29,10 +30,12 @@
 	--color-danger-surface-hover: #fff1f1;
 
 	--radius-base: 14px;
+	--radius-modal: 20px;
 	--radius-button-sm: 4px;
 	--radius-button-md: 6px;
 	--radius-button-lg: 10px;
 	--radius-button-xl: 12px;
+	--spacing-modal: 24px;
 }
 
 :root {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import RouteTitle from './RouteTitle.svelte';
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { goto, preloadCode } from '$app/navigation';
 	import { AccountNavigation } from './account-navigation';
@@ -16,7 +17,7 @@
 	import { createClerkEmailCodeAuthController, getClerkErrorCode } from '$lib/auth/email-code-auth';
 	import { useStartupPreparation } from './startup-preparation';
 	import { preloadDestination } from './destination-code';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
 
 	type LoginStep = 'login' | 'code';
 
@@ -45,7 +46,7 @@
 			? page.url.pathname + page.url.search
 			: localReturn(page.url.searchParams.get('returnTo'))
 	);
-	const invitationTicket = $derived(page.url.searchParams.get('__clerk_ticket'));
+	const authTicket = $derived(page.url.searchParams.get('__clerk_ticket'));
 	$effect(() => {
 		const id = clerk.session?.id;
 		const destination = returnTo;
@@ -82,14 +83,13 @@
 	}
 	let ticketStarted = $state(false);
 	$effect(() => {
-		const ticket = invitationTicket;
+		const ticket = authTicket;
 		if (
-			joining &&
 			ticket &&
 			!ticketStarted &&
 			!clerk.session &&
 			readiness.status === 'ready' &&
-			signUpState.signUp
+			(joining ? signUpState.signUp : signInState.signIn)
 		) {
 			ticketStarted = true;
 			void acceptTicket(ticket);
@@ -102,7 +102,8 @@
 		try {
 			if (!(await waitForAuth(current))) return;
 			prepareDestination();
-			await authController.acceptTicket(ticket);
+			if (joining) await authController.acceptTicket(ticket);
+			else await authController.acceptSignInTicket(ticket);
 		} catch (error) {
 			if (current === generation) {
 				preparation.cancel();
@@ -150,6 +151,12 @@
 	let isSubmittingEmail = $state(false);
 	let isSubmittingCode = $state(false);
 	let isResendingCode = $state(false);
+	const ticketPending = $derived(
+		Boolean(authTicket) &&
+			!clerk.session &&
+			(!ticketStarted || isSubmittingEmail) &&
+			readiness.status !== 'error'
+	);
 
 	const joinHref = $derived(
 		(joining ? '/login' : '/join') + '?returnTo=' + encodeURIComponent(returnTo)
@@ -189,8 +196,8 @@
 
 		try {
 			if (!(await waitForAuth(current))) return;
-			// An invitation is consumed by its own serialized operation.
-			if (joining && invitationTicket && !ticketStarted) return;
+			// A Clerk ticket is consumed by its own serialized operation.
+			if (authTicket && !ticketStarted) return;
 			prepareDestination();
 			if (invitation) await authController.sendInvitationCode(normalizedEmail);
 			else if (joining) await authController.sendJoinCode(normalizedEmail);
@@ -259,7 +266,7 @@
 
 	$effect(() => {
 		presentation.footer = accountFooter;
-		presentation.showFooter = !invitation && step === 'login' && !opening;
+		presentation.showFooter = !invitation && step === 'login' && !opening && !ticketPending;
 		return () => {
 			if (presentation.footer === accountFooter) {
 				presentation.footer = undefined;
@@ -275,17 +282,9 @@
 	}
 </script>
 
-<svelte:head>
-	<title
-		>{step === 'code'
-			? 'Enter your code'
-			: invitation
-				? `Join ${invitation.companyName}`
-				: joining
-					? 'Join'
-					: 'Log in'} | Agreed</title
-	>
-</svelte:head>
+<RouteTitle
+	title={`${step === 'code' ? 'Enter your code' : invitation ? `Join ${invitation.companyName}` : joining ? 'Join' : 'Log in'} | Agreed`}
+/>
 
 {#snippet accountFooter()}
 	<p class="m-0 text-[13px] leading-5 text-[#8f9297]">
@@ -299,8 +298,8 @@
 	</p>
 {/snippet}
 
-{#if opening}
-	<div class="flex justify-center py-8"><LoadingWheel label="Opening your account" /></div>
+{#if opening || ticketPending}
+	<LoadingState label={opening ? 'Opening your account' : 'Signing in'} />
 {:else}
 	{#if clerk.session}
 		<AuthStepFrame title="Continue to Agreed">

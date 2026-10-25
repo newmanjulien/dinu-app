@@ -2,7 +2,7 @@
 	import { recordColdStart } from '$lib/document/runtime/render-perf';
 	import { DocumentSearchSession } from '$lib/document/search/search-session.svelte';
 	import UtilityRail from '$lib/components/chrome/UtilityRail.svelte';
-	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
+	import HeaderContent from '$lib/components/chrome/HeaderContent.svelte';
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
 	import DocumentSearchPanel from '$lib/components/search/DocumentSearchPanel.svelte';
 	import AppStatus from '$lib/components/chrome/AppStatus.svelte';
@@ -10,9 +10,7 @@
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import { onMount, tick } from 'svelte';
 	import { getContractWorkspace } from '$lib/document/runtime/context';
-	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
-	import { isHelpHidden } from '$lib/components/ui/modal/help-storage';
-	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
+	import { getWorkspaceHelp } from '$lib/auth/workspace-help';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
 	import {
 		getInteractionController,
@@ -24,19 +22,12 @@
 	const searchId = Symbol('document-search');
 	const protect = protectedInteraction();
 	let {
-		variant = 'rep',
-		isAdmin = false,
 		feedback = null
 	}: {
-		variant?: HelpVariant;
-		isAdmin?: boolean;
 		feedback?: OperationStatus | null;
 	} = $props();
 	const { source, renderer, viewer } = getContractWorkspace();
-	let helpVisible = $state(false);
-	onMount(() => {
-		helpVisible = !isHelpHidden(variant);
-	});
+	const help = getWorkspaceHelp();
 	const searchEnabled = $derived(Boolean(viewer.displayedSnapshot && viewer.visible));
 	const searchSession = new DocumentSearchSession();
 	let searchOpen = $state(false);
@@ -133,7 +124,7 @@
 	});
 </script>
 
-<AppHeader>
+<HeaderContent>
 	<div
 		class="pointer-events-none absolute top-[calc(100%+20px)] right-0 left-0 flex justify-center max-[999px]:top-[calc(100%+8px)] max-[999px]:right-3 max-[999px]:left-auto max-[999px]:w-[min(454px,calc(100vw-24px))] max-[999px]:flex-col max-[999px]:items-end max-[999px]:gap-2"
 	>
@@ -161,7 +152,7 @@
 			/>
 		</div>
 	</div>
-</AppHeader>
+</HeaderContent>
 
 <div
 	use:protect
@@ -178,10 +169,7 @@
 	>
 		<MagnifyingGlassIcon aria-hidden="true" size={19} weight="regular" />
 	</SquareIconButton>
-	<SquareIconButton
-		type="button"
-		aria-label="Help: How Agreed works"
-		onclick={() => (helpVisible = true)}
+	<SquareIconButton type="button" aria-label="Help: How Agreed works" onclick={() => help?.open()}
 		><InfoIcon aria-hidden="true" size={19} weight="regular" /></SquareIconButton
 	>
 </div>
@@ -196,8 +184,6 @@
 		bind:searchElement={desktopSearchButton}
 		{searchEnabled}
 		onSearchToggle={toggleSearch}
-		onOpenHelp={() => (helpVisible = true)}
+		onOpenHelp={() => help?.open()}
 	/>
 </div>
-
-{#if helpVisible}<HelpModal {variant} {isAdmin} onClose={() => (helpVisible = false)} />{/if}

@@ -14,8 +14,8 @@ New profiles default to Rep. Invitations preserve the user’s chosen personal r
 access is preserved; this change does not introduce an authoring capability policy.
 
 Creating a company makes account setup ready immediately. Template readiness is
-separate: a new company has no baseline or playbook until an operator completes its
-initial import. Team and Settings work while contract creation and authoring show
+separate: a new company has no baseline until an admin uploads a DOCX or an operator
+completes its initial seed import. Team and Settings work while contract creation and authoring show
 the preparation screen. Companies never share another company's live template.
 
 ## Data model and boundaries
@@ -36,8 +36,8 @@ Leave company. The backend enforces these protections.
 profile. It accepts no target ID and requires no Admin permission. Team and operator
 role-assignment endpoints are removed.
 
-Live company-scoped business records require company IDs. Live blocks use
-`by_companyId_and_order`, playbook items and template versions use `by_companyId`,
+Live company-scoped business records require company IDs. Live blocks require `baselineId` and are indexed by baseline and order; playbook
+items and template versions use `by_companyId`,
 current template pointers use one indexed row per company, and contracts list/search
 by company. Approval requests carry both the contract's company and the recipient
 captured when the request was made. Updating the company's approval recipient does
@@ -47,8 +47,8 @@ Public company operations require the caller's stable `membershipId`, resolve it
 from authenticated identity, and compare it with the current membership before
 accessing records. An old membership cannot operate in a newly joined company.
 Contract snapshots and template children are accessed through their authorized
-parent. Immutable version blocks and items also require their own indexed company
-ID so cleanup can drain children before removing versions. Parent company checks
+parent. Baseline blocks, immutable rule revisions, and version manifests also require
+company scope so cleanup can drain company data in bounded batches. Parent company checks
 happen before reading children or returning avatar
 URLs. Snapshot HTTP requests carry the cache instance's membership ID; one backend
 load validates that membership and reads the snapshot. Responses are authenticated
@@ -79,7 +79,7 @@ Signed deletion markers immediately block the deleted identity. Cleanup removes
 its membership, profile, and personal avatar, preserving company business data.
 The last live member can explicitly consent to deleting both account and company;
 company cleanup starts only after Clerk deletion is confirmed. Preparation,
-dispatch, cleanup, and migration details are in [company deletion](company-deletion.md).
+dispatch and cleanup details are in [company deletion](company-deletion.md).
 
 External Clerk deletion of an owner selects the oldest live remaining membership,
 paging through at most 25 candidates per transaction. It updates ownership without
@@ -138,46 +138,40 @@ component supplies a `no-referrer` policy.
 
 ## Fresh development reset
 
-The legacy migration module/table, shared-company marker, and readiness gates are
-removed. This rollout uses a fresh reset, clearing incompatible records before
-pushing the strict schema. This runbook is development-only; identify and announce
-the exact Convex deployment and Clerk development instance before destructive work.
-Do not infer a target from an old note or extend authorization to production.
+The canonical schema requires baseline/revision links, contract creators and review
+maps, and structured numbering/reference patterns. Existing data is intentionally
+discarded before deployment; no backfill or transitional schema is needed. This
+procedure describes a development/local reset, not an action performed by the code.
 
-1. Recheck `.env.local`, process overrides, deployment credentials, Convex URL,
-   Clerk publishable-key domain, and backend Clerk configuration without logging
-   secrets. Confirm the Clerk API reports a development instance.
-2. Run `npm run seed:verify` before deletion. The repository seed contains 113
-   contract blocks and 56 playbook items (62 triggers, 26 concessions, 66 changes).
-3. Export the complete Convex database with storage. Verify the archive and retain
-   matching code/configuration outside the repository. Securely inventory Clerk
-   user IDs. Convex backups do not restore deleted Clerk accounts or sessions.
-4. Quiesce public writes and deletion webhooks, pause recurring work, and cancel or
-   drain queued migration, deletion, invitation, and approval work. A private
-   temporary maintenance backend can retain the compatible schema with no public
-   functions, no HTTP routes, and empty crons. Any reset helpers must be internal
-   and removed afterward.
-5. Delete every user in the confirmed Clerk development instance. Clear all Convex
-   application tables, including physically retained legacy tables, and storage.
-   Verify zero remaining accounts/data. Handle cleanup jobs and late deletion
-   events before reopening. Issuer-qualified markers for old Clerk IDs cannot
-   affect newly signed-up identities; delayed events must never recreate profiles.
-6. Deploy the strict backend and matching frontend. Required scope applies to live
-   records and newly generated embedded playbook snapshots. Immutable snapshot
-   identity is retained; historical `creatorId` remains optional. Remove temporary
-   reset functions and physically retained legacy tables after schema removal.
-7. Julien signs up normally with verified email and creates the company. Obtain
-   its actual Convex company ID; never fabricate an authenticated profile or
-   automatically claim ownership.
-8. Run the scoped import and audit below. Preserve fingerprint, committed-prefix,
-   bounded batching, and publication checks. Interrupted imports remain unavailable
-   until resumed successfully; do not import unscoped JSONL directly.
-9. Restore recurring work and access, verify the published template and a rendered
-   new contract, and record target, backup location, company ID, and check results.
+1. Identify the exact Convex target from `.env.local`, process overrides, deployment
+   credentials, and the frontend URL without logging secrets. Confirm the matching
+   Clerk issuer. Do not infer a target from historical deployment notes.
+2. Run `npm run seed:verify`. The retained seed contains 113 contract blocks and
+   56 playbook items (62 triggers, 26 concessions, 66 changes).
+3. Stop application writes and deletion webhooks, pause crons, and cancel or drain
+   queued upload cleanup, company deletion, invitation, and approval jobs. Keep
+   incoming requests stopped until the empty database and final schema are ready.
+4. Clear every Convex application table and stored file, including physical tables
+   omitted from the current schema. Verify all application data and storage are
+   empty. Schema removal alone does not delete a physical table. No Clerk account
+   deletion is required for this database reset.
+5. Deploy the strict backend and matching frontend. Remove temporary reset helpers
+   if any were used. Browser caches and draft checkpoints use new format namespaces
+   and cannot restore incompatible records.
+6. Sign in or sign up through normal onboarding with verified email and create the
+   company. Existing Clerk users can initialize their missing application profile.
+   Obtain the actual Convex company ID; do not fabricate authentication metadata or
+   ownership records.
+7. Run the scoped seed and read-only audit below. Preserve fingerprint, committed
+   prefix, bounded batching, and publication checks. Resume any interrupted import
+   using the same command; never import the business JSONL directly into tables.
+8. Restore recurring work and access. Verify the published template, create/render
+   a contract, and check an admin Save/Delete. Record the target, company ID, and
+   check results.
 
-The reset restores the original contract and playbook. Saved contracts, invitations,
-approval history, uploaded avatars, and later content edits are intentionally cleared.
-No special Julien account, protected Admin list, or Admin approval process exists.
+The seed restores the supplied baseline and playbook. Saved contracts, invitations,
+approval history, uploaded files, and later content edits are cleared. No database
+wipe, deployment, or live seed run is performed by local verification.
 
 ## Initial company template import
 

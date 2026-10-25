@@ -1,3 +1,4 @@
+import { describeDestination } from '$lib/auth/routes';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/public';
 import type { DocumentDomain } from '../domain/document-domain';
@@ -177,7 +178,7 @@ export function observeHomeWarming(): () => void {
 let documentNavigation: { pathname: string; startedAt: number } | undefined;
 export function recordDocumentNavigation(pathname: string, startedAt = performance.now()) {
 	if (!enabled() || typeof window === 'undefined') return;
-	if (pathname !== '/admin' && !/^\/contracts\/[^/]+$/.test(pathname)) {
+	if (!describeDestination(pathname).document) {
 		cancelDocumentNavigation();
 		return;
 	}
@@ -194,7 +195,7 @@ export function recordDocumentReady() {
 	const navigation = documentNavigation;
 	if (!navigation || navigation.pathname !== window.location.pathname) return;
 	recordColdStart(
-		navigation.pathname === '/admin'
+		describeDestination(navigation.pathname).document === 'admin'
 			? 'admin-navigation-to-document-ready'
 			: 'contract-navigation-to-document-ready',
 		navigation.startedAt

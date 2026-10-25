@@ -35,7 +35,8 @@ byte limits count shared content once, and metadata updates preserve snapshot id
 IndexedDB upgrades rebuild only the optional snapshot cache, leaving draft journals intact.
 
 Creation checks its retry receipt before the current pointer and version metadata,
-then inserts exactly the contract and receipt. It does not read or compile template
+then inserts exactly the contract, receipt, and compact contract-directory entry.
+It does not read or compile template
 content. The response includes authoritative contract metadata, version ID, revision,
 and confirmed initial choices. Retries keep the original contract/version; a receipt
 for a deleted contract returns `deleted`.
@@ -122,7 +123,8 @@ The numeric samples are retained in
 Automated regression checks cover initialization idempotence/concurrency and its
 race with admin publication; immutable old content; publication replay/no-op behavior;
 rollback after partial copying and invalid-template rejection; latest-version
-creation, retries, and deleted receipts; two creation writes with no content reads;
+creation, retries, and deleted receipts; two contract/receipt writes plus one compact
+directory write with no content reads;
 saved versions after live-item deletion; saving and approval description reads; import maintenance;
 exact-reference cache seeding, newer revision reconciliation, and deletion protection.
 External email delivery is stubbed. Existing save, scheduling, rendering, and cache
@@ -146,30 +148,17 @@ errors or warnings, and production build), Convex TypeScript checking,
 `npm run seed:verify` (58 compositor states and zero reconciliation mismatches),
 changed-file Prettier checking, and `git diff --check`.
 
-## Rollout and imports
+## Initial imports
 
-The development rollout first deployed compatible schema/read support and atomic
-admin publication while retaining legacy creation when no current pointer existed.
-It then ran the idempotent internal `templates:initialize`, verified a complete
-113-block / 56-item version and pointer, and deployed optimized creation with the
-legacy fallback removed. No production deployment was performed.
-The final development check confirmed complete live-template parity and no remaining
-temporary browser-test contracts.
+New contracts reference a published immutable template version. Initial imports use
+`npm run convex:seed -- --company-id COMPANY_ID` on a configured development/local
+deployment. The scoped `companyTemplateImport` workflow fingerprints business
+content, persists batch counts, verifies the committed prefix, and publishes through
+`finish`. It resumes interrupted imports without overwriting edited content or
+republishing an unchanged completed import. Items receive revision 1 and immutable
+heads from the shared authoring writer.
 
-This historical staged rollout no longer applies to the strict schema. The fresh
-development reset removed legacy contracts; new contracts always reference a
-published version. Production changes require separate authorization and a reviewed
-procedure for any incompatible records before deploying this schema.
-
-The original publication rehearsal above predates private companies. Current
-initial imports use `npm run convex:seed -- --company-id COMPANY_ID` on an explicitly
-configured development/local deployment. The scoped `companyTemplateImport`
-workflow fingerprints content, persists batch counts, verifies the committed
-prefix, and publishes once through `finish`. It resumes interrupted initial imports
-without overwriting edited content or republishing an unchanged completed import.
-Imports block creation and authoring until publication completes; saved contracts
-retain their immutable snapshots. After a fresh development reset, create the
-account and company through normal signup, then seed the actual company ID. Follow
-the current [private-company rollout runbook](private-companies-rollout.md) for
-backup, reset, strict-schema deployment, and publication checks. Production
-operations require a separately reviewed procedure and explicit authorization.
+Imports block creation and authoring until publication completes. After the
+[fresh reset](private-companies-rollout.md#fresh-development-reset), create the
+account/company through normal onboarding, seed the actual company ID, and audit
+before intentional edits. Local checks do not certify a deployment or live seed run.

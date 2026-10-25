@@ -7,7 +7,7 @@
 	import { useAccount, useViewerSession } from '../viewer-session.svelte';
 	import { workspaceDestination } from '../navigation';
 	import { recordStartup } from '../startup-perf';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import ArrowLeftIcon from 'phosphor-svelte/lib/ArrowLeftIcon';
 	import ChooseCompanyStep from './ChooseCompanyStep.svelte';
 	import CreateCompanyStep from './CreateCompanyStep.svelte';
@@ -70,8 +70,6 @@
 	}
 </script>
 
-<svelte:head><title>Set up your company | Agreed</title></svelte:head>
-
 {#if step === 'create' && !account()?.membership}
 	<div class="mx-auto h-5 w-full max-w-190">
 		<button
@@ -87,7 +85,7 @@
 
 <div class="m-auto w-full max-w-190 pt-7 pb-15 text-center">
 	{#if account()?.membership}
-		<div class="flex justify-center py-8"><LoadingWheel label="Opening your workspace" /></div>
+		<LoadingState label="Opening your workspace" />
 		{#if error}<p role="alert" class="text-center text-sm text-danger">{error}</p>{/if}
 	{:else if step === 'choose'}
 		<ChooseCompanyStep

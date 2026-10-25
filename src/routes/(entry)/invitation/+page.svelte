@@ -9,7 +9,7 @@
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import AuthStepFrame from '$lib/auth/components/AuthStepFrame.svelte';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import type { PageData } from './$types';
 	let { data }: { data: PageData } = $props();
 	const clerk = useClerkContext();
@@ -53,7 +53,6 @@
 </script>
 
 <svelte:head>
-	<title>Company invitation | Agreed</title>
 	<meta name="referrer" content="no-referrer" />
 </svelte:head>
 
@@ -69,21 +68,21 @@
 		{#if InvitationLink}<InvitationLink />
 		{:else}
 			<AuthStepFrame title="Company invitation">
-				<div class="grid justify-items-center gap-4">
+				<LoadingState label={invitation.failed ? undefined : 'Loading invitation'}>
 					{#if invitation.failed}
 						<p role="alert" class="text-center text-sm text-danger">
 							Unable to load this invitation. Please try again.
 						</p>
 						<button class="text-sm underline" onclick={() => invitation.retry()}>Try again</button>
-					{:else}<LoadingWheel label="Loading invitation" />{/if}
-				</div>
+					{/if}
+				</LoadingState>
 			</AuthStepFrame>
 		{/if}
 	</RequireAccount>
 {:else if data.previewSkipped && !clerk.isLoaded}
 	<AccountLoading inline />
 {:else if data.token !== page.url.searchParams.get('invitation') || (data.previewSkipped && retrying)}
-	<div class="flex justify-center py-8"><LoadingWheel label="Loading invitation" /></div>
+	<LoadingState label="Loading invitation" />
 {:else if data.preview?.status === 'available' && !expired}
 	{#key data.token}<EmailCodeFlow invitation={data.preview} />{/key}
 {:else if !data.preview}

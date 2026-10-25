@@ -31,15 +31,15 @@ modules, and `scripts/seed-convex.mjs`:
 - Update replaces the full record at expected revision + 1 and changes the
   operation ID. Idempotent replay does not change the record.
 - Delete removes the record after the existing revision check.
-- Seed imports only into an empty table, refuse edited/partially unexpected data,
-  and supply unversioned records. There are no other Playbook writers in this tree.
+- Seed imports only initial company content, refuse edited/unexpected committed
+  prefixes, and use the shared authoring writer to create revision 1 and its
+  immutable head. They do not fabricate author IDs or operation receipts.
+  There are no other Playbook writers in this tree.
 
-Records with a positive safe revision and operation metadata use their ID,
-creation time, revision, and operation ID as the accepted identity. Legacy/imported
-records use exact serialized record equality. Future maintenance writers must
-increment revision/change operation metadata, or supply unversioned records for
-the exact fallback; do not edit authoritative versioned records in place without
-advancing their identity.
+Every accepted record has a required revision. Identity uses creation time and
+revision within its stable item ID. All writers that change content must advance
+that revision; operation metadata is not required for seed-created records.
+There is no serialized-record fallback for unversioned data.
 
 Only changed records are copied, projected through `toDocumentOverlay()`, and
 compared with their previous rendering projection. Unchanged projections retain
@@ -168,16 +168,16 @@ The review-fix checks additionally confirmed:
 `docs/domain-runtime/` retains command results and work-counter observations.
 A revision-bearing copy of the supplied seed produced these work counts:
 
-| Transition | Records projected | Entries inserted/removed | Render revision advance |
-| --- | ---: | ---: | ---: |
-| Equal complete result | 0 | 0 / 0 | 0 |
-| One instructions-only update | 1 | 0 / 0 | 0 |
-| Draft instructions typing after validation | 0 | 0 / 0 | 0 |
-| Reorder only | 0 | 0 / 0 | 1 |
-| Delete one single-Trigger item | 0 | 0 / 1 | 1 |
+| Transition                                 | Records projected | Entries inserted/removed | Render revision advance |
+| ------------------------------------------ | ----------------: | -----------------------: | ----------------------: |
+| Equal complete result                      |                 0 |                    0 / 0 |                       0 |
+| One instructions-only update               |                 1 |                    0 / 0 |                       0 |
+| Draft instructions typing after validation |                 0 |                    0 / 0 |                       0 |
+| Reorder only                               |                 0 |                    0 / 0 |                       1 |
+| Delete one single-Trigger item             |                 0 |                    0 / 1 |                       1 |
 
-These are work counts, not browser latency benchmarks. Unversioned seed rows still
-pay exact per-record comparison, but reuse unchanged projections/index entries.
+These are work counts, not browser latency benchmarks. Current seed imports use
+the same revision identity as admin-created records.
 
 `PUBLIC_CONTRACT_PERF=1` (or development mode) exposes fixed numeric counters at
 `window.__contractDomainPerf`, with `ingestion` and `geometry` groups. Existing

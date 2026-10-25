@@ -1,187 +1,132 @@
 <script lang="ts">
-	import { onMount, onDestroy, untrack, tick } from 'svelte';
-	import { useAuth, useQuery } from 'convex-svelte';
-	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { ReadAttempt } from '$lib/auth/attempt';
-	import { api } from '../../../convex/_generated/api';
-	import type { ContractRouteData } from '$lib/contract/saved';
-	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
-	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
+	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
+	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
+	import { getContractSessions } from '$lib/contract/sessions.svelte';
 	import { creationPhase } from '$lib/contract/creation-perf';
 	import { recordColdStart } from '$lib/document/runtime/render-perf';
-	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
 	import LoadingPagination from '$lib/components/document/LoadingPagination.svelte';
 	import RepWorkspace from './RepWorkspace.svelte';
-	let {
-		id,
-		onVisible,
-		onFailure
-	}: {
-		id: string;
-		onVisible?: () => void;
-		onFailure?: () => void;
-	} = $props();
-	let mounted = $state(false);
-	let snapshot = $state.raw<ContractRouteData | undefined>();
-	let ready = $state.raw<Extract<ContractRouteData, { status: 'ready' }> | undefined>(undefined);
-	let attempt = $state(0);
-	let openingOutcome = $state<'pending' | 'visible' | 'failed'>('pending');
+	let { id, onVisible, onFailure }: { id: string; onVisible?: () => void; onFailure?: () => void } =
+		$props();
+	const mountedId = untrack(() => id);
+	const sessions = getContractSessions();
+	const acquired = untrack(() => sessions.acquire(mountedId));
+	const session = acquired.session;
+	const account = useViewerSession();
+	const runtime = getWorkspaceRuntime();
+	let opening = $state.raw<{
+		token: symbol;
+		deadline: ReadAttempt;
+		outcome: 'pending' | 'visible' | 'failed';
+	}>();
 	let openingError = $state(false);
-	let openingGeneration: number | undefined;
-	const resources = getDocumentResources();
-	// This owner survives initialization and supplies the workspace's editing state.
-	const auth = useAuth();
-	const session = useViewerSession();
-	const viewer = useViewer();
-	const membershipId = viewer().membership.id;
-	const metadata = useQuery(api.savedContracts.state, () =>
-		mounted && auth.isAuthenticated ? { membershipId, id } : 'skip'
-	);
-	onMount(() => {
-		mounted = true;
+	let retryAttempt = $state(0);
+	let completionSettled = false;
+	let active = true;
+	onDestroy(() => {
+		active = false;
+		acquired.release();
 	});
 	$effect(() => {
-		if (!mounted || !auth.isAuthenticated) return;
-		const generation = session.transportGeneration;
-		const currentAttempt = attempt;
+		const ready = sessions.ready && !runtime.paused;
+		const generation = account.transportGeneration;
+		void retryAttempt;
 		untrack(() => {
-			if (openingGeneration !== generation && openingOutcome === 'failed') {
-				openingOutcome = 'pending';
-				openingError = false;
-			}
-			openingGeneration = generation;
+			openingError = false;
+			opening = ready
+				? {
+						token: Symbol('contract-opening'),
+						deadline: new ReadAttempt(15_000),
+						outcome: 'pending'
+					}
+				: undefined;
 		});
-		if (openingOutcome !== 'pending') return;
-		let active = true;
-		const opening = new ReadAttempt(15_000);
-		opening.signal.addEventListener(
+		const current = untrack(() => opening);
+		if (!current) return;
+		current.deadline.signal.addEventListener(
 			'abort',
 			() => {
-				if (active && session.transportGeneration === generation && attempt === currentAttempt)
-					openingError = true;
+				if (
+					!active ||
+					opening?.token !== current.token ||
+					account.transportGeneration !== generation
+				)
+					return;
+				openingError = true;
+				failure(current.token);
 			},
 			{ once: true }
 		);
-		return () => {
-			active = false;
-			opening.abort();
-		};
+		return () => current.deadline.complete();
 	});
 	$effect(() => {
-		if (!mounted || !auth.isAuthenticated || ready) return;
-		const currentId = id;
-		const generation = session.transportGeneration;
-		const currentAttempt = attempt;
+		if (
+			opening?.outcome !== 'pending' ||
+			openingError ||
+			session.error ||
+			session.viewError ||
+			session.initializing
+		)
+			return;
+		if (!session.snapshot || !session.metadata || !session.persistence) return;
 		untrack(() => {
-			snapshot = undefined;
-		});
-		let active = true;
-		void getContractSnapshotCache()
-			.load(currentId, fetch, { restart: currentAttempt > 0 })
-			.then((data) => {
-				if (active && !openingError && session.transportGeneration === generation) {
-					snapshot = data;
-					creationPhase('snapshot-ready');
-				}
-			});
-		return () => {
-			active = false;
-		};
-	});
-	$effect(() => {
-		if (mounted && metadata.data === null) untrack(() => getContractSnapshotCache().remove(id));
-	});
-	let releaseOpening: (() => void) | undefined;
-	onDestroy(() => releaseOpening?.());
-	$effect(() => {
-		const data = snapshot;
-		const state = metadata.data;
-		const error = metadata.error;
-		if (!data || ready) return;
-		untrack(() => {
-			if (data.status !== 'ready' || state === null || error || openingError) return;
-			// Validate current membership before preparing any cached document.
-			if (!state) return;
-			if (data.contract.companyId !== viewer().company.id) {
-				openingError = true;
-				return;
-			}
-			if (resources && !releaseOpening) {
-				resources.acquireContract(data);
-				releaseOpening = resources.beginOpen(id);
-			}
-			getContractSnapshotCache().updateState(id, state);
-			ready = {
-				...data,
-				contract: {
-					...data.contract,
-					...state,
-					lastOperationId: state.lastOperationId ?? undefined
-				}
-			};
+			creationPhase('snapshot-ready');
 			recordColdStart('contract-data-ready');
 		});
 	});
-	const failed = $derived(
-		openingError ||
-			(!ready &&
-				(Boolean(metadata.error) ||
-					snapshot?.status === 'error' ||
-					snapshot?.status === 'missing' ||
-					metadata.data === null))
-	);
 	$effect(() => {
-		if (failed && openingOutcome === 'pending') untrack(failure);
+		if (session.error || session.viewError || session.metadata === null) {
+			const token = opening?.token;
+			if (token) untrack(() => failure(token));
+		}
 	});
-	async function retry() {
-		openingOutcome = 'pending';
-		openingError = false;
-		ready = undefined;
-		snapshot = undefined;
-		mounted = false;
-		await tick();
-		attempt++;
-		mounted = true;
+	function visible(token: symbol) {
+		if (!active || opening?.token !== token || opening.outcome !== 'pending') return;
+		opening.deadline.complete();
+		opening = { ...opening, outcome: 'visible' };
+		if (!completionSettled) {
+			completionSettled = true;
+			onVisible?.();
+		}
 	}
-	function visible() {
-		if (openingOutcome !== 'pending') return;
-		openingOutcome = 'visible';
-		releaseOpening?.();
-		releaseOpening = undefined;
-		onVisible?.();
+	function failure(token: symbol) {
+		if (!active || opening?.token !== token || opening.outcome !== 'pending') return;
+		opening.deadline.complete();
+		opening = { ...opening, outcome: 'failed' };
+		if (!completionSettled) {
+			completionSettled = true;
+			onFailure?.();
+		}
 	}
-	function failure() {
-		if (openingOutcome !== 'pending') return;
-		openingOutcome = 'failed';
-		releaseOpening?.();
-		releaseOpening = undefined;
-		onFailure?.();
+	function retry() {
+		retryAttempt++;
+		session.retry();
 	}
 </script>
 
-{#if ready}
-	<RepWorkspace
-		snapshot={ready.snapshot}
-		initialContract={ready.contract}
-		{metadata}
-		onVisible={visible}
-		onFailure={failure}
-	/>
-{:else}
-	<AppHeader />
-	{#if failed}
-		<main class="mx-auto max-w-2xl px-6 py-12 text-center">
-			{#if metadata.data === null || snapshot?.status === 'missing'}
-				<h1 class="text-xl font-medium">Contract not found</h1>
-				<p class="mt-3 text-ink-muted">This contract may have been deleted.</p>
-			{:else}
-				<p role="alert">We couldn’t load this contract.</p>
-				<button
-					class="mt-4 rounded-button-sm border border-line bg-surface px-4 py-2"
-					onclick={retry}>Try again</button
-				>
-			{/if}
-			<a href="/" class="mt-6 block underline">Back to Home</a>
-		</main>
-	{:else}<LoadingPagination label="Loading contract" />{/if}
-{/if}
+{#if opening && !openingError && !session.error && !session.viewError && !session.initializing && session.snapshot && session.metadata && session.persistence}
+	{#key opening.token}
+		{@const token = opening.token}
+		<RepWorkspace
+			snapshot={session.snapshot}
+			{session}
+			onVisible={() => visible(token)}
+			onFailure={() => failure(token)}
+		/>
+	{/key}
+{:else if openingError || session.error || session.viewError || session.metadata === null}
+	<main class="mx-auto max-w-2xl px-6 py-12 text-center text-[13px] leading-5">
+		{#if session.metadata === null}
+			<h1 class="text-sm font-medium">Contract not found</h1>
+			<p class="mt-2 text-ink-muted">This contract may have been deleted.</p>
+		{:else}
+			<p role="alert">We couldn’t load this contract.</p>
+			<button class="mt-4 rounded-button-sm border border-line bg-surface px-4 py-2" onclick={retry}
+				>Try again</button
+			>
+		{/if}
+		<a href="/" class="mt-6 block underline">Back to Home</a>
+	</main>
+{:else}<LoadingPagination label="Loading contract" />{/if}

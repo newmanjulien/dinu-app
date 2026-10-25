@@ -50,7 +50,9 @@
 	const buttonClass = $derived(
 		cn(
 			'inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-button-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default data-[disabled]:pointer-events-none data-[disabled]:cursor-default motion-reduce:transition-none',
-			size === 'sm' ? 'h-9 gap-1.5 px-3 text-[13px] font-normal' : 'size-8 rounded-button-md p-0',
+			size === 'sm'
+				? 'h-[38px] gap-1.5 px-3.5 py-2 text-[12.5px] font-normal'
+				: 'size-8 rounded-button-md p-0',
 			variant === 'primary' &&
 				'bg-[#171717] text-white hover:bg-[#303030] disabled:hover:bg-stone-100 disabled:bg-stone-100 disabled:text-stone-400 data-[disabled]:bg-stone-100 data-[disabled]:text-stone-400',
 			variant === 'secondary' &&

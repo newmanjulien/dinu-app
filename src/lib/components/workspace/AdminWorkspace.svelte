@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { untrack, onMount, onDestroy, tick } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
+	import { page } from '$app/state';
+	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import { createContractWorkspace, setContractWorkspace } from '$lib/document/runtime/context';
 	import {
 		recordAdminQueryOwner,
@@ -25,22 +27,35 @@
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 
+	let { active = true }: { active?: boolean } = $props();
+	const runtime = getWorkspaceRuntime();
+	const available = $derived(active && !runtime.paused);
 	const client = env.PUBLIC_CONVEX_URL ? useConvexClient() : null;
 	const session = useViewerSession();
 	const accountViewer = useViewer();
 	const membershipId = accountViewer().membership.id;
 	const data: ContractSourceInput = client
 		? {
-				blocks: useQuery(api.contract.getBlocks, { membershipId }),
-				items: useQuery(api.playbookItems.list, { membershipId })
+				blocks: useQuery(api.contract.getBlocks, () =>
+					runtime.paused ? 'skip' : { membershipId }
+				),
+				items: useQuery(api.playbookItems.list, () => (runtime.paused ? 'skip' : { membershipId }))
 			}
 		: { blocks: { error: true }, items: { error: true } };
 	onMount(() => (client ? recordAdminQueryOwner() : undefined));
 	const resources = getDocumentResources();
 	const resource = resources ? untrack(() => resources.acquire('admin', data)) : undefined;
-	if (resource && resources) untrack(() => resources.activate(resource));
-	onDestroy(() => {
-		if (resource && resources) resources.deactivate(resource);
+	let attachment =
+		$state.raw<import('$lib/document/runtime/resources.svelte').DocumentAttachment>();
+	$effect(() => {
+		if (!resource || !resources) return;
+		if (!available) return;
+		const owned = untrack(() => resources.activate(resource));
+		attachment = owned;
+		return () => {
+			owned.release();
+			attachment = undefined;
+		};
 	});
 	setInteractionOwner(resource?.owner ?? Symbol('authoring-workspace'));
 	const workspace = setContractWorkspace(
@@ -49,6 +64,7 @@
 	const { source, renderer, viewer } = workspace;
 	const authoring = new AuthoringSession(client ? convexSaveTransport(client, membershipId) : null);
 	$effect(() => {
+		if (runtime.paused) return;
 		const { compiled, geometry, geometryVersion, items } = source;
 		void geometryVersion;
 		untrack(() => authoring.accept(compiled, geometry, items));
@@ -66,6 +82,7 @@
 		return () => clearTimeout(timer);
 	});
 	$effect(() => {
+		if (runtime.paused) return;
 		workspace.accept(data);
 		recordAdminSourceUpdate();
 	});
@@ -73,7 +90,7 @@
 		index: source.compiled?.index ?? null,
 		geometry: source.geometry,
 		items: source.items,
-		available: viewer.ready
+		available: available && viewer.ready
 	}));
 	const entry = $derived(flow.entry);
 	const draft = $derived(flow.draft);
@@ -93,9 +110,10 @@
 			get pending() {
 				return flow.hasUnsavedWork;
 			},
-			flush: async () => (await authoring.flush()) && !flow.addingConcession,
+			flush: async () =>
+				runtime.paused ? !flow.hasUnsavedWork : (await authoring.flush()) && !flow.addingConcession,
 			retry: () => {
-				void authoring.retry();
+				if (!runtime.paused) void authoring.retry();
 			},
 			suspend: () => {},
 			resume: () => {},
@@ -144,6 +162,10 @@
 		}
 		// Document unload uses the browser warning below, without discarding first.
 		if (navigation.willUnload) return;
+		const target = navigation.to?.route.id;
+		// The temporary Settings detour does not abandon or retry local work.
+		if (target === '/(workspace)/admin' && page.route.id === '/(workspace)/settings') return;
+		if (target === '/(workspace)/settings' && (runtime.paused || !active)) return;
 		if (authoring.unresolved) {
 			navigation.cancel();
 			flow.editError = 'Resolve the current operation before leaving this instruction box.';
@@ -172,58 +194,89 @@
 	});
 </script>
 
-<WorkspaceChrome variant="admin" {feedback} />
-{#if source.renderSource}
-	<main
-		oninputcapture={recordContractInput}
-		onclickcapture={recordContractInput}
-		class="pt-14 pb-12 admin-selection-enabled min-[1000px]:pt-6"
-		aria-label="Contract authoring"
-	>
-		<h1 class="mb-5 px-2 text-center text-[13px] leading-6 text-ink-muted/50">
-			Edit the instructions reps will see
-		</h1>
-		{#snippet panelContent()}{#if entry && source.renderSource}{#key entry.key}<PlaybookEditor
-						{flow}
-						onCancel={cancel}
-						onPrimary={() =>
-							runEditorAction(() => (flow.creating ? flow.next() : authoring.save()))}
-						onRetry={() => runEditorAction(() => authoring.retry())}
-						onDelete={remove}
-					/>{/key}{/if}{/snippet}
-		{#if !entry && flow.feedback}<p
-				class="mx-auto max-w-3xl px-6 text-sm text-danger"
-				role="status"
-			>
-				{flow.feedback}
-			</p>{/if}
-		<DocumentViewerSlot
-			entry={resource}
-			hasPanel={Boolean(draft)}
-			followScroll={flow.otherClauseActive}
-			{panelContent}
-			selectedAnnotationId={flow.selectedAnnotationId}
-			selectedRanges={authoringHighlightRanges}
-			{previewChanges}
-			selectedConcessions={{}}
-			onRemoveConcession={() => (flow.previewConcessionId = null)}
-			panelSource={draft?.triggers[0]?.range.start}
-			picking={flow.picking}
-			allowPlaybookNavigation={!flow.creating}
-			onSelect={(itemId, triggerId) => flow.openItem(itemId, triggerId)}
-		/>
-	</main>
-	{#if viewer.ready && viewer.displayedSnapshot}<SourceSelectionToolbar
-			container={viewer.documentStageElement}
-			snapshot={viewer.displayedSnapshot}
-			enabled={flow.selectionMode !== 'inactive'}
-			autoConfirm={flow.picking}
-			onSelectionIssue={(issue) => flow.reportIssue(issue)}
-			onGestureStart={() => flow.clearFeedback()}
-			evaluate={(range) => flow.selectionEligibility(range)}
-			onConfirm={(range, mode) => flow.acceptSelection(range, mode)}
-		/>{/if}
-{:else if source.issue}<p role="alert">
-		We couldn’t load this contract. Please refresh to try again.
-	</p>
-{:else}<LoadingPagination label="Loading contract" />{/if}
+<div hidden={!available} inert={!available} aria-hidden={!available}>
+	{#if available}<WorkspaceChrome {feedback} />{/if}
+	{#if source.renderSource}
+		<main
+			oninputcapture={recordContractInput}
+			onclickcapture={recordContractInput}
+			class="admin-selection-enabled"
+			aria-label="Contract authoring"
+		>
+			<h1 class="px-2 text-center text-[13px] text-ink-muted/50">
+				Edit the instructions reps will see
+			</h1>
+			{#snippet panelContent()}{#if entry && source.renderSource}{#key entry.key}<PlaybookEditor
+							{flow}
+							onCancel={cancel}
+							onPrimary={() =>
+								runEditorAction(() => (flow.creating ? flow.next() : authoring.save()))}
+							onRetry={() => runEditorAction(() => authoring.retry())}
+							onDelete={remove}
+						/>{/key}{/if}{/snippet}
+			{#if !entry && flow.feedback}<p
+					class="mx-auto max-w-3xl px-6 text-sm text-danger"
+					role="status"
+				>
+					{flow.feedback}
+				</p>{/if}
+			<DocumentViewerSlot
+				{attachment}
+				entry={resource}
+				active={available}
+				prepare={!runtime.paused}
+				interactive={available}
+				hasPanel={Boolean(draft)}
+				followScroll={flow.otherClauseActive}
+				{panelContent}
+				selectedAnnotationId={flow.selectedAnnotationId}
+				selectedRanges={authoringHighlightRanges}
+				{previewChanges}
+				selectedConcessions={{}}
+				onRemoveConcession={() => (flow.previewConcessionId = null)}
+				panelSource={draft?.triggers[0]?.range.start}
+				picking={flow.picking}
+				allowPlaybookNavigation={!flow.creating}
+				onSelect={(itemId, triggerId) => flow.openItem(itemId, triggerId)}
+			/>
+		</main>
+		{#if available && viewer.ready && viewer.displayedSnapshot}<SourceSelectionToolbar
+				container={viewer.documentStageElement}
+				snapshot={viewer.displayedSnapshot}
+				enabled={flow.selectionMode !== 'inactive'}
+				autoConfirm={flow.picking}
+				onSelectionIssue={(issue) => flow.reportIssue(issue)}
+				onGestureStart={() => flow.clearFeedback()}
+				evaluate={(range) => flow.selectionEligibility(range)}
+				onConfirm={(range, mode) => flow.acceptSelection(range, mode)}
+			/>{/if}
+	{:else if source.issue}<p role="alert">
+			We couldn’t load this contract. Please refresh to try again.
+		</p>
+	{:else}<LoadingPagination label="Loading contract" chrome={false} />{/if}
+</div>
+
+<style>
+	main {
+		--document-padding-top: calc(var(--spacing) * 14);
+		--document-padding-bottom: calc(var(--spacing) * 12);
+		--heading-line-height: calc(var(--spacing) * 6);
+		--heading-margin-bottom: calc(var(--spacing) * 5);
+		--workspace-loading-inset: calc(
+			var(--document-padding-top) + var(--document-padding-bottom) + var(--heading-line-height) +
+				var(--heading-margin-bottom)
+		);
+		padding-block: var(--document-padding-top) var(--document-padding-bottom);
+	}
+
+	h1 {
+		line-height: var(--heading-line-height);
+		margin-bottom: var(--heading-margin-bottom);
+	}
+
+	@media (min-width: 1000px) {
+		main {
+			--document-padding-top: calc(var(--spacing) * 6);
+		}
+	}
+</style>

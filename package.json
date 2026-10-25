@@ -18,14 +18,15 @@
 		"prepare": "svelte-kit sync",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"test:perf": "vitest run --config vitest.config.ts",
-		"verify": "npm run test:perf && npm run build",
+		"verify": "npm run test:lifecycle && npm run test:perf && npm run build",
 		"seed:restore-export": "node scripts/production-seed.mjs",
 		"seed:reconcile": "node scripts/reconcile-production-seed.mjs",
 		"seed:verify": "node scripts/verify-seed-data.mjs",
 		"convex:seed": "npm run seed:verify && node scripts/seed-convex.mjs",
 		"db:audit": "node scripts/audit-convex.mjs",
 		"format": "prettier --write src scripts",
-		"format:check": "prettier --check src scripts"
+		"format:check": "prettier --check src scripts",
+		"test:lifecycle": "vitest run --config vitest.lifecycle.config.ts"
 	},
 	"dependencies": {
 		"@clerk/backend": "^3.23.0",
@@ -55,6 +56,7 @@
 		"@types/node": "^22.0.0",
 		"convex-test": "^0.0.60",
 		"fake-indexeddb": "^6.2.5",
+		"jsdom": "^27.0.1",
 		"prettier": "^3.9.9",
 		"prettier-plugin-svelte": "^4.1.1",
 		"svelte": "^5.56.1",

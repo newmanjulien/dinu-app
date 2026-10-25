@@ -1,16 +1,21 @@
 <script lang="ts">
-	let { label = 'Laying out contract pages' }: { label?: string } = $props();
+	import { page } from '$app/state';
+	import { describeRoute } from '$lib/auth/routes';
+	import DocumentSkeleton from './DocumentSkeleton.svelte';
+	let {
+		label = 'Laying out contract pages',
+		embedded = false,
+		chrome = !embedded,
+		hasPanel = false
+	}: { label?: string; embedded?: boolean; chrome?: boolean; hasPanel?: boolean } = $props();
 </script>
 
-<div
-	class="grid min-h-[calc(100vh-100px)] place-items-center"
-	data-testid="pagination-loading"
-	role="status"
-	aria-live="polite"
->
-	<span
-		class="size-6 animate-spin rounded-full border-2 border-line-strong/50 border-t-ink-muted [animation-duration:700ms] motion-reduce:[animation-duration:1400ms]"
-		aria-hidden="true"
-	></span>
-	<span class="sr-only">{label}</span>
+<div data-testid="pagination-loading">
+	<DocumentSkeleton
+		admin={describeRoute(page.route.id).document === 'admin'}
+		{label}
+		{embedded}
+		{chrome}
+		{hasPanel}
+	/>
 </div>

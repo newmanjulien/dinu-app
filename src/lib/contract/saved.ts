@@ -11,8 +11,8 @@ export type ContractSnapshot = Infer<typeof snapshot>;
 export type SavedSelections = Infer<typeof selections>;
 export type ContractState = Infer<typeof contractState>;
 export type ContractSaveResult = Infer<typeof saveResult>;
-export type ContractRouteData = { id: string | null } & (
-	| { status: 'new' }
+export type ContractDestination = { kind: 'new' } | { kind: 'saved'; id: string };
+export type ContractSnapshotResult = { id: string } & (
 	| { status: 'ready'; snapshot: ContractSnapshot; contract: Doc<'savedContracts'> }
 	| { status: 'loading' | 'missing' | 'error' }
 );

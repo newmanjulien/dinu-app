@@ -2,7 +2,6 @@ import { PlaybookValidationError } from '../playbook/validation-error';
 import type { ContractBlock, InlineAtom } from './model';
 import {
 	formatNumberPattern,
-	patternParts,
 	validateNumberPattern,
 	type NumberPattern,
 	type NumberPatternPart
@@ -21,7 +20,7 @@ function itemAddress(
 	pattern: NumberPattern,
 	label: string
 ): Pick<Address, 'address' | 'pattern'> {
-	const local = patternParts(pattern).map((part) => ({ ...part }));
+	const local = pattern.map((part) => ({ ...part }));
 	const wrapped = parent && !/^[([]/u.test(label);
 	const last = local.at(-1);
 	if (last && 'text' in last) {
@@ -37,14 +36,6 @@ function itemAddress(
 			? `${parent.address}(${label.replace(/[.):\s]+$/u, '')})`
 			: `${parent?.address ?? ''}${label.endsWith('.') ? label.slice(0, -1) : label}`
 	};
-}
-
-function referenceAddress(start: string, end?: string): string {
-	if (!end) return start;
-	const lastOpen = end.lastIndexOf('(');
-	if (lastOpen >= 0 && start.slice(0, lastOpen) === end.slice(0, lastOpen))
-		return `${start}-${end.slice(lastOpen)}`;
-	return `${start}-${end}`;
 }
 
 /** Sequences are counted in document order. A child address uses its parent's active address. */
@@ -70,18 +61,14 @@ export function* iterateNumberAddresses(
 		if (item.parentItemKey && !parent)
 			throw new PlaybookValidationError(`Missing parent address: ${item.itemKey}`);
 		const position = item.start ?? (positions.get(item.sequenceKey) ?? 0) + 1;
-		let token = numberValue(item.style, position, item.alphabeticStyle !== 'repeated');
+		let token = numberValue(item.style, position, item.alphabeticStyle === 'sequential');
 		if (item.minimumDigits) token = token.padStart(item.minimumDigits, '0');
 		const values = [...(parent?.tokens ?? []), token];
 		const format = (pattern: NumberPattern) => formatNumberPattern(pattern, values);
-		const labelPattern =
-			item.labelPattern ??
-			(item.style === 'decimal'
-				? [{ level: values.length }, { text: '.' }]
-				: [{ text: '(' }, { level: values.length }, { text: ')' }]);
+		const labelPattern = item.labelPattern;
 		const label = format(labelPattern);
 		const address = item.referencePattern
-			? { pattern: patternParts(item.referencePattern), address: format(item.referencePattern) }
+			? { pattern: item.referencePattern, address: format(item.referencePattern) }
 			: itemAddress(parent, labelPattern, label);
 		positions.set(item.sequenceKey, position);
 		result.set(item.itemKey, {
@@ -97,46 +84,27 @@ export function referenceText(
 	atom: Extract<InlineAtom, { kind: 'reference' }>,
 	addresses: ReadonlyMap<string, Address>
 ): string {
-	if (atom.display) {
-		if (
-			atom.suffixLevels !== undefined ||
-			Boolean(atom.display.end) !== Boolean(atom.endTargetItemKey) ||
-			Boolean(atom.display.separator) !== Boolean(atom.endTargetItemKey)
-		)
-			throw new PlaybookValidationError('Invalid reference display.');
-		const first = addresses.get(atom.targetItemKey);
-		const last = atom.endTargetItemKey ? addresses.get(atom.endTargetItemKey) : undefined;
-		if (!first || (atom.endTargetItemKey && !last))
-			throw new PlaybookValidationError('Unresolved reference.');
-		if (atom.display.separator && !/^[ \t]*[-–—][ \t]*$/u.test(atom.display.separator))
-			throw new PlaybookValidationError('Invalid reference range separator.');
-		for (const [pattern, target] of [
-			[atom.display.start, first],
-			[atom.display.end, last]
-		] as const)
-			if (target) {
-				if (!pattern) throw new PlaybookValidationError('Missing reference display.');
-				validateNumberPattern(pattern, target.tokens.length, true);
-			}
-		return (
-			formatNumberPattern(atom.display.start, first.tokens) +
-			(last ? atom.display.separator + formatNumberPattern(atom.display.end!, last.tokens) : '')
-		);
-	}
-	const start = addresses.get(atom.targetItemKey)?.address;
-	const end = atom.endTargetItemKey ? addresses.get(atom.endTargetItemKey)?.address : undefined;
-	if (!start || (atom.endTargetItemKey && !end))
-		throw new PlaybookValidationError(`Unresolved reference: ${atom.targetItemKey}`);
-	const suffix = (address: string) => {
-		if (atom.suffixLevels === undefined) return address;
-		const groups = address.match(/\([a-zA-Z0-9]+\)/g) ?? [];
-		if (
-			!Number.isSafeInteger(atom.suffixLevels) ||
-			atom.suffixLevels < 1 ||
-			atom.suffixLevels > groups.length
-		)
-			throw new PlaybookValidationError('Invalid abbreviated reference.');
-		return groups.slice(-atom.suffixLevels).join('');
-	};
-	return referenceAddress(suffix(start), end ? suffix(end) : undefined);
+	if (
+		Boolean(atom.display.end) !== Boolean(atom.endTargetItemKey) ||
+		Boolean(atom.display.separator) !== Boolean(atom.endTargetItemKey)
+	)
+		throw new PlaybookValidationError('Invalid reference display.');
+	const first = addresses.get(atom.targetItemKey);
+	const last = atom.endTargetItemKey ? addresses.get(atom.endTargetItemKey) : undefined;
+	if (!first || (atom.endTargetItemKey && !last))
+		throw new PlaybookValidationError('Unresolved reference.');
+	if (atom.display.separator && !/^[ \t]*[-–—][ \t]*$/u.test(atom.display.separator))
+		throw new PlaybookValidationError('Invalid reference range separator.');
+	for (const [pattern, target] of [
+		[atom.display.start, first],
+		[atom.display.end, last]
+	] as const)
+		if (target) {
+			if (!pattern) throw new PlaybookValidationError('Missing reference display.');
+			validateNumberPattern(pattern, target.tokens.length, true);
+		}
+	return (
+		formatNumberPattern(atom.display.start, first.tokens) +
+		(last ? atom.display.separator + formatNumberPattern(atom.display.end!, last.tokens) : '')
+	);
 }

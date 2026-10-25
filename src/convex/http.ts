@@ -3,7 +3,13 @@ import { ConvexError } from 'convex/values';
 import { env, httpAction } from './_generated/server';
 import { internal } from './_generated/api';
 import { Webhook } from 'svix';
+import { upload, preflight } from './baselineUploads';
+import { upload as delegationUpload, preflight as delegationPreflight } from './delegationUploads';
 const http = httpRouter();
+http.route({ path: '/delegation-attachment', method: 'POST', handler: delegationUpload });
+http.route({ path: '/delegation-attachment', method: 'OPTIONS', handler: delegationPreflight });
+http.route({ path: '/baseline', method: 'POST', handler: upload });
+http.route({ path: '/baseline', method: 'OPTIONS', handler: preflight });
 http.route({
 	path: '/clerk/webhook',
 	method: 'POST',

@@ -1,4 +1,4 @@
-import type { ConcessionSelection } from '$lib/document/runtime/types';
+import type { ConcessionSelection } from '../playbook/model';
 import type { ContractBlock, ContractView, ResolvedBlock, ResolvedRun } from './model';
 import type { Trigger, ContractChange, SourceRange } from '../playbook/model';
 import type { InlineSource, ReplacementAtom } from './source-model';

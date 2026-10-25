@@ -12,11 +12,9 @@ interface AcceptedItem {
 	overlayKey: string;
 	geometryKey: string;
 }
-/** Revisions are authoritative for admin saves. Imports/legacy records use an exact fallback. */
+/** Every content write advances the stored revision, including seeded records. */
 function recordIdentity(record: PlaybookItemRecord): string {
-	return Number.isSafeInteger(record.revision) && record.revision! > 0 && record.lastOperationId
-		? JSON.stringify([record._creationTime, record.revision, record.lastOperationId])
-		: JSON.stringify(record);
+	return JSON.stringify([record._creationTime, record.revision]);
 }
 /** Workspace-owned pure semantics; no renderer, reactive effects, native objects, or view intent. */
 export class DocumentDomain {

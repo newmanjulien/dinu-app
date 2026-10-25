@@ -5,10 +5,10 @@ import type { ContractSaveRequest } from './persistence.svelte';
 import { MAX_SELECTED_CONCESSIONS } from './selection-limits';
 
 export type ContractDraft = {
-	version: 1;
+	version: 2;
 	base: ContractState;
 	choices: SavedSelections;
-	lifecycles?: Record<string, string>;
+	lifecycles: Record<string, string>;
 	request: ContractSaveRequest | null;
 	conflict: boolean;
 };
@@ -17,7 +17,7 @@ const volatileKeys = new Set<string>();
 const deletedUsers = new Set<string>();
 const removedMemberships = new Set<string>();
 const prefix = (userId: string) =>
-	`agreed:drafts:v1:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
+	`agreed:drafts:v2:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
 
 function selections(value: unknown): value is SavedSelections {
 	return Boolean(
@@ -32,33 +32,30 @@ function lifecycle(value: unknown): value is string {
 	return typeof value === 'string' && value.trim().length > 0 && value.length <= 300;
 }
 function lifecycles(value: unknown) {
-	return value === undefined || (selections(value) && Object.values(value).every(lifecycle));
+	return selections(value) && Object.values(value).every(lifecycle);
 }
 function reviews(value: unknown) {
-	return (
-		value === undefined ||
-		Boolean(
-			value &&
-			typeof value === 'object' &&
-			!Array.isArray(value) &&
-			Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
-			Object.entries(value).every(
-				([id, review]) =>
-					id.length > 0 &&
-					review &&
-					typeof review === 'object' &&
-					!Array.isArray(review) &&
-					typeof review.concessionId === 'string' &&
-					lifecycle(review.lifecycle) &&
-					['pending', 'approved', 'rejected'].includes(review.status)
-			)
+	return Boolean(
+		value &&
+		typeof value === 'object' &&
+		!Array.isArray(value) &&
+		Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
+		Object.entries(value).every(
+			([id, review]) =>
+				id.length > 0 &&
+				review &&
+				typeof review === 'object' &&
+				!Array.isArray(review) &&
+				typeof review.concessionId === 'string' &&
+				lifecycle(review.lifecycle) &&
+				['pending', 'approved', 'rejected'].includes(review.status)
 		)
 	);
 }
 function valid(value: unknown, id: string): value is ContractDraft {
 	const draft = value as ContractDraft | null;
 	return Boolean(
-		draft?.version === 1 &&
+		draft?.version === 2 &&
 		typeof draft.conflict === 'boolean' &&
 		draft.base &&
 		typeof draft.base.companyName === 'string' &&
@@ -89,9 +86,9 @@ export class DraftJournal {
 	constructor(
 		private userId: string,
 		private contractId: string,
-		membershipId?: string
+		membershipId: string
 	) {
-		this.namespace = prefix(userId) + (membershipId ? encodeURIComponent(membershipId) + ':' : '');
+		this.namespace = prefix(userId) + encodeURIComponent(membershipId) + ':';
 		this.key = this.namespace + encodeURIComponent(contractId);
 	}
 	read(): ContractDraft | null {
@@ -131,6 +128,36 @@ export class DraftJournal {
 			}
 		}
 	}
+}
+
+/** Discover intent before account-level flushing can decide that the workspace is clean. */
+export type DraftRecovery = { id: string; journal: DraftJournal; draft: ContractDraft };
+
+export function discoverContractDrafts(userId: string, membershipId: string): DraftRecovery[] {
+	const namespace = prefix(userId) + encodeURIComponent(membershipId) + ':';
+	if (!browser || deletedUsers.has(userId) || removedMemberships.has(namespace)) return [];
+	const keys = new Set([...memory.keys()].filter((key) => key.startsWith(namespace)));
+	try {
+		for (let i = 0; i < sessionStorage.length; i++) {
+			const key = sessionStorage.key(i);
+			if (key?.startsWith(namespace)) keys.add(key);
+		}
+	} catch {
+		/* Memory remains usable when storage is unavailable. */
+	}
+	const records: DraftRecovery[] = [];
+	for (const key of keys) {
+		try {
+			const id = decodeURIComponent(key.slice(namespace.length));
+			if (!id) continue;
+			const journal = new DraftJournal(userId, id, membershipId);
+			const draft = journal.read();
+			if (draft) records.push({ id, journal, draft });
+		} catch {
+			/* Ignore invalid keys and checkpoints. */
+		}
+	}
+	return records;
 }
 
 export function discardUserDrafts(userId: string) {

@@ -22,7 +22,8 @@
 	onDestroy(() => clearTimeout(tabTimer));
 	function items() {
 		return Array.from(
-			element?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []
+			element?.querySelectorAll<HTMLButtonElement>('[role="menuitem"], [role="menuitemradio"]') ??
+				[]
 		).filter((item) => !item.matches(':disabled'));
 	}
 	function keydown(event: KeyboardEvent) {
@@ -69,7 +70,11 @@
 	{label}
 	dismissOnFocus
 	bind:element
-	onReady={() => items()[0]?.focus({ preventScroll: true })}
+	onReady={() => {
+		const enabled = items();
+		const selected = enabled.find((item) => item.getAttribute('aria-checked') === 'true');
+		(selected ?? enabled[0])?.focus({ preventScroll: true });
+	}}
 	onkeydown={keydown}
 	class="rounded-base border border-line bg-surface p-1 shadow-md"
 >

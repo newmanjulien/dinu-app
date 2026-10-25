@@ -52,7 +52,7 @@
 
 	{#if footer || action}
 		<footer
-			class="flex min-h-12 flex-col gap-3 border-t border-[#e5e5e5] bg-[#fafafa] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5"
+			class="flex min-h-12 flex-col gap-3 border-t border-[#e5e5e5] bg-page px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5"
 		>
 			<div class="min-w-0 text-[0.74rem] leading-5 text-stone-500">
 				{@render footer?.()}

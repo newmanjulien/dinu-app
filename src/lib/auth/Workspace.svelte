@@ -1,12 +1,14 @@
 <script lang="ts">
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
-	import BaselineSetup from '$lib/components/template/BaselineSetup.svelte';
+	import { useConvexClient } from 'convex-svelte';
 	import { page } from '$app/state';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
+	import WorkspaceSkeleton from './WorkspaceSkeleton.svelte';
 	import { useViewer, useViewerSession } from './viewer-session.svelte';
 	import { DocumentResources, setDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { env } from '$env/dynamic/public';
 	import { loadComponent } from './component-loader.svelte';
-	import { recordStartup } from './startup-perf';
+	import { afterStartupPaint, recordStartup } from './startup-perf';
+	import { useWorkspaceReadiness } from './workspace-readiness.svelte';
 	import { browser } from '$app/environment';
 	import { beforeNavigate, afterNavigate, onNavigate } from '$app/navigation';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
@@ -19,13 +21,14 @@
 		setContractLayoutProfiles
 	} from '$lib/document/runtime/layout-context.svelte';
 	import { onMount, onDestroy, type Snippet, untrack } from 'svelte';
-	import { InteractionController, setInteractionController } from '$lib/components/ui/interactions';
+	import { describeRoute } from './routes';
+	import { setWorkspaceRuntime } from './workspace-context.svelte';
+	import { setDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	let { children }: { children: Snippet } = $props();
-	const interactions = setInteractionController(new InteractionController());
 	const session = useViewerSession();
+	const readiness = useWorkspaceReadiness();
 	const viewer = useViewer();
-	const cache = getContractSnapshotCache();
-	onMount(() => interactions.mount());
+	const cache = getContractSnapshotCache(useConvexClient());
 	let navigationIntent = 0;
 
 	beforeNavigate((navigation) => {
@@ -49,15 +52,18 @@
 			? setDocumentResources(new DocumentResources(layoutProfiles))
 			: undefined;
 	const templatePending = $derived(
-		!viewer().templateReady && ['/admin', '/contracts/new'].includes(page.url.pathname)
+		!viewer().templateReady && Boolean(describeRoute(page.route.id).baseline)
 	);
-	const documentRoute = $derived(/^\/(admin|contracts)(\/|$)/.test(page.url.pathname));
+	const route = $derived(describeRoute(page.route.id));
+	const documentRoute = $derived(Boolean(route.document));
 	const deletionPending = $derived(Boolean(viewer().company.deletionPending));
 	const needsDocumentHost = $derived(documentRoute && !templatePending && !deletionPending);
 	const host = loadComponent(
 		() => import('./DocumentHost.svelte'),
 		() =>
-			!deletionPending && (needsDocumentHost || Boolean(resources?.preparationCandidates.length)),
+			!deletionPending &&
+			(needsDocumentHost ||
+				Boolean(resources?.backgroundEnabled && resources.preparationCandidates.length)),
 		() => session.transportGeneration,
 		(module) => {
 			if (resources) resources.createWorkspace = module.createContractWorkspace;
@@ -65,14 +71,70 @@
 	);
 	const DocumentHost = $derived(host.component);
 	const hostError = $derived(host.failed ? 'Unable to load the document viewer. Try again.' : '');
+	const runtime = setWorkspaceRuntime({
+		get ready() {
+			return Boolean(DocumentHost);
+		},
+		get paused() {
+			return deletionPending;
+		},
+		get error() {
+			return hostError;
+		},
+		get navigationIntent() {
+			return navigationIntent;
+		},
+		retry: host.retry
+	});
+	setDocumentNavigation();
+	const admin = loadComponent(
+		() => import('$lib/components/workspace/AdminWorkspace.svelte'),
+		() => route.document === 'admin' && !templatePending && !deletionPending,
+		() => session.transportGeneration
+	);
+	const AdminWorkspace = $derived(admin.component);
+	let adminMounted = $state(false);
+	let adminDetour = $state(false);
+	afterNavigate(({ to }) => {
+		// Clear only after commit: Settings must retain its owner while returning to Admin.
+		if (to?.route.id !== '/(workspace)/settings') adminDetour = false;
+	});
 	$effect(() => {
-		if (page.url.pathname !== '/' && (!needsDocumentHost || DocumentHost))
+		if (
+			route.document === 'admin' &&
+			AdminWorkspace &&
+			runtime.ready &&
+			!templatePending &&
+			!deletionPending
+		)
+			adminMounted = true;
+		else if (
+			route.document !== 'admin' &&
+			!(page.route.id === '/(workspace)/settings' && adminDetour)
+		)
+			adminMounted = false;
+	});
+	$effect(() => {
+		if (page.url.pathname !== '/' && (!needsDocumentHost || DocumentHost)) {
 			untrack(() => recordStartup('usable'));
+			return afterStartupPaint(() => (readiness.painted = true));
+		}
 	});
 	onNavigate(({ to }) => {
+		if (
+			to?.route.id === '/(workspace)/settings' &&
+			adminMounted &&
+			(deletionPending || adminDetour)
+		)
+			adminDetour = true;
 		if (deletionPending) return;
-		const path = to?.url.pathname;
-		const id = path === '/admin' ? 'admin' : path?.match(/^\/contracts\/([^/]+)\/?$/)?.[1];
+		const destination = describeRoute(to?.route.id ?? null);
+		const id =
+			destination.document === 'admin'
+				? 'admin'
+				: destination.document === 'saved'
+					? to?.params?.id
+					: undefined;
 		if (id && id !== 'admin' && id !== 'new') void cache.load(id);
 		return id ? resources?.beginOpen(id) : undefined;
 	});
@@ -92,6 +154,7 @@
 		layoutProfiles?.scheduler.destroy();
 	});
 	$effect(() => {
+		if (resources) resources.paused = deletionPending;
 		if (deletionPending) {
 			cache.cancelPending();
 			resources?.candidates([]);
@@ -105,17 +168,29 @@
 		<a href="/settings" class="underline">Open Settings to finish or cancel deletion.</a>
 	</div>
 {/if}
-{#if deletionPending && page.url.pathname !== '/settings'}
-	<div class="p-6 text-sm text-stone-700">
-		Your company data will be removed after account deletion is confirmed.
-	</div>
-{:else if templatePending}
-	<BaselineSetup getNavigationIntent={() => navigationIntent} />
-{:else if !documentRoute || DocumentHost}{@render children()}
-{:else if !hostError}<div class="flex justify-center py-16">
-		<LoadingWheel label="Loading document viewer" />
-	</div>{/if}
-{#if needsDocumentHost && hostError}<p role="alert" class="p-4 text-sm">
-		{hostError} <button class="underline" onclick={host.retry}>Try again</button>
-	</p>{/if}
-{#if DocumentHost && !deletionPending}<DocumentHost profiles={layoutProfiles} {resources} />{/if}
+<div
+	hidden={deletionPending && !route.availableDuringHold}
+	inert={deletionPending && !route.availableDuringHold}
+>
+	<!-- Retain document owners; other bodies release their queries, shortcuts, and modals. -->
+	{#if !deletionPending || documentRoute || route.availableDuringHold}
+		{@render children()}
+	{/if}
+</div>
+{#if adminMounted && AdminWorkspace}
+	<AdminWorkspace active={route.document === 'admin'} />
+{:else if route.document === 'admin' && !templatePending && !deletionPending && runtime.ready}
+	{#if !admin.failed}
+		<WorkspaceSkeleton label="Loading contract authoring" />
+	{:else}
+		<LoadingState layout="workspace">
+			<p role="alert" class="text-sm">Unable to load contract authoring.</p>
+			<button class="text-sm underline" onclick={admin.retry}>Try again</button>
+		</LoadingState>
+	{/if}
+{/if}
+{#if DocumentHost}<DocumentHost
+		profiles={layoutProfiles}
+		{resources}
+		paused={deletionPending}
+	/>{/if}

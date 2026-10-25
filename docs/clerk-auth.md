@@ -65,6 +65,28 @@ scoped to profile and membership and cleared on logout, deletion, account change
 or membership changes. Server
 snapshot reads forward an authenticated token and return `private, no-store`.
 
+## Preparing an account for a user
+
+In the matching Clerk application's Users page, create the user with their real
+email address and no password. The primary email must be verified; Agreed requires
+the `email_verified` JWT claim above.
+
+Choose **Impersonate user** from the user's three-dot menu. Clerk opens Agreed's
+configured `/login` route with a one-time `__clerk_ticket`. The login flow consumes
+that sign-in ticket, activates the impersonated session, and opens normal onboarding
+or the existing workspace without asking for an email code. Clerk continues to
+control who can issue impersonation links; Agreed only consumes the issued ticket.
+The `/join` route handles Clerk signup tickets separately.
+
+Complete onboarding and Settings as the user. Creating a company makes them its
+owner and Admin. To join an existing company, invite their email from that company's
+Team page, then open and accept the invitation while impersonating them. Sign out
+when finished. The user can later sign in with their normal email code and use the
+prepared account. If the link expires or has already been used, open a fresh
+impersonation link from Clerk.
+
+See [Clerk's impersonation guide](https://clerk.com/docs/guides/users/impersonation).
+
 ## Roles and permissions
 
 `src/convex/permissions.ts` defines personal roles and capabilities. Profiles store
@@ -213,15 +235,11 @@ If its outcome is still uncertain, it retains the draft and reports failure.
 
 ## Fresh development reset
 
-The strict schema replaces the legacy migration workflow. Clear incompatible live
-records before deploying it. Export Convex with storage and retain matching code,
-configuration, and a secure Clerk user inventory first. Deleting Clerk accounts
-also deletes their sessions; a Convex backup cannot restore them.
-
-Quiesce writes and recurring/queued work, delete accounts in the confirmed
-development Clerk instance, and clear all application data, retained legacy tables,
-and storage. Deploy the matching backend/frontend, recreate through verified signup,
-and seed the actual company ID. Follow [the reset runbook](private-companies-rollout.md#fresh-development-reset).
+Clear incompatible Convex records and stored files before deploying the canonical
+schema. Stop writes, deletion webhooks, and queued/recurring work first. Clerk
+accounts can remain: normal onboarding initializes a missing application profile
+and lets the user create a company. Then seed the actual company ID through the
+scoped importer. Follow [the reset procedure](private-companies-rollout.md#fresh-development-reset).
 
 ## Deletion and recovery
 
@@ -254,7 +272,7 @@ to current colleagues and queued approvals retain their company recipient.
 Confirmed combined deletion also drains company business records, snapshot children,
 creation receipts, memberships, and the company avatar before completing a permanent
 company deletion marker. See [company deletion](company-deletion.md) for the lifecycle,
-cleanup order, recovery, and migration procedure.
+cleanup order, recovery, and reset procedure.
 
 External owner deletion transfers ownership to the oldest live remaining membership
 using bounded pagination, without role preference or changing the successor’s role. If no successor

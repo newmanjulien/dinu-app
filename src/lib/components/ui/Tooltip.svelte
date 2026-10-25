@@ -7,12 +7,17 @@
 		label = text,
 		trigger,
 		standalone = true,
+		enabled = true,
+		class:
+			className = 'rounded-base border-0 bg-ink-secondary px-2.5 py-2 text-left text-xs leading-[1.4] text-surface',
 		children
 	}: {
 		text: string;
 		label?: string;
 		trigger?: HTMLElement;
 		standalone?: boolean;
+		enabled?: boolean;
+		class?: string;
 		children: Snippet<[string]>;
 	} = $props();
 	const componentId = $props.id();
@@ -26,12 +31,20 @@
 	let open = $state(false);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let pointerType = '';
+	$effect(() => {
+		if (!enabled) {
+			cancelTimer();
+			open = false;
+			tapped = false;
+			suppressed = hovered || focused;
+		}
+	});
 	function cancelTimer() {
 		clearTimeout(timer);
 	}
 	function activate() {
 		cancelTimer();
-		if (!suppressed) open = true;
+		if (enabled && !suppressed) open = true;
 	}
 	function settle() {
 		cancelTimer();
@@ -85,7 +98,7 @@
 			aria-describedby={tooltipId}
 			onpointerdown={(event) => (pointerType = event.pointerType)}
 			onclick={(event) => {
-				if (pointerType !== 'touch' || event.detail === 0) return;
+				if (!enabled || pointerType !== 'touch' || event.detail === 0) return;
 				suppressed = false;
 				tapped = !tapped;
 				open = tapped;
@@ -97,7 +110,7 @@
 		{@render children(tooltipId)}
 	{/if}
 	<FloatingSurface
-		{open}
+		open={enabled && open}
 		trigger={trigger ?? infoButton}
 		onClose={close}
 		id={tooltipId}
@@ -116,7 +129,7 @@
 			hovered = false;
 			settle();
 		}}
-		class="rounded-base border-0 bg-ink-secondary px-2.5 py-2 text-left text-xs leading-[1.4] text-surface"
+		class={className}
 	>
 		{text}
 	</FloatingSurface>

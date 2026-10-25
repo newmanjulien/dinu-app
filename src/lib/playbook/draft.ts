@@ -47,20 +47,15 @@ export function semanticConcession({
 					: {
 							kind: 'reference',
 							targetItemKey: atom.targetItemKey,
-							...(atom.suffixLevels !== undefined ? { suffixLevels: atom.suffixLevels } : {}),
-							...(atom.display
-								? {
-										display: {
-											start: canonicalNumberPattern(atom.display.start),
-											...(atom.display.end !== undefined
-												? { end: canonicalNumberPattern(atom.display.end) }
-												: {}),
-											...(atom.display.separator !== undefined
-												? { separator: atom.display.separator }
-												: {})
-										}
-									}
-								: {}),
+							display: {
+								start: canonicalNumberPattern(atom.display.start),
+								...(atom.display.end !== undefined
+									? { end: canonicalNumberPattern(atom.display.end) }
+									: {}),
+								...(atom.display.separator !== undefined
+									? { separator: atom.display.separator }
+									: {})
+							},
 							...(atom.endTargetItemKey !== undefined
 								? { endTargetItemKey: atom.endTargetItemKey }
 								: {}),

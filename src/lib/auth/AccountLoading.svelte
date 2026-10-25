@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { useViewerSession } from './viewer-session.svelte';
 	import { useClerkReadiness } from './clerk-readiness';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
+	import { page } from '$app/state';
+	import WorkspaceSkeleton from './WorkspaceSkeleton.svelte';
 	let { inline = false }: { inline?: boolean } = $props();
 	const session = useViewerSession();
 	const readiness = useClerkReadiness();
@@ -18,13 +20,7 @@
 	}
 </script>
 
-<div
-	class={inline
-		? 'grid justify-items-center gap-4 py-8 text-center'
-		: 'grid min-h-dvh place-content-center justify-items-center gap-4 bg-[#fafafa] p-8 text-center'}
-	aria-busy={!failure}
->
-	{#if !failure}<LoadingWheel label="Connecting your account" />{/if}
+{#snippet recovery()}
 	{#if failure || session.delayed}
 		<p role={failure ? 'alert' : 'status'} class="max-w-md text-sm text-ink-muted">
 			{failure || 'This is taking longer than usual.'}
@@ -34,4 +30,19 @@
 			<button class="underline" onclick={() => void session.signOut()}>Log out</button>
 		</div>
 	{/if}
-</div>
+{/snippet}
+
+{#if !inline && page.route.id?.startsWith('/(workspace)') && !failure}
+	{#if session.delayed}
+		<WorkspaceSkeleton header announce={false}>{@render recovery()}</WorkspaceSkeleton>
+	{:else}
+		<WorkspaceSkeleton header label="Connecting your account" />
+	{/if}
+{:else}
+	<LoadingState
+		layout={inline ? 'section' : 'screen'}
+		label={failure ? undefined : 'Connecting your account'}
+	>
+		{@render recovery()}
+	</LoadingState>
+{/if}

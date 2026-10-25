@@ -1,6 +1,7 @@
 import { composeContract } from '../compose';
 import type { ResolvedRun } from '../model';
-import type { RenderSnapshot } from '$lib/document/runtime/types';
+import type { CompositionInput } from '../compose';
+import type { ContractBlock } from '../model';
 
 export interface ExportRun {
 	text: string;
@@ -25,11 +26,13 @@ function cleanRuns(runs: ResolvedRun[]): ExportRun[] {
 }
 
 /** Export source and saved concessions, never the screen's redlines or draft previews. */
-export function composeExport(snapshot: RenderSnapshot): ExportBlock[] {
+export function composeExport(
+	input: Pick<CompositionInput, 'items' | 'activeConcessions'> & {
+		blocks: readonly ContractBlock[];
+	}
+): ExportBlock[] {
 	const resolved = composeContract({
-		blocks: snapshot.source.blocks,
-		items: snapshot.source.items,
-		activeConcessions: snapshot.concessions,
+		...input,
 		view: 'effective'
 	});
 	return resolved.flatMap((block): ExportBlock[] => {

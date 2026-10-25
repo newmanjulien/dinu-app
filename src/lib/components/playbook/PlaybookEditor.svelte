@@ -3,6 +3,7 @@
 	import DotsThreeVerticalIcon from 'phosphor-svelte/lib/DotsThreeVerticalIcon';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import Menu from '$lib/components/ui/Menu.svelte';
+	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import type { Concession } from '$lib/playbook/model';
 	import { instructionsFields } from '$lib/playbook/instructions-fields';
 	import type { AuthoringFlow } from '$lib/playbook/authoring-flow.svelte';
@@ -109,16 +110,13 @@
 						label="Instruction box options"
 					>
 						{#snippet children(activate)}
-							<button
-								type="button"
-								role="menuitem"
-								tabindex="-1"
+							<MenuItem
+								danger
 								disabled={!session.canDelete}
-								class="w-full cursor-pointer rounded-button-sm border-0 bg-transparent px-3 py-2 text-left text-[14px] text-danger hover:bg-danger-surface focus-visible:bg-danger-surface focus-visible:outline-2 focus-visible:outline-accent"
 								onclick={() => {
 									activate();
 									onDelete();
-								}}>Delete instruction box</button
+								}}>Delete instruction box</MenuItem
 							>
 						{/snippet}
 					</Menu>

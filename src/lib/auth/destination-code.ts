@@ -1,4 +1,5 @@
 import { loadHome } from '$lib/components/workspace/home';
+import { describeDestination } from './routes';
 
 /** Download independent modules together without mounting them or starting queries. */
 export async function preloadDestination(pathname: string) {
@@ -10,6 +11,6 @@ export async function preloadDestination(pathname: string) {
 				? import('./onboarding/OnboardingFlow.svelte')
 				: import('./Workspace.svelte'),
 		pathname === '/' ? loadHome() : undefined,
-		/^\/(admin|contracts)(\/|$)/.test(pathname) ? import('./DocumentHost.svelte') : undefined
+		describeDestination(pathname).document ? import('./DocumentHost.svelte') : undefined
 	]);
 }

@@ -7,7 +7,7 @@
 	import { useAccount, useViewerSession } from '../viewer-session.svelte';
 	import OnboardingStepFrame from './OnboardingStepFrame.svelte';
 	import AuthButton from '../components/AuthButton.svelte';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
 
 	let {
 		pending,
@@ -66,7 +66,7 @@
 				</p>
 			</div>
 		{:else}
-			<div class="flex justify-center py-6"><LoadingWheel label="Loading invitations" /></div>
+			<LoadingState label="Loading invitations" />
 		{/if}
 		{#if error}<p role="alert" class="text-center text-sm leading-5 text-danger">{error}</p>{/if}
 	</div>

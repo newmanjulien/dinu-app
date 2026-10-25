@@ -75,7 +75,63 @@ function sourceCounts(source) {
 }
 // Independent output oracle: apply the OLD named-provision rules directly to the
 // exported segments. It never reads new ranges, source keys, or transformExport.
-export function legacyEffective(source, selected, numberAddresses, referenceText) {
+function historicalAddresses(blocks) {
+	const positions = new Map(),
+		addresses = new Map();
+	function token(style, position) {
+		if (style === 'decimal') return String(position);
+		let result = '';
+		if (style.endsWith('roman')) {
+			for (const [value, symbol] of [
+				[1000, 'm'],
+				[900, 'cm'],
+				[500, 'd'],
+				[400, 'cd'],
+				[100, 'c'],
+				[90, 'xc'],
+				[50, 'l'],
+				[40, 'xl'],
+				[10, 'x'],
+				[9, 'ix'],
+				[5, 'v'],
+				[4, 'iv'],
+				[1, 'i']
+			])
+				while (position >= value) {
+					result += symbol;
+					position -= value;
+				}
+		} else
+			while (position) {
+				position--;
+				result = String.fromCharCode(97 + (position % 26)) + result;
+				position = Math.floor(position / 26);
+			}
+		return style.startsWith('upper') ? result.toUpperCase() : result;
+	}
+	for (const block of blocks) {
+		const n = block.numbering;
+		if (!n) continue;
+		const position = (positions.get(n.sequenceKey) ?? 0) + 1;
+		positions.set(n.sequenceKey, position);
+		const value = token(n.style, position);
+		const label = n.style === 'decimal' ? `${value}.` : `(${value})`;
+		const parent = addresses.get(n.parentItemKey);
+		addresses.set(n.itemKey, {
+			label,
+			address: `${parent?.address ?? ''}${parent || n.style !== 'decimal' ? `(${value})` : value}`
+		});
+	}
+	return addresses;
+}
+function historicalReference(atom, addresses) {
+	const start = addresses.get(atom.targetItemKey).address;
+	if (!atom.endTargetItemKey) return start;
+	const end = addresses.get(atom.endTargetItemKey).address;
+	const lastOpen = end.lastIndexOf('(');
+	return `${start}-${lastOpen >= 0 && start.slice(0, lastOpen) === end.slice(0, lastOpen) ? end.slice(lastOpen) : end}`;
+}
+export function historicalEffective(source, selected) {
 	const replacements = new Map();
 	for (const box of source.boxes)
 		for (const c of [...box.preferredConcessions, ...box.rareConcessions])
@@ -95,11 +151,11 @@ export function legacyEffective(source, selected, numberAddresses, referenceText
 				.get(b.numbering.activationProvisionKey)
 				?.some((a) => a.kind === 'reference' || a.text.length)
 	);
-	const addresses = numberAddresses(active);
+	const addresses = historicalAddresses(active);
 	const runs = (segments) =>
 		segments.flatMap((s) =>
 			(replacements.get(s.provisionKey) ?? s.content).map((a) => ({
-				text: a.kind === 'text' ? a.text : referenceText(a, addresses),
+				text: a.kind === 'text' ? a.text : historicalReference(a, addresses),
 				...(a.marks !== undefined ? { marks: a.marks } : {})
 			}))
 		);
@@ -177,6 +233,7 @@ export async function reconcile(server, blocks, items) {
 	const { semanticPlaybookDraft, editingPlaybookDraft, equalConcession } =
 		await server.ssrLoadModule('/src/lib/playbook/draft.ts');
 	const { savePlaybookItem } = await server.ssrLoadModule('/src/convex/admin.ts');
+	const { businessItem } = await server.ssrLoadModule('/src/convex/baselineStorage.ts');
 	const { render } = await server.ssrLoadModule('svelte/server');
 	const { default: RepPlaybookPanel } = await server.ssrLoadModule(
 		'/src/lib/components/playbook/RepPlaybookPanel.svelte'
@@ -196,7 +253,7 @@ export async function reconcile(server, blocks, items) {
 		emailVerified: true
 	};
 	for (const [i, item] of items.entries()) {
-		const saved = { ...item, companyId, _id: `seed-item-${i}`, _creationTime: 0 };
+		const saved = { ...item, revision: 1, companyId, _id: `seed-item-${i}`, _creationTime: 0 };
 		assert.deepEqual(
 			semanticPlaybookDraft(editingPlaybookDraft(saved)),
 			item,
@@ -213,14 +270,41 @@ export async function reconcile(server, blocks, items) {
 			['company', [{ _id: companyId, ownerProfileId: profileId }]],
 			[
 				'currentTemplate',
-				[{ _id: 'seed-pointer', companyId, versionId: 'seed-version', maintenance: false }]
+				[
+					{
+						_id: 'seed-pointer',
+						baselineId: 'seed-baseline',
+						companyId,
+						versionId: 'seed-version',
+						maintenance: false
+					}
+				]
 			],
-			['contractBlocks', blocks.map((block) => ({ ...block, companyId }))],
+			[
+				'baselines',
+				[
+					{
+						_id: 'seed-baseline',
+						companyId,
+						source: 'seed',
+						state: 'published',
+						blockCount: blocks.length,
+						issues: [],
+						fingerprint: 'seed'
+					}
+				]
+			],
+			[
+				'contractBlocks',
+				blocks.map((block) => ({ ...block, companyId, baselineId: 'seed-baseline' }))
+			],
 			[
 				'playbookItems',
 				items.map((value, index) => ({
 					...value,
 					companyId,
+					revision: 1,
+					publishedRevisionId: `seed-revision-${index}`,
 					_id: `seed-item-${index}`,
 					_creationTime: 0
 				}))
@@ -229,11 +313,16 @@ export async function reconcile(server, blocks, items) {
 		let nextId = 0;
 		const ctx = {
 			auth: { getUserIdentity: async () => identity },
+			scheduler: { runAfter: async () => 'seed-scheduled-job' },
 			meta: {
 				getTransactionMetrics: async () => ({
-					documentsWritten: { remaining: 16_384 },
-					bytesWritten: { remaining: 16_000_000 },
-					databaseQueries: { remaining: 16_384 }
+					documentsWritten: { remaining: 16000 },
+					bytesWritten: { remaining: 16 * 1024 * 1024 },
+					databaseQueries: { remaining: 4096 },
+					documentsRead: { remaining: 32000 },
+					bytesRead: { remaining: 16 * 1024 * 1024 },
+					functionsScheduled: { remaining: 1000 },
+					scheduledFunctionArgsBytes: { remaining: 16 * 1024 * 1024 }
 				})
 			},
 			db: {
@@ -248,7 +337,7 @@ export async function reconcile(server, blocks, items) {
 					return query;
 				},
 				insert: async (table, value) => {
-					const row = { ...value, _id: `publication-${++nextId}` };
+					const row = { ...value, _id: `publication-${++nextId}`, _creationTime: 0 };
 					tables.set(table, [...(tables.get(table) ?? []), row]);
 					return row._id;
 				},
@@ -257,9 +346,11 @@ export async function reconcile(server, blocks, items) {
 						tables.get(table).find((row) => row._id === id),
 						value
 					),
-				replace: async (_table, _id, value) => {
-					persisted = { ...value, _id: saved._id, _creationTime: 0 };
-					tables.get('playbookItems')[i] = persisted;
+				replace: async (table, id, value) => {
+					const rows = tables.get(table);
+					const index = rows.findIndex((row) => row._id === id);
+					rows[index] = { ...value, _id: id, _creationTime: rows[index]._creationTime ?? 0 };
+					if (table === 'playbookItems') persisted = rows[index];
 				}
 			}
 		};
@@ -267,20 +358,11 @@ export async function reconcile(server, blocks, items) {
 			membershipId,
 			id: saved._id,
 			item: semanticPlaybookDraft(editingPlaybookDraft(saved)),
-			expectedRevision: 0,
+			expectedRevision: 1,
 			operationId: '00000000-0000-4000-8000-000000000000'
 		});
 		assert.equal(result.status, 'saved', `Mutation rejected item ${i}`);
-		const {
-			_id,
-			_creationTime,
-			companyId: _companyId,
-			revision,
-			lastOperationCaller,
-			lastOperationId,
-			...business
-		} = persisted;
-		assert.deepEqual(business, item, `Mutation drops business fields: ${i}`);
+		assert.deepEqual(businessItem(persisted), item, `Mutation drops business fields: ${i}`);
 		const html = render(RepPlaybookPanel, {
 			props: { item: saved, onToggle: () => {}, onClose: () => {} }
 		}).body;
@@ -313,9 +395,6 @@ export async function reconcile(server, blocks, items) {
 				);
 		}
 	}
-	const { numberAddresses, referenceText } = await server.ssrLoadModule(
-		'/src/lib/contract/numbering.ts'
-	);
 	const { composeContract } = await server.ssrLoadModule('/src/lib/contract/compose.ts');
 	const { toDocumentOverlay } = await server.ssrLoadModule('/src/lib/playbook/document-overlay.ts');
 	const overlays = items.map((item, i) =>
@@ -332,12 +411,7 @@ export async function reconcile(server, blocks, items) {
 		if (Object.keys(state.selected).length > 1 && !scenarios.some((s) => s.name === state.name))
 			scenarios.push({ name: state.name, selected: state.selected });
 	for (const { name, selected } of scenarios) {
-		const old = legacyEffective(
-			source,
-			new Set(Object.values(selected)),
-			numberAddresses,
-			referenceText
-		);
+		const old = historicalEffective(source, new Set(Object.values(selected)));
 		const effective = composeContract({
 			blocks,
 			items: overlays,

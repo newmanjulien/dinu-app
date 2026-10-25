@@ -1,0 +1,14 @@
+/* Both the live document and its skeleton supply --page-width and the gutters. */
+.document-workspace-geometry {
+	--panel-width: clamp(
+		var(--panel-min-width),
+		calc(
+			100cqw - var(--rail-safe-gutter) - var(--page-width) - var(--panel-gap) - var(--right-gutter)
+		),
+		480px
+	);
+	--page-left: min(
+		calc(50cqw - var(--page-width) / 2),
+		calc(100cqw - var(--right-gutter) - var(--panel-width) - var(--panel-gap) - var(--page-width))
+	);
+}

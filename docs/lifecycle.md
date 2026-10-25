@@ -1,3 +1,88 @@
+# Saved contract navigation and saving
+
+The contracts layout reads its own `ContractDestination` load data. Each keyed saved
+view captures its ID for the whole mount, including teardown. Incoming Home data
+cannot change the departing editor's identity. New-contract creation retains its
+existing ID and coordinator until the saved view reports visible, with callbacks
+scoped to the opening attempt.
+Each opening, retry and reopening after interruption gets its own identity and
+deadline covering rendering as well as data initialization. Creation registers its
+completion callback before navigation can mount the saved view, and settles it once.
+A stalled viewer offers Retry while retaining the created ID and editing session.
+
+`WorkspaceScope` owns one membership-scoped `ContractSessions` registry above the
+header and route bodies. A contract session owns its authenticated metadata
+subscription, draft journal and `ContractPersistence`; views acquire explicit
+attachment tokens. Ordinary navigation, including Home and Back/Forward, proceeds
+without waiting for saving. Reopening attaches to the same pending session and
+renders its latest local choices. Rendering readiness does not require an
+acknowledgement; approval requests and Word export still require confirmed state.
+
+Every selection checkpoints intent synchronously, then starts the existing
+serialized, immutable operation protocol. Workspace feedback and Home card statuses
+read that same owner. Errors and conflicts remain actionable after navigation;
+storage failures warn while intent is pending. The membership owns the unload
+warning even when Home is visible.
+
+Recovery reads each valid journal once before account-level pending state is registered,
+and transfers that record and its storage status to the session.
+It validates fresh metadata and loads the immutable template's approval requirements
+before replaying any operation. Two recovered sessions initialize concurrently;
+foreground opening is immediate and version reads use the existing shared cache.
+Initialization has a 15-second deadline and failures remain pending until Retry or
+explicit discard. Saving and recovery require no document viewer or document host.
+
+The registry has one reactive map. Detached sessions release full template references
+independently of save and flush lifetimes. Validated template identity and approval
+requirements survive releasing rendering data; reattachment can reload the snapshot
+without replacing a healthy subscription. A failure to reload rendering data reaches
+the view's retry handling while saving continues. Unchanged readiness notifications
+do no work. Detached sessions keep their subscription while saving, including through early live acknowledgement, until the write callback
+settles. Clean sessions then dispose. Failed or conflicted detached sessions retain
+compact editing state and the journal while stopping subscriptions. Recovery after
+failure or connection replacement validates fresh metadata before resuming. Account
+flushing pins sessions until its
+result is captured so cleanup cannot turn a completed save into a failed exit.
+Flushing considers only unresolved intent and submitted saves, so clean reads do not
+delay an account exit. A clean initial read is canceled when its last view detaches.
+Read failures reach the mounted view's existing retry handling. Sessions with read
+failures and no unsaved intent dispose on departure and do not appear as failed saves.
+Explicit discard does not report a successful save.
+
+The account controller owns authentication readiness; company availability is a
+separate gate, so account recovery cannot bypass a hold. Authentication interruptions,
+company holds and transport replacement pause work.
+Fresh reconciliation precedes replay; both account-exit saving phases may flush
+while editing is frozen. Membership teardown unregisters the aggregate owner and
+invalidates old callbacks. Every authoritative deletion uses the same idempotent cleanup:
+intent, confirmed cache, opening records, document resources and recent save notices
+are cleared. Deletion settles flush waiters successfully even if a submitted reply
+is still outstanding. Renaming also updates recent save notices. Failed or
+uncertain deletion rechecks live state before resuming. Already submitted backend
+writes cannot be cancelled, so retries retain their operation identity. Interruption
+settles account-flush waiters even when the outgoing write response never arrives.
+
+Document resources retain rendering within their existing limits. Activation gives
+each view an owned attachment for bindings, choices and cleanup. The incoming owner
+is protected before releasing the outgoing attachment or applying retention limits. An outgoing view
+cannot detach its replacement; acquisition and background cache updates do not
+reset an active view's local choices. Admin retains its explicit Save/Cancel owner.
+
+Background writes require the live workspace. Refresh recovery uses the tab's
+existing journal; tab closure does not guarantee network completion. URLs, backend
+APIs and journal format are unchanged.
+
+## Manual navigation checklist
+
+- Open a saved contract, click Home once, and confirm both URL and content change.
+- Change a selection and immediately click Home; reopen while saving and confirm
+  the latest local choice appears. Verify the header and Home card agree on status.
+- Use Back/Forward between Home and several contracts, including during saving.
+- Create a contract; if opening fails, retry and confirm the same contract opens.
+- Interrupt the connection while saving, leave, and confirm failure/recovery feedback
+  remains available. Check the nonmodal save panel, Retry and conflict Open action.
+- Check Admin Save/Cancel and a company-hold Settings detour with an open draft.
+
 # Playbook authoring and persistence
 
 `AdminWorkspace` owns one `AuthoringSession` and passes it the shared compiled contract, indexed geometry, and accepted records.
@@ -7,6 +92,14 @@ selection feedback and the last locally added concession preview. Components bin
 to draft content and own presentation state such as menus and focus. The Convex
 transport is a separate adapter. Neither the app layout nor the rep workspace owns
 an authoring session.
+
+The membership-scoped workspace retains the mounted Admin owner through a temporary
+company deletion hold and a Settings detour to cancel that hold. Its session, draft,
+creation flow, and immutable unresolved operation survive; document preparation and
+new reads pause, and the hidden editor cannot start another operation. Returning to
+Admin restores the same owner. Ordinary departure still requires resolving an
+operation or confirming abandonment. Membership loss, account switching, and actual
+workspace teardown destroy the owner; refresh does not preserve local authoring work.
 
 ## Explicit transaction boundary
 
@@ -45,8 +138,9 @@ is no new operation ID or queued replacement. A definite rejection leaves the dr
 editable. Correcting its content permits a new save operation. A revision conflict
 retains local work and offers Use saved version; it never silently overwrites or
 merges another admin's edits. Missing records retain the local draft for explicit
-cancellation. Editing and navigation remain blocked until an uncertain operation
-has a definite outcome.
+cancellation. Editing and ordinary departure remain blocked until an uncertain
+operation has a definite outcome. The company-hold Settings detour retains that
+operation without retrying or abandoning it.
 
 Clean drafts adopt newer live records. Dirty drafts become conflicted, and conflicts
 track newer revisions and deletion. Updates received during an unresolved operation
@@ -57,15 +151,14 @@ treated as deletion. Subsequent query updates reconcile it normally.
 
 ## Backend contract
 
-`admin.savePlaybookItem` checks replays, missing records and expected revisions before
-validation. Updates with semantically unchanged ordered Triggers and concessions
-use source-independent item-content validation, reading only the target record.
-Creations and structural changes validate the proposed live set atomically,
-including source references, Trigger uniqueness/overlap, change boundaries,
-concession update rules and supported-size limits. The database audit validates the
-complete set. Accepted updates replace the full item and increment its revision;
-legacy records start at revision zero. Repeated operations acknowledge the existing
-result without writing again.
+`admin.savePlaybookItem` checks replays, missing records, and expected revisions
+before content validation. It validates source-independent item content before
+capturing the full playbook. Publication validates that capture, including source
+references, Trigger uniqueness/overlap, change boundaries, concession rules, and
+supported-size limits. Authoring, immutable revision creation, the full manifest,
+and pointer advancement commit atomically. New items start at revision 1; accepted
+updates advance the counter. Repeated operations acknowledge the existing result
+without writing again.
 
 Creation receipts map an operation UUID to a database ID atomically and outlive
 items. Retrying creation cannot duplicate or resurrect a deleted item; replay after
@@ -76,7 +169,7 @@ record is already absent. It does not queue behind another operation.
 Semantic comparison preserves business text and structured references while
 excluding persistence metadata. Creation mode is not part of the business payload.
 Live records and immutable snapshots contain no creation-mode field. Deploy schema
-and mutations with the frontend. Optional revision metadata needs no reset or reseeding.
+and mutations with the frontend after clearing incompatible records and reseeding.
 
 ## Source selection and validation
 
@@ -118,10 +211,20 @@ latest status. Automatic approval receipts and review receipts have separate nam
 Live confirmation retires an ambiguous client attempt, so a later override uses a
 fresh operation rather than replaying its earlier receipt.
 
+Review generation is separate from selection revision and advances for changed
+saves and explicit changed decisions. Only an explicit decision that completes
+all required reviews queues an immediate summary to the creator, with current
+same-company reviewers CC'd. The final decision writes a small delivery event;
+email preparation and immutable byte-bounded snapshots are separate from it.
+Claiming dispatch checks that generation again. Current reviewer attribution is
+maintained atomically in bounded records, while decision history remains an audit.
+Delivery attempts, persistence retries, and recovery are shared with approval
+requests and invitations. No batching timer is used.
+
 Each applied concession owns one review state and one tab per affected part. Edits
 owned by the same instruction trigger share a location; changes outside its triggers
 are grouped by source container. This keeps an explicitly selected additional part
-separate, including when it lies elsewhere in the same paragraph, and groups legacy
+separate, including when it lies elsewhere in the same paragraph, and groups
 concessions with several edits in one part. Each location anchors once at its first
 visible edit, without repeating across page splits. All instances use the same
 concession decision. Choices without text changes anchor once per instruction trigger.

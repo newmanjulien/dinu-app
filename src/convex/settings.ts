@@ -1,3 +1,4 @@
+import { emailAddress } from './emailValidators';
 import { v, ConvexError } from 'convex/values';
 import { mutation, internalMutation, internalQuery, type QueryCtx } from './_generated/server';
 import { requirePermission, requireProfile } from './auth';
@@ -79,9 +80,7 @@ export const saveApprovalEmail = mutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const access = await requirePermission(ctx, 'editCompanyProfile', args.membershipId);
-		const email = args.email.trim().toLowerCase();
-		if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-			throw new ConvexError('Enter a valid approval email address.');
+		const email = emailAddress(args.email);
 		await ctx.db.patch('company', access.companyId, { approvalEmail: email });
 		return null;
 	}

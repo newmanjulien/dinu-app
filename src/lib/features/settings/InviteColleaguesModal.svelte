@@ -15,7 +15,7 @@
 	let { error, isAdding, open, value, onClose, onSubmit, onValueChange }: Props = $props();
 </script>
 
-<ModalShell {open} title="Invite colleagues" {onClose}>
+<ModalShell {open} title="Invite colleagues" dismissible={!isAdding} {onClose}>
 	<label for="team-member-emails" class="block text-xs text-stone-950"
 		>List colleague emails separated by commas</label
 	>

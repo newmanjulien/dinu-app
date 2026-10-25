@@ -1,5 +1,5 @@
 import type { Action } from 'svelte/action';
-import { untrack } from 'svelte';
+import { onMount, untrack } from 'svelte';
 import { observeHomeWarming } from '$lib/document/runtime/render-perf';
 import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 import { getContractSnapshotCache } from './snapshot-cache';
@@ -13,26 +13,77 @@ export function createVisibleContractWarming() {
 	const cards = new Map<Element, SavedContractCard>();
 	const visible = new Set<string>();
 	const promoted = new Set<string>();
-	let pending = true;
-	let enabled = false;
+	let pending = $state(true);
+	let enabled = $state(false);
+	let busy = $state(false);
+	let hidden = $state(false);
+	let downloads = $state.raw<readonly string[]>([]);
+	const device =
+		typeof navigator === 'undefined'
+			? undefined
+			: (navigator as Navigator & {
+					deviceMemory?: number;
+					connection?: { saveData?: boolean };
+				});
+	const constrained = Boolean(
+		device?.connection?.saveData ||
+		(device?.deviceMemory && device.deviceMemory <= 4) ||
+		(device?.hardwareConcurrency && device.hardwareConcurrency <= 4)
+	);
+	const downloadLimit = device?.connection?.saveData ? 1 : 4;
 	let cancelStart: (() => void) | undefined;
 	let releaseObservation: (() => void) | undefined;
 	let destroyed = false;
 	let observer: IntersectionObserver | undefined;
 	let cache: ReturnType<typeof getContractSnapshotCache> | undefined;
 	$effect(() => {
+		const allowed = enabled && !pending && !busy && !hidden;
 		const ids = resources?.preparationCandidates ?? [];
+		// The eligible preparation target must still download when earlier candidates failed.
+		const fetchIds = [...new Set([...ids, ...downloads])].slice(0, downloadLimit);
 		untrack(() => {
 			if (destroyed) return;
-			cache?.backgroundCandidates(ids);
+			if (resources) resources.backgroundEnabled = allowed;
+			if (!allowed) cache?.pauseBackground();
+			cache?.backgroundCandidates(fetchIds);
+			if (!allowed) return;
+			cache?.allowBackground();
 			for (const id of ids) {
 				const data = cache?.peek(id);
 				if (data) resources?.prepare(data);
 			}
 		});
 	});
+	onMount(() => {
+		let cooldown: ReturnType<typeof setTimeout> | undefined;
+		const interaction = () => {
+			busy = true;
+			clearTimeout(cooldown);
+			cooldown = setTimeout(() => (busy = false), 250);
+		};
+		const visibility = () => (hidden = document.visibilityState === 'hidden');
+		visibility();
+		const options = { passive: true, capture: true };
+		for (const event of ['scroll', 'keydown', 'pointerdown'])
+			window.addEventListener(event, interaction, options);
+		document.addEventListener('visibilitychange', visibility);
+		return () => {
+			clearTimeout(cooldown);
+			for (const event of ['scroll', 'keydown', 'pointerdown'])
+				window.removeEventListener(event, interaction, options);
+			document.removeEventListener('visibilitychange', visibility);
+		};
+	});
+	let rankingScheduled = false;
 	function candidates() {
-		if (destroyed) return;
+		if (destroyed || rankingScheduled) return;
+		rankingScheduled = true;
+		queueMicrotask(() => {
+			rankingScheduled = false;
+			if (!destroyed) publishCandidates();
+		});
+	}
+	function publishCandidates() {
 		const ranked = rankCards(
 			[...cards.entries()]
 				.filter(([, card]) => visible.has(card._id))
@@ -43,7 +94,14 @@ export function createVisibleContractWarming() {
 			[...promoted]
 		);
 		const ids = !enabled || pending ? [] : ranked;
-		resources?.candidates(ids);
+		const selected = ids.slice(0, downloadLimit);
+		if (
+			downloads.length !== selected.length ||
+			downloads.some((id, index) => id !== selected[index])
+		)
+			downloads = selected;
+		// Filter failures before spending the single document preparation slot.
+		resources?.candidates(constrained ? ids.filter((id) => promoted.has(id)) : ids, 1);
 	}
 	const observe: Action<HTMLElement, SavedContractCard> = (node, card) => {
 		releaseObservation ??= observeHomeWarming();
@@ -99,9 +157,7 @@ export function createVisibleContractWarming() {
 					const start = () => {
 						if (destroyed || pending) return;
 						enabled = true;
-						if (resources) resources.backgroundEnabled = true;
 						candidates();
-						cache?.allowBackground();
 					};
 					if ('requestIdleCallback' in window) {
 						const idle = window.requestIdleCallback(start, { timeout: 2000 });

@@ -4,6 +4,7 @@ export type Role = Infer<typeof role>;
 export const permissions = v.object({
 	editCompanyProfile: v.boolean(),
 	manageMembers: v.boolean(),
+	manageTemplate: v.boolean(),
 	manageOwnership: v.boolean()
 });
 export type Permissions = Infer<typeof permissions>;
@@ -12,6 +13,7 @@ export function permissionsForRole(role: Role, isOwner = false): Permissions {
 	return {
 		editCompanyProfile: role === 'admin',
 		manageMembers: role === 'admin',
+		manageTemplate: role === 'admin',
 		manageOwnership: isOwner
 	};
 }

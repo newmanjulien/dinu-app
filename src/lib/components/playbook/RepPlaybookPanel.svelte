@@ -13,6 +13,7 @@
 		selected,
 		conflicts = {},
 		disabled = false,
+		isAdmin = false,
 		onToggle,
 		onClose
 	}: {
@@ -20,11 +21,22 @@
 		selected?: string;
 		conflicts?: Record<string, string>;
 		disabled?: boolean;
+		isAdmin?: boolean;
 		onToggle: (id: string) => void;
 		onClose: () => void;
 	} = $props();
 	let open = $state<string | null>(null);
+	let appliedConcession = $state<string | null>(null);
 	const itemId = $derived(item._id);
+	const approvalHint = $derived(
+		appliedConcession && selected === appliedConcession
+			? isAdmin
+				? "You've auto-approved this concession yourself"
+				: item.instructions?.changesNeedApproval?.trim()
+					? 'This concession will stay pending until you request and get approval'
+					: 'You have the authority to make this concession without approval'
+			: ''
+	);
 	const hasSummary = $derived(Boolean(item.instructions?.summary?.trim()));
 	const hasSections = $derived(
 		Boolean(
@@ -35,6 +47,7 @@
 	$effect(() => {
 		void itemId;
 		open = null;
+		appliedConcession = null;
 	});
 </script>
 
@@ -90,8 +103,10 @@
 									describedBy={conflict
 										? `${descriptionId} ${descriptionId}-conflict`
 										: descriptionId}
-									onclick={() => onToggle(concession.id)}
-									>{applied ? 'Remove concession' : 'Apply concession'}</InlineAction
+									onclick={() => {
+										appliedConcession = applied ? null : concession.id;
+										onToggle(concession.id);
+									}}>{applied ? 'Remove concession' : 'Apply concession'}</InlineAction
 								>
 							</ConcessionRow>
 							{#if conflict}<p id={`${descriptionId}-conflict`} class="m-0 text-sm text-danger">
@@ -104,3 +119,11 @@
 		</div>
 	{/if}
 </PlaybookCard>
+
+<p
+	role="status"
+	class="m-0 px-3.5 text-[13px] leading-[1.45] text-ink-muted @min-[1150px]:mt-3 @max-[1150px]:bg-surface @max-[1150px]:pb-[calc(12px+env(safe-area-inset-bottom))]"
+	class:hidden={!approvalHint}
+>
+	{approvalHint}
+</p>

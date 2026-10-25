@@ -3,7 +3,6 @@
 	import { useConvexClient } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import SettingsTextFieldCard from '$lib/features/settings/SettingsTextFieldCard.svelte';
 	import SettingsReadonlyFieldCard from '$lib/features/settings/SettingsReadonlyFieldCard.svelte';
@@ -52,10 +51,8 @@
 	}
 </script>
 
-<svelte:head><title>Settings | Agreed</title></svelte:head>
-<AppHeader />
 <section
-	class="flex min-h-[calc(100dvh-var(--app-header-height))] w-full bg-[#fafafa] px-3 py-4 md:px-6 md:py-6"
+	class="flex min-h-[calc(100dvh-var(--app-header-height))] w-full bg-page px-3 py-4 md:px-6 md:py-6"
 >
 	<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 pb-10 md:gap-7 md:pb-16">
 		<fieldset disabled={Boolean(viewer().company.deletionPending)} class="contents">
@@ -145,6 +142,7 @@
 					{#snippet preview()}<Avatar
 							name={viewer().company.name}
 							avatarUrl={viewer().company.avatarUrl}
+							fallbackUrl={null}
 							size={68}
 						/>{/snippet}
 				</SettingsAvatarCard>

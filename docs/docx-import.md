@@ -1,7 +1,7 @@
 # DOCX baseline import
 
-Import runs locally in a disposable worker. It uses Word's document structure and
-formatting rules, without an LLM. The result uses the same immutable source model,
+Import runs on the backend from the uploaded original DOCX. It uses Word's document
+structure and formatting rules, without an LLM. The result uses the same immutable source model,
 composition, reference resolution, and Word export as existing contracts.
 Errors block publication. The upload page gives plain-English corrections and
 short text excerpts to find in Word, without displaying the contract. Routine
@@ -16,6 +16,9 @@ file can be published after confirming that the starting contract is permanent.
 - Document defaults and inherited paragraph, character, and table styles. Table
   text supports whole-table, first/last column, and first/last row conditions.
   Row conditions take precedence over column conditions.
+  Repeated style IDs are accepted only when their complete parsed definitions
+  match, regardless of XML attribute order; the first definition is retained.
+  Missing style IDs and conflicting definitions require correction.
 - Decimal, upper/lower letter, and upper/lower Roman automatic numbering, up to
   nine levels, including starting values, decimal-zero padding, literal prefixes
   such as `Article`, supported label patterns, and restarts. Automatic letter
@@ -34,7 +37,9 @@ file can be published after confirming that the starting contract is permanent.
 Fonts, spacing, colors, borders, underline, page/column breaks, and hyperlink
 behavior use Agreed's layout. Comments, comment anchors, and footers are ignored,
 including their related parts. They do not become contract text or publication
-errors. Blank headers and validated PAGE/NUMPAGES fields are discarded;
+errors. Paragraph-level content controls containing only comment markers are also
+ignored in the body and headers when their only properties are `id` and `tag`
+metadata. Blank headers and validated PAGE/NUMPAGES fields are discarded;
 substantive headers must move into the body. Archive expansion bounds still
 include ignored parts.
 Related parts are located through package relationships, regardless of filenames
@@ -45,7 +50,8 @@ Consumed XML parts support UTF-8 and UTF-16 in either byte order.
 ## Content that requires correction in Word
 
 Unknown content is rejected rather than flattened into text. This includes math,
-drawings, text boxes, tracked content or formatting changes, content controls,
+drawings, text boxes, tracked content or formatting changes, substantive or
+malformed content controls (including unsupported control properties),
 unsupported fields, nested tables, merged cells, and numbered lists in cells.
 Effective hidden, struck-through, superscript/subscript, or unsupported
 complex-script formatting is rejected, including when inherited from defaults or
@@ -133,7 +139,8 @@ are then released. Paragraphs receive unique identities before formatting or
 diagnostics, including separate paragraphs within the same table cell. Simple
 and complex fields have explicit instruction/result states. Style inheritance
 uses cycle detection and a depth check that remains valid when ancestors are
-cached; character styles apply to both body runs and numbering labels. Styles and
+cached; character styles apply to both body runs and numbering labels. Duplicate
+numbering IDs and package metadata keys remain invalid. Styles and
 resolved table conditions are cached. Reference replacement sweeps runs and field
 spans in order instead of rescanning every run for every field. Typed-label
 formatting scans stop at the end of the label; signature
@@ -145,28 +152,57 @@ conversion. Diagnostic retention is capped independently at 100 warnings and
 Numbering and reference display patterns use explicit literal and counter parts
 across import, composition, validation, and export. Word's raw `%1`–`%9` syntax is
 interpreted separately, so a literal colon or digit after a counter remains
-literal. Existing persisted string patterns and legacy abbreviated-reference
-metadata remain readable; new imports emit explicit parts.
-New letter imports explicitly store either repeated or sequential lettering.
-Persisted numbering without this metadata retains sequential lettering, including
-z, aa, ab, so existing contracts keep their labels.
+literal. Persisted label patterns and reference display patterns are required
+structured arrays. Alphabetic numbering explicitly stores repeated or sequential
+lettering. The offline seed generator emits the same canonical format, preserving
+its sequential z, aa, ab labels.
 
-Vite prebundles the upload worker's `fflate` and `saxes` dependencies. This avoids
-discovering them during the first upload and sending a full reload that clears
-the component's local file and result state. Uploads remain local and disposable;
-refreshing intentionally clears them.
+The existing upload page sends the original DOCX to the authenticated Convex HTTP
+endpoint `POST /baseline`, with a company membership and filename. The backend
+checks admin access and that the company has no permanent baseline, bounds the
+request body, and runs the parser. Error diagnostics return without persisting
+an upload. A document with no meaningful contract text also requires correction.
+A successful check stores a prepared baseline and its blocks, the original file,
+SHA-256 file hash, canonical content fingerprint, parser version, uploader,
+filename, and diagnostics. The browser receives the prepared baseline ID and
+diagnostics; no public mutation accepts client-generated baseline blocks.
+
+The page retains the same checking, correction, confirmation, and Publish flow.
+The request has a 30-second deadline, including token retrieval and response-body
+reading. Choosing another file or leaving the page cancels the attempt. Changed
+sessions and memberships prevent stale results from becoming publishable.
 Publication navigation belongs to the route intent and session that started it.
 A newer navigation or changed session prevents a late publication response from
 redirecting the user. The expected same-route setup unmount after publication
 still allows navigation to the admin page.
 
-The server independently validates the submitted baseline. Only an authenticated
-company admin can initialize an empty company. Publication captures validated
-content once, reserves transaction capacity, writes live and immutable version
-records, and exposes the version through one pointer write in the same mutation.
-The baseline cannot be replaced. An identical retry uses a canonical fingerprint
-and returns the current published version. Later playbook publications use the
-same captured-snapshot path without rereading live content.
+Publication accepts the prepared ID, verifies its company, uploader, validity,
+and fingerprint, and atomically marks the baseline published, creates the first
+version, and updates the current pointer. One company has one permanent baseline;
+replacement is refused. Identical publication retries and concurrent first
+publications of the same canonical content return the committed version.
+Identical upload retries reuse an unexpired prepared baseline with the current
+parser version before parsing or storing another copy. Parser version `docx-3`
+includes identical-style deduplication and comment-only control handling, so
+preparations from older parsers are not reused. New uploads parse in a separate
+internal Node action. Cleanup dispatch is independent of preparation success. Unpublished DOCX
+uploads expire after 24 hours, with bounded scheduled cleanup and a recurring
+recovery sweep. A daily bounded sweep removes unreferenced DOCX files left by an
+interrupted preparation or export. It persists its cursor and fixed cutoff for
+resumption, and advances a completed watermark to avoid rescanning retained originals.
+Published originals remain until company deletion.
+
+Published baseline blocks are stored once. Each template version references that
+baseline and a complete manifest from stable rule IDs to immutable full rule
+revisions. Save and Delete still publish immediately in their existing transaction;
+one captured playbook, business-field validation, native document-size capacity checks, version creation, and pointer
+advancement succeed or roll back together. Unchanged rule revisions are reused.
+Historical versions retain deleted rules and their original payloads.
+
+Storage accepts only required baseline/revision links and canonical manifests.
+Seed imports, audits, reconciliation, and company deletion use that same model.
+See [template storage](template-storage.md) and the
+[fresh reset procedure](private-companies-rollout.md#fresh-development-reset).
 
 ## Bounds
 
@@ -174,68 +210,48 @@ same captured-snapshot path without rereading live content.
 | ------------------------------------------------- | ---------------------------- |
 | Uploaded archive                                  | 10 MiB                       |
 | Actual expanded archive / entries                 | 50 MiB / 2,000               |
-| Individual retained XML part                      | 12 MiB                       |
-| Parsed XML nodes / depth / attributes per element | 300,000 / 100 / 100          |
-| Parsed XML characters across consumed parts       | 12 million                   |
+| Aggregate retained XML across parsed parts        | 8 MiB                        |
+| Parsed XML nodes / depth / attributes per element | 100,000 / 100 / 100          |
+| Parsed XML characters across consumed parts       | 2 million                    |
 | Imported blocks / serialized baseline             | 400 / 512 KiB                |
 | Paragraphs / text segments / text characters      | 20,000 / 100,000 / 1 million |
 | Characters per paragraph                          | 512,000                      |
 | Fields / instruction characters                   | 10,000 / 4,096               |
 | Table columns / rows / total cells                | 256 / 8,192 / 20,000         |
 | Persisted array entries / content nesting depth   | 8,192 / 32                   |
-| Individual source block / playbook item JSON      | 900,000 / 500,000 bytes      |
-| Worker duration                                   | 30 seconds                   |
+| Individual source block / playbook business JSON  | 900,000 / 500,000 bytes      |
+| Playbook rules / historical snapshot              | 4,000 / 8,000,000 bytes      |
+| Upload request duration                           | 30 seconds                   |
 
 Archive expansion is counted while inflating, and XML budgets are enforced while
-parsing, before building the normalized tree. Browser and server validation share
+parsing, before building the normalized tree. Expanded element/attribute names
+are charged before constructing normalized names, so namespace expansion consumes
+the same character budget. Shared source validation enforces
 storage array limits; source and playbook item limits leave room for Convex wrappers.
 
 ## Verification evidence
 
-Fresh local checks on 2026-10-20 covered all eight accepted review findings:
-legacy and explicit lettering, typed inference, repeated-prefix/title ranges,
-Word REF literal words/digits, case/padding and renumbering, whole-group counter
-bounds, namespace cleanup, and one native list formatter per import needing
-sibling alternatives. The 36 focused conversion checks passed. Compatibility
-probes also passed for legacy string patterns and suffixLevels, scope qualifiers,
-abbreviated references, malformed fields, distinct table-paragraph diagnostics,
-foreign namespaces, cached style-depth bounds, warning saturation, ignored-part
-expansion bounds, Word lettering starting at 27, and Roman numbering near 10,000.
+The original `Oceans PSA Contracting Cheat Sheet 9.21.26 (2) (1).docx` imports
+248 blocks with zero errors and 67 formatting warnings (66 underline warnings
+and one layout warning). Discarding its comment-only controls leaves the imported
+blocks identical to the conversion that reported those controls as unsupported;
+the original file was unchanged. In-memory diagnostics checked identical and
+attribute-reordered styles, conflicting complete definitions, missing style IDs,
+strict numbering/package indexes, and accepted versus substantive or malformed
+comment controls. These checks did not add repository tests or exercise live upload
+and persistence.
 
-The uploaded `Oceans PSA Contracting Cheat Sheet 9.21.26 (2).docx` imports 249
-blocks, 84 numbered clauses, and 31 live reference atoms. Exact parsed-body parity
-covers 44,775 characters, bold/italic marks, and positions of all 12 table cells.
-Its 67 layout warnings stay out of the user-facing correction list. One source
-reference remains blocked: `Section 3(a)(iv)` has no matching clause; the correction
-lists `3(a)(i)`, `3(a)(ii)`, and `3(a)(iii)` as existing siblings. `Section 8(C)`
-resolves to `8(c)` while preserving its original spelling. Export and reimport
-retain 117 nonblank blocks, all 84 labels, 31 references, that same source error,
-and exact composed text, formatting, and table-cell positions.
+Local verification uses `npm run verify`, backend TypeScript checking, and
+`npm run seed:verify`. The existing performance suite checks saving, scheduling,
+caching, immutable version behavior, and publication rollback. Seed verification
+checks all business records, edit/save preservation, 58 effective/redline output
+states, token/fragment provenance, and server source against the independent
+historical oracle. These checks exercise canonical numbering and reference patterns.
 
-Exact upload-script probes passed for read/worker replacement, stale callbacks,
-destruction during reading, timeout, read rejection, and successful worker
-cleanup. Nine publication probes used the actual component script and Workspace
-navigation callback: mounted and expected same-route unmount success navigate;
-changed route intent, committed route, user, session preparation, transport
-generation, closing state, or membership prevents stale navigation. These checks
-exercise control flow without browser event dispatch or the Svelte DOM.
-
-A fresh cold Vite probe loaded 24 modules, confirmed prebundled `fflate` and
-`saxes`, and observed an unchanged dependency hash and zero full reloads.
-Numbering at 32/128/384 clauses took local medians of 1.94/5.68/10.72 ms.
-Mixed field/typed groups at 64/256/1,024/4,096 repetitions preserved
-128/512/2,048/8,192 references; the largest inputs correctly report the independent
-512 KiB baseline and 8,192-entry array bounds. Local timings are observations,
-not latency guarantees.
-
-`npm run verify` passed all 24 existing performance checks in five files, then
-type checking with zero errors/warnings and the production build. The suite
-checks saving, scheduling, caching, and publication rollback guarantees.
-No assertions were weakened and no repository tests or browser harness were added.
-
-Earlier implementation checks, recorded before this review, imported the exported
-built-in contract with 112 blocks and 84 labels and verified repeated export/import
-parity after applying Word heading/table styles. Those built-in checks are
-historical evidence, separate from the fresh checks above.
-Browser upload/cancellation, visual pagination, arbitrary third-party Word
-formats, and live multi-admin races remain unverified. No deployment was performed.
+The parser enforces the documented budgets during parsing, including expanded XML
+names. Adversarial heap/memory bounds have not been remeasured after this cleanup.
+The development database was reset, the strict baseline/revision schema deployed,
+and the Oceans template reseeded with 113 blocks and 56 rules during the server split.
+Live Clerk JWT authentication, HTTP upload/cancellation, multi-admin races,
+third-party Word formats, and visual pagination remain unverified.
+No repository tests or browser harness were added.

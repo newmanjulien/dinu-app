@@ -4,7 +4,8 @@ import { connect, type TLSSocket } from 'node:tls';
 import nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { ConvexError, v } from 'convex/values';
-import { action, env } from './_generated/server';
+import { action } from './_generated/server';
+import { configuration, transportOptions, deliverEmail } from './smtpEmail';
 import { internal } from './_generated/api';
 import { emailAddress, invitationDelivery, type InvitationDelivery } from './invitationValidators';
 const deliveryConcurrency = 5;
@@ -20,22 +21,21 @@ export const invite = action({
 		if (!args.emails.length || args.emails.length > 50)
 			throw new ConvexError('Enter up to 50 valid email addresses.');
 		const emails = [...new Set(args.emails.map(emailAddress))];
-		if (!env.SMTP_USER || !env.SMTP_APP_PASSWORD || !env.APP_URL)
+		let config: ReturnType<typeof configuration>;
+		try {
+			config = configuration();
+		} catch {
 			throw new ConvexError('Email is unavailable.');
-		const baseUrl = new URL('/invitation', env.APP_URL);
+		}
+		const baseUrl = new URL('/invitation', config.appUrl);
+		const inlineDeadline = Date.now() + batchTimeoutMs;
 		const sockets = new Set<TLSSocket>();
 		let timedOut = false;
 		const transport = nodemailer.createTransport({
 			pool: true,
 			maxConnections: deliveryConcurrency,
 			maxRequeues: 0,
-			host: 'smtp.gmail.com',
-			port: 465,
-			secure: true,
-			auth: { user: env.SMTP_USER, pass: env.SMTP_APP_PASSWORD },
-			connectionTimeout: 30_000,
-			greetingTimeout: 30_000,
-			socketTimeout: 60_000,
+			...transportOptions(config),
 			// Own sockets so the batch deadline also cancels active SMTP exchanges.
 			getSocket(
 				_options: SMTPTransport.Options,
@@ -81,41 +81,27 @@ export const invite = action({
 					membershipId: args.membershipId,
 					email,
 					resend: args.resend ?? false,
+					inlineDeadline,
 					tokenHash: createHash('sha256').update(token).digest('hex')
 				});
 				if (!invitation) return { email, error: null };
 				const url = new URL(baseUrl);
 				url.searchParams.set('invitation', token);
-				let sent = false;
-				try {
-					if (timedOut) throw new Error('Invitation batch timed out.');
-					if (
-						!(await ctx.runQuery(internal.companyInvitations.canDeliver, {
-							id: invitation.id,
-							generation: invitation.generation
-						}))
-					)
-						throw new Error('This invitation is unavailable.');
-					const result = await transport.sendMail({
-						from: env.SMTP_USER,
-						to: invitation.email,
+				const outcome = await deliverEmail(
+					ctx,
+					{ id: invitation.deliveryId, attempt: 1 },
+					async () => ({
 						subject: `Join ${invitation.companyName} on Agreed`,
 						text: `${invitation.inviterName} invited you to join ${invitation.companyName} on Agreed.\n\n${url.href}\n\nOpen the invitation, verify ${invitation.email} with an email code, then choose Join ${invitation.companyName}. Your Agreed account will be created if needed. This invitation expires in 7 days.`
-					});
-					sent = result.accepted.length > 0;
-				} catch {
-					/* Persist failure without logging the token or recipient. */
-				}
-				await ctx.runMutation(internal.companyInvitations.finishDelivery, {
-					id: invitation.id,
-					generation: invitation.generation,
-					sent
-				});
+					}),
+					{ transport, expired: () => timedOut }
+				);
 				return {
 					email,
-					error: sent
-						? null
-						: 'Invitation delivery could not be confirmed. You can resend it from the team page.'
+					error:
+						outcome?.status === 'sent'
+							? null
+							: 'Invitation delivery could not be confirmed. You can resend it from the team page.'
 				};
 			} catch (error) {
 				return {

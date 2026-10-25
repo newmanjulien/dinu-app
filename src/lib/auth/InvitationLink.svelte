@@ -11,7 +11,7 @@
 	import type { InvitationResolution } from '../../convex/invitationValidators';
 	import AuthButton from './components/AuthButton.svelte';
 	import AuthStepFrame from './components/AuthStepFrame.svelte';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
 	const client = useConvexClient();
 	const session = useViewerSession();
 	const account = useAccount();
@@ -111,9 +111,7 @@
 			? `Open ${result.companyName} on Agreed.`
 			: 'Your company is ready to open.'}
 	>
-		<a
-			href="/"
-			class="block rounded-button-lg bg-accent px-4 py-3 text-center text-sm text-white"
+		<a href="/" class="block rounded-button-lg bg-accent px-4 py-3 text-center text-sm text-white"
 			>Open workspace</a
 		>
 		{#if error}<p role="alert" class="mt-3 text-sm text-danger">{error}</p>{/if}
@@ -174,10 +172,10 @@
 	</AuthStepFrame>
 {:else}
 	<AuthStepFrame title="Company invitation">
-		<div class="grid justify-items-center gap-4">
+		<LoadingState label={error ? undefined : 'Loading invitation'}>
 			{#if error}<p role="alert" class="text-center text-sm text-danger">{error}</p>
 				<button class="text-sm underline" onclick={() => retry++}>Try again</button>
-			{:else}<LoadingWheel label="Loading invitation" />{/if}
-		</div>
+			{/if}
+		</LoadingState>
 	</AuthStepFrame>
 {/if}

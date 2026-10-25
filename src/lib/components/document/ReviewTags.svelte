@@ -1,12 +1,16 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import Menu from '$lib/components/ui/Menu.svelte';
+	import MenuItem from '$lib/components/ui/MenuItem.svelte';
+	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import { ReviewAnchorProjector, type ReviewAnchor } from '$lib/document/review-anchors';
 	import type { ReviewTag, ReviewNavigation, ReviewDecision } from '$lib/contract/approval';
 	import type { SourceIndex } from '$lib/contract/source-index';
 	import type { PaginatedPage } from '$lib/document/pagination/types';
 	import { getDocumentViewportMetrics } from '$lib/document/document-viewport';
+	import { reviewTagExplanation } from './review-tag-copy';
 	let {
 		host,
 		tags,
@@ -29,7 +33,7 @@
 	let anchors = $state.raw<ReviewAnchor[]>([]);
 	let projectionPending = $state(true);
 	let openKey = $state<string | null>(null);
-	const elements = new Map<string, HTMLButtonElement>();
+	const elements = new SvelteMap<string, HTMLButtonElement>();
 	const id = $props.id();
 	const projector = new ReviewAnchorProjector();
 	const decisionLabels: Record<ReviewDecision, string> = {
@@ -131,38 +135,53 @@
 	{#each anchors as anchor, i (anchor.key)}
 		{@const tag = tagsByItem.get(anchor.itemId)}
 		{#if tag}
-			<button
-				type="button"
-				class="review-tab"
-				class:approved={tag.status === 'approved'}
-				class:rejected={tag.status === 'rejected'}
-				class:waiting={!tag.admin && tag.status === 'pending'}
-				style:top={`${anchor.top}px`}
-				use:register={anchor.key}
-				aria-label={`${label(tag)}: ${tag.description}${tag.admin && tag.disabled ? '. Saving or reconnecting; review is temporarily unavailable.' : ''}`}
-				aria-disabled={!tag.admin || tag.disabled || !ready}
-				aria-haspopup={tag.admin ? 'menu' : undefined}
-				aria-expanded={tag.admin ? openKey === anchor.key : undefined}
-				aria-controls={tag.admin && openKey === anchor.key ? `${id}-${i}` : undefined}
-				title={tag.description}
-				onclick={() => {
-					if (tag.admin && !tag.disabled && ready)
-						openKey = openKey === anchor.key ? null : anchor.key;
-				}}
-				onkeydown={(event) => {
-					if (
-						tag.admin &&
-						!tag.disabled &&
-						ready &&
-						(event.key === 'ArrowDown' || event.key === 'ArrowUp')
-					) {
-						event.preventDefault();
-						openKey = anchor.key;
-					}
-				}}
+			{@const explanation = reviewTagExplanation(tag, ready)}
+			<Tooltip
+				text={explanation}
+				trigger={elements.get(anchor.key)}
+				standalone={false}
+				enabled={openKey !== anchor.key}
+				class="rounded-md border-0 bg-[#fafafa] px-2 py-1 text-left text-xs leading-[1.4] text-[#202124] shadow-sm"
 			>
-				{label(tag)}{#if tag.admin}<CaretDownIcon aria-hidden="true" size={12} weight="bold" />{/if}
-			</button>
+				{#snippet children(descriptionId)}
+					<button
+						type="button"
+						class="review-tab"
+						class:approved={tag.status === 'approved'}
+						class:rejected={tag.status === 'rejected'}
+						class:waiting={!tag.admin && tag.status === 'pending'}
+						style:top={`${anchor.top}px`}
+						use:register={anchor.key}
+						aria-label={`${label(tag)}: ${tag.description}`}
+						aria-describedby={descriptionId}
+						aria-disabled={!tag.admin || tag.disabled || !ready}
+						aria-haspopup={tag.admin ? 'menu' : undefined}
+						aria-expanded={tag.admin ? openKey === anchor.key : undefined}
+						aria-controls={tag.admin && openKey === anchor.key ? `${id}-${i}` : undefined}
+						onclick={() => {
+							if (tag.admin && !tag.disabled && ready)
+								openKey = openKey === anchor.key ? null : anchor.key;
+						}}
+						onkeydown={(event) => {
+							if (
+								tag.admin &&
+								!tag.disabled &&
+								ready &&
+								(event.key === 'ArrowDown' || event.key === 'ArrowUp')
+							) {
+								event.preventDefault();
+								openKey = anchor.key;
+							}
+						}}
+					>
+						{label(tag)}{#if tag.admin}<CaretDownIcon
+								aria-hidden="true"
+								size={12}
+								weight="bold"
+							/>{/if}
+					</button>
+				{/snippet}
+			</Tooltip>
 			{#if tag.admin && openKey === anchor.key}
 				<Menu
 					open={true}
@@ -175,9 +194,8 @@
 				>
 					{#snippet children(close)}
 						{#each ['approved', 'rejected'] as const as status}
-							<button
-								role="menuitem"
-								class="flex w-full items-center justify-between gap-5 rounded px-3 py-2 text-left text-sm hover:bg-control-fill focus:bg-control-fill focus:outline-none"
+							<MenuItem
+								checked={tag.status === status}
 								disabled={tag.disabled || !ready}
 								aria-label={`${decisionLabels[status]}${tag.status === status ? ', current status' : ''}`}
 								onclick={() => {
@@ -186,10 +204,8 @@
 									onDecision?.(tag, status);
 								}}
 							>
-								{decisionLabels[status]}<span aria-hidden="true"
-									>{tag.status === status ? '✓' : ''}</span
-								>
-							</button>
+								{decisionLabels[status]}
+							</MenuItem>
 						{/each}
 					{/snippet}
 				</Menu>
@@ -221,7 +237,7 @@
 		border-radius: 3px 0 0 3px;
 		background: var(--color-accent);
 		color: white;
-		font: 600 12px/1.2 var(--font-sans, sans-serif);
+		font: 400 13px/1.2 var(--font-sans, sans-serif);
 		cursor: pointer;
 		white-space: nowrap;
 		box-shadow: 0 1px 2px #00000018;

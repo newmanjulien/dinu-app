@@ -1,6 +1,5 @@
 import type { HelpVariant } from './help-content';
 
-// Legacy storage keys retained for backwards compatibility.
 const HIDE_HELP_STORAGE_KEYS: Record<HelpVariant, string> = {
 	rep: 'hide-agreed-guide',
 	admin: 'hide-agreed-admin-guide'

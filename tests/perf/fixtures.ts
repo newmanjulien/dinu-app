@@ -9,7 +9,10 @@ export const block: BaselineBlock = {
 	content: [{ kind: 'text', sourceKey: 'text-1', text: 'Synthetic contract.' }]
 };
 
-export const item: Omit<Doc<'playbookItems'>, '_id' | '_creationTime' | 'companyId'> = {
+export const item: Omit<
+	Doc<'playbookItems'>,
+	'_id' | '_creationTime' | 'companyId' | 'revision' | 'publishedRevisionId'
+> = {
 	triggers: [],
 	concessions: [
 		{ id: 'preferred', tier: 'preferred', description: 'Synthetic choice.', changes: [] }

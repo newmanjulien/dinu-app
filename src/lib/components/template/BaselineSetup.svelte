@@ -3,25 +3,28 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { useConvexClient } from 'convex-svelte';
+	import { ConvexError } from 'convex/values';
+	import { useClerkContext } from 'svelte-clerk';
+	import { env } from '$env/dynamic/public';
+	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 	import { api } from '../../../convex/_generated/api';
+	import type { Id } from '../../../convex/_generated/dataModel';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
 	import InfoBar from '$lib/components/ui/InfoBar.svelte';
 	import FileTextIcon from 'phosphor-svelte/lib/FileTextIcon';
 	import CheckCircleIcon from 'phosphor-svelte/lib/CheckCircleIcon';
-	import WarningCircleIcon from 'phosphor-svelte/lib/WarningCircleIcon';
-	import type { BaselineBlock } from '$lib/contract/source-model';
 	import { DOCX_MAX_BYTES, type ImportIssue } from '$lib/contract/import/limits';
 	import { saveError } from '$lib/contract/saved';
 	let { getNavigationIntent }: { getNavigationIntent: () => number } = $props();
 	const viewer = useViewer();
 	const session = useViewerSession();
 	const client = useConvexClient();
+	const clerk = useClerkContext();
 	const membershipId = viewer().membership.id;
 	const admin = $derived(viewer().profile.role === 'admin');
 	let fileInput = $state<HTMLInputElement>();
 	let fileName = $state('');
-	let blocks = $state.raw<BaselineBlock[]>([]);
+	let preparedBaselineId = $state<Id<'baselines'> | null>(null);
 	let issues = $state.raw<ImportIssue[]>([]);
 	let parsing = $state(false);
 	let publishing = $state(false);
@@ -30,11 +33,10 @@
 	let publishError = $state('');
 	let dragDepth = $state(0);
 	let generation = 0;
-	let worker: Worker | undefined;
-	let timeout: ReturnType<typeof setTimeout> | undefined;
+	let attempt: ReadAttempt | undefined;
 	const errors = $derived(issues.filter((i) => i.severity === 'error'));
 	const blocked = $derived(errors.length > 0);
-	const ready = $derived(blocks.length > 0 && !blocked && !parsing);
+	const ready = $derived(!!preparedBaselineId && !blocked && !parsing);
 	const dragging = $derived(dragDepth > 0 && !publishing);
 	function findText(context: string) {
 		const text = context.replace(/\s+/g, ' ').trim();
@@ -42,14 +44,13 @@
 	}
 	function cancel() {
 		generation++;
-		worker?.terminate();
-		worker = undefined;
-		clearTimeout(timeout);
+		attempt?.abort();
+		attempt = undefined;
 	}
 	onDestroy(cancel);
 	function resetUpload(name = '') {
 		cancel();
-		blocks = [];
+		preparedBaselineId = null;
 		issues = [];
 		confirmed = false;
 		uploadError = '';
@@ -97,53 +98,82 @@
 		}
 		parsing = true;
 		const current = generation;
+		const userId = session.userId;
+		const prepared = session.prepared;
+		const transportGeneration = session.transportGeneration;
+		const active = () =>
+			generation === current &&
+			!session.closing &&
+			session.userId === userId &&
+			session.prepared === prepared &&
+			session.transportGeneration === transportGeneration &&
+			viewer().membership.id === membershipId;
+		const read = new ReadAttempt(30000);
+		attempt = read;
 		try {
-			const data = await file.arrayBuffer();
-			if (generation !== current) return;
-			worker = new Worker(new URL('../../contract/import/worker.ts', import.meta.url), {
-				type: 'module'
-			});
-			// Worker construction and parser loading happen only after a file is selected.
-			worker.onmessage = (
-				event: MessageEvent<{
-					error?: string;
-					result?: {
-						blocks: BaselineBlock[];
-						issues: ImportIssue[];
-					};
-				}>
-			) => {
-				if (generation !== current) return;
-				if (event.data.error) uploadError = event.data.error;
-				else if (event.data.result) {
-					blocks = event.data.result.blocks;
-					issues = event.data.result.issues;
-				}
-				parsing = false;
-				worker?.terminate();
-				worker = undefined;
-				clearTimeout(timeout);
-			};
-			worker.onerror = () => {
-				if (generation === current) {
-					uploadError = 'Unable to read this Word file. Save it again in Word and re-upload.';
-					parsing = false;
-					cancel();
-				}
-			};
-			timeout = setTimeout(() => {
-				if (generation === current) {
-					cancel();
-					parsing = false;
-					uploadError = 'The Word file took too long to read. Simplify it and upload again.';
-				}
-			}, 30000);
-			worker.postMessage(data, [data]);
+			if (!active()) return;
+			if (!clerk.session) throw new Error('Sign in again to upload your contract.');
+			const token = await waitForRead(clerk.session.getToken({ template: 'convex' }), read.signal);
+			if (!active()) return;
+			if (!token) throw new Error('Sign in again to upload your contract.');
+			const url = new URL(
+				'/baseline',
+				env.PUBLIC_CONVEX_URL!.replace('.convex.cloud', '.convex.site')
+			);
+			url.searchParams.set('membershipId', membershipId);
+			url.searchParams.set('filename', file.name);
+			const response = await waitForRead(
+				fetch(url, {
+					method: 'POST',
+					headers: {
+						Authorization: `Bearer ${token}`,
+						'Content-Type':
+							'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+					},
+					body: file,
+					signal: read.signal
+				}),
+				read.signal
+			);
+			const result: unknown = await waitForRead(response.json(), read.signal);
+			if (!active()) return;
+			if (!result || typeof result !== 'object')
+				throw new Error('Unable to read the upload response. Try again.');
+			if (!response.ok)
+				throw new ConvexError(
+					'error' in result && typeof result.error === 'string'
+						? result.error
+						: 'Unable to upload your contract. Try again.'
+				);
+			if (
+				!('preparedBaselineId' in result) ||
+				(result.preparedBaselineId !== null && typeof result.preparedBaselineId !== 'string') ||
+				!('issues' in result) ||
+				!Array.isArray(result.issues) ||
+				!result.issues.every(
+					(value): value is ImportIssue =>
+						value &&
+						typeof value === 'object' &&
+						(value.severity === 'warning' || value.severity === 'error') &&
+						typeof value.location === 'string' &&
+						typeof value.message === 'string' &&
+						(value.context === undefined || typeof value.context === 'string')
+				)
+			)
+				throw new Error('Unable to read the upload response. Try again.');
+			preparedBaselineId = result.preparedBaselineId as Id<'baselines'> | null;
+			issues = result.issues;
 		} catch (cause) {
+			if (active()) {
+				uploadError = read.signal.aborted
+					? 'The upload took too long. Try again.'
+					: saveError(cause, 'Unable to upload your contract. Try again.');
+			}
+		} finally {
+			read.complete();
 			if (generation === current) {
-				cancel();
 				parsing = false;
-				uploadError = cause instanceof Error ? cause.message : 'Unable to read this file.';
+				attempt = undefined;
 			}
 		}
 	}
@@ -154,7 +184,7 @@
 			blocked ||
 			!confirmed ||
 			publishing ||
-			!blocks.length ||
+			!preparedBaselineId ||
 			session.closing
 		)
 			return;
@@ -166,7 +196,7 @@
 		const prepared = session.prepared;
 		const transportGeneration = session.transportGeneration;
 		try {
-			await client.mutation(api.templates.publishBaseline, { membershipId, blocks });
+			await client.mutation(api.templates.publishBaseline, { membershipId, preparedBaselineId });
 			if (
 				getNavigationIntent() !== intent ||
 				page.url.href !== route ||
@@ -195,9 +225,8 @@
 	}
 </script>
 
-<AppHeader />
 <main
-	class="min-h-[calc(100dvh-var(--app-header-height))] bg-[#fafafa] px-5 pt-10 pb-12 sm:px-6 sm:pt-16 sm:pb-16"
+	class="min-h-[calc(100dvh-var(--app-header-height))] bg-page px-5 pt-10 pb-12 sm:px-6 sm:pt-16 sm:pb-16"
 >
 	<div class="mx-auto max-w-[1262px]">
 		<div class="mx-auto mb-9 max-w-[440px] text-center">
@@ -290,7 +319,7 @@
 					class="flex min-h-[250px] flex-col items-center justify-center rounded-base border border-line bg-surface px-6 py-10 text-center"
 				>
 					<div
-						class="mb-4 flex size-11 items-center justify-center rounded-button-xl bg-canvas text-ink-muted"
+						class="mb-4 flex size-11 items-center justify-center rounded-button-xl bg-canvas/80 text-ink-muted/90"
 						aria-hidden="true"
 					>
 						<FileTextIcon size={22} />
@@ -304,16 +333,18 @@
 				</section>
 			{/if}
 
-			<InfoBar
-				class="mt-4"
-				label={admin ? 'This is the first step.' : 'Your admin needs to finish setup.'}
-			>
-				{#if admin}
-					Upload the baseline contract you use with customers as a first step to get started.
-				{:else}
-					Ask an admin to upload and publish your company’s starting contract.
-				{/if}
-			</InfoBar>
+			{#if !(admin && blocked)}
+				<InfoBar
+					class="mt-4"
+					label={admin ? 'This feature is in beta.' : 'Your admin needs to finish setup.'}
+				>
+					{#if admin}
+						Please email julien@agreed.so if you can't upload your baseline contract.
+					{:else}
+						Ask an admin to upload and publish your company’s starting contract.
+					{/if}
+				</InfoBar>
+			{/if}
 
 			{#if admin}
 				{#if uploadError}
@@ -329,23 +360,18 @@
 					<section
 						aria-labelledby="contract-corrections"
 						role="alert"
-						class="mt-5 rounded-base border border-line bg-surface p-5 sm:p-6"
+						class="mt-4 rounded-base border border-line bg-surface p-4"
 					>
-						<div class="flex items-start gap-3">
-							<WarningCircleIcon size={22} class="mt-0.5 shrink-0 text-danger" aria-hidden="true" />
-							<div>
-								<h2 id="contract-corrections" class="text-sm leading-6 font-medium text-ink">
-									{errors.length === 1 ? 'One correction' : `${errors.length} corrections`} before publishing
-								</h2>
-								<p class="mt-1 text-[13px] leading-6 text-ink-muted">
-									Make {errors.length === 1 ? 'this correction' : 'these corrections'} in Word, save the
-									file, and upload it again.
-								</p>
-							</div>
-						</div>
-						<ul class="mt-5 divide-y divide-line/70 border-t border-line/70 text-[13px] leading-6">
+						<h2 id="contract-corrections" class="text-sm leading-6 font-medium text-ink">
+							{errors.length === 1 ? 'One correction' : `${errors.length} corrections`} before publishing
+						</h2>
+						<p class="mt-1 text-[13px] leading-6 text-ink-muted">
+							Make {errors.length === 1 ? 'this correction' : 'these corrections'} in Word, save the file,
+							and upload it again.
+						</p>
+						<ul class="mt-3 divide-y divide-line/70 border-t border-line/70 text-[13px] leading-6">
 							{#each errors as issue}
-								<li class="py-4 last:pb-0">
+								<li class="py-3 last:pb-0">
 									<p class="text-ink">{issue.message}</p>
 									{#if issue.context}
 										<p class="mt-1 text-ink-muted [overflow-wrap:anywhere]">
@@ -377,7 +403,7 @@
 							</div>
 						</div>
 						<label
-							class="mt-5 flex cursor-pointer items-start gap-3 rounded-button-lg border border-line/70 bg-[#fafafa] p-4 text-[13px] leading-6 text-ink-secondary"
+							class="mt-5 flex cursor-pointer items-start gap-3 rounded-button-lg border border-line/70 bg-page p-4 text-[13px] leading-6 text-ink-secondary"
 						>
 							<input
 								class="mt-1 size-4 shrink-0 cursor-pointer accent-ink focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent disabled:cursor-default"

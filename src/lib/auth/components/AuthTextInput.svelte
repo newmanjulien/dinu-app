@@ -2,7 +2,6 @@
 	import { tick } from 'svelte';
 	import type { HTMLInputAttributes } from 'svelte/elements';
 	import { cn } from '$lib/ui/cn';
-	import { fieldClass } from '$lib/ui/field-styles';
 
 	type Props = {
 		label: string;
@@ -33,6 +32,8 @@
 	}: Props = $props();
 
 	let inputElement = $state<HTMLInputElement | null>(null);
+	const fieldClass =
+		'w-full rounded-button-lg border-[0.5px] border-[#e5e5e5] bg-surface px-3 text-[13px] text-ink shadow-[0_1px_3px] shadow-ink/6 outline-none transition-colors placeholder:font-[350] placeholder:text-[#8a8a8a] hover:not-focus:bg-[#f3f3f3] focus:border-accent focus:ring-[1px] focus:ring-inset focus:ring-accent disabled:bg-stone-50 disabled:text-ink-muted disabled:opacity-55 disabled:hover:bg-stone-50 motion-reduce:transition-none';
 
 	$effect(() => {
 		if (!autofocus || !inputElement) {
@@ -63,7 +64,7 @@
 			fieldClass,
 			'box-border h-10 leading-none',
 			invalid &&
-				'border-danger/30 bg-danger-surface text-danger focus:border-danger focus-visible:outline-danger/30'
+				'border-danger/30 bg-danger-surface text-danger hover:bg-danger-surface focus:border-danger focus:ring-danger'
 		)}
 	/>
 </label>

@@ -21,11 +21,7 @@
 	} satisfies AuthQuote;
 </script>
 
-<section
-	data-sveltekit-preload-data="off"
-	data-sveltekit-preload-code="off"
-	class="entry-shell"
->
+<section data-sveltekit-preload-data="off" data-sveltekit-preload-code="off" class="entry-shell">
 	<div class="entry-layout">
 		<main class="entry-panel" aria-label="Agreed account entry">
 			<div class="entry-content">
@@ -49,7 +45,7 @@
 <style>
 	.entry-shell {
 		min-height: 100dvh;
-		background: #fafafa;
+		background: var(--color-page);
 		color: #202124;
 	}
 

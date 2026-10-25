@@ -11,6 +11,7 @@
 	import { AccountPreparation } from './account-preparation';
 	import { ReadAttempt, waitForRead } from './attempt';
 	import { recordStartup } from './startup-perf';
+	import { useStartupData } from './startup-data';
 	import { untrack, onDestroy, type Snippet } from 'svelte';
 	let { children }: { children: Snippet } = $props();
 	const client = useConvexClient();
@@ -18,6 +19,17 @@
 	const session = useViewerSession();
 	session.registerResources(contractCacheResources);
 	const viewer = useQuery(api.profiles.viewer, () => (auth.isAuthenticated ? {} : 'skip'));
+	const startup = useStartupData();
+	let receivedViewer = $state(false);
+	const data = $derived.by(() => {
+		if (viewer.data !== undefined) return viewer.data;
+		if (receivedViewer || !auth.isAuthenticated || viewer.error) return undefined;
+		const initial = startup()?.viewer;
+		return initial && !initial.needsInitialization ? initial : undefined;
+	});
+	$effect(() => {
+		if (auth.isAuthenticated && (viewer.data !== undefined || viewer.error)) receivedViewer = true;
+	});
 	let account = $state.raw<AccountViewer>();
 	setAccount(() => account);
 	const preparation = new AccountPreparation();
@@ -51,33 +63,33 @@
 	$effect(() => {
 		const authenticated = auth.isAuthenticated;
 		const nextGeneration = session.transportGeneration;
-		const data = viewer.data;
+		const value = viewer.data;
 		untrack(() => {
 			if (authenticated)
-				void preparation.initialize(data, nextGeneration, () => initialize(nextGeneration));
+				void preparation.initialize(value, nextGeneration, () => initialize(nextGeneration));
 		});
 	});
 	$effect(() => {
-		const data = viewer.data;
+		const value = data;
 		const nextGeneration = session.transportGeneration;
 		const failure = (generation === nextGeneration ? error : '') || viewer.error?.message || '';
-		const ready = Boolean(data && !data.needsInitialization && !failure);
+		const ready = Boolean(auth.isAuthenticated && value && !value.needsInitialization && !failure);
 		untrack(() => {
-			if (data) {
+			if (value) {
 				if (
-					account?.profile.id !== data.profile.id ||
-					account?.membership?.id !== data.membership?.id
+					account?.profile.id !== value.profile.id ||
+					account?.membership?.id !== value.membership?.id
 				) {
 					releaseContractSnapshotCache();
 					setCacheIdentity(
-						data.membership
-							? { profileId: data.profile.id, membershipId: data.membership.id }
+						value.membership
+							? { profileId: value.profile.id, membershipId: value.membership.id }
 							: null
 					);
 				}
-				if (account?.membership && account.membership.id !== data.membership?.id && session.userId)
+				if (account?.membership && account.membership.id !== value.membership?.id && session.userId)
 					discardMembershipDrafts(session.userId, account.membership.id);
-				account = data;
+				account = value;
 			}
 			if (ready && !recorded) {
 				recordStartup('account-ready');

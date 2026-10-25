@@ -5,8 +5,8 @@
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { useConvexClient, usePaginatedQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
-	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
+	import TeamRowsSkeleton from '$lib/components/workspace/TeamRowsSkeleton.svelte';
 	import InviteColleaguesModal from '$lib/features/settings/InviteColleaguesModal.svelte';
 	import { Button } from '$lib/ui';
 	const client = useConvexClient();
@@ -35,6 +35,15 @@
 		api.companyInvitations.list,
 		() => (canManage ? { membershipId } : 'skip'),
 		{ initialNumItems: 50 }
+	);
+	const colleaguesLoading = $derived(
+		colleagues.status === 'LoadingFirstPage' && !colleagues.results.length && !colleagues.error
+	);
+	const invitationsLoading = $derived(
+		canManage &&
+			invitations.status === 'LoadingFirstPage' &&
+			!invitations.results.length &&
+			!invitations.error
 	);
 	let modalOpen = $state(false);
 	let emailInput = $state('');
@@ -117,16 +126,23 @@
 	}
 </script>
 
-<svelte:head><title>Company team | Agreed</title></svelte:head>
-<AppHeader />
 <main class="min-h-[calc(100dvh-var(--app-header-height))] bg-surface px-6 py-8">
+	{#if colleaguesLoading || invitationsLoading}
+		<span role="status" class="sr-only"
+			>{colleaguesLoading && invitationsLoading
+				? 'Loading colleagues and invitations'
+				: colleaguesLoading
+					? 'Loading colleagues'
+					: 'Loading invitations'}</span
+		>
+	{/if}
 	<div class="mx-auto max-w-4xl space-y-8">
 		{#if invitationReturn}<a href={invitationReturn} class="text-sm underline"
 				>Return to invitation</a
 			>{/if}
 		<div class="flex items-center justify-between gap-4">
 			<div>
-				<h1 class="text-xl font-medium">{viewer().company.name}</h1>
+				<h1 class="text-sm font-medium">{viewer().company.name}</h1>
 				<p class="mt-2 text-sm text-ink-muted">
 					Your company is private. Colleagues join by invitation.
 				</p>
@@ -141,57 +157,63 @@
 		</div>
 		<section aria-labelledby="colleagues-heading">
 			<h2 id="colleagues-heading" class="mb-3 text-sm font-medium">Colleagues</h2>
-			<ul class="divide-y divide-stone-200 rounded-xl border border-stone-200">
-				{#each colleagues.results as person (person.membershipId)}
-					<li class="flex flex-wrap items-center gap-3 p-4">
-						<Avatar
-							name={person.name || person.email}
-							avatarUrl={person.avatarUrl}
-							size={28}
-							decorative
-						/>
-						<div class="min-w-0 flex-1">
-							<p class="text-sm">
-								{person.name || person.email}{person.membershipId === membershipId ? ' (you)' : ''}
-							</p>
-							<p class="text-xs text-ink-muted">{person.email}</p>
-						</div>
-						<span class="text-xs text-ink-muted"
-							>{person.role === 'admin' ? 'Admin' : 'Rep'}{person.isOwner ? ' · Owner' : ''}</span
-						>
-						{#if isOwner && !person.isOwner}
-							<Button
-								variant="ghost"
-								disabled={busy || session.blocked}
-								onclick={() =>
-									(confirmAction = {
-										message: `Transfer company ownership to ${person.name || person.email}? They will manage company ownership.`,
-										run: () =>
-											client.mutation(api.companies.transferOwnership, {
-												membershipId,
-												targetMembershipId: person.membershipId
-											})
-									})}>Transfer ownership</Button
+			{#if colleaguesLoading}
+				<TeamRowsSkeleton />
+			{:else}
+				<ul class="divide-y divide-stone-200 rounded-xl border border-stone-200">
+					{#each colleagues.results as person (person.membershipId)}
+						<li class="flex flex-wrap items-center gap-3 p-4">
+							<Avatar
+								name={person.name || person.email}
+								avatarUrl={person.avatarUrl}
+								size={28}
+								decorative
+							/>
+							<div class="min-w-0 flex-1">
+								<p class="text-sm">
+									{person.name || person.email}{person.membershipId === membershipId
+										? ' (you)'
+										: ''}
+								</p>
+								<p class="text-xs text-ink-muted">{person.email}</p>
+							</div>
+							<span class="text-xs text-ink-muted"
+								>{person.role === 'admin' ? 'Admin' : 'Rep'}{person.isOwner ? ' · Owner' : ''}</span
 							>
-						{/if}
-						{#if canManage && !person.isOwner && person.membershipId !== membershipId}
-							<Button
-								variant="ghost"
-								disabled={busy || session.blocked}
-								onclick={() =>
-									(confirmAction = {
-										message: `Remove ${person.name || person.email} from your company? Their contracts will stay with the company.`,
-										run: () =>
-											client.mutation(api.companies.removeMember, {
-												membershipId,
-												targetMembershipId: person.membershipId
-											})
-									})}>Remove</Button
-							>
-						{/if}
-					</li>
-				{/each}
-			</ul>
+							{#if isOwner && !person.isOwner}
+								<Button
+									variant="ghost"
+									disabled={busy || session.blocked}
+									onclick={() =>
+										(confirmAction = {
+											message: `Transfer company ownership to ${person.name || person.email}? They will manage company ownership.`,
+											run: () =>
+												client.mutation(api.companies.transferOwnership, {
+													membershipId,
+													targetMembershipId: person.membershipId
+												})
+										})}>Transfer ownership</Button
+								>
+							{/if}
+							{#if canManage && !person.isOwner && person.membershipId !== membershipId}
+								<Button
+									variant="ghost"
+									disabled={busy || session.blocked}
+									onclick={() =>
+										(confirmAction = {
+											message: `Remove ${person.name || person.email} from your company? Their contracts will stay with the company.`,
+											run: () =>
+												client.mutation(api.companies.removeMember, {
+													membershipId,
+													targetMembershipId: person.membershipId
+												})
+										})}>Remove</Button
+								>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
 			{#if colleagues.error}<p role="alert" class="mt-3 text-sm text-danger">
 					Unable to load colleagues. Reload to try again.
 				</p>{/if}
@@ -203,52 +225,56 @@
 		{#if canManage}
 			<section aria-labelledby="invitations-heading">
 				<h2 id="invitations-heading" class="mb-3 text-sm font-medium">Pending invitations</h2>
-				<ul class="divide-y divide-stone-200 rounded-xl border border-stone-200">
-					{#each invitations.results as invitation (invitation.id)}
-						<li class="flex flex-wrap items-center gap-3 p-4">
-							<div class="flex-1">
-								<p class="text-sm">{invitation.email}</p>
-								<p class="text-xs text-ink-muted">
-									{invitation.expiresAt <= now
-										? 'Expired'
-										: invitation.deliveryStatus === 'failed'
-											? 'Delivery unconfirmed'
-											: invitation.deliveryStatus === 'sending'
-												? 'Sending…'
-												: 'Waiting to join'}
-								</p>
-							</div>
-							<Button
-								variant="secondary"
-								disabled={busy || session.blocked}
-								onclick={() =>
-									run(async () => {
-										const [delivery] = await client.action(api.invitationEmail.invite, {
-											membershipId,
-											emails: [invitation.email],
-											resend: true
-										});
-										if (delivery.error) throw new Error(delivery.error);
-									})}>Resend</Button
-							>
-							<Button
-								variant="ghost"
-								disabled={busy || session.blocked}
-								onclick={() =>
-									run(() =>
-										client.mutation(api.companyInvitations.revoke, {
-											membershipId,
-											invitationId: invitation.id
-										})
-									)}>Revoke</Button
-							>
-						</li>
-					{:else}<li class="p-4 text-sm text-ink-muted">
-							{invitations.status === 'LoadingFirstPage'
-								? 'Loading invitations…'
-								: 'No pending invitations.'}
-						</li>{/each}
-				</ul>
+				{#if invitationsLoading}
+					<TeamRowsSkeleton invitations />
+				{:else}
+					<ul class="divide-y divide-stone-200 rounded-xl border border-stone-200">
+						{#each invitations.results as invitation (invitation.id)}
+							<li class="flex flex-wrap items-center gap-3 p-4">
+								<div class="flex-1">
+									<p class="text-sm">{invitation.email}</p>
+									<p class="text-xs text-ink-muted">
+										{invitation.expiresAt <= now
+											? 'Expired'
+											: invitation.deliveryStatus === 'failed'
+												? 'Delivery unconfirmed'
+												: invitation.deliveryStatus === 'sending'
+													? 'Sending…'
+													: 'Waiting to join'}
+									</p>
+								</div>
+								<Button
+									variant="secondary"
+									disabled={busy || session.blocked}
+									onclick={() =>
+										run(async () => {
+											const [delivery] = await client.action(api.invitationEmail.invite, {
+												membershipId,
+												emails: [invitation.email],
+												resend: true
+											});
+											if (delivery.error) throw new Error(delivery.error);
+										})}>Resend</Button
+								>
+								<Button
+									variant="ghost"
+									disabled={busy || session.blocked}
+									onclick={() =>
+										run(() =>
+											client.mutation(api.companyInvitations.revoke, {
+												membershipId,
+												invitationId: invitation.id
+											})
+										)}>Revoke</Button
+								>
+							</li>
+						{:else}{#if !invitations.error && invitations.status === 'Exhausted'}<li
+									class="p-4 text-sm text-ink-muted"
+								>
+									No pending invitations.
+								</li>{/if}{/each}
+					</ul>
+				{/if}
 				{#if invitations.error}<p role="alert" class="mt-3 text-sm text-danger">
 						Unable to load invitations. Reload to try again.
 					</p>{/if}

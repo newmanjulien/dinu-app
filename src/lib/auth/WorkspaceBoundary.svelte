@@ -4,7 +4,9 @@
 	import { useAccount, useViewerSession, type Viewer } from './viewer-session.svelte';
 	import { currentDestination, onboardingHref, localReturn } from './navigation';
 	import WorkspaceScope from './WorkspaceScope.svelte';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import WorkspaceShell from './WorkspaceShell.svelte';
+	import LoadingState from '$lib/ui/LoadingState.svelte';
+	import WorkspaceSkeleton from './WorkspaceSkeleton.svelte';
 	import { loadComponent } from './component-loader.svelte';
 	import { untrack, type Snippet } from 'svelte';
 	let { children }: { children: Snippet } = $props();
@@ -47,25 +49,35 @@
 	});
 </script>
 
-{#if member && Workspace}
+{#snippet pending()}
+	{#if member && !error}
+		<WorkspaceSkeleton label="Opening your workspace" />
+	{:else}
+		<main class="bg-page">
+			<LoadingState
+				layout={member ? 'workspace' : 'screen'}
+				label={error ? undefined : 'Opening your workspace'}
+			>
+				{#if error}
+					<p role="alert" class="text-sm">{error}</p>
+					<button
+						class="text-sm underline"
+						onclick={() => {
+							retry++;
+							workspace.retry();
+						}}>Try again</button
+					>
+				{/if}
+			</LoadingState>
+		</main>
+	{/if}
+{/snippet}
+{#if member}
 	{#key `${member.profile.id}:${member.membership.id}`}
 		<WorkspaceScope viewer={member}>
-			<Workspace>{@render children()}</Workspace>
+			<WorkspaceShell>
+				{#if Workspace}<Workspace>{@render children()}</Workspace>{:else}{@render pending()}{/if}
+			</WorkspaceShell>
 		</WorkspaceScope>
 	{/key}
-{:else}
-	<main
-		class="grid min-h-dvh place-content-center justify-items-center gap-4 bg-[#fafafa] p-8 text-center"
-	>
-		{#if error}
-			<p role="alert" class="text-sm">{error}</p>
-			<button
-				class="text-sm underline"
-				onclick={() => {
-					retry++;
-					workspace.retry();
-				}}>Try again</button
-			>
-		{:else}<LoadingWheel label="Opening your workspace" />{/if}
-	</main>
-{/if}
+{:else}{@render pending()}{/if}

@@ -1,12 +1,15 @@
 <script lang="ts">
 	import Menu from '$lib/components/ui/Menu.svelte';
+	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import DotsThreeVerticalIcon from 'phosphor-svelte/lib/DotsThreeVerticalIcon';
+	import type { SaveStatus } from '$lib/contract/sessions.svelte';
 	import type { SavedContractCard } from '$lib/contract/card';
 	import type { Action } from 'svelte/action';
 	let {
 		contract,
+		status,
 		deleting = false,
 		onRename,
 		onDelete,
@@ -15,6 +18,7 @@
 		onCool
 	}: {
 		contract: SavedContractCard;
+		status?: SaveStatus;
 		deleting?: boolean;
 		onRename: () => void;
 		onDelete: () => void;
@@ -77,6 +81,7 @@
 		<p class="text-xs text-ink-muted">
 			Last edited <time datetime={new Date(contract.savedAt).toISOString()}>{date}</time>
 		</p>
+		{#if status}<p class="text-xs text-ink-muted" role="status">{status}</p>{/if}
 	</a>
 	<div class="absolute top-2 right-3">
 		<SquareIconButton
@@ -107,25 +112,18 @@
 		onClose={() => (open = false)}
 	>
 		{#snippet children(close)}
-			<button
-				type="button"
-				role="menuitem"
-				tabindex="-1"
-				class="w-full cursor-pointer rounded-button-sm border-0 bg-transparent px-3 py-2 text-left text-[14px] text-ink-secondary hover:bg-control-fill focus-visible:bg-control-fill focus-visible:outline-2 focus-visible:outline-accent"
+			<MenuItem
 				onclick={() => {
 					close();
 					onRename();
-				}}>Rename</button
+				}}>Rename</MenuItem
 			>
-			<button
-				type="button"
-				role="menuitem"
-				tabindex="-1"
-				class="w-full cursor-pointer rounded-button-sm border-0 bg-transparent px-3 py-2 text-left text-[14px] text-danger hover:bg-danger-surface focus-visible:bg-danger-surface focus-visible:outline-2 focus-visible:outline-accent"
+			<MenuItem
+				danger
 				onclick={() => {
 					close();
 					onDelete();
-				}}>Delete</button
+				}}>Delete</MenuItem
 			>
 		{/snippet}
 	</Menu>

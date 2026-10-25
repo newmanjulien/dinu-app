@@ -13,7 +13,7 @@ import type { ContractDraft } from './draft-recovery.svelte';
 export type ContractSaveRequest = {
 	id: Id<'savedContracts'>;
 	selectedConcessions: SavedSelections;
-	selectionLifecycles?: Record<string, string>;
+	selectionLifecycles: Record<string, string>;
 	expectedRevision: number;
 	operationId: string;
 };
@@ -29,11 +29,12 @@ export class ContractPersistence {
 	conflict = $state(false);
 	deleted = $state(false);
 	recoveryPending = $state(false);
-	private running: Promise<void> | null = null;
-	private active = true;
-	private paused = false;
-	private frozen = false;
-	private loadingLatest = false;
+	private running = $state.raw<Promise<void> | null>(null);
+	inFlight = $derived(this.running !== null);
+	private active = $state(true);
+	private paused = $state(false);
+	private frozen = $state(false);
+	private loadingLatest = $state(false);
 	private transportGeneration = 0;
 	private recovery: ContractDraft | null;
 	private confirmedLifecycles = $derived.by(() =>
@@ -57,27 +58,7 @@ export class ContractPersistence {
 	}
 	private restoreChoices(draft: ContractDraft) {
 		this.choices = { ...draft.choices };
-		const lifecycles = selectionLifecycles(
-			{ ...draft.base, selectedConcessions: draft.choices },
-			this.required
-		);
-		// Older or incomplete checkpoints may omit applications or retain removed ones.
-		// Normalize local intent without changing an interrupted request's immutable arguments.
-		for (const id of Object.keys(lifecycles)) {
-			const itemId = id as Id<'playbookItems'>;
-			let lifecycle = draft.lifecycles?.[id];
-			const request = draft.request;
-			if (!lifecycle && request?.selectedConcessions[itemId] === this.choices[itemId]) {
-				// Match the server's fallback for an interrupted pre-lifecycle request.
-				lifecycle =
-					request.selectionLifecycles?.[id] ??
-					(draft.base.selectedConcessions[itemId] === this.choices[itemId]
-						? lifecycles[id]
-						: `${request.operationId}:${id}`);
-			}
-			if (lifecycle?.trim() && lifecycle.length <= 300) lifecycles[id] = lifecycle;
-		}
-		this.lifecycles = lifecycles;
+		this.lifecycles = { ...draft.lifecycles };
 	}
 	private useConfirmedChoices() {
 		if (!sameSelection(this.choices, this.confirmed.selectedConcessions))
@@ -114,7 +95,7 @@ export class ContractPersistence {
 			this.deleted || !this.pending
 				? null
 				: {
-						version: 1,
+						version: 2,
 						base: this.confirmed,
 						choices: this.choices,
 						lifecycles: this.lifecycles,
@@ -202,6 +183,7 @@ export class ContractPersistence {
 	applyRecovered() {
 		if (
 			!this.active ||
+			this.frozen ||
 			!this.conflict ||
 			this.deleted ||
 			this.running ||
@@ -228,7 +210,7 @@ export class ContractPersistence {
 			this.request = {
 				id: this.id,
 				selectedConcessions: { ...this.choices },
-				...(this.required.size ? { selectionLifecycles: { ...this.lifecycles } } : {}),
+				selectionLifecycles: { ...this.lifecycles },
 				expectedRevision: this.confirmed.revision,
 				operationId: crypto.randomUUID()
 			};
@@ -247,13 +229,15 @@ export class ContractPersistence {
 		// Yield so `running` is assigned even if the transport throws synchronously.
 		await Promise.resolve();
 		if (!this.active || generation !== this.transportGeneration || this.paused) {
-			if (generation === this.transportGeneration) this.running = null;
+			if (generation === this.transportGeneration) {
+				this.running = null;
+			}
 			return;
 		}
 		try {
 			const result = await this.save(request);
 			if (!this.active || generation !== this.transportGeneration) return;
-			if (result.status === 'deleted') this.deleted = true;
+			if (result.status === 'deleted') this.accept(null);
 			else {
 				// A subscription may already include a later rename at the same revision.
 				if (result.state.revision > this.confirmed.revision) this.accept(result.state);
@@ -286,7 +270,8 @@ export class ContractPersistence {
 	async loadLatest() {
 		// A request already handed to Convex cannot be cancelled. Wait for its outcome
 		// before discarding intent so a late acknowledgement cannot start another save.
-		if (!this.active || this.deleted || this.recoveryPending || this.loadingLatest) return false;
+		if (!this.active || this.frozen || this.deleted || this.recoveryPending || this.loadingLatest)
+			return false;
 		const generation = this.transportGeneration;
 		this.loadingLatest = true;
 		try {
@@ -322,7 +307,7 @@ export class ContractPersistence {
 		this.error = null;
 		if (this.pending && !this.recoveryPending) {
 			this.recovery = {
-				version: 1,
+				version: 2,
 				base: this.confirmed,
 				choices: this.choices,
 				lifecycles: this.lifecycles,

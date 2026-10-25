@@ -75,7 +75,16 @@ it('reads returning accounts and provisions missing state once without restartin
 	expect(newMutation).toHaveBeenCalledExactlyOnceWith(api.profiles.initialize, {});
 	await t.run(async ({ db }) => {
 		const company = await db.query('company').first();
+		const baselineId = await db.insert('baselines', {
+			companyId: company!._id,
+			source: 'seed',
+			state: 'prepared',
+			fingerprint: 'staging',
+			issues: [],
+			blockCount: 0
+		});
 		await db.insert('currentTemplate', {
+			baselineId,
 			companyId: company!._id,
 			maintenance: true
 		});
