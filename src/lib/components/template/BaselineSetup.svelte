@@ -338,7 +338,7 @@
 					label={admin ? 'This feature is in beta.' : 'Your admin needs to finish setup.'}
 				>
 					{#if admin}
-						Please email j@dinu.co if you can't upload your baseline contract.
+						Please email help@dinu.co if you can't upload your baseline contract.
 					{:else}
 						Ask an admin to upload and publish your company’s starting contract.
 					{/if}
