@@ -1,8 +1,9 @@
+import { sameSourceRange } from '$lib/contract/source-model';
 import type { ContractBlock } from '$lib/contract/model';
 import type { DocumentOverlayItem } from '$lib/playbook/document-overlay';
 import type { SourceIndex } from '$lib/contract/source-index';
 import type { Address } from '$lib/contract/numbering';
-import type { ContractChange, SourceRange, ConcessionSelection } from '$lib/playbook/model';
+import type { ContractChange, ConcessionSelection } from '$lib/playbook/model';
 import type { PaginatedPage } from '../pagination/types';
 
 export type { ConcessionSelection } from '$lib/playbook/model';
@@ -42,15 +43,6 @@ export interface RenderJobMeta {
 	readonly progressive: boolean;
 	readonly status: 'running' | 'failed';
 }
-export function sameSourceRange(a: SourceRange, b: SourceRange): boolean {
-	return (
-		a.start.sourceKey === b.start.sourceKey &&
-		a.start.offset === b.start.offset &&
-		a.end.sourceKey === b.end.sourceKey &&
-		a.end.offset === b.end.offset
-	);
-}
-
 export function samePreviewChanges(
 	a: readonly ContractChange[],
 	b: readonly ContractChange[]

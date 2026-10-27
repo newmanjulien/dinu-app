@@ -5,17 +5,20 @@
 	let {
 		label = 'Laying out contract pages',
 		embedded = false,
-		chrome = !embedded,
+		reviewGutter = 0,
 		hasPanel = false
-	}: { label?: string; embedded?: boolean; chrome?: boolean; hasPanel?: boolean } = $props();
+	}: {
+		label?: string;
+		embedded?: boolean;
+		reviewGutter?: number;
+		hasPanel?: boolean;
+	} = $props();
 </script>
 
-<div data-testid="pagination-loading">
-	<DocumentSkeleton
-		admin={describeRoute(page.route.id).document === 'admin'}
-		{label}
-		{embedded}
-		{chrome}
-		{hasPanel}
-	/>
-</div>
+<DocumentSkeleton
+	admin={describeRoute(page.route.id).document === 'admin'}
+	{label}
+	{embedded}
+	{reviewGutter}
+	{hasPanel}
+/>

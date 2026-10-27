@@ -6,17 +6,20 @@
 	let {
 		searchOpen,
 		searchEnabled = true,
+		helpEnabled = true,
 		searchElement = $bindable(),
 		onSearchToggle,
 		onOpenHelp
 	}: {
 		searchOpen: boolean;
 		searchEnabled?: boolean;
+		helpEnabled?: boolean;
 		searchElement?: HTMLButtonElement;
 		onSearchToggle?: (trigger: HTMLButtonElement) => void;
 		onOpenHelp: () => void;
 	} = $props();
-	const itemClass = 'flex flex-col items-center gap-[3px] text-[10px] leading-[1.2] text-ink-secondary';
+	const itemClass =
+		'flex flex-col items-center gap-[3px] text-[10px] leading-[1.2] text-ink-secondary';
 </script>
 
 <nav class="pointer-events-auto flex w-16 flex-col items-center" aria-label="Document tools">
@@ -26,6 +29,7 @@
 				<SquareIconButton
 					bind:element={searchElement}
 					type="button"
+					rounded="lg"
 					disabled={!searchEnabled}
 					aria-label="Search"
 					aria-pressed={searchOpen}
@@ -38,7 +42,13 @@
 			</div>
 		{/if}
 		<div class={itemClass}>
-			<SquareIconButton type="button" aria-label="Help: How Agreed works" onclick={onOpenHelp}>
+			<SquareIconButton
+				type="button"
+				rounded="lg"
+				disabled={!helpEnabled}
+				aria-label="Help: How Dinu works"
+				onclick={onOpenHelp}
+			>
 				<InfoIcon aria-hidden="true" size={20} weight="regular" />
 			</SquareIconButton>
 			<span aria-hidden="true">Help</span>

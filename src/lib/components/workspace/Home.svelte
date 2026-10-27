@@ -20,6 +20,8 @@
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
+	import { fieldShellClass, fieldInputClass } from '$lib/ui/field-styles';
+	import Button from '$lib/ui/Button.svelte';
 	import HomeSkeleton from './HomeSkeleton.svelte';
 	import { getInteractionController, setInteractionOwner } from '$lib/components/ui/interactions';
 	setInteractionOwner(Symbol('home'));
@@ -55,10 +57,17 @@
 		}),
 		{ initialNumItems: 24 }
 	);
-	let receivedPage = $state(false);
-	const initialPage = $derived.by(() => {
+	type ContractPage = {
+		cards: SavedContractCard[];
+		query: string;
+		hasMore: boolean;
+		source: 'startup' | 'live';
+	};
+	let page = $state.raw<ContractPage | null>(null);
+	let startupEligible = $state(true);
+	const startupPage = $derived.by(() => {
 		const value = startup();
-		return !receivedPage &&
+		return startupEligible &&
 			!search &&
 			!query &&
 			value?.viewer?.profile.id === viewer().profile.id &&
@@ -68,16 +77,13 @@
 	});
 	$effect(() => {
 		if (query || search || contracts.error || contracts.status !== 'LoadingFirstPage')
-			receivedPage = true;
+			startupEligible = false;
 	});
 	$effect(() => {
 		const value = search.trim();
 		const timer = setTimeout(() => (query = value), 200);
 		return () => clearTimeout(timer);
 	});
-	const pendingSearch = $derived(search.trim() !== query);
-	let retained = $state.raw<SavedContractCard[]>([]);
-	let settledQuery = $state<string | null>(null);
 	function handleTyping(event: KeyboardEvent) {
 		if (
 			!searchInput ||
@@ -109,60 +115,80 @@
 		return interactions.shortcut(handleTyping);
 	});
 	let listTimedOut = $state(false);
-	const listLoading = $derived(Boolean(contracts.isLoading && !contracts.error));
-	const listError = $derived(listTimedOut || Boolean(contracts.error));
+	const liveLoading = $derived(
+		!contracts.error &&
+			(contracts.status === 'LoadingFirstPage' || contracts.status === 'LoadingMore')
+	);
 	$effect(() => {
 		// Each search and recovered transport receives a fresh read budget.
 		void query;
 		void session.transportGeneration;
-		const pending = listLoading;
+		const pending = liveLoading;
 		untrack(() => (listTimedOut = false));
 		if (!pending) return;
 		const timer = setTimeout(() => (listTimedOut = true), 15_000);
 		return () => clearTimeout(timer);
 	});
-	const waiting = $derived(
-		pendingSearch ||
-			Boolean(
-				!listError &&
-				!initialPage &&
-				((contracts.isLoading && contracts.status !== 'LoadingMore') || settledQuery !== query)
-			)
-	);
-	const cards = $derived(retained);
 	$effect(() => {
-		const initial = initialPage;
+		const initial = startupPage;
 		if (initial && contracts.status === 'LoadingFirstPage') {
 			untrack(() => {
-				retained = initial.page.filter((card) => !cache.isDeleted(card._id));
-				settledQuery = '';
+				page = {
+					cards: initial.page.filter((card) => !cache.isDeleted(card._id)),
+					query: '',
+					hasMore: !initial.isDone,
+					source: 'startup'
+				};
 			});
 			return;
 		}
-		if ((contracts.isLoading && contracts.status !== 'LoadingMore') || contracts.error) return;
+		if (contracts.status === 'LoadingFirstPage' || contracts.error) return;
 		const results = contracts.results;
 		const currentQuery = query;
+		const hasMore = contracts.status === 'CanLoadMore' || contracts.status === 'LoadingMore';
 		untrack(() => {
-			retained = results.filter((card) => !cache.isDeleted(card._id));
-			settledQuery = currentQuery;
+			page = {
+				cards: results.filter((card) => !cache.isDeleted(card._id)),
+				query: currentQuery,
+				hasMore,
+				source: 'live'
+			};
 		});
 	});
+	const list = $derived.by(() => {
+		const error = listTimedOut || Boolean(contracts.error);
+		const currentQuery = search.trim() === query && page?.query === query;
+		const waiting =
+			search.trim() !== query ||
+			(!error &&
+				(page?.query !== query ||
+					(contracts.status === 'LoadingFirstPage' &&
+						!(page?.source === 'startup' && startupPage))));
+		const hasMore = Boolean(currentQuery && page?.hasMore);
+		return {
+			cards: page?.cards ?? [],
+			query: page?.query ?? '',
+			error,
+			waiting,
+			empty: Boolean(page && !page.cards.length && !page.hasMore && !waiting && !error),
+			hasMore,
+			loadingMore: hasMore && page?.source === 'live' && contracts.status === 'LoadingMore',
+			canLoadMore:
+				hasMore &&
+				!waiting &&
+				!error &&
+				page?.source === 'live' &&
+				contracts.status === 'CanLoadMore',
+			pending: liveLoading || waiting || error
+		};
+	});
 	$effect(() => {
-		const pending =
-			Boolean(contracts.isLoading) ||
-			waiting ||
-			listError ||
-			session.blocked ||
-			Boolean(navigating.to);
+		const pending = list.pending || session.blocked || Boolean(navigating.to);
 		untrack(() => warming.pending(pending));
 	});
-	let firstResult = $state(false);
+	const hasPage = $derived(page !== null);
 	$effect(() => {
-		const ready = Boolean(initialPage || (!listError && contracts.status !== 'LoadingFirstPage'));
-		if (ready) firstResult = true;
-	});
-	$effect(() => {
-		if (!session.admitted || !firstResult) return;
+		if (!session.admitted || !hasPage) return;
 		return afterStartupPaint(() => {
 			readiness.painted = true;
 			recordStartup('dashboard-painted');
@@ -176,9 +202,13 @@
 		try {
 			await saves.rename(id, name);
 			if (!alive) return;
-			retained = retained.map((card) =>
-				card._id === id ? { ...card, companyName: name, savedAt: Date.now() } : card
-			);
+			if (page)
+				page = {
+					...page,
+					cards: page.cards.map((card) =>
+						card._id === id ? { ...card, companyName: name, savedAt: Date.now() } : card
+					)
+				};
 			renaming = null;
 		} catch (error) {
 			if (alive) renameError = saveError(error, 'We couldn’t rename this contract. Try again.');
@@ -199,7 +229,7 @@
 		try {
 			await saves.remove(id);
 			if (!alive) return;
-			retained = retained.filter((card) => card._id !== id);
+			if (page) page = { ...page, cards: page.cards.filter((card) => card._id !== id) };
 		} catch (error) {
 			if (alive) actionError = saveError(error, 'We couldn’t delete this contract. Try again.');
 		} finally {
@@ -213,10 +243,8 @@
 >
 	<div class="mx-auto max-w-[1800px]">
 		<div class="mb-6 flex items-center gap-2">
-			<div
-				class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-button-lg border border-[#e5e5e5] bg-white px-3 text-[#8a8a8a] transition-colors focus-within:border-[#d5d5d5]"
-			>
-				<MagnifyingGlassIcon size={17} aria-hidden="true" />
+			<div class={`${fieldShellClass} flex h-9 flex-1 items-center gap-2`}>
+				<MagnifyingGlassIcon size={17} aria-hidden="true" class="shrink-0 text-ink-muted" />
 				<input
 					bind:this={searchInput}
 					type="search"
@@ -224,13 +252,13 @@
 					placeholder="Search by name of company"
 					maxlength="200"
 					bind:value={search}
-					class="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-[#8a8a8a] [&::-webkit-search-cancel-button]:hidden"
+					class={fieldInputClass}
 				/>
 				{#if search}
 					<button
 						type="button"
 						aria-label="Clear search"
-						class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-button-sm text-[#8a8a8a] transition-colors hover:bg-[#f3f3f3] hover:text-ink focus-visible:outline-1 focus-visible:outline-[#d5d5d5]"
+						class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-button-sm text-ink-muted transition-colors hover:bg-control-fill hover:text-ink focus-visible:outline-1 focus-visible:outline-line-strong/40"
 						onclick={() => {
 							search = '';
 							searchInput?.focus();
@@ -240,17 +268,14 @@
 					</button>
 				{/if}
 			</div>
-			{#if viewer().templateReady}<a
-					href="/contracts/new"
-					class="flex h-[38px] shrink-0 items-center gap-1.5 rounded-button-lg bg-[#171717] px-3.5 py-2 text-[12.5px] font-normal text-white hover:bg-[#303030]"
-					><PlusIcon size={15} aria-hidden="true" />Add New</a
-				>
-			{:else}<button
-					disabled
-					title="An admin must upload your company’s baseline contract."
-					class="flex h-[38px] shrink-0 items-center gap-1.5 rounded-button-lg bg-[#171717] px-3.5 py-2 text-[12.5px] font-normal text-white opacity-40"
-					><PlusIcon size={15} aria-hidden="true" />Add New</button
-				>{/if}
+			<Button
+				href={viewer().templateReady ? '/contracts/new' : undefined}
+				disabled={!viewer().templateReady}
+				title={viewer().templateReady
+					? undefined
+					: 'An admin must upload your company’s baseline contract.'}
+				><PlusIcon size={15} aria-hidden="true" />Add New</Button
+			>
 		</div>
 		{#if !viewer().templateReady}<p class="mb-5 text-[13px] text-ink-muted">
 				Your company needs a baseline contract. <a class="underline text-accent" href="/admin"
@@ -259,32 +284,30 @@
 			</p>{/if}
 		<div class="mb-3 flex items-center gap-3">
 			<h1 class="text-sm font-medium">Contracts</h1>
-			{#if waiting && cards.length}<LoadingWheel label="Refreshing contracts" />{/if}
+			{#if list.waiting && list.cards.length}<LoadingWheel label="Refreshing contracts" />{/if}
 		</div>
-		{#if listError && cards.length}<p class="mb-3 text-xs text-ink-muted" role="status">
+		{#if list.error && list.cards.length}<p class="mb-3 text-xs text-ink-muted" role="status">
 				We couldn’t refresh your contracts. Showing previous results.
 			</p>{/if}
 		{#if actionError}<p
-				class="mb-5 rounded-xl border border-danger/20 bg-danger-surface p-4 text-sm text-danger"
+				class="mb-5 rounded-xl border-hairline border-danger/20 bg-danger-surface shadow-card p-4 text-sm text-danger"
 				role="alert"
 			>
 				{actionError}
 			</p>{/if}
-		{#if listError && cards.length === 0}
+		{#if list.error && list.cards.length === 0}
 			<div class="state" role="alert">
 				<p>We couldn’t load your contracts.</p>
-				<button
-					onclick={() => window.location.reload()}
-					class="mt-4 rounded-button-lg border border-line bg-surface px-4 py-2 text-sm"
-					>Try again</button
+				<Button variant="secondary" onclick={() => window.location.reload()} class="mt-4"
+					>Try again</Button
 				>
 			</div>
-		{:else if waiting && cards.length === 0}
+		{:else if list.waiting && list.cards.length === 0}
 			<HomeSkeleton cardsOnly />
-		{:else if cards.length === 0 && !waiting && (contracts.status === 'Exhausted' || initialPage?.isDone)}
+		{:else if list.empty}
 			<div class="state" role="status">
-				{#if query}<h2 class="text-[13px] font-medium">No contracts found</h2>
-					<p class="mt-2 text-[13px] text-ink-muted">No company names match “{query}”.</p>
+				{#if list.query}<h2 class="text-[13px] font-medium">No contracts found</h2>
+					<p class="mt-2 text-[13px] text-ink-muted">No company names match “{list.query}”.</p>
 					<button onclick={() => (search = '')} class="mt-4 text-[13px] underline"
 						>Clear search</button
 					>
@@ -299,9 +322,9 @@
 								: 'This is where reps create contracts for customers. But first, an admin needs to set up your company’s baseline contract.'}
 					</p>{/if}
 			</div>
-		{:else if cards.length}
+		{:else if list.cards.length}
 			<div class="contract-card-grid">
-				{#each cards as contract (contract._id)}
+				{#each list.cards as contract (contract._id)}
 					<ContractCard
 						status={saves.statusFor(contract._id)}
 						{contract}
@@ -318,17 +341,12 @@
 				{/each}
 			</div>
 		{/if}
-		{#if (cards.length || contracts.status === 'CanLoadMore' || contracts.status === 'LoadingMore') && contracts.status !== 'Exhausted'}<div
-				class="mt-6 flex justify-center"
-			>
-				<button
-					disabled={waiting ||
-						listError ||
-						contracts.status === 'LoadingFirstPage' ||
-						contracts.status === 'LoadingMore'}
+		{#if list.hasMore}<div class="mt-6 flex justify-center">
+				<Button
+					variant="secondary"
+					disabled={!list.canLoadMore}
 					onclick={() => contracts.loadMore(24)}
-					class="rounded-button-lg border border-[#e5e5e5] bg-white px-4 py-2 text-sm disabled:opacity-50"
-					>{contracts.status === 'LoadingMore' ? 'Loading…' : 'Load more'}</button
+					>{list.loadingMore ? 'Loading…' : 'Load more'}</Button
 				>
 			</div>{/if}
 	</div>
@@ -345,9 +363,10 @@
 
 <style>
 	.state {
-		border: 1px solid #e5e5e5;
+		border: var(--surface-border-width) solid var(--color-edge);
 		border-radius: var(--radius-base);
-		background: white;
+		background: var(--color-surface);
+		box-shadow: var(--shadow-card);
 		padding: 36px 20px;
 		font-size: 14px;
 		text-align: center;

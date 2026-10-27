@@ -18,10 +18,10 @@
 	aria-checked={checked}
 	tabindex="-1"
 	class={[
-		'flex w-full cursor-pointer items-center justify-between gap-5 rounded-button-lg border-0 bg-transparent px-3 py-2 text-left text-sm focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent',
+		'flex w-full cursor-pointer items-center justify-between gap-5 rounded-button-lg border-0 bg-transparent px-3 py-2 text-left text-sm focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted disabled:hover:bg-transparent',
 		danger
 			? 'text-danger hover:bg-danger-surface focus-visible:bg-danger-surface'
-			: 'text-ink-secondary hover:bg-control-fill focus-visible:bg-control-fill'
+			: 'text-ink-secondary hover:bg-surface-hover focus-visible:bg-surface-hover'
 	]}
 >
 	{@render children()}

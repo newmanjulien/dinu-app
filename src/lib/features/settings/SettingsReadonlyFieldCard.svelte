@@ -17,13 +17,7 @@
 <SettingsCard {title} {description}>
 	<div class="mt-4 max-w-sm space-y-2">
 		<label class="sr-only" for={fieldId}>{label}</label>
-		<input
-			id={fieldId}
-			type="text"
-			readonly
-			{value}
-			class={`${fieldClass} h-9 bg-stone-50 text-ink-muted`}
-		/>
+		<input id={fieldId} type="text" readonly {value} class={`${fieldClass} h-9`} />
 	</div>
 
 	{#snippet footer()}

@@ -5,8 +5,8 @@ import { getDocumentViewportMetrics } from '../document-viewport';
 import { countSearchWork } from '../runtime/render-perf';
 import type { DocumentSearchResult } from './types';
 
-const ALL_MATCHES_HIGHLIGHT = 'agreed-search-matches';
-const ACTIVE_MATCH_HIGHLIGHT = 'agreed-search-active-match';
+const ALL_MATCHES_HIGHLIGHT = 'dinu-search-matches';
+const ACTIVE_MATCH_HIGHLIGHT = 'dinu-search-active-match';
 const REFRESH_DELAY_MS = 100;
 
 export class DocumentSearchSession {

@@ -10,7 +10,7 @@
 
 <svg
 	aria-hidden="true"
-	class="absolute inset-0 size-full text-[#d1d5db] opacity-[0.14] [stroke-width:1.2]"
+	class="absolute inset-0 size-full text-edge opacity-[0.14] [stroke-width:1.2]"
 	viewBox="0 0 1200 1200"
 	preserveAspectRatio="none"
 >
@@ -28,18 +28,18 @@
 >
 	<div
 		aria-hidden="true"
-		class="absolute -z-10 h-[260px] w-[min(1040px,118%)] rounded-full bg-gray-200/60 blur-[42px]"
+		class="absolute -z-10 h-[260px] w-[min(1040px,118%)] rounded-full bg-control-fill/60 blur-[42px]"
 	></div>
 
 	<blockquote
-		class="font-quote m-0 max-w-[560px] text-[clamp(22px,1.2vw,32px)] font-normal leading-[1.16] tracking-normal text-[#1c1917]"
+		class="font-editorial m-0 max-w-[560px] text-[clamp(22px,1.2vw,32px)] font-normal leading-[1.16] tracking-normal text-ink"
 	>
 		"{quote.text}"
 	</blockquote>
 
 	<div class="mt-8 inline-flex items-center gap-3 text-left">
 		<div
-			class="relative size-10 shrink-0 overflow-hidden rounded-full bg-gray-100 shadow-[0_0_0_1px_rgb(0_0_0_/_10%)]"
+			class="relative size-10 shrink-0 overflow-hidden rounded-full bg-canvas ring-1 ring-ink/10"
 		>
 			<img
 				src={quote.avatarSrc}
@@ -48,8 +48,8 @@
 			/>
 		</div>
 		<div>
-			<p class="m-0 text-xs font-medium leading-[1.18] text-[#202124]">{quote.personName}</p>
-			<p class="mt-1 mb-0 text-xs leading-[1.18] text-[#8c8f94]">
+			<p class="m-0 text-xs font-medium leading-[1.18] text-ink">{quote.personName}</p>
+			<p class="mt-1 mb-0 text-xs leading-[1.18] text-ink-muted">
 				{quote.personTitle}
 			</p>
 		</div>

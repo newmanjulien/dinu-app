@@ -1,8 +1,8 @@
 import type { HelpVariant } from './help-content';
 
 const HIDE_HELP_STORAGE_KEYS: Record<HelpVariant, string> = {
-	rep: 'hide-agreed-guide',
-	admin: 'hide-agreed-admin-guide'
+	rep: 'hide-dinu-guide',
+	admin: 'hide-dinu-admin-guide'
 };
 
 export function isHelpHidden(variant: HelpVariant): boolean {

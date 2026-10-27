@@ -9,7 +9,7 @@
 		children
 	}: {
 		description: string;
-		detail?: string[];
+		detail?: readonly string[];
 		after?: string;
 		descriptionId: string;
 		children: Snippet;

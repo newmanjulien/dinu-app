@@ -1,12 +1,19 @@
 <script lang="ts">
-	import { useViewerSession } from './viewer-session.svelte';
+	import { useAccount, useViewerSession } from './viewer-session.svelte';
 	import { useClerkReadiness } from './clerk-readiness';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import { page } from '$app/state';
 	import WorkspaceSkeleton from './WorkspaceSkeleton.svelte';
 	let { inline = false }: { inline?: boolean } = $props();
 	const session = useViewerSession();
+	const account = useAccount();
 	const readiness = useClerkReadiness();
+	const workspaceKnown = $derived.by(() => {
+		const value = account?.();
+		return Boolean(
+			value?.membership && value.company && !value.needsInitialization && !session.closing
+		);
+	});
 	const failure = $derived(
 		readiness.error || (session.phase === 'authentication-error' ? session.authenticationError : '')
 	);
@@ -32,7 +39,7 @@
 	{/if}
 {/snippet}
 
-{#if !inline && page.route.id?.startsWith('/(workspace)') && !failure}
+{#if !inline && workspaceKnown && page.route.id?.startsWith('/(workspace)') && !failure}
 	{#if session.delayed}
 		<WorkspaceSkeleton header announce={false}>{@render recovery()}</WorkspaceSkeleton>
 	{:else}

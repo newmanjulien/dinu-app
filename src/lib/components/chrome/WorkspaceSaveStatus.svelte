@@ -64,7 +64,7 @@
 	label="Contract saves"
 	onClose={close}
 	maxWidth={420}
-	class="w-[min(400px,calc(100vw-24px))] rounded-base border border-line bg-surface p-4 shadow-md"
+	class="w-[min(400px,calc(100vw-24px))] rounded-base border-hairline border-edge bg-surface p-4 shadow-floating"
 >
 	<div class="mb-3 flex items-center justify-between gap-3">
 		<h2 class="text-sm font-medium">Contract saves</h2>

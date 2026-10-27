@@ -1,4 +1,4 @@
-# Agreed
+# Dinu
 
 A SvelteKit / Svelte 5 contract workspace backed by Convex.
 
@@ -20,6 +20,11 @@ parent draft until that box is saved. Back preserves entered clause selections a
 wording. Their concessions
 are read-only, including newly added concessions in the draft. Changing a concession
 requires deleting it and adding a new one.
+
+An unchanged existing instruction box can be replaced by another box or by an action
+on selected text. Highlighting alone keeps its editor open. Unsaved changes block
+replacement with a red warning while preserving the selection. New creation still
+requires finishing or explicit cancellation.
 
 Typing, outside clicks, Escape and tab visibility never save. Dirty drafts stay
 open until Save, Cancel or confirmed abandonment during navigation. An unresolved
@@ -148,12 +153,13 @@ with `npx convex env set NAME value` (not as public SvelteKit environment variab
 | ------------------- | ------------------------------------------------------ |
 | `SMTP_USER`         | `julien.newman@gmail.com`                              |
 | `SMTP_APP_PASSWORD` | Gmail app password for that account; setup deferred    |
-| `APP_URL`           | HTTP(S) app origin, without a path, query, or fragment |
+| `APP_URL`           | `https://app.dinu.co` in production; `http://localhost:5173` in development |
 
 Set each company’s approval recipient in Settings. Requests capture that recipient
 when queued. Invitations also use these SMTP credentials and `APP_URL`.
-Nodemailer uses `smtp.gmail.com:465` with TLS. Missing variables are listed in the
-request's failure feedback. A durable marker records dispatch immediately before
+Nodemailer uses `smtp.gmail.com:465` with TLS and sends as
+`Dinu <julien.newman@gmail.com>`. Missing variables are listed in the request's
+failure feedback. A durable marker records dispatch immediately before
 SMTP. Recovery checks the scheduled action every minute and blocks all further
 requests while that job is pending or running. A stopped job with no dispatch is a
 confirmed failure. DNS failure (`EDNS`), message preparation failures (`EMESSAGE`
@@ -220,7 +226,7 @@ server-rendered provenance attributes; see the [reference policy](docs/overlay-r
 Contract creation, immutable publication, development measurements, and the staged
 rollout are documented in [the creation report](docs/contract-creation-performance.md).
 
-Agreed uses open verified email signup and private companies. Each account creates a
+Dinu uses open verified email signup and private companies. Each account creates a
 company, accepts an invitation, or waits for a colleague. There is no company
 discovery or email-domain autojoin. Each user chooses Rep or Admin for themselves
 in Settings; Admin grants company administration immediately. New profiles start

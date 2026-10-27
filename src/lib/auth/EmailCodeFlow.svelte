@@ -1,13 +1,13 @@
 <script lang="ts">
 	import RouteTitle from './RouteTitle.svelte';
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
-	import { goto, preloadCode } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { AccountNavigation } from './account-navigation';
 	import { useClerkReadiness } from './clerk-readiness';
 	import { beginStartupAttempt, recordStartup } from './startup-perf';
 	import { page } from '$app/state';
 	import { useClerkContext } from 'svelte-clerk';
-	import { localReturn } from './navigation';
+	import { localReturn, onboardingHref } from './navigation';
 	import { useSignIn, useSignUp } from 'svelte-clerk';
 	import AuthCodeStep from '$lib/auth/components/AuthCodeStep.svelte';
 	import { useEntryPresentation } from './entry-presentation.svelte';
@@ -46,10 +46,15 @@
 			? page.url.pathname + page.url.search
 			: localReturn(page.url.searchParams.get('returnTo'))
 	);
+	const entryDestination = $derived.by(() => {
+		if (!joining || invitation) return returnTo;
+		const pathname = new URL(returnTo, page.url).pathname;
+		return ['/onboarding', '/invitation'].includes(pathname) ? returnTo : onboardingHref(returnTo);
+	});
 	const authTicket = $derived(page.url.searchParams.get('__clerk_ticket'));
 	$effect(() => {
 		const id = clerk.session?.id;
-		const destination = returnTo;
+		const destination = entryDestination;
 		untrack(() => {
 			if (id === observedSession) return;
 			observedSession = id;
@@ -277,21 +282,21 @@
 
 	function prepareDestination() {
 		preparation.warm();
-		const pathname = new URL(returnTo, page.url).pathname;
-		void Promise.all([preloadCode(pathname), preloadDestination(pathname)]).catch(() => {});
+		const pathname = new URL(entryDestination, page.url).pathname;
+		void preloadDestination(pathname).catch(() => {});
 	}
 </script>
 
 <RouteTitle
-	title={`${step === 'code' ? 'Enter your code' : invitation ? `Join ${invitation.companyName}` : joining ? 'Join' : 'Log in'} | Agreed`}
+	title={`${step === 'code' ? 'Enter your code' : invitation ? `Join ${invitation.companyName}` : joining ? 'Join' : 'Log in'} | Dinu`}
 />
 
 {#snippet accountFooter()}
-	<p class="m-0 text-[13px] leading-5 text-[#8f9297]">
+	<p class="m-0 text-[13px] leading-5 text-ink-muted">
 		{joining ? 'Already have an account?' : 'Need an account?'}
 		<a
 			href={joinHref}
-			class="text-stone-500 underline underline-offset-2 transition-colors hover:text-[#202124]"
+			class="text-ink-muted underline underline-offset-2 transition-colors hover:text-ink"
 		>
 			{joining ? 'Log in' : 'Join'}
 		</a>
@@ -302,11 +307,11 @@
 	<LoadingState label={opening ? 'Opening your account' : 'Signing in'} />
 {:else}
 	{#if clerk.session}
-		<AuthStepFrame title="Continue to Agreed">
+		<AuthStepFrame title="Continue to Dinu">
 			{#if authErrorText}
 				<p role="alert" class="m-0 text-sm leading-5 text-danger">{authErrorText}</p>
 			{/if}
-			<AuthHotkeyButton onclick={() => void openDestination(clerk.session!.id, returnTo)}>
+			<AuthHotkeyButton onclick={() => void openDestination(clerk.session!.id, entryDestination)}>
 				Try again
 			</AuthHotkeyButton>
 		</AuthStepFrame>
@@ -315,10 +320,10 @@
 			title={invitation
 				? `Join ${invitation.companyName}`
 				: joining
-					? 'Join Agreed'
-					: 'Log in to Agreed'}
+					? 'Join Dinu'
+					: 'Log in to Dinu'}
 			description={invitation
-				? 'Verify your invited email to continue. We’ll create your Agreed account if you need one.'
+				? 'Verify your invited email to continue. We’ll create your Dinu account if you need one.'
 				: undefined}
 		>
 			<form
@@ -331,7 +336,7 @@
 				}}
 			>
 				{#if invitation}
-					<p class="m-0 text-center text-sm leading-5 break-words text-[#686b73]">
+					<p class="m-0 text-center text-sm leading-5 break-words text-ink-muted">
 						{invitation.email}
 					</p>
 				{:else}<AuthTextInput

@@ -127,6 +127,10 @@ The catalog is stored on the development deployment `scrupulous-squirrel-986`.
 After editing its descriptions or questions in `src/convex/delegation.ts`, push the
 backend and refresh the stored catalog:
 
+Publishing the Dinu rename also requires this refresh so the stored task
+descriptions use the new app name. The repository rename does not update deployed
+catalog content.
+
 ```sh
 npx convex run --deployment scrupulous-squirrel-986 delegation:seedCatalog '{}' --push --typecheck enable
 ```

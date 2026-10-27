@@ -104,8 +104,10 @@
 	{#if SavedContract && runtime.ready}{#key `${data.id}:${attempt}`}
 			{@const mountedId = data.id}
 			{@const mountedAttempt = attempt}
+			<!-- Preparation can finish before the naming dialog hands off the workspace. -->
 			<SavedContract
 				id={mountedId}
+				admitted={!creating}
 				onVisible={() => visible(mountedId, mountedAttempt)}
 				onFailure={() => failure(mountedId, mountedAttempt)}
 			/>

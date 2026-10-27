@@ -39,7 +39,7 @@
 			}
 		}}
 	>
-		<p class="m-0 text-sm leading-5 text-[#686b73]">
+		<p class="m-0 text-sm leading-5 text-ink-muted">
 			Sent a code to {email}
 		</p>
 		<AuthTextInput
@@ -66,7 +66,7 @@
 				</button>{/if}
 			<button
 				type="button"
-				class="cursor-pointer rounded-button-sm text-ink-muted underline underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:text-stone-300"
+				class="cursor-pointer rounded-button-sm text-ink-muted underline underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:text-ink-muted"
 				disabled={isResending}
 				onclick={onResend}
 			>

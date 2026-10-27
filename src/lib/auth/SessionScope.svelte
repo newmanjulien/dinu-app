@@ -89,12 +89,12 @@
 			transport.current.setAuth(
 				async ({ forceRefreshToken }) => {
 					if (current !== attempt || signal.aborted || clerk.session?.id !== sessionId) return null;
-					const tokenAttempt = new ReadAttempt(15_000);
+					const tokenAttempt = new ReadAttempt(15_000, signal);
 					try {
 						const skipCache = forceRefreshToken || generation !== initialGeneration;
 						const token = await waitForRead(
 							clerk.session!.getToken({ template: 'convex', skipCache }),
-							AbortSignal.any([signal, tokenAttempt.signal])
+							tokenAttempt.signal
 						);
 						return current === attempt && !signal.aborted && clerk.session?.id === sessionId
 							? token

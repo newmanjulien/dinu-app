@@ -17,7 +17,7 @@ export function completedReview(contract: Doc<'savedContracts'>) {
 }
 /** Only an explicit changed decision calls this, atomically with its new generation. */
 export async function queueCompletedReview(ctx: MutationCtx, contract: Doc<'savedContracts'>) {
-	if (!completedReview(contract)) return;
+	if (!completedReview(contract)) return false;
 	await createDelivery(ctx, {
 		companyId: contract.companyId,
 		contractId: contract._id,
@@ -29,6 +29,7 @@ export async function queueCompletedReview(ctx: MutationCtx, contract: Doc<'save
 			templateVersionId: contract.templateVersionId
 		}
 	});
+	return true;
 }
 export async function decisionSelections(
 	ctx: QueryCtx,

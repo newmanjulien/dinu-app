@@ -214,12 +214,8 @@ export class SnapshotStorage {
 		work: (tx: IDBTransaction) => Promise<T>,
 		cancel?: AbortSignal
 	): Promise<T> {
-		const attempt = new ReadAttempt(1000);
-		const signal = AbortSignal.any([
-			this.lifetime.signal,
-			attempt.signal,
-			...(cancel ? [cancel] : [])
-		]);
+		const attempt = new ReadAttempt(1000, this.lifetime.signal, cancel);
+		const signal = attempt.signal;
 		let tx: IDBTransaction | undefined;
 		const abort = () => {
 			try {

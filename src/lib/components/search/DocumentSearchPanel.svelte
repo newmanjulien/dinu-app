@@ -5,6 +5,7 @@
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
 	import type { DocumentSearchSession } from '$lib/document/search/search-session.svelte';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
+	import { fieldShellClass, fieldInputClass } from '$lib/ui/field-styles';
 
 	let {
 		session,
@@ -35,17 +36,20 @@
 <section
 	bind:this={panelElement}
 	id="document-search"
-	class="pointer-events-auto w-full rounded-xl border border-[#e5e5e5] bg-surface p-2.5 text-ink shadow-none"
+	class="pointer-events-auto w-full rounded-xl border-hairline border-edge bg-surface p-2.5 text-ink shadow-floating"
 	aria-label="Search"
 	data-utility-panel="document-search"
 >
-	<label
-		class="flex h-9 min-w-0 items-center gap-2 rounded-button-lg border border-[#e5e5e5] bg-white px-3 text-[#8a8a8a] transition-colors focus-within:border-[#d5d5d5] motion-reduce:transition-none"
-	>
+	<label class={`${fieldShellClass} flex h-9 items-center gap-2`}>
 		<span class="sr-only">Find in document</span>
-		<MagnifyingGlassIcon aria-hidden="true" size={17} weight="regular" />
+		<MagnifyingGlassIcon
+			aria-hidden="true"
+			size={17}
+			weight="regular"
+			class="shrink-0 text-ink-muted"
+		/>
 		<input
-			class="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] text-ink outline-none placeholder:text-[#8a8a8a] [&::-webkit-search-cancel-button]:hidden"
+			class={fieldInputClass}
 			bind:this={inputElement}
 			type="search"
 			value={session.query}

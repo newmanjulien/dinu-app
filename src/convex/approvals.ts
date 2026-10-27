@@ -210,7 +210,7 @@ export const decide = mutation({
 		status: reviewDecision,
 		operationId: v.string()
 	},
-	returns: v.null(),
+	returns: v.object({ reviewCompleted: v.boolean() }),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		if (access.role !== 'admin')
@@ -234,7 +234,7 @@ export const decide = mutation({
 				receipt.status !== args.status
 			)
 				throw new ConvexError('This review operation was already used.');
-			return null;
+			return { reviewCompleted: receipt.reviewCompleted ?? false };
 		}
 		if (contract.selectedConcessions[args.itemId] !== args.concessionId)
 			throw new ConvexError('This concession changed. Review its current version.');
@@ -250,6 +250,24 @@ export const decide = mutation({
 			throw new ConvexError('This concession was replaced. Review its current version.');
 		const previousStatus = review.status;
 		const changed = previousStatus !== args.status;
+		let reviewCompleted = false;
+		if (changed) {
+			const reviews = {
+				...contract.reviews,
+				[args.itemId]: { concessionId: args.concessionId, lifecycle, status: args.status }
+			};
+			const reviewGeneration = (contract.reviewGeneration ?? 0) + 1;
+			await updateAttributions(ctx, contract, reviews, [
+				attribution(args.itemId, args.concessionId, lifecycle, access)
+			]);
+			await ctx.db.patch('savedContracts', args.id, { reviews, reviewGeneration });
+			const notificationQueued = await queueCompletedReview(ctx, {
+				...contract,
+				reviews,
+				reviewGeneration
+			});
+			reviewCompleted = previousStatus === 'pending' && notificationQueued;
+		}
 		await ctx.db.insert('concessionDecisions', {
 			companyId: access.companyId,
 			contractId: args.id,
@@ -263,20 +281,9 @@ export const decide = mutation({
 			previousStatus,
 			status: args.status,
 			decidedAt: Date.now(),
-			changed
+			changed,
+			reviewCompleted
 		});
-		if (changed) {
-			const reviews = {
-				...contract.reviews,
-				[args.itemId]: { concessionId: args.concessionId, lifecycle, status: args.status }
-			};
-			const reviewGeneration = (contract.reviewGeneration ?? 0) + 1;
-			await updateAttributions(ctx, contract, reviews, [
-				attribution(args.itemId, args.concessionId, lifecycle, access)
-			]);
-			await ctx.db.patch('savedContracts', args.id, { reviews, reviewGeneration });
-			await queueCompletedReview(ctx, { ...contract, reviews, reviewGeneration });
-		}
-		return null;
+		return { reviewCompleted };
 	}
 });

@@ -1,9 +1,12 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import { accentButtonClass } from '$lib/ui/button-styles';
+	import type { ButtonHref } from '$lib/ui/types';
 
 	type Props = {
 		type?: 'button' | 'submit';
+		href?: ButtonHref;
 		'aria-keyshortcuts'?: string;
 		disabled?: boolean;
 		children: Snippet;
@@ -13,6 +16,7 @@
 
 	let {
 		type = 'button',
+		href,
 		disabled = false,
 		children,
 		onclick,
@@ -23,15 +27,14 @@
 
 <Button
 	{type}
+	{href}
 	{disabled}
 	{onclick}
 	{variant}
 	aria-keyshortcuts={ariaKeyshortcuts}
 	class={[
-		'relative w-full',
-		variant === 'primary'
-			? 'bg-accent hover:bg-accent-hover disabled:bg-accent-soft disabled:text-white disabled:hover:bg-accent-soft data-[disabled]:bg-accent-soft data-[disabled]:text-white'
-			: 'h-auto border-stone-200 py-3 text-sm hover:bg-stone-50'
+		'relative h-auto min-h-button-sm w-full whitespace-normal [overflow-wrap:anywhere]',
+		variant === 'primary' && accentButtonClass
 	]}
 >
 	{@render children()}

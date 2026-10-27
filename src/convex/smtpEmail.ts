@@ -211,7 +211,7 @@ export async function deliverEmail(
 			smtpStarted = true;
 			const result = await transport.sendMail({
 				...mail,
-				from: { address: config.user, name: '' },
+				from: { address: config.user, name: 'Dinu' },
 				to: { address: recipients.recipientEmail, name: '' },
 				cc: recipients.cc.map((email) => ({ address: email, name: '' }))
 			});

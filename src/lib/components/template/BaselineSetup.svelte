@@ -15,6 +15,8 @@
 	import CheckCircleIcon from 'phosphor-svelte/lib/CheckCircleIcon';
 	import { DOCX_MAX_BYTES, type ImportIssue } from '$lib/contract/import/limits';
 	import { saveError } from '$lib/contract/saved';
+	import Button from '$lib/ui/Button.svelte';
+	import { accentButtonClass } from '$lib/ui/button-styles';
 	let { getNavigationIntent }: { getNavigationIntent: () => number } = $props();
 	const viewer = useViewer();
 	const session = useViewerSession();
@@ -278,7 +280,7 @@
 							height="calc(100% - 1px)"
 							rx="15"
 							fill="none"
-							stroke="var(--color-line)"
+							stroke="var(--color-edge)"
 							stroke-width="1"
 							stroke-dasharray="7 5"
 							class={[
@@ -305,21 +307,18 @@
 							Or choose a Word file from your computer.
 						{/if}
 					</p>
-					<button
-						type="button"
-						class="mt-5 cursor-pointer rounded-full bg-accent px-5 py-2.5 text-[13px] font-medium text-white ring-4 ring-transparent transition-[background-color,box-shadow,filter] duration-100 ease-out enabled:hover:bg-accent-hover enabled:active:brightness-90 enabled:active:ring-accent/20 enabled:active:duration-0 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent disabled:cursor-default disabled:opacity-40"
-						onclick={chooseFile}
-						disabled={publishing}>{fileName ? 'Choose another file' : 'Choose a Word file'}</button
+					<Button class={[accentButtonClass, 'mt-5']} onclick={chooseFile} disabled={publishing}
+						>{fileName ? 'Choose another file' : 'Choose a Word file'}</Button
 					>
 					<p class="mt-3 text-xs leading-5 text-ink-muted">Upload a .docx</p>
 				</section>
 			{:else}
 				<section
 					aria-labelledby="waiting-for-contract"
-					class="flex min-h-[250px] flex-col items-center justify-center rounded-base border border-line bg-surface px-6 py-10 text-center"
+					class="flex min-h-[250px] flex-col items-center justify-center rounded-base border-hairline border-edge bg-surface shadow-card px-6 py-10 text-center"
 				>
 					<div
-						class="mb-4 flex size-11 items-center justify-center rounded-button-xl bg-canvas/80 text-ink-muted/90"
+						class="mb-4 flex size-11 items-center justify-center rounded-button-xl bg-canvas/80 text-ink-muted"
 						aria-hidden="true"
 					>
 						<FileTextIcon size={22} />
@@ -339,7 +338,7 @@
 					label={admin ? 'This feature is in beta.' : 'Your admin needs to finish setup.'}
 				>
 					{#if admin}
-						Please email julien@agreed.so if you can't upload your baseline contract.
+						Please email j@dinu.co if you can't upload your baseline contract.
 					{:else}
 						Ask an admin to upload and publish your company’s starting contract.
 					{/if}
@@ -350,7 +349,7 @@
 				{#if uploadError}
 					<p
 						role="alert"
-						class="mt-4 rounded-button-xl border border-danger/20 bg-danger-surface px-5 py-4 text-[13px] leading-6 text-danger"
+						class="mt-4 rounded-button-xl border-hairline border-danger/20 bg-danger-surface shadow-card px-5 py-4 text-[13px] leading-6 text-danger"
 					>
 						{uploadError}
 					</p>
@@ -360,7 +359,7 @@
 					<section
 						aria-labelledby="contract-corrections"
 						role="alert"
-						class="mt-4 rounded-base border border-line bg-surface p-4"
+						class="mt-4 rounded-base border-hairline border-edge bg-surface shadow-card p-4"
 					>
 						<h2 id="contract-corrections" class="text-sm leading-6 font-medium text-ink">
 							{errors.length === 1 ? 'One correction' : `${errors.length} corrections`} before publishing
@@ -369,7 +368,9 @@
 							Make {errors.length === 1 ? 'this correction' : 'these corrections'} in Word, save the file,
 							and upload it again.
 						</p>
-						<ul class="mt-3 divide-y divide-line/70 border-t border-line/70 text-[13px] leading-6">
+						<ul
+							class="mt-3 divide-y-[length:var(--surface-border-width)] divide-line border-t-[length:var(--surface-border-width)] border-line text-[13px] leading-6"
+						>
 							{#each errors as issue}
 								<li class="py-3 last:pb-0">
 									<p class="text-ink">{issue.message}</p>
@@ -389,7 +390,7 @@
 				{#if ready}
 					<section
 						aria-labelledby="contract-ready"
-						class="mt-5 rounded-base border border-line bg-surface p-5 sm:p-6"
+						class="mt-5 rounded-base border-hairline border-edge bg-surface shadow-card p-5 sm:p-6"
 					>
 						<div class="flex items-start gap-3">
 							<CheckCircleIcon size={22} class="mt-0.5 shrink-0 text-success" aria-hidden="true" />
@@ -403,7 +404,7 @@
 							</div>
 						</div>
 						<label
-							class="mt-5 flex cursor-pointer items-start gap-3 rounded-button-lg border border-line/70 bg-page p-4 text-[13px] leading-6 text-ink-secondary"
+							class="mt-5 flex cursor-pointer items-start gap-3 rounded-button-lg border-hairline border-line bg-page p-4 text-[13px] leading-6 text-ink-secondary"
 						>
 							<input
 								class="mt-1 size-4 shrink-0 cursor-pointer accent-ink focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent disabled:cursor-default"
@@ -416,11 +417,10 @@
 								replaced.</span
 							>
 						</label>
-						<button
-							type="button"
-							class="mt-5 cursor-pointer rounded-button-lg bg-[#171717] px-5 py-2.5 text-[13px] font-medium text-white transition-colors hover:bg-[#303030] focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent disabled:cursor-default disabled:opacity-40"
+						<Button
+							class="mt-5"
 							disabled={!confirmed || publishing || session.closing}
-							onclick={publish}>{publishing ? 'Publishing…' : 'Publish contract'}</button
+							onclick={publish}>{publishing ? 'Publishing…' : 'Publish contract'}</Button
 						>
 						{#if publishError}
 							<p role="alert" class="mt-3 text-[13px] leading-6 text-danger">{publishError}</p>

@@ -71,7 +71,7 @@ const initialCatalog = {
 			key: 'set-up-contract',
 			title: 'Set up a contract',
 			description:
-				'I’ll set up your contract in Agreed so your team can use it as a starting point for negotiations. Share the contract you’d like to use and tell me what it’s for, along with any clauses or details that need particular attention.',
+				'I’ll set up your contract in Dinu so your team can use it as a starting point for negotiations. Share the contract you’d like to use and tell me what it’s for, along with any clauses or details that need particular attention.',
 			businessDays: 2,
 			questions: [
 				{

@@ -8,7 +8,7 @@
 	import type {
 		AuthoringMode,
 		SelectionIssue,
-		SelectionEligibility
+		SelectionAvailability
 	} from '$lib/playbook/source-picking';
 	import { getDocumentHighlights } from '$lib/document/highlights/controller';
 	import { mapSelection } from '$lib/document/selection/dom-selection';
@@ -23,6 +23,7 @@
 		enabled,
 		autoConfirm = false,
 		onSelectionIssue,
+		onActionBlocked,
 		onGestureStart,
 		evaluate,
 		onConfirm
@@ -32,8 +33,9 @@
 		enabled: boolean;
 		autoConfirm?: boolean;
 		onSelectionIssue: (issue: SelectionIssue | null) => void;
+		onActionBlocked: (reason: string) => void;
 		onGestureStart: () => void;
-		evaluate: (range: SourceRange) => SelectionEligibility;
+		evaluate: (range: SourceRange) => SelectionAvailability;
 		onConfirm: (range: SourceRange, mode?: AuthoringMode) => boolean;
 	} = $props();
 	const actions = [
@@ -41,6 +43,7 @@
 		{ mode: 'concession', label: 'Add concession', icon: LightningIcon }
 	] as const;
 	const index = $derived(snapshot.source.sourceIndex);
+	const preserveSelection = (event: PointerEvent) => event.preventDefault();
 	let canConcede = $state(false);
 	type SelectionEndpoints = {
 		startNode: Node;
@@ -213,7 +216,8 @@
 		}
 		const permission = evaluate(range);
 		if (!permission.allowed) {
-			onSelectionIssue(permission.issue);
+			if ('reason' in permission) onActionBlocked(permission.reason);
+			else onSelectionIssue(permission.issue);
 			return;
 		}
 		onSelectionIssue(null);
@@ -254,11 +258,16 @@
 		referenceClipping="hide"
 		role="group"
 		label="Text selection actions"
-		class="flex h-[34px] items-center rounded-xl border border-line bg-surface p-0.5"
-		onpointerdown={(event) => event.preventDefault()}
+		class="flex h-[34px] items-center rounded-xl border-hairline border-edge bg-surface p-0.5 shadow-floating"
+		onpointerdown={preserveSelection}
 	>
 		{#each actions.slice(0, canConcede ? 2 : 1) as action (action.mode)}
-			<Tooltip text={action.label} trigger={actionButtons[action.mode]} standalone={false}>
+			<Tooltip
+				text={action.label}
+				trigger={actionButtons[action.mode]}
+				standalone={false}
+				onpointerdown={preserveSelection}
+			>
 				{#snippet children(descriptionId)}
 					<SquareIconButton
 						bind:element={actionButtons[action.mode]}

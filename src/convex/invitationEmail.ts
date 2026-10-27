@@ -91,8 +91,8 @@ export const invite = action({
 					ctx,
 					{ id: invitation.deliveryId, attempt: 1 },
 					async () => ({
-						subject: `Join ${invitation.companyName} on Agreed`,
-						text: `${invitation.inviterName} invited you to join ${invitation.companyName} on Agreed.\n\n${url.href}\n\nOpen the invitation, verify ${invitation.email} with an email code, then choose Join ${invitation.companyName}. Your Agreed account will be created if needed. This invitation expires in 7 days.`
+						subject: `Join ${invitation.companyName} on Dinu`,
+						text: `${invitation.inviterName} invited you to join ${invitation.companyName} on Dinu.\n\n${url.href}\n\nOpen the invitation, verify ${invitation.email} with an email code, then choose Join ${invitation.companyName}. Your Dinu account will be created if needed. This invitation expires in 7 days.`
 					}),
 					{ transport, expired: () => timedOut }
 				);

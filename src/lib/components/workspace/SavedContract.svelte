@@ -7,13 +7,29 @@
 	import { creationPhase } from '$lib/contract/creation-perf';
 	import { recordColdStart } from '$lib/document/runtime/render-perf';
 	import LoadingPagination from '$lib/components/document/LoadingPagination.svelte';
+	import { REVIEW_GUTTER_WIDTH } from '$lib/components/document/workspace-layout';
+	import { selectedReviewApplications } from '$lib/contract/approval';
+	import Button from '$lib/ui/Button.svelte';
 	import RepWorkspace from './RepWorkspace.svelte';
-	let { id, onVisible, onFailure }: { id: string; onVisible?: () => void; onFailure?: () => void } =
-		$props();
+	let {
+		id,
+		admitted = true,
+		onVisible,
+		onFailure
+	}: { id: string; admitted?: boolean; onVisible?: () => void; onFailure?: () => void } = $props();
 	const mountedId = untrack(() => id);
 	const sessions = getContractSessions();
 	const acquired = untrack(() => sessions.acquire(mountedId));
 	const session = acquired.session;
+	const reviewGutter = $derived(
+		session.snapshot &&
+			selectedReviewApplications(
+				session.snapshot.items,
+				session.persistence?.choices ?? session.metadata?.selectedConcessions ?? {}
+			).length
+			? REVIEW_GUTTER_WIDTH
+			: 0
+	);
 	const account = useViewerSession();
 	const runtime = getWorkspaceRuntime();
 	let opening = $state.raw<{
@@ -112,6 +128,7 @@
 		<RepWorkspace
 			snapshot={session.snapshot}
 			{session}
+			{admitted}
 			onVisible={() => visible(token)}
 			onFailure={() => failure(token)}
 		/>
@@ -123,10 +140,8 @@
 			<p class="mt-2 text-ink-muted">This contract may have been deleted.</p>
 		{:else}
 			<p role="alert">We couldn’t load this contract.</p>
-			<button class="mt-4 rounded-button-sm border border-line bg-surface px-4 py-2" onclick={retry}
-				>Try again</button
-			>
+			<Button variant="secondary" class="mt-4" onclick={retry}>Try again</Button>
 		{/if}
 		<a href="/" class="mt-6 block underline">Back to Home</a>
 	</main>
-{:else}<LoadingPagination label="Loading contract" />{/if}
+{:else}<LoadingPagination label="Loading contract" {reviewGutter} />{/if}

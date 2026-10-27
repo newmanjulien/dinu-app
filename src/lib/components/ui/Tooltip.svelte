@@ -8,6 +8,7 @@
 		trigger,
 		standalone = true,
 		enabled = true,
+		onpointerdown,
 		class:
 			className = 'rounded-base border-0 bg-ink-secondary px-2.5 py-2 text-left text-xs leading-[1.4] text-surface',
 		children
@@ -17,6 +18,7 @@
 		trigger?: HTMLElement;
 		standalone?: boolean;
 		enabled?: boolean;
+		onpointerdown?: (event: PointerEvent) => void;
 		class?: string;
 		children: Snippet<[string]>;
 	} = $props();
@@ -120,6 +122,7 @@
 		maxWidth={288}
 		bind:element={surface}
 		onpointerenter={enter}
+		{onpointerdown}
 		onpointerleave={(event) => {
 			if (
 				event.relatedTarget instanceof Node &&

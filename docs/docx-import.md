@@ -6,7 +6,7 @@ composition, reference resolution, and Word export as existing contracts.
 Errors block publication. The upload page gives plain-English corrections and
 short text excerpts to find in Word, without displaying the contract. Routine
 layout warnings remain in the conversion diagnostics; the page explains once
-that Agreed applies its own layout and ignores comments and footers. A valid
+that Dinu applies its own layout and ignores comments and footers. A valid
 file can be published after confirming that the starting contract is permanent.
 
 ## Supported content
@@ -35,7 +35,7 @@ file can be published after confirming that the starting contract is permanent.
   applying their formatting in Word's logical column order.
 
 Fonts, spacing, colors, borders, underline, page/column breaks, and hyperlink
-behavior use Agreed's layout. Comments, comment anchors, and footers are ignored,
+behavior use Dinu's layout. Comments, comment anchors, and footers are ignored,
 including their related parts. They do not become contract text or publication
 errors. Paragraph-level content controls containing only comment markers are also
 ignored in the body and headers when their only properties are `id` and `tag`

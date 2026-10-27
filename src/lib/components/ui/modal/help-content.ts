@@ -13,8 +13,8 @@ type HelpContent = {
 
 export const helpContent = {
 	rep: {
-		title: 'How Agreed works',
-		intro: 'Agreed helps sales reps understand, negotiate and close sales contracts on their own.',
+		title: 'How Dinu works',
+		intro: 'Dinu helps sales reps understand, negotiate and close sales contracts on their own.',
 		steps: [
 			{
 				title: 'Open a clause',

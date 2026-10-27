@@ -17,7 +17,7 @@ const volatileKeys = new Set<string>();
 const deletedUsers = new Set<string>();
 const removedMemberships = new Set<string>();
 const prefix = (userId: string) =>
-	`agreed:drafts:v2:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
+	`dinu:drafts:v2:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
 
 function selections(value: unknown): value is SavedSelections {
 	return Boolean(

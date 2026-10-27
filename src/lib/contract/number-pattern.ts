@@ -83,7 +83,7 @@ export function addressPattern(pattern: NumberPattern): NumberPatternPart[] {
 }
 
 /** Select semantic fields in a stable order, excluding editor metadata. */
-export function canonicalNumberPattern(pattern: NumberPattern): NumberPatternPart[] {
+export function canonicalNumberPattern(pattern: readonly NumberPatternPart[]): NumberPatternPart[] {
 	return pattern.map((part) =>
 		'text' in part
 			? { text: part.text }

@@ -351,15 +351,15 @@
 	<div class="space-y-4">
 		{#if step === 'confirmDeletion'}
 			{#if !options.data && !options.error}
-				<p class="text-sm leading-6 text-stone-700">Checking company membership...</p>
+				<p class="text-sm leading-6 text-ink-secondary">Checking company membership...</p>
 			{:else if options.data?.mode === 'transferOwnership'}
-				<p class="text-sm leading-6 text-stone-700">
+				<p class="text-sm leading-6 text-ink-secondary">
 					Transfer ownership of {options.data.companyName ?? 'your company'} to a colleague before deleting
 					your account.
 					<a href="/team" class="underline" onclick={() => onClose()}>Open the team page</a>
 				</p>
 			{:else if options.data}
-				<p class="text-sm leading-6 text-stone-700">
+				<p class="text-sm leading-6 text-ink-secondary">
 					{#if combined}
 						You are the last member of <strong>{options.data.companyName}</strong>. This permanently
 						deletes your account and company, including all contracts, the playbook, templates and
@@ -371,13 +371,13 @@
 					{/if}
 				</p>
 				{#if options.data.pending}
-					<p class="text-sm leading-6 text-stone-700">
+					<p class="text-sm leading-6 text-ink-secondary">
 						Company activity is paused while account deletion is confirmed. You can retry deletion
 						or cancel it here.
 					</p>
 				{/if}
 				<div>
-					<label for="delete-account-confirmation" class="block text-xs text-stone-950">
+					<label for="delete-account-confirmation" class="block text-xs text-ink">
 						Type <strong>"{confirmationPhrase}"</strong> to continue
 					</label>
 					<input
@@ -395,19 +395,19 @@
 			{/if}
 		{:else}
 			<div>
-				<h3 class="text-sm leading-tight font-medium text-stone-950">
+				<h3 class="text-sm leading-tight font-medium text-ink">
 					{verificationTitle}
 				</h3>
-				<p class="mt-2 text-sm leading-6 text-stone-700">
+				<p class="mt-2 text-sm leading-6 text-ink-secondary">
 					{verificationDescription}
 				</p>
 			</div>
 
 			{#if verification.status === 'preparing'}
-				<p class="text-[0.72rem] leading-5 text-stone-500">Preparing verification...</p>
+				<p class="text-[0.72rem] leading-5 text-ink-muted">Preparing verification...</p>
 			{:else if showVerificationInput}
 				<div>
-					<label for="delete-account-verification" class="block text-xs text-stone-950">
+					<label for="delete-account-verification" class="block text-xs text-ink">
 						{verificationTitle}
 					</label>
 					<input
@@ -424,7 +424,7 @@
 					/>
 				</div>
 			{:else if showPasskeyPrompt}
-				<p class="text-[0.72rem] leading-5 text-stone-500">
+				<p class="text-[0.72rem] leading-5 text-ink-muted">
 					Continue with the passkey prompt to verify your identity.
 				</p>
 			{/if}

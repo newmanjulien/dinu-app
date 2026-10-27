@@ -15,18 +15,24 @@
 	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import DocumentViewerSlot from '$lib/components/document/DocumentViewerSlot.svelte';
-	import LoadingPagination from '$lib/components/document/LoadingPagination.svelte';
+	import { REVIEW_GUTTER_WIDTH } from '$lib/components/document/workspace-layout';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
 	import RepPlaybookPanel from '$lib/components/playbook/RepPlaybookPanel.svelte';
+	import ReviewCompletedModal from '$lib/components/ui/modal/ReviewCompletedModal.svelte';
 	import WorkspaceChrome from './WorkspaceChrome.svelte';
 	import { recordContractInput } from '$lib/document/runtime/render-perf';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
+	import InteractionInputScope from '$lib/components/ui/InteractionInputScope.svelte';
 	import { sameSelection } from '$lib/playbook/model';
 	import { downloadWord } from '$lib/contract/export/download';
 	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
+	import Button from '$lib/ui/Button.svelte';
+	import Tooltip from '$lib/components/ui/Tooltip.svelte';
+	import { accentButtonClass } from '$lib/ui/button-styles';
 	import {
 		approvalCoversPending,
 		savedReviews,
+		selectedReviewApplications,
 		reviewStatus,
 		type ReviewTag,
 		type ReviewDecision,
@@ -36,11 +42,13 @@
 	let {
 		snapshot,
 		session: contractSession,
+		admitted = true,
 		onVisible,
 		onFailure
 	}: {
 		snapshot: ContractSnapshot;
 		session: ContractSession;
+		admitted?: boolean;
 		onVisible?: () => void;
 		onFailure?: () => void;
 	} = $props();
@@ -254,6 +262,7 @@
 		status: ReviewDecision;
 	};
 	let deciding = $state(false);
+	let reviewCompleted = $state(false);
 	let decisionError = $state.raw<{
 		itemId: string;
 		attempt: DecisionAttempt;
@@ -272,26 +281,10 @@
 			viewer.ready &&
 			!session.blocked
 	);
-	const reviewApplications = $derived.by(() => {
-		if (!source.renderSource?.sourceIndex) return [];
-		return snapshot.items.flatMap((item) => {
-			const selected = persistence.choices[item._id];
-			if (!selected || !item.instructions?.changesNeedApproval?.trim()) return [];
-			const concessionPosition = item.concessions.findIndex((c) => c.id === selected);
-			const concession = item.concessions[concessionPosition];
-			if (!concession) return [];
-			const range = concession.changes[0]?.range ?? item.triggers[0]?.range;
-			if (!range) return [];
-			return [
-				{
-					item,
-					concession,
-					concessionPosition,
-					range
-				}
-			];
-		});
-	});
+	const reviewApplications = $derived(
+		selectedReviewApplications(snapshot.items, persistence.choices)
+	);
+	const reviewGutter = $derived(reviewApplications.length ? REVIEW_GUTTER_WIDTH : 0);
 	const reviewTags = $derived.by<ReviewTag[]>(() =>
 		reviewApplications.map(({ item, concession, concessionPosition, range }) => {
 			const lifecycle = persistence.lifecycles[item._id];
@@ -318,6 +311,9 @@
 	const approvalCount = $derived(savedReviewTags.filter((t) => t.status !== 'approved').length);
 	const pendingApprovalCount = $derived(
 		savedReviewTags.filter((t) => t.status === 'pending').length
+	);
+	const rejectedApprovalCount = $derived(
+		savedReviewTags.filter((t) => t.status === 'rejected').length
 	);
 	const approvalNeeded = $derived(approvalCount > 0);
 	$effect(() => {
@@ -389,7 +385,7 @@
 		deciding = true;
 		decisionError = null;
 		try {
-			await client.mutation(api.approvals.decide, {
+			const result = await client.mutation(api.approvals.decide, {
 				membershipId,
 				id: contractId,
 				itemId: tag.itemId as Id<'playbookItems'>,
@@ -400,7 +396,9 @@
 			});
 			if (!active) return;
 			decisionAttempts.delete(tag.itemId);
-			reviewNavigation = { afterItemId: tag.itemId };
+			if (result.reviewCompleted && !runtime.paused && !session.blocked && !navigating.to)
+				reviewCompleted = true;
+			else reviewNavigation = { afterItemId: tag.itemId };
 		} catch (error) {
 			if (active && !decisionSettled(tag.itemId, attempt, changesStatus))
 				decisionError = {
@@ -446,11 +444,15 @@
 		return matchingApproval?.status === 'failed' ? matchingApproval.error : null;
 	});
 	const approvalMessage = $derived(
-		!approvalSending && approvalRequested
-			? 'Approval request sent.'
-			: approvalNeeded
-				? `${approvalCount === 1 ? 'This concession requires' : 'These concessions require'} approval before download.`
-				: null
+		rejectedApprovalCount > 0
+			? rejectedApprovalCount === 1
+				? 'This concession was declined. Remove it or choose another concession before downloading.'
+				: 'These concessions were declined. Remove them or choose other concessions before downloading.'
+			: !approvalSending && approvalRequested
+				? 'Approval has been requested. Waiting for approval before download.'
+				: approvalNeeded
+					? `${approvalCount === 1 ? 'This concession requires' : 'These concessions require'} approval before download.`
+					: null
 	);
 	const approvalRetryBlocked = $derived(
 		latestApproval &&
@@ -465,30 +467,53 @@
 	let exportError = $state<string | null>(null);
 	let wordAttempt = $state.raw<ReadAttempt | null>(null);
 	const preparingWord = $derived(wordAttempt !== null);
-	const savedStateReady = $derived(
-		!persistence.pending &&
-			!persistence.error &&
-			!persistence.conflict &&
-			!persistence.deleted &&
-			stateReconciled &&
-			!metadata.error &&
-			connected &&
-			!session.blocked &&
-			!navigating.to
+	const actionDisabledReason = $derived.by(() => {
+		if (persistence.deleted) return 'This contract was deleted.';
+		if (session.blocked) return 'Reconnect to your account to continue.';
+		if (!connected) return 'Reconnect to continue.';
+		if (persistence.conflict) return 'Resolve the conflicting changes before continuing.';
+		if (persistence.error || metadata.error)
+			return 'Changes could not be saved or loaded. Resolve the error before continuing.';
+		if (persistence.pending) return 'Waiting for your changes to finish saving.';
+		if (!stateReconciled) return 'Waiting for the contract to finish updating.';
+		if (navigating.to) return 'Please wait while the next page opens.';
+		return null;
+	});
+	const approvalDisabledReason = $derived.by(() => {
+		if (approvalSending) return 'Your approval request is being sent.';
+		if (!pendingApprovalCount)
+			return rejectedApprovalCount
+				? 'The selected concessions were declined. Remove them or choose other concessions to request approval again.'
+				: 'There are no concessions waiting for approval.';
+		if (approvalRequested) return 'Approval has already been requested. Waiting for a decision.';
+		if (actionDisabledReason) return actionDisabledReason;
+		if (approvalQuery.error)
+			return (
+				approvalErrorMessage ??
+				'We couldn’t check approval request status. Reconnect or reload to try again.'
+			);
+		if (approvalQuery.data === undefined) return 'Checking approval request status.';
+		if (approvalRetryBlocked)
+			return approvalErrorMessage ?? 'Please wait before retrying the approval request.';
+		return null;
+	});
+	// Export readiness excludes document preparation so starting a download does not abort it.
+	const exportDisabledReason = $derived(
+		actionDisabledReason ??
+			(approvalNeeded ? 'Your concessions need to be approved before downloading' : null)
 	);
-	const exportReady = $derived(savedStateReady && !approvalNeeded);
-	const canExport = $derived(exportReady && !preparingWord);
-	const canRequestApproval = $derived(
-		pendingApprovalCount > 0 &&
-			savedStateReady &&
-			approvalQuery.data !== undefined &&
-			!approvalQuery.error &&
-			!approvalSending &&
-			!approvalRetryBlocked &&
-			!approvalRequested
+	const downloadDisabledReason = $derived(
+		preparingWord ? 'Your Word document is being prepared.' : exportDisabledReason
 	);
+	const exportReady = $derived(exportDisabledReason === null);
+	const canExport = $derived(downloadDisabledReason === null);
+	const canRequestApproval = $derived(approvalDisabledReason === null);
+	let approvalHintTrigger = $state<HTMLSpanElement>();
+	let downloadHintTrigger = $state<HTMLSpanElement>();
+	const actionHintClass =
+		'rounded-md border-hairline border-edge bg-surface px-2 py-1 text-left text-xs leading-[1.4] text-ink shadow-floating';
 	async function askForApproval() {
-		if (!active || session.blocked || !canRequestApproval) return;
+		if (!active || !canRequestApproval) return;
 		requestingApproval = true;
 		approvalError = null;
 		try {
@@ -553,31 +578,32 @@
 			if (wordAttempt === attempt) wordAttempt = null;
 		}
 	}
-	const actionButtonClass =
-		'cursor-pointer rounded-lg border border-accent bg-accent px-5 py-2.5 font-normal text-sm text-surface enabled:hover:border-accent-hover enabled:hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-accent disabled:cursor-default disabled:border-line disabled:bg-control-fill disabled:text-ink-muted';
+	const actionButtonClass = `${accentButtonClass} h-11 px-5 text-sm`;
 </script>
 
 <BoxDismissal owner={interactionOwner} active={Boolean(item)} onDismiss={close} />
 
-{#if !runtime.paused}<WorkspaceChrome {feedback} />{/if}
+{#if admitted && !runtime.paused}
+	<WorkspaceChrome {feedback} helpVariant="rep" helpReady={notifiedVisible} />
+{/if}
 {#if persistence.deleted}<p
 		role="alert"
-		class="mx-auto mt-4 max-w-3xl rounded-md border border-line bg-surface p-3 text-sm"
+		class="mx-auto mt-4 max-w-3xl rounded-md border-hairline border-edge bg-surface p-3 shadow-card text-sm"
 	>
 		This contract was deleted. <a class="underline" href="/">Back to Home</a>
 	</p>
 {:else if persistence.conflict}<div
 		role="alert"
-		class="mx-auto mt-4 max-w-3xl rounded-md border border-line bg-surface p-3 text-sm"
+		class="mx-auto mt-4 max-w-3xl rounded-md border-hairline border-edge bg-surface p-3 shadow-card text-sm"
 	>
 		This contract changed elsewhere. Choose which selections to keep.
 		<button
-			class="ml-2 underline disabled:opacity-50"
+			class="ml-2 underline disabled:text-ink-muted"
 			disabled={session.blocked || !stateReconciled}
 			onclick={() => void loadLatest()}>Use latest saved version</button
 		>
 		<button
-			class="ml-2 underline disabled:opacity-50"
+			class="ml-2 underline disabled:text-ink-muted"
 			disabled={session.blocked || !stateReconciled}
 			onclick={() => {
 				if (!session.blocked && stateReconciled) persistence.applyRecovered();
@@ -590,97 +616,147 @@
 	>
 		{reviewLinkMessage}
 	</p>{/if}
-{#if source.renderSource && !persistence.deleted}
-	<main onclickcapture={recordContractInput} aria-label="Contract document">
-		{#snippet panelContent()}{#if item}<RepPlaybookPanel
-					{item}
-					{isAdmin}
-					selected={persistence.choices[item._id]}
-					disabled={!editable}
-					conflicts={reasons}
-					onToggle={toggle}
-					onClose={() => close()}
-				/>{/if}{/snippet}
-		{#snippet footerContent()}
-			<div
-				class="pt-6"
-				role="group"
-				aria-label="Contract actions"
-				aria-busy={preparingWord || approvalSending}
-			>
-				<div class="flex flex-wrap justify-center gap-3">
-					<button
-						type="button"
-						class={actionButtonClass}
-						disabled={!canRequestApproval}
-						aria-live="polite"
-						onclick={askForApproval}
-					>
-						{approvalButtonLabel}
-					</button>
-					<button
-						type="button"
-						class={actionButtonClass}
-						disabled={!canExport}
-						onclick={() => void downloadSavedWord()}>Download as .docx</button
-					>
-				</div>
-				{#if approvalErrorMessage}
-					<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
-						{approvalErrorMessage}
-					</p>
-				{/if}
-				{#if approvalMessage}
-					<p class="mt-3 text-center text-sm text-ink-muted" role="status">
-						{approvalMessage}
-					</p>
-				{/if}
+{#if !persistence.deleted}
+	<InteractionInputScope
+		capture={(event) => {
+			if (event.type === 'click') recordContractInput(event);
+		}}
+	>
+		<main onclickcapture={recordContractInput} aria-label="Contract document">
+			{#snippet panelContent()}{#if item}<RepPlaybookPanel
+						{item}
+						{isAdmin}
+						selected={persistence.choices[item._id]}
+						disabled={!editable}
+						conflicts={reasons}
+						onToggle={toggle}
+						onClose={() => close()}
+					/>{/if}{/snippet}
+			{#snippet footerContent()}
+				<div
+					class="pt-6"
+					role="group"
+					aria-label="Contract actions"
+					aria-busy={preparingWord || approvalSending}
+				>
+					<div class="flex flex-wrap items-center justify-center gap-3">
+						<Tooltip
+							text={approvalDisabledReason ?? ''}
+							trigger={approvalHintTrigger}
+							standalone={false}
+							enabled={!canRequestApproval}
+							class={actionHintClass}
+						>
+							{#snippet children(descriptionId)}
+								<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
+								<span
+									bind:this={approvalHintTrigger}
+									class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+									role="group"
+									tabindex={!canRequestApproval ? 0 : undefined}
+									aria-label={approvalButtonLabel}
+									aria-describedby={!canRequestApproval ? descriptionId : undefined}
+								>
+									<Button
+										class={`${actionButtonClass} disabled:pointer-events-none`}
+										disabled={!canRequestApproval}
+										aria-describedby={!canRequestApproval ? descriptionId : undefined}
+										aria-live="polite"
+										onclick={askForApproval}
+									>
+										{approvalButtonLabel}
+									</Button>
+								</span>
+							{/snippet}
+						</Tooltip>
+						<Tooltip
+							text={downloadDisabledReason ?? ''}
+							trigger={downloadHintTrigger}
+							standalone={false}
+							enabled={!canExport}
+							class={actionHintClass}
+						>
+							{#snippet children(descriptionId)}
+								<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
+								<span
+									bind:this={downloadHintTrigger}
+									class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+									role="group"
+									tabindex={!canExport ? 0 : undefined}
+									aria-label="Download as .docx"
+									aria-describedby={!canExport ? descriptionId : undefined}
+								>
+									<Button
+										class={`${actionButtonClass} disabled:pointer-events-none`}
+										disabled={!canExport}
+										aria-describedby={!canExport ? descriptionId : undefined}
+										onclick={() => void downloadSavedWord()}>Download as .docx</Button
+									>
+								</span>
+							{/snippet}
+						</Tooltip>
+					</div>
+					{#if approvalErrorMessage}
+						<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
+							{approvalErrorMessage}
+						</p>
+					{/if}
+					{#if approvalMessage}
+						<p class="mt-3 text-center text-sm text-ink-muted" role="status">
+							{approvalMessage}
+						</p>
+					{/if}
 
-				{#if decisionError}<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
-						{decisionError.message}
-					</p>{/if}
-				{#if preparingWord}
-					<p class="mt-3 text-center text-sm text-ink-muted" role="status">
-						Preparing Word download…
-					</p>
-				{:else if exportError}
-					<p class="mt-3 text-center text-sm text-ink-muted" role="alert">{exportError}</p>
-				{/if}
-			</div>
-		{/snippet}
-		<DocumentViewerSlot
-			{attachment}
-			entry={resource}
-			active={!runtime.paused}
-			prepare={!runtime.paused}
-			interactive={stateReconciled && (notifiedVisible || Boolean(workspace.renderer.error))}
-			hasPanel={Boolean(item)}
-			{panelContent}
-			{footerContent}
-			{selectedAnnotationId}
-			{reviewTags}
-			{reviewNavigation}
-			onReviewDecision={decideReview}
-			selectedConcessions={persistence.choices}
-			allowPlaybookNavigation
-			playbookNavigationReady={editable}
-			onRemoveConcession={(itemId) => {
-				if (editable) persistence.select(itemId as Id<'playbookItems'>, null);
-			}}
-			panelSource={item?.triggers[0]?.range.start}
-			onSelect={(id, trigger) => {
-				if (!editable) return false;
-				selectedItemId = id;
-				selectedAnnotationId = trigger;
-			}}
-		/>
-	</main>
-{:else if source.issue && !persistence.deleted}<p role="alert">
-		We couldn’t load this contract. Please refresh to try again.
-	</p>{:else if !persistence.deleted}<LoadingPagination
-		label="Loading contract"
-		chrome={false}
-	/>{/if}
+					{#if decisionError}<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
+							{decisionError.message}
+						</p>{/if}
+					{#if preparingWord}
+						<p class="mt-3 text-center text-sm text-ink-muted" role="status">
+							Preparing Word download…
+						</p>
+					{:else if exportError}
+						<p class="mt-3 text-center text-sm text-ink-muted" role="alert">{exportError}</p>
+					{/if}
+				</div>
+			{/snippet}
+			{#if source.issue && !source.renderSource}<p role="alert">
+					We couldn’t load this contract. Please refresh to try again.
+				</p>{:else}<DocumentViewerSlot
+					{attachment}
+					entry={resource}
+					active={!runtime.paused}
+					prepare={!runtime.paused}
+					interactive={admitted &&
+						stateReconciled &&
+						(notifiedVisible || Boolean(workspace.renderer.error))}
+					hasPanel={Boolean(item)}
+					{panelContent}
+					{footerContent}
+					{selectedAnnotationId}
+					{reviewTags}
+					{reviewGutter}
+					{reviewNavigation}
+					onReviewDecision={decideReview}
+					selectedConcessions={persistence.choices}
+					allowPlaybookNavigation
+					playbookNavigationReady={editable}
+					onRemoveConcession={(itemId) => {
+						if (editable) persistence.select(itemId as Id<'playbookItems'>, null);
+					}}
+					panelSource={item?.triggers[0]?.range.start}
+					onSelect={(id, trigger) => {
+						if (!editable) return false;
+						selectedItemId = id;
+						selectedAnnotationId = trigger;
+					}}
+				/>{/if}
+		</main>
+	</InteractionInputScope>
+{/if}
+
+{#if reviewCompleted && !runtime.paused && !session.blocked && !navigating.to && !persistence.deleted}
+	<ReviewCompletedModal onClose={() => (reviewCompleted = false)} />
+{/if}
 
 <style>
 	main {

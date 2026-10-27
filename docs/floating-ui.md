@@ -6,9 +6,18 @@ listeners for outside pointers, focus dismissal, or Escape. The controller reque
 closure with a reason. Authoring still decides whether a clean, dirty, new, or unresolved
 box can close, as described in [lifecycle.md](lifecycle.md). Nothing in this layer saves.
 
-`FloatingSurface` uses a manual native popover in the browser top layer. It stays in its
-logical DOM location, preserving Svelte context and disabled fieldsets. Do not add a
-portal, local z-index fix, or absolute floating coordinates. Native modal dialogs keep
+`FloatingSurface` uses a manual native popover in the browser top layer when supported.
+It stays in its logical DOM location, preserving Svelte context and disabled fieldsets.
+On older browsers, the shared positioning layer moves the same surface into a viewport
+host and mirrors inherited fonts, colors, local CSS variables, disabled fieldsets, and
+inertness. Cleanup restores a still-mounted surface; it never restores a surface or
+subtree that Svelte has already removed. Style changes share the positioning frame,
+while blocking changes apply immediately. Svelte context and interaction ownership
+remain intact. Workspace input capture reaches portaled surfaces through context;
+selection tooltips explicitly preserve the accepted selection because portaling changes
+DOM event ancestry.
+Keep this fallback in `floating.ts`; feature components must not add their own portals,
+z-index fixes, or absolute floating coordinates. Native modal dialogs keep
 `showModal()`; opening a workspace modal closes transient surfaces, and a modal blocks workspace
 dismissal and shortcuts.
 
@@ -29,7 +38,7 @@ locks body scrolling and restores available focus without taking it from another
 active modal. Company naming and session status retain their dismissal restrictions.
 
 `floating.ts` is the only positioning implementation. Floating UI measures the invisible
-top-layer surface before revealing it, uses fixed coordinates, applies an offset, flips
+surface outside clipping ancestors before revealing it, uses fixed coordinates, applies an offset, flips
 and shifts with 8px viewport padding, and constrains available width and height. Large
 surfaces scroll internally. Its updates track scroll, resize, content size, and moving
 anchors; closing or unmounting releases all observers. An element or a virtual anchor
@@ -68,13 +77,14 @@ registers that symbol as a panel. Descendant floating surfaces inherit ownership
 `FloatingSurface` provides its own symbol for nested surfaces, which open above their
 parent. Its optional `owner` and `boundaries` props handle explicit relationships.
 Use the `protectedInteraction()` action on real interaction boundaries such as the
-workspace panel, annotation triggers, search, and utility controls. Source picking
-also registers the document stage as protected. Pointer interactions with descendants
+workspace panel, annotation triggers, search, and utility controls. Admin authoring
+registers the document stage as protected while its editor is open, so selection
+gestures leave the working context intact. Pointer interactions with descendants
 count as inside their owners, even when those descendants render in the top layer.
 Protected boundaries inherit through the same ownership chain.
 
 Escape closes a visible tooltip first, then the most recently active interactive
 surface or search, then the owning panel on a subsequent press. Hidden selection
 surfaces do not consume Escape. Dirty-draft and staged-creation safeguards remain in
-`AuthoringFlow`. Registration cleanup closes descendants when their owner disappears;
+`AuthoringController`. Registration cleanup closes descendants when their owner disappears;
 the persistent dispatcher is released with the app layout.

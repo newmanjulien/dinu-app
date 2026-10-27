@@ -5,5 +5,5 @@
 
 <div
 	aria-hidden="true"
-	class={cn('h-3 animate-pulse rounded bg-fill-subtle/70 motion-reduce:animate-none', className)}
+	class={cn('h-[15px] animate-pulse rounded bg-fill-subtle/70 motion-reduce:animate-none', className)}
 ></div>

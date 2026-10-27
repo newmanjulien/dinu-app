@@ -69,7 +69,9 @@ Onboarding offers company creation and a live invitation inbox. The inbox subscr
 
 ## Loading and recovery
 
-Initial login HTML contains the email form; active invitation HTML contains company context, the invited email, and Continue. The anonymous preview uses a server-only Convex HTTP client. The initial static login and anonymous invitation graphs exclude the Convex transport and workspace document/cache modules. Authenticated invitation resolution code loads only for a signed-in account. During email verification, startup preparation warms an unused Convex connection and preloads the authenticated account host plus the requested route's code. Direct protected workspace loads start those independent downloads while Clerk connects. Workspace destinations also preload the workspace, Home destinations preload Home, and document destinations preload the document host. Entry destinations avoid those workspace imports. Preloading does not mount components or start authenticated queries; a verified session takes ownership of the warmed connection once.
+Initial login HTML contains the email form; active invitation HTML contains company context, the invited email, and Continue. The anonymous preview uses a server-only Convex HTTP client. The initial static login and anonymous invitation graphs exclude the Convex transport and workspace document/cache modules. Authenticated invitation resolution code loads only for a signed-in account. During email verification, startup preparation warms an unused Convex connection and preloads the authenticated account host plus the requested route's code. Direct protected workspace loads start those independent downloads while Clerk connects. Workspace destinations also preload the workspace, Home destinations preload Home, and saved-contract destinations preload the document host. Routes requiring a baseline leave editor and renderer loading to Workspace's baseline-readiness guards. Entry destinations avoid those workspace imports. Preloading does not mount components or start authenticated queries; a verified session takes ownership of the warmed connection once.
+
+Ordinary signup preloads and opens onboarding, preserving any requested workspace destination for joining an existing company. After onboarding paints, it preloads the admin setup route without speculatively loading Home. Creating a company opens `/admin`; its completion destination survives temporary blocking of the same session, while navigation waits for readiness. Joining keeps the requested workspace destination. The admin editor and renderer load only after the company's baseline is ready.
 
 Account admission, workspace admission, and the destination's usable marker are distinct. Workspace chrome appears only after membership admission. Home controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Admin code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its naming dialog and skeleton in a lightweight shell while creation code loads. Optional preview and delegation imports recover through transport replacement and existing creation or navigation triggers, respectively. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
 
@@ -78,7 +80,25 @@ for SHA-256; only SMTP delivery uses Node. When the server skips anonymous previ
 the route uses the shared account-loading recovery while Clerk initializes, so a
 failed initialization exposes the existing retry control.
 
+Document help belongs to `WorkspaceChrome`, alongside its Help buttons. Admin waits
+for prepared, visible document content; saved contracts wait for their existing
+visible-state reconciliation. Each workspace opening checks the per-variant
+“Don't show this again” preference once, and its Help button can reopen the guide.
+Loading, missing-contract, and failed-opening views cannot mount the guide. During
+creation, `ContractRoute` admits the prepared saved workspace only after the naming
+dialog completes its opening handoff; background recovery after a failed attempt
+does not bypass the retry dialog. The shell has no route-driven help context or
+modal hold counter.
+
 ## Verification
+
+The help-ownership cleanup passed `npm run build` with zero Svelte/type errors or
+warnings, targeted formatting checks, and `git diff --check`. The two existing
+creation-retry lifecycle tests passed, preserving the created ID and retry after
+stalled rendering. No tests were added or expanded. The suite uses a viewer fixture,
+so help timing, preference behavior, missing-link presentation, and browser modal
+layering remain unverified. Saving, scheduling, and caching were not changed; their
+performance suite was not rerun.
 
 The skeleton cleanup passed `npm run verify`: all 20 existing lifecycle tests and 24 performance tests, zero Svelte/type errors or warnings, and the production build. The existing assertions continue to cover creation handoff and retry without duplicate creation, detached saving, transport recovery, company holds, cache reuse, and preparation scheduling. No tests were added or expanded. The production import graph confirms that creation logic, the saved viewer, and the fallback preview are deferred from the contract layout; the naming dialog and skeleton remain in its initial graph. Browser modal layering, early display timing, help transitions, and actual failed-chunk recovery remain unverified for this cleanup.
 

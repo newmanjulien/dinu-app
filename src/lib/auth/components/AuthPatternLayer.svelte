@@ -17,7 +17,10 @@
 		let ratio = 0;
 		let frame = 0;
 		let lastFrame = 0;
+		let lastDraw = -interval;
+		let nextDot = 0;
 		const start = performance.now();
+		const dotColor = getComputedStyle(canvas).getPropertyValue('--color-line-strong').trim();
 		const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 		let resolution = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
 
@@ -27,18 +30,37 @@
 			return ((value ^ (value >>> 16)) >>> 0) / 4294967296;
 		}
 
-		function draw(time: number) {
+		function paint(dot: Dot, time: number) {
 			if (!context) return;
-			context.fillStyle = '#a5a5a5';
-			for (const dot of dots) {
-				const step = Math.floor((time + dot.phase) / interval);
-				if (step === dot.step) continue;
-				dot.step = step;
-				// Each dot holds a random brightness for 300ms, independently of its neighbors.
-				context.clearRect(dot.x - 1, dot.y - 1, 4, 4);
-				context.globalAlpha = 0.16 + random(dot.seed + Math.imul(step + 1, 0x9e3779b9)) * 0.52;
-				context.fill(dot.path);
+			dot.step = Math.floor((time + dot.phase) / interval);
+			// Each dot holds a random brightness for 300ms, independently of its neighbors.
+			context.clearRect(dot.x - 1, dot.y - 1, 4, 4);
+			context.globalAlpha = 0.16 + random(dot.seed + Math.imul(dot.step + 1, 0x9e3779b9)) * 0.52;
+			context.fill(dot.path);
+		}
+
+		function draw(time: number, reset = false) {
+			if (!context || !dots.length) return;
+			context.fillStyle = dotColor;
+			if (reset || time - lastDraw >= interval || time < lastDraw) {
+				let earliest = Infinity;
+				for (let index = 0; index < dots.length; index++) {
+					const dot = dots[index];
+					paint(dot, time);
+					const nextChange = (dot.step + 1) * interval - dot.phase;
+					if (nextChange < earliest) {
+						earliest = nextChange;
+						nextDot = index;
+					}
+				}
+			} else {
+				// Phases are ordered, so stop as soon as the next dot is not due.
+				while (dots[nextDot].step !== Math.floor((time + dots[nextDot].phase) / interval)) {
+					paint(dots[nextDot], time);
+					nextDot = (nextDot + 1) % dots.length;
+				}
 			}
+			lastDraw = time;
 		}
 
 		function animate(now: number) {
@@ -54,7 +76,7 @@
 			frame = 0;
 			lastFrame = 0;
 			if (!width || !height || document.hidden) return;
-			draw(reducedMotion.matches ? 0 : performance.now() - start);
+			draw(reducedMotion.matches ? 0 : performance.now() - start, true);
 			if (!reducedMotion.matches) {
 				frame = requestAnimationFrame(animate);
 			}
@@ -83,6 +105,7 @@
 					dots.push({ x, y, path, seed, phase: random(seed) * interval, step: -1 });
 				}
 			}
+			dots.sort((a, b) => b.phase - a.phase);
 			syncAnimation();
 			ready = width > 0 && height > 0;
 		}
@@ -114,7 +137,7 @@
 	<svg class="absolute inset-0 size-full" class:invisible={ready} width="100%" height="100%">
 		<defs>
 			<pattern id="auth-dot-grid" width={spacing} height={spacing} patternUnits="userSpaceOnUse">
-				<rect width="2" height="2" rx="0.32" fill="#a5a5a5" opacity="0.42" />
+				<rect width="2" height="2" rx="0.32" fill="var(--color-line-strong)" opacity="0.42" />
 			</pattern>
 		</defs>
 		<rect width="100%" height="100%" fill="url(#auth-dot-grid)" />

@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
+	import { fieldClass } from '$lib/ui/field-styles';
+	import Button from '$lib/ui/Button.svelte';
 	let {
 		title,
 		initialName = '',
@@ -75,7 +77,7 @@
 			autocomplete="organization"
 			aria-invalid={Boolean(validation || error)}
 			aria-describedby={validation || error ? `${formId}-error` : undefined}
-			class="h-9 w-full rounded-xl border border-[#e5e5e5] bg-white px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-[#8a8a8a] focus:border-[#d5d5d5] disabled:opacity-50"
+			class={`${fieldClass} h-9`}
 		/>
 		{#if validation || error}<p
 				id={`${formId}-error`}
@@ -90,19 +92,9 @@
 	</form>
 	{#snippet footer()}
 		<div class="ml-auto flex justify-end gap-2">
-			<button
-				type="button"
-				disabled={busy}
-				onclick={onClose}
-				class="h-[38px] rounded-button-lg border border-[#e5e5e5] bg-white px-3.5 py-2 text-[12.5px] font-normal transition-colors hover:bg-[#f3f3f3] focus-visible:outline-1 focus-visible:outline-[#d5d5d5] disabled:opacity-50"
-				>Cancel</button
-			>
-			<button
-				type="submit"
-				form={formId}
-				disabled={busy || submitDisabled}
-				class="h-[38px] rounded-button-lg bg-[#171717] px-3.5 py-2 text-[12.5px] font-normal text-white hover:bg-[#303030] focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[#d5d5d5] disabled:opacity-50"
-				>{busy ? busyLabel : submitLabel}</button
+			<Button variant="secondary" disabled={busy} onclick={onClose}>Cancel</Button>
+			<Button type="submit" form={formId} disabled={busy || submitDisabled}
+				>{busy ? busyLabel : submitLabel}</Button
 			>
 		</div>
 	{/snippet}

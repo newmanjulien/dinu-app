@@ -48,7 +48,7 @@
 				?.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled), [tabindex="0"]')
 				?.focus({ preventScroll: true });
 	}}
-	class="rounded-base border border-line bg-surface p-1 shadow-md"
+	class="rounded-base border-hairline border-edge bg-surface p-1 shadow-floating"
 >
 	{@render children()}
 </FloatingSurface>

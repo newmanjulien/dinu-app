@@ -30,7 +30,7 @@
 
 {#snippet status(item: StatusItem)}
 	<div
-		class="pointer-events-none rounded-xl border border-line bg-surface px-2.5 py-1.5 text-[14px] leading-5 text-ink-secondary shadow-sm max-[999px]:w-full max-[999px]:px-3 max-[999px]:py-1 max-[999px]:text-sm"
+		class="pointer-events-none rounded-xl border-hairline border-edge bg-surface px-2.5 py-1.5 text-[14px] leading-5 text-ink-secondary shadow-floating max-[999px]:w-full max-[999px]:px-3 max-[999px]:py-1 max-[999px]:text-sm"
 		role={item.urgent ? 'alert' : 'status'}
 	>
 		{item.message}

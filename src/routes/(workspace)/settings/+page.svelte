@@ -58,7 +58,7 @@
 		<fieldset disabled={Boolean(viewer().company.deletionPending)} class="contents">
 			<SettingsTextFieldCard
 				title="Your name"
-				description="This is your visible name in Agreed."
+				description="This is your visible name in Dinu."
 				fieldId="personal-name"
 				label="Your name"
 				value={viewer().profile.name}
@@ -70,7 +70,7 @@
 			/>
 			<SettingsReadonlyFieldCard
 				title="Sign-in email"
-				description="This is the email address you use to sign in to Agreed."
+				description="This is the email address you use to sign in to Dinu."
 				fieldId="sign-in-email"
 				label="Email address"
 				value={viewer().profile.email}
@@ -79,7 +79,7 @@
 			{#if viewer().permissions.editCompanyProfile}
 				<SettingsTextFieldCard
 					title="Company name"
-					description="This is your company's visible name in Agreed."
+					description="This is your company's visible name in Dinu."
 					fieldId="company-name"
 					label="Company name"
 					value={viewer().company.name}
@@ -133,7 +133,7 @@
 				<SettingsAvatarCard
 					title="Company avatar"
 					description={["This is your company's avatar."]}
-					footerText="An avatar is optional but strongly recommended."
+					footerText="An avatar is optional."
 					ariaLabel="Upload company avatar"
 					uploading={busy.companyAvatar}
 					errorText={errors.companyAvatar}

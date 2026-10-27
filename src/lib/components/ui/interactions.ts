@@ -15,6 +15,7 @@ export interface Interaction {
 
 const controllerKey = Symbol('interaction-controller');
 const ownerKey = Symbol('interaction-owner');
+const inputCaptureKey = Symbol('interaction-input-capture');
 
 /** One app-owned dispatcher. Registrations request dismissal; owners decide whether it is allowed. */
 export class InteractionController {
@@ -155,6 +156,14 @@ export function setInteractionOwner(owner: symbol) {
 }
 export function getInteractionOwner(): symbol | undefined {
 	return getContext(ownerKey);
+}
+
+/** Portaled surfaces still report input to their logical workspace before handling it. */
+export function setInteractionInputCapture(capture: (event: Event) => void) {
+	return setContext(inputCaptureKey, capture);
+}
+export function getInteractionInputCapture(): ((event: Event) => void) | undefined {
+	return getContext(inputCaptureKey);
 }
 
 /** Capture context at component initialization, then attach real boundaries without selector exemptions. */

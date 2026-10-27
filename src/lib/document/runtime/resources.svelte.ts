@@ -15,6 +15,8 @@ export interface ViewerBindings {
 	active?: boolean;
 	prepare?: boolean;
 	reviewTags?: readonly ReviewTag[];
+	/** Reserved by the workspace before document pagination or review-tag projection. */
+	reviewGutter?: number;
 	reviewNavigation?: ReviewNavigation;
 	onReviewDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
 	panelContent: Snippet;

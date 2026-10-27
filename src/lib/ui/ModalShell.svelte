@@ -69,7 +69,7 @@
 		'fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-hidden border-0 bg-transparent text-ink outline-none open:flex open:items-center',
 		variant === 'panel'
 			? 'p-4 backdrop:bg-canvas/70 max-[600px]:p-0'
-			: 'px-4 py-6 backdrop:bg-black/25'
+			: 'px-4 py-6 backdrop:bg-ink/25'
 	)}
 	style:--modal-width={`${maxWidth ?? (variant === 'panel' ? 480 : 440)}px`}
 	style:--modal-padding={contentPadding === undefined
@@ -81,11 +81,11 @@
 >
 	<div
 		class={cn(
-			'flex max-h-full min-h-0 w-full max-w-[var(--modal-width)] flex-col overflow-hidden rounded-modal border border-line bg-surface',
+			'flex max-h-full min-h-0 w-full max-w-[var(--modal-width)] flex-col overflow-hidden rounded-modal border-hairline border-edge bg-surface',
 			position === 'right' ? 'ml-auto' : 'mx-auto',
 			variant === 'panel'
-				? 'h-full shadow-none max-[600px]:max-w-none max-[600px]:rounded-none max-[600px]:border-0'
-				: 'shadow-xl'
+				? 'h-full shadow-floating max-[600px]:max-w-none max-[600px]:rounded-none max-[600px]:border-0 max-[600px]:shadow-none'
+				: 'shadow-dialog'
 		)}
 	>
 		<header class="flex shrink-0 items-start justify-between gap-4 p-[var(--modal-padding)]">
@@ -111,7 +111,7 @@
 
 		{#if footer}
 			<footer
-				class="flex shrink-0 items-center justify-between gap-3 border-t border-line p-[var(--modal-padding)]"
+				class="flex shrink-0 items-center justify-between gap-3 border-t-[length:var(--surface-border-width)] border-line p-[var(--modal-padding)]"
 			>
 				{@render footer()}
 			</footer>

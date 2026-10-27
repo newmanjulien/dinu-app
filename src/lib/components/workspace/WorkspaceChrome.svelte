@@ -8,9 +8,12 @@
 	import AppStatus from '$lib/components/chrome/AppStatus.svelte';
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
+	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
+	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
+	import { isHelpHidden } from '$lib/components/ui/modal/help-storage';
 	import { onMount, tick } from 'svelte';
 	import { getContractWorkspace } from '$lib/document/runtime/context';
-	import { getWorkspaceHelp } from '$lib/auth/workspace-help';
+	import { useViewer } from '$lib/auth/viewer-session.svelte';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
 	import {
 		getInteractionController,
@@ -22,12 +25,31 @@
 	const searchId = Symbol('document-search');
 	const protect = protectedInteraction();
 	let {
-		feedback = null
+		feedback = null,
+		helpVariant,
+		helpReady
 	}: {
 		feedback?: OperationStatus | null;
+		helpVariant: HelpVariant;
+		helpReady: boolean;
 	} = $props();
 	const { source, renderer, viewer } = getContractWorkspace();
-	const help = getWorkspaceHelp();
+	const accountViewer = useViewer();
+	let helpInitialized = $state(false);
+	let helpOpen = $state(false);
+	const documentAvailable = $derived(
+		viewer.visible && !source.issue && !renderer.error && !viewer.preparationBlocked
+	);
+	const helpEnabled = $derived(helpInitialized && documentAvailable);
+	$effect(() => {
+		// Check the preference once per workspace opening, after its document is usable.
+		if (!helpReady || !documentAvailable || helpInitialized) return;
+		helpInitialized = true;
+		helpOpen = !isHelpHidden(helpVariant);
+	});
+	function openHelp() {
+		if (helpEnabled) helpOpen = true;
+	}
 	const searchEnabled = $derived(Boolean(viewer.displayedSnapshot && viewer.visible));
 	const searchSession = new DocumentSearchSession();
 	let searchOpen = $state(false);
@@ -156,11 +178,12 @@
 
 <div
 	use:protect
-	class="fixed top-[calc(var(--app-header-height)+8px)] left-2 z-20 flex gap-1 rounded-lg border border-line bg-surface shadow-sm min-[1000px]:hidden"
+	class="fixed top-[calc(var(--app-header-height)+8px)] left-2 z-20 flex gap-1 rounded-lg border-hairline border-edge bg-surface shadow-floating min-[1000px]:hidden"
 >
 	<SquareIconButton
 		bind:element={mobileSearchButton}
 		type="button"
+		rounded="lg"
 		disabled={!searchEnabled}
 		aria-label="Search contract"
 		aria-pressed={searchOpen}
@@ -169,21 +192,34 @@
 	>
 		<MagnifyingGlassIcon aria-hidden="true" size={19} weight="regular" />
 	</SquareIconButton>
-	<SquareIconButton type="button" aria-label="Help: How Agreed works" onclick={() => help?.open()}
-		><InfoIcon aria-hidden="true" size={19} weight="regular" /></SquareIconButton
+	<SquareIconButton
+		type="button"
+		rounded="lg"
+		disabled={!helpEnabled}
+		aria-label="Help: How Dinu works"
+		onclick={openHelp}><InfoIcon aria-hidden="true" size={19} weight="regular" /></SquareIconButton
 	>
 </div>
 
 <div
 	use:protect
 	bind:this={utilityRailElement}
-	class="pointer-events-none fixed top-[calc(var(--app-header-height)+20px)] left-2 z-15 max-[999px]:hidden"
+	class="pointer-events-none fixed top-[calc(var(--app-header-height)+14px)] left-[4px] z-15 max-[999px]:hidden"
 >
 	<UtilityRail
 		{searchOpen}
 		bind:searchElement={desktopSearchButton}
 		{searchEnabled}
 		onSearchToggle={toggleSearch}
-		onOpenHelp={() => help?.open()}
+		{helpEnabled}
+		onOpenHelp={openHelp}
 	/>
 </div>
+
+{#if helpEnabled && helpOpen}
+	<HelpModal
+		variant={helpVariant}
+		isAdmin={helpVariant === 'rep' && accountViewer().profile.role === 'admin'}
+		onClose={() => (helpOpen = false)}
+	/>
+{/if}

@@ -1,15 +1,23 @@
-import type {
-	Concession,
-	Instructions,
-	PlaybookItem,
-	PlaybookItemId,
-	PlaybookItemRecord,
-	SourceRange
-} from './model';
+import type { Concession, Instructions, PlaybookItem, PlaybookItemId, SourceRange } from './model';
 import { newTriggerId } from './model';
 import { instructionsFields } from './instructions-fields';
 import { canonicalMarks } from '../contract/marks';
 import { canonicalNumberPattern } from '../contract/number-pattern';
+
+export type DeepReadonly<T> = T extends string | number | boolean | null | undefined
+	? T
+	: T extends object
+		? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+		: T;
+export type ReadonlyDraft = DeepReadonly<PlaybookDraft>;
+
+/** Already frozen values are shared without walking their contents again. */
+export function immutable<T extends object>(value: T): T {
+	if (Object.isFrozen(value)) return value;
+	for (const child of Object.values(value))
+		if (child && typeof child === 'object') immutable(child);
+	return Object.freeze(value);
+}
 
 export type PlaybookDraft = PlaybookItem & {
 	instructions: Instructions;
@@ -31,7 +39,7 @@ export function semanticConcession({
 	detail,
 	after,
 	changes
-}: Concession): Concession {
+}: DeepReadonly<Concession>): Concession {
 	return {
 		id,
 		tier,
@@ -81,28 +89,25 @@ export function equalPlaybookStructure(a: PlaybookItem, b: PlaybookItem): boolea
 	);
 }
 
-/** Strip UI keys while preserving all stored instruction strings, including empty strings. */
-export function semanticPlaybookDraft(draft: PlaybookItem): PlaybookItem {
+/** Preserve stored instruction strings, including empty strings, without UI keys. */
+export function semanticInstructions(
+	value: DeepReadonly<Instructions> | undefined
+): Pick<PlaybookItem, 'instructions'> {
 	const instructions: Instructions = {};
 	for (const { key } of instructionsFields) {
-		const text = draft.instructions?.[key];
+		const text = value?.[key];
 		if (text !== undefined) instructions[key] = text;
 	}
+	return Object.keys(instructions).length ? { instructions } : {};
+}
+
+/** Strip UI keys without normalizing business text. */
+export function semanticPlaybookDraft(draft: DeepReadonly<PlaybookItem>): PlaybookItem {
 	return {
 		triggers: draft.triggers.map(({ id, range }) => ({ id, range: semanticRange(range) })),
-		...(Object.keys(instructions).length ? { instructions } : {}),
+		...semanticInstructions(draft.instructions),
 		concessions: draft.concessions.map(semanticConcession)
 	};
-}
-
-export function equalPlaybookDraft(a: PlaybookItem, b: PlaybookItem): boolean {
-	return JSON.stringify(semanticPlaybookDraft(a)) === JSON.stringify(semanticPlaybookDraft(b));
-}
-
-/** Saved editing always exposes every instruction field, even when persistence omits them. */
-export function editingPlaybookDraft(record: PlaybookItemRecord): PlaybookDraft {
-	const draft = semanticPlaybookDraft(record);
-	return { ...draft, instructions: draft.instructions ?? {}, persistedId: record._id };
 }
 
 export function newPlaybookDraft(range: SourceRange): PlaybookDraft {

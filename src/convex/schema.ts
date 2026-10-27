@@ -263,7 +263,8 @@ export default defineSchema({
 		previousStatus: reviewStatus,
 		status: reviewDecision,
 		decidedAt: v.number(),
-		changed: v.boolean()
+		changed: v.boolean(),
+		reviewCompleted: v.optional(v.boolean())
 	})
 		.index('by_contractId', ['contractId'])
 		.index('by_contractId_and_operationId', ['contractId', 'operationId'])

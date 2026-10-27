@@ -34,9 +34,9 @@
 	</ClerkSessionProvider>
 {:else}
 	<main class="grid min-h-dvh place-content-center bg-white p-8 text-center">
-		<h1 class="text-sm font-medium">Agreed</h1>
-		<p class="mt-3 text-sm text-stone-500">
-			Sign-in setup is pending. Add the development Clerk keys to open Agreed.
+		<h1 class="text-sm font-medium">Dinu</h1>
+		<p class="mt-3 text-sm text-ink-muted">
+			Sign-in setup is pending. Add the development Clerk keys to open Dinu.
 		</p>
 	</main>
 {/if}

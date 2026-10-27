@@ -202,13 +202,13 @@ class ContractSnapshotCache {
 		}
 		let flight = this.versionFlights.get(versionId);
 		if (!flight) {
-			const attempt = new ReadAttempt(15_000);
-			const readSignal = AbortSignal.any([this.lifetime.signal, attempt.signal]);
+			const attempt = new ReadAttempt(15_000, this.lifetime.signal);
+			const readSignal = attempt.signal;
 			const work = Promise.resolve().then(async () => {
-				const diskAttempt = new ReadAttempt(250);
+				const diskAttempt = new ReadAttempt(250, readSignal);
 				let persisted: ContractSnapshot | undefined;
 				try {
-					const diskSignal = AbortSignal.any([readSignal, diskAttempt.signal]);
+					const diskSignal = diskAttempt.signal;
 					persisted = await waitForRead(
 						this.disk.getVersion(versionId, companyId, diskSignal),
 						diskSignal
@@ -256,10 +256,7 @@ class ContractSnapshotCache {
 		}
 		flight.consumers++;
 		try {
-			return await waitForRead(
-				flight.result,
-				signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal
-			);
+			return await waitForRead(flight.result, signal, this.lifetime.signal);
 		} finally {
 			if (--flight.consumers === 0 && this.versionFlights.get(versionId) === flight) {
 				this.versionFlights.delete(versionId);
@@ -345,12 +342,12 @@ class ContractSnapshotCache {
 		const existing = this.flights.get(id);
 		if (existing) return existing.result;
 		this.queued.delete(id);
-		const attempt = new ReadAttempt(15_000);
-		const signal = AbortSignal.any([this.lifetime.signal, attempt.signal]);
+		const attempt = new ReadAttempt(15_000, this.lifetime.signal);
+		const signal = attempt.signal;
 		const work = Promise.resolve().then(async () => {
 			signal.throwIfAborted();
-			const diskAttempt = new ReadAttempt(250);
-			const diskSignal = AbortSignal.any([signal, diskAttempt.signal]);
+			const diskAttempt = new ReadAttempt(250, signal);
+			const diskSignal = diskAttempt.signal;
 			let persisted: SnapshotMetadata | undefined;
 			try {
 				persisted = await waitForRead(this.disk.getMetadata(id, diskSignal), diskSignal);

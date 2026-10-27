@@ -18,6 +18,8 @@ export type SelectionIssue =
 export type SelectionEligibility =
 	| { allowed: true; modes: readonly AuthoringMode[]; concessionIssue?: SelectionIssue }
 	| { allowed: false; issue: SelectionIssue };
+/** Action restrictions stay distinct from source/geometry failures. */
+export type SelectionAvailability = SelectionEligibility | { allowed: false; reason: string };
 
 export function selectionIssueMessage(issue: SelectionIssue): string {
 	switch (issue.kind) {

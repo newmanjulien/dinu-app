@@ -61,7 +61,7 @@
 		title="Invitation unavailable"
 		description="Open the invitation link from your email, or ask a colleague for a new invitation."
 	>
-		<a href="/login" class="block text-center text-sm underline">Log in to Agreed</a>
+		<a href="/login" class="block text-center text-sm underline">Log in to Dinu</a>
 	</AuthStepFrame>
 {:else if signedIn}
 	<RequireAccount inline>
@@ -107,6 +107,6 @@
 			? 'This invitation has already been used. Log in to open your workspace, or ask a colleague for a new invitation.'
 			: 'Open the latest invitation email, or ask a colleague for a new invitation.'}
 	>
-		<a href="/login" class="block text-center text-sm underline">Log in to Agreed</a>
+		<a href="/login" class="block text-center text-sm underline">Log in to Dinu</a>
 	</AuthStepFrame>
 {/if}

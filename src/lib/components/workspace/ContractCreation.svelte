@@ -183,7 +183,7 @@
 	<main inert aria-hidden="true" class="pointer-events-none pt-6 pb-12 blur-sm">
 		{#if resources}
 			<div bind:this={host}></div>
-			{#if !draft?.workspace.viewer.visible && !draft?.workspace.renderer.error && !draft?.workspace.viewer.preparationBlocked}
+			{#if !draft}
 				<DocumentSkeleton embedded announce={false} />
 			{/if}
 		{:else if preview && ContractPreview}

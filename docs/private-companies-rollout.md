@@ -1,6 +1,6 @@
 # Private companies and rollout
 
-Agreed supports many private companies and one company per account. Signup verifies
+Dinu supports many private companies and one company per account. Signup verifies
 identity; it does not create or join a company. An account without membership sees
 its invitations, can create a company, or can wait for a colleague's invitation.
 There is no company search, discovery, domain matching, or automatic email-domain

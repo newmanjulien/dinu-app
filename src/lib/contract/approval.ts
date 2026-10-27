@@ -17,6 +17,22 @@ export type ReviewTag = {
 	disabled: boolean;
 };
 export type ReviewNavigation = { afterItemId?: string };
+/** Selected approval changes can be identified without a prepared document. */
+export function selectedReviewApplications(
+	items: ContractSnapshot['items'],
+	choices: Readonly<Record<string, string>>
+) {
+	return items.flatMap((item) => {
+		const selected = choices[item._id];
+		if (!selected || !item.instructions?.changesNeedApproval?.trim()) return [];
+		const concessionPosition = item.concessions.findIndex((c) => c.id === selected);
+		const concession = item.concessions[concessionPosition];
+		if (!concession) return [];
+		const range = concession.changes[0]?.range ?? item.triggers[0]?.range;
+		if (!range) return [];
+		return [{ item, concession, concessionPosition, range }];
+	});
+}
 /** Business readiness uses saved choices and reviews, independently of document layout. */
 export function savedReviews(
 	items: ContractSnapshot['items'],

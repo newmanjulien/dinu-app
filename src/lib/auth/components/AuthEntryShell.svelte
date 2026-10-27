@@ -23,7 +23,7 @@
 
 <section data-sveltekit-preload-data="off" data-sveltekit-preload-code="off" class="entry-shell">
 	<div class="entry-layout">
-		<main class="entry-panel" aria-label="Agreed account entry">
+		<main class="entry-panel" aria-label="Dinu account entry">
 			<div class="entry-content">
 				{@render children()}
 			</div>
@@ -46,7 +46,7 @@
 	.entry-shell {
 		min-height: 100dvh;
 		background: var(--color-page);
-		color: #202124;
+		color: var(--color-ink);
 	}
 
 	.entry-layout {
@@ -70,7 +70,7 @@
 
 	.entry-footer {
 		width: 100%;
-		border-top: 1px solid #eceef1;
+		border-top: var(--surface-border-width) solid var(--color-line);
 		padding-top: 16px;
 	}
 
@@ -89,7 +89,7 @@
 		}
 
 		.entry-panel {
-			border: 1px solid rgb(0 0 0 / 4%);
+			border: var(--surface-border-width) solid var(--color-edge);
 			border-radius: 12px;
 		}
 	}

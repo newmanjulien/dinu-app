@@ -16,7 +16,7 @@
 </script>
 
 <ModalShell {open} title="Invite colleagues" dismissible={!isAdding} {onClose}>
-	<label for="team-member-emails" class="block text-xs text-stone-950"
+	<label for="team-member-emails" class="block text-xs text-ink"
 		>List colleague emails separated by commas</label
 	>
 	<textarea

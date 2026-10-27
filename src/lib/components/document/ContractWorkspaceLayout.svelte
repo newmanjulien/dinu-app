@@ -1,15 +1,16 @@
 <script lang="ts">
-	import '$lib/styles/document-workspace-geometry.css';
 	import type { Snippet } from 'svelte';
+	import DocumentPageFrame from './DocumentPageFrame.svelte';
+	import DocumentPaperSkeleton from './DocumentPaperSkeleton.svelte';
+	import DocumentPanelSkeleton from './DocumentPanelSkeleton.svelte';
 	import { protectedInteraction } from '$lib/components/ui/interactions';
 	const protect = protectedInteraction();
-	import { RAIL_SAFE_GUTTER, PANEL_MIN_WIDTH, PANEL_GAP, RIGHT_GUTTER } from './workspace-layout';
 
 	let {
 		hasPanel,
+		loading = false,
 		interactive = true,
 		followScroll = false,
-		displayedPageWidth,
 		documentHeight,
 		panelTop,
 		layoutElement = $bindable(),
@@ -19,9 +20,9 @@
 		footerContent
 	}: {
 		hasPanel: boolean;
+		loading?: boolean;
 		interactive?: boolean;
 		followScroll?: boolean;
-		displayedPageWidth: number;
 		documentHeight: number;
 		panelTop: number;
 		layoutElement?: HTMLDivElement;
@@ -33,36 +34,28 @@
 </script>
 
 <div
-	class="document-workspace-geometry relative w-full @container"
+	class="relative w-full"
 	bind:this={layoutElement}
-	style:--page-width={`${displayedPageWidth}px`}
 	style:--panel-top={`${panelTop}px`}
-	style:--rail-safe-gutter={`${RAIL_SAFE_GUTTER}px`}
-	style:--panel-min-width={`${PANEL_MIN_WIDTH}px`}
-	style:--panel-gap={`${PANEL_GAP}px`}
-	style:--right-gutter={`${RIGHT_GUTTER}px`}
 	style:min-height={`${documentHeight}px`}
 >
-	<!-- Keep the container threshold in sync with SIDE_PANEL_BREAKPOINT. -->
-	<div
-		class={`mx-auto ${hasPanel ? '@min-[1150px]:ml-(--page-left) @min-[1150px]:mr-0' : ''}`}
-		style:width={`${displayedPageWidth}px`}
-	>
+	{#snippet footer()}{#if !loading}{@render footerContent?.()}{/if}{/snippet}
+	<DocumentPageFrame {footer}>
 		<!-- Programmatic focus only; inert previews have no focus target. -->
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<div
-			class="document-stage relative focus:outline-none"
+			class="document-stage relative w-full focus:outline-none"
 			bind:this={documentStageElement}
 			tabindex={interactive ? -1 : undefined}
-			style:width={`${displayedPageWidth}px`}
-			style:height={`${documentHeight}px`}
+			style:height={documentHeight ? `${documentHeight}px` : undefined}
 		>
-			{@render documentContent()}
+			{#if loading}<DocumentPaperSkeleton />{/if}
+			<div hidden={loading}>{@render documentContent()}</div>
 		</div>
-		{@render footerContent?.()}
-	</div>
+	</DocumentPageFrame>
 
-	{#if hasPanel}
+	{#if hasPanel && loading}<DocumentPanelSkeleton />
+	{:else if hasPanel}
 		<div
 			class="panel-rail pointer-events-none absolute top-(--panel-top) right-(--panel-gap) z-5 w-(--panel-width) animate-[panel-in_140ms_ease_both] @min-[1150px]:right-auto @min-[1150px]:left-[calc(var(--page-left)+var(--page-width)+var(--panel-gap))] @max-[1150px]:fixed @max-[1150px]:inset-x-0 @max-[1150px]:top-auto @max-[1150px]:bottom-0 @max-[1150px]:z-30 @max-[1150px]:w-auto @max-[1150px]:animate-[sheet-in_140ms_ease_both] motion-reduce:animate-none"
 			class:follow-scroll={followScroll}

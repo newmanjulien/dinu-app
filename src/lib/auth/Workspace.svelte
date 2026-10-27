@@ -163,7 +163,7 @@
 </script>
 
 {#if deletionPending}
-	<div role="status" class="bg-stone-100 px-6 py-4 text-sm leading-6 text-stone-700">
+	<div role="status" class="bg-canvas px-6 py-4 text-sm leading-6 text-ink-secondary">
 		Company activity is paused while account deletion is confirmed.
 		<a href="/settings" class="underline">Open Settings to finish or cancel deletion.</a>
 	</div>

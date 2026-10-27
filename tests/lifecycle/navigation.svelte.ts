@@ -13,5 +13,6 @@ export const setNavigate = (handler: typeof navigate) => {
 	navigate = handler;
 };
 export const goto = (path: string) => navigate(path);
+export const resolve = (path: string) => path;
 export const beforeNavigate = () => {};
 export const preloadCode = async () => {};

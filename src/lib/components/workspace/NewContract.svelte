@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { beforeNavigate, goto } from '$app/navigation';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
-	import { getWorkspaceHelp } from '$lib/auth/workspace-help';
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
@@ -18,10 +17,6 @@
 	} = $props();
 	const runtime = getWorkspaceRuntime();
 	const session = useViewerSession();
-	const help = getWorkspaceHelp();
-	$effect(() => {
-		if (!runtime.paused) return help?.hold();
-	});
 	const creation = loadComponent(
 		() => import('./ContractCreation.svelte'),
 		() => true,

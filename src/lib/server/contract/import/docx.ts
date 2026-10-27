@@ -38,7 +38,7 @@ export function importDocx(input: Uint8Array): {
 	};
 	issue(
 		'Document',
-		'Agreed uses its own fonts, spacing, colors, table borders, and page breaks.',
+		'Dinu uses its own fonts, spacing, colors, table borders, and page breaks.',
 		'warning'
 	);
 	const relationships = new Map(pkg.related.map((r) => [r.id, r]));
@@ -241,5 +241,5 @@ function checkPagination(root: XmlNode, issue: Issue) {
 	)
 		issue('Document', 'Move substantive headers into the document body in Word.');
 	else if (pageFields)
-		issue('Document', 'Word page headers are replaced by Agreed’s pagination.', 'warning');
+		issue('Document', 'Word page headers are replaced by Dinu’s pagination.', 'warning');
 }

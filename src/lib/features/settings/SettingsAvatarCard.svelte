@@ -61,7 +61,7 @@
 			class="sr-only"
 			onchange={handleFileChange}
 		/>
-		<p class="min-h-5 text-[0.72rem] leading-5 {errorText ? 'text-danger' : 'text-stone-500'}">
+		<p class="min-h-5 text-[0.72rem] leading-5 {errorText ? 'text-danger' : 'text-ink-muted'}">
 			{errorText ?? (uploading ? 'Uploading...' : '')}
 		</p>
 	</div>
@@ -70,7 +70,7 @@
 		<button
 			type="button"
 			disabled={uploading}
-			class="inline-flex size-[68px] shrink-0 items-center justify-center rounded-full outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-stone-300 focus-visible:ring-offset-2"
+			class="inline-flex size-[68px] shrink-0 items-center justify-center rounded-full outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
 			aria-label={ariaLabel}
 			onclick={chooseFile}
 		>

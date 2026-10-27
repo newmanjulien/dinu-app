@@ -28,7 +28,9 @@
 	let joined = $state(false);
 	let error = $state('');
 	let retry = $state(0);
-	const teamHref = $derived('/team?returnTo=' + encodeURIComponent(currentDestination(page.url)));
+	const teamHref = $derived(
+		`/team?returnTo=${encodeURIComponent(currentDestination(page.url))}` as const
+	);
 	$effect(() => {
 		const token = page.url.searchParams.get('invitation');
 		const generation = session.transportGeneration;
@@ -108,12 +110,10 @@
 	<AuthStepFrame
 		title={joined ? 'You’re in' : 'You’re already on this team'}
 		description={result?.companyName
-			? `Open ${result.companyName} on Agreed.`
+			? `Open ${result.companyName} on Dinu.`
 			: 'Your company is ready to open.'}
 	>
-		<a href="/" class="block rounded-button-lg bg-accent px-4 py-3 text-center text-sm text-white"
-			>Open workspace</a
-		>
+		<AuthButton href="/">Open workspace</AuthButton>
 		{#if error}<p role="alert" class="mt-3 text-sm text-danger">{error}</p>{/if}
 	</AuthStepFrame>
 {:else if result?.status === 'available'}
@@ -142,12 +142,8 @@
 		title="You already belong to a company"
 		description={`To join ${result.companyName}, first leave ${account()?.company?.name || 'your current company'} from the team page.`}
 	>
-		<a
-			href={teamHref}
-			class="block rounded-button-lg bg-accent px-4 py-3 text-center text-sm text-white"
-			>Manage current company</a
-		>
-		<p class="mt-3 text-center text-xs leading-5 text-stone-500">
+		<AuthButton href={teamHref}>Manage current company</AuthButton>
+		<p class="mt-3 text-center text-xs leading-5 text-ink-muted">
 			You can return to this invitation after managing your membership.
 		</p>
 	</AuthStepFrame>

@@ -14,6 +14,7 @@ export interface ContractSourceInput {
 
 /** Workspace-owned source semantics. Query failures retain accepted data. */
 export class ContractSourceController {
+	itemsCurrent = $state(false);
 	items = $state.raw<readonly PlaybookItemRecord[] | null>(null);
 	compiled = $state.raw<CompiledContract | null>(null);
 	geometry = $state.raw<PlaybookGeometryIndex | null>(null);
@@ -22,6 +23,10 @@ export class ContractSourceController {
 	issue = $state.raw<SourceIssue | null>(null);
 
 	constructor(readonly domain = new DocumentDomain()) {}
+
+	lookup(id: string) {
+		return this.domain.lookup(id);
+	}
 
 	accept(input: ContractSourceInput) {
 		const startedAt = performance.now();
@@ -50,16 +55,13 @@ export class ContractSourceController {
 				itemsFailed = true;
 			}
 		}
+		this.itemsCurrent = Boolean(input.items.data) && !itemsFailed;
 		this.issue = blocksFailed || itemsFailed ? { blocksFailed, itemsFailed } : null;
 		this.compiled = this.domain.contract;
 		this.geometry = this.domain.geometry;
 		this.geometryVersion = this.geometry?.version ?? 0;
 		this.items = this.domain.records;
-		if (
-			!this.compiled ||
-			!this.items ||
-			this.renderSource?.revision === this.domain.renderRevision
-		)
+		if (!this.compiled || !this.items || this.renderSource?.revision === this.domain.renderRevision)
 			return;
 		this.renderSource = Object.freeze({
 			revision: this.domain.renderRevision,

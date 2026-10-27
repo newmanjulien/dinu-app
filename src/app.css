@@ -18,7 +18,15 @@
 	--color-line-strong: #9aa0a6;
 
 	--color-control-fill: #e3e6e8;
+	--color-edge: var(--color-control-fill);
+	--color-surface-hover: color-mix(in srgb, var(--color-canvas) 50%, var(--color-surface));
+	--color-field-hover: color-mix(in srgb, var(--color-surface-hover) 65%, var(--color-surface));
 	--color-fill-subtle: #e8eaed;
+
+	--shadow-control: 0 1px 3px rgb(32 33 36 / 6%);
+	--shadow-card: 0 1px 3px rgb(32 33 36 / 4%), 0 3px 8px rgb(32 33 36 / 2%);
+	--shadow-floating: 0 2px 5px rgb(32 33 36 / 5%), 0 8px 24px rgb(32 33 36 / 8%);
+	--shadow-dialog: 0 4px 12px rgb(32 33 36 / 6%), 0 20px 60px rgb(32 33 36 / 14%);
 
 	--color-accent: #3f8ef7;
 	--color-accent-hover: #3278d6;
@@ -35,24 +43,44 @@
 	--radius-button-md: 6px;
 	--radius-button-lg: 10px;
 	--radius-button-xl: 12px;
+	--spacing-button-sm: 38px;
 	--spacing-modal: 24px;
 }
 
 :root {
-	--app-header-height: 34px;
+	--surface-border-width: 0.5px;
+	--app-header-height: 30px;
 	--document-viewport-gap: 16px;
+}
+
+/* Shared edge weight; surfaces keep their own shape, layout, and interaction. */
+@utility border-hairline {
+	border-style: var(--tw-border-style, solid);
+	border-width: var(--surface-border-width);
+}
+
+/* Focus outlines appear immediately; hover colors can still animate. */
+@layer utilities {
+	.transition-colors {
+		transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+	}
 }
 
 @media (min-width: 768px) {
 	:root {
-		--app-header-height: 38px;
+		--app-header-height: 35px;
 	}
+}
+
+html,
+body {
+	background-color: var(--color-page);
 }
 
 html {
 	scrollbar-gutter: stable;
 }
 
-.font-quote {
+.font-editorial {
 	font-family: Newsreader, 'Times New Roman', serif;
 }

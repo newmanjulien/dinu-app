@@ -43,10 +43,9 @@
 		LayoutProfiler,
 		type LayoutProfileSurface as ProfileSurface
 	} from '$lib/document/pagination/profiler';
-	import { SIDE_PANEL_BREAKPOINT, SIDE_PANEL_RESERVED_WIDTH } from './workspace-layout';
+	import DocumentWorkspaceGeometry from './DocumentWorkspaceGeometry.svelte';
 	import DocumentPage from './DocumentPage.svelte';
 	import LayoutProfileSurface from './LayoutProfileSurface.svelte';
-	import LoadingPagination from './LoadingPagination.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import ContractWorkspaceLayout from './ContractWorkspaceLayout.svelte';
 	import '$lib/styles/document.css';
@@ -64,6 +63,7 @@
 		panelContent,
 		footerContent,
 		reviewTags = [],
+		reviewGutter = 0,
 		reviewNavigation,
 		onReviewDecision,
 		selectedConcessions,
@@ -87,6 +87,7 @@
 		panelContent: Snippet;
 		footerContent?: Snippet;
 		reviewTags?: readonly ReviewTag[];
+		reviewGutter?: number;
 		reviewNavigation?: ReviewNavigation;
 		onReviewDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
 		selectedConcessions: ConcessionSelection;
@@ -422,23 +423,14 @@
 		clauseInteractions?.setEnabled(canOpenPlaybookItems);
 	});
 	let layoutElement = $state<HTMLDivElement>();
-	let layoutWidth = $state(PAGE_FORMAT.width + 30);
+	let displayWidth = $state<number>(PAGE_FORMAT.width);
 	let panelTop = $state(0);
 	let selectedOccurrence = $state.raw<AnnotationOccurrence | null>(null);
 	let pageViewport = $state<HTMLDivElement>();
-	const reviewGutter = $derived(reviewTags.length ? 100 : 0);
-	const pageScale = $derived(
-		Math.min(
-			1,
-			Math.max(
-				reviewGutter ? 120 : 280,
-				(layoutWidth >= SIDE_PANEL_BREAKPOINT
-					? layoutWidth - SIDE_PANEL_RESERVED_WIDTH
-					: layoutWidth - 30) - reviewGutter
-			) / PAGE_FORMAT.width
-		)
+	const loading = $derived(
+		!renderer.error && (!pages.length || (active && !viewer.visible && !viewer.preparationBlocked))
 	);
-	const displayWidth = $derived(PAGE_FORMAT.width * pageScale);
+	const pageScale = $derived(displayWidth / PAGE_FORMAT.width);
 	const displayHeight = $derived(
 		(mountedPages.length * PAGE_FORMAT.height +
 			Math.max(0, mountedPages.length - 1) * PAGE_FORMAT.gap +
@@ -550,16 +542,6 @@
 		const following = followScroll;
 		if (active && wasFollowingScroll && !following) untrack(() => void keepPanelVisible());
 		wasFollowingScroll = following;
-	});
-	$effect(() => {
-		const el = layoutElement;
-		if (!active || !viewer.visible || !el) return;
-		layoutWidth = el.getBoundingClientRect().width;
-		const observer = new ResizeObserver(([entry]) => {
-			layoutWidth = entry.contentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
-		});
-		observer.observe(el);
-		return () => observer.disconnect();
 	});
 	function retryRender() {
 		if (!prepare) return;
@@ -790,7 +772,10 @@
 </script>
 
 {#if hasActiveConflicts}
-	<div role="alert" class="mx-auto max-w-xl rounded border border-line bg-surface p-3">
+	<div
+		role="alert"
+		class="mx-auto max-w-xl rounded border-hairline border-edge bg-surface p-3 shadow-card"
+	>
 		These applied concessions conflict with current contract changes. Remove an alternative to
 		continue.
 		{#each requestedModel.conflicts as conflict}
@@ -808,22 +793,13 @@
 	</div>
 {/if}
 {#if !sharedProfiles}<LayoutProfileSurface bind:surface />{/if}
-{#if !pages.length && !renderer.error}
-	{#if !retained}<LoadingPagination embedded {hasPanel} />{/if}
-{:else if !pages.length}
-	<LoadingState layout="workspace" class="gap-1.5 text-ink-secondary">
-		<strong role="alert" class="font-medium">We couldn’t display this contract.</strong>
-		<button type="button" class="underline" onclick={interacting ? retryRender : undefined}
-			>Retry</button
-		>
-	</LoadingState>
-{:else}
-	{#if !retained && active && !viewer.visible && !renderer.error && !viewer.preparationBlocked}
-		<LoadingPagination embedded {hasPanel} />
-	{/if}
+<DocumentWorkspaceGeometry
+	{reviewGutter}
+	{hasPanel}
+	onPageResize={(width) => (displayWidth = width)}
+>
 	<div
 		class="viewer-root w-full"
-		class:awaiting-prepared={active && !viewer.visible}
 		data-document-commit={targetGeneration}
 		data-page-count={mountedPages.length}
 		style:--contract-page-width={`${PAGE_FORMAT.width}px`}
@@ -836,63 +812,70 @@
 		style:--contract-page-gap={`${PAGE_FORMAT.gap}px`}
 	>
 		{#snippet documentContent()}
-			<div
-				class="page-viewport relative isolate shrink-0 focus:outline-none"
-				bind:this={pageViewport}
-				style:--review-gutter-width={`${reviewGutter}px`}
-				style:margin-left="var(--review-gutter-width)"
-				style:width={`${displayWidth}px`}
-				style:height={`${displayHeight}px`}
-			>
-				<ReviewTags
-					host={pageViewport}
-					tags={reviewTags}
-					navigation={reviewNavigation}
-					onDecision={onReviewDecision}
-					ready={interacting && viewer.ready}
-					index={pageElementsSnapshot?.source.sourceIndex ?? snapshot?.source.sourceIndex}
-					pages={mountedPages}
-					scale={pageScale}
-				/>
+			{#if pages.length}
 				<div
-					class="page-stack absolute top-0 left-0 z-1 flex w-(--contract-page-width) origin-top-left flex-col gap-(--contract-page-gap)"
-					style:transform={`scale(${pageScale})`}
+					class="page-viewport relative isolate shrink-0 focus:outline-none"
+					bind:this={pageViewport}
+					style:width="100%"
+					style:height={`${displayHeight}px`}
 				>
-					{#each mountedPages as page (page.number)}
-						<DocumentPage
-							{page}
-							interactive={active && (interactive || allowPlaybookNavigation)}
-							highlights={highlightRects.get(page.number) ?? EMPTY_HIGHLIGHTS}
-							{selectedAnnotationId}
-							{navigationCapable}
-							{canOpenPlaybookItems}
-							onAnnotationSelect={selectAnnotation}
-						/>
-					{/each}
-					{#if incomplete}
-						<div
-							class="px-6 py-3 text-center text-sm text-ink-secondary"
-							role={renderer.error ? 'alert' : 'status'}
-						>
-							{#if renderer.error}
-								This document is incomplete. We couldn’t prepare the remaining pages.
-								<button
-									type="button"
-									class="ml-2 underline"
-									onclick={interacting ? retryRender : undefined}>Retry</button
-								>
-							{:else}Preparing remaining pages…{/if}
-						</div>
-					{/if}
+					<ReviewTags
+						host={pageViewport}
+						tags={reviewTags}
+						navigation={reviewNavigation}
+						onDecision={onReviewDecision}
+						ready={interacting && viewer.ready}
+						index={pageElementsSnapshot?.source.sourceIndex ?? snapshot?.source.sourceIndex}
+						pages={mountedPages}
+						scale={pageScale}
+					/>
+					<div
+						class="page-stack absolute top-0 left-0 z-1 flex w-(--contract-page-width) origin-top-left flex-col gap-(--contract-page-gap)"
+						style:transform={`scale(${pageScale})`}
+					>
+						{#each mountedPages as page (page.number)}
+							<DocumentPage
+								{page}
+								interactive={active && (interactive || allowPlaybookNavigation)}
+								highlights={highlightRects.get(page.number) ?? EMPTY_HIGHLIGHTS}
+								{selectedAnnotationId}
+								{navigationCapable}
+								{canOpenPlaybookItems}
+								onAnnotationSelect={selectAnnotation}
+							/>
+						{/each}
+						{#if incomplete}
+							<div
+								class="px-6 py-3 text-center text-sm text-ink-secondary"
+								role={renderer.error ? 'alert' : 'status'}
+							>
+								{#if renderer.error}
+									This document is incomplete. We couldn’t prepare the remaining pages.
+									<button
+										type="button"
+										class="ml-2 underline"
+										onclick={interacting ? retryRender : undefined}>Retry</button
+									>
+								{:else}Preparing remaining pages…{/if}
+							</div>
+						{/if}
+					</div>
 				</div>
-			</div>
+			{:else if renderer.error}
+				<LoadingState layout="workspace" class="gap-1.5 text-ink-secondary">
+					<strong role="alert" class="font-medium">We couldn’t display this contract.</strong>
+					<button type="button" class="underline" onclick={interacting ? retryRender : undefined}
+						>Retry</button
+					>
+				</LoadingState>
+			{/if}
 		{/snippet}
 		<ContractWorkspaceLayout
 			{hasPanel}
-			interactive={active && (interactive || allowPlaybookNavigation)}
+			{loading}
+			interactive={!loading && active && (interactive || allowPlaybookNavigation)}
 			{followScroll}
-			displayedPageWidth={displayWidth + reviewGutter}
-			documentHeight={displayHeight}
+			documentHeight={loading ? PAGE_FORMAT.height * pageScale : displayHeight}
 			{panelTop}
 			bind:layoutElement
 			bind:documentStageElement={viewer.documentStageElement}
@@ -901,10 +884,4 @@
 			{footerContent}
 		/>
 	</div>
-{/if}
-
-<style>
-	.awaiting-prepared {
-		display: none;
-	}
-</style>
+</DocumentWorkspaceGeometry>

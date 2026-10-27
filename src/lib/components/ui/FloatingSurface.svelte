@@ -4,12 +4,14 @@
 	import { positionFloating, type FloatingAnchor } from './floating';
 	import {
 		getInteractionController,
+		getInteractionInputCapture,
 		getInteractionOwner,
 		setInteractionOwner,
 		type CloseReason,
 		type InteractionKind
 	} from './interactions';
 	const parentOwner = getInteractionOwner();
+	const captureInput = getInteractionInputCapture();
 
 	let {
 		open,
@@ -70,7 +72,10 @@
 			owner: parentOwner,
 			kind,
 			dismissOnFocus,
-			visible: () => surface.checkVisibility({ visibilityProperty: true }),
+			visible: () =>
+				surface.isConnected &&
+				surface.getClientRects().length > 0 &&
+				getComputedStyle(surface).visibility === 'visible',
 			elements: () => [surface, trigger],
 			close: (reason) => onClose(reason)
 		});
@@ -90,7 +95,16 @@
 		};
 	});
 	function nativeToggle() {
-		if (open && element && !element.matches(':popover-open')) onClose('anchor-removal');
+		if (
+			open &&
+			element &&
+			typeof element.showPopover === 'function' &&
+			!element.matches(':popover-open')
+		)
+			onClose('anchor-removal');
+	}
+	function capturePortaledInput(event: Event) {
+		if (typeof element?.showPopover !== 'function') captureInput?.(event);
 	}
 </script>
 
@@ -99,11 +113,15 @@
 <div
 	bind:this={element}
 	popover="manual"
+	style="visibility: hidden;"
+	style:display={open ? undefined : 'none'}
 	{id}
 	{role}
 	aria-label={label}
 	class={`box-border min-w-0 overflow-auto overscroll-contain ${className}`}
 	ontoggle={nativeToggle}
+	oninputcapture={capturePortaledInput}
+	onclickcapture={capturePortaledInput}
 	{onkeydown}
 	{onpointerenter}
 	{onpointerleave}

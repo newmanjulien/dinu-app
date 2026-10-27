@@ -141,7 +141,7 @@
 				trigger={elements.get(anchor.key)}
 				standalone={false}
 				enabled={openKey !== anchor.key}
-				class="rounded-md border-0 bg-[#fafafa] px-2 py-1 text-left text-xs leading-[1.4] text-[#202124] shadow-sm"
+				class="rounded-md border-hairline border-edge bg-surface px-2 py-1 text-left text-xs leading-[1.4] text-ink shadow-floating"
 			>
 				{#snippet children(descriptionId)}
 					<button
@@ -217,9 +217,9 @@
 <style>
 	.review-gutter {
 		position: absolute;
-		left: calc(0px - var(--review-gutter-width));
+		left: calc(0px - var(--review-gutter));
 		top: 0;
-		width: var(--review-gutter-width);
+		width: var(--review-gutter);
 		z-index: 0;
 	}
 	.review-tab {
@@ -235,12 +235,12 @@
 		gap: 4px;
 		border: 0;
 		border-radius: 3px 0 0 3px;
-		background: var(--color-accent);
+		background: color-mix(in srgb, var(--color-accent) 90%, white);
 		color: white;
 		font: 400 13px/1.2 var(--font-sans, sans-serif);
 		cursor: pointer;
 		white-space: nowrap;
-		box-shadow: 0 1px 2px #00000018;
+		box-shadow: var(--shadow-control);
 	}
 	.review-tab:focus-visible {
 		outline: 2px solid var(--color-accent);
@@ -250,13 +250,13 @@
 		cursor: default;
 	}
 	.approved {
-		background: var(--color-success);
+		background: color-mix(in srgb, var(--color-success) 90%, white);
 	}
 	.rejected {
-		background: var(--color-danger);
+		background: color-mix(in srgb, var(--color-danger) 90%, white);
 	}
 	.waiting {
-		background: #e4e6e9;
-		color: #535a64;
+		background: var(--color-control-fill);
+		color: var(--color-ink-muted);
 	}
 </style>

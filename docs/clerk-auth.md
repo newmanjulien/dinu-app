@@ -12,11 +12,11 @@ runbook](private-companies-rollout.md) before updating an existing deployment.
 
 ## Development configuration
 
-Create an Agreed **development** application in Clerk. Enable email verification
+Create a Dinu **development** application in Clerk. Enable email verification
 codes for signup and sign-in, open signup, self-deletion, and reverification for
 sensitive actions. Disable required passwords, names, and legal acceptance so the
 custom signup can finish with an email and code. Clerk Organizations are
-unnecessary; Agreed supplies its own company onboarding and invitation acceptance. Configure `/login` and `/join` as the custom auth routes, `/` as the
+unnecessary; Dinu supplies its own company onboarding and invitation acceptance. Configure `/login` and `/join` as the custom auth routes, `/` as the
 fallback destination, and the frontend development origin as an allowed redirect.
 
 Copy `.env.example` to `.env.local`, keeping the existing Convex deployment values.
@@ -35,7 +35,7 @@ Create Clerk's **convex** JWT template. Preserve its Convex defaults, including
 }
 ```
 
-Clerk resolves the verification shortcode to a boolean. Agreed requires
+Clerk resolves the verification shortcode to a boolean. Dinu requires
 `emailVerified === true`; an absent or false claim blocks profile initialization
 and business operations. The issuer is the template's `iss` URL, including `https://`.
 
@@ -68,14 +68,14 @@ snapshot reads forward an authenticated token and return `private, no-store`.
 ## Preparing an account for a user
 
 In the matching Clerk application's Users page, create the user with their real
-email address and no password. The primary email must be verified; Agreed requires
+email address and no password. The primary email must be verified; Dinu requires
 the `email_verified` JWT claim above.
 
-Choose **Impersonate user** from the user's three-dot menu. Clerk opens Agreed's
+Choose **Impersonate user** from the user's three-dot menu. Clerk opens Dinu's
 configured `/login` route with a one-time `__clerk_ticket`. The login flow consumes
 that sign-in ticket, activates the impersonated session, and opens normal onboarding
 or the existing workspace without asking for an email code. Clerk continues to
-control who can issue impersonation links; Agreed only consumes the issued ticket.
+control who can issue impersonation links; Dinu only consumes the issued ticket.
 The `/join` route handles Clerk signup tickets separately.
 
 Complete onboarding and Settings as the user. Creating a company makes them its

@@ -25,8 +25,7 @@
 	} from '$lib/delegation';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import Button from '$lib/ui/Button.svelte';
-	import { fieldClass } from '$lib/ui/field-styles';
-	import { cn } from '$lib/ui/cn';
+	import { fieldClass, fieldShellClass, fieldInputClass } from '$lib/ui/field-styles';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import FileTextIcon from 'phosphor-svelte/lib/FileTextIcon';
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
@@ -553,7 +552,7 @@
 >
 	{#if success}
 		<div
-			class="flex flex-col items-start gap-4 rounded-[10px] border border-line p-[22px]"
+			class="flex flex-col items-start gap-4 rounded-[10px] border-hairline border-edge bg-surface p-[22px] shadow-card"
 			role="status"
 		>
 			<CheckCircleIcon size={32} weight="regular" aria-hidden="true" />
@@ -563,7 +562,7 @@
 					{delegateName} will take care of your task by {formatDelegationDeadline(success.dueDate)}.
 				</p>
 			</div>
-			<Button variant="secondary" class="w-full text-[12.5px]" onclick={onClose}>Done</Button>
+			<Button variant="secondary" class="w-full" onclick={onClose}>Done</Button>
 		</div>
 	{:else if !frozen && (catalogError || catalogData === null)}
 		<p class="py-4 text-[12.5px] text-ink-muted" role="alert">
@@ -576,7 +575,10 @@
 			{#each steps as title, index}
 				{@const disabled =
 					locked || (index > 0 && !task) || (index === 2 && configuredRevision === null)}
-				<section class="rounded-[10px] border border-line" class:opacity-45={!locked && disabled}>
+				<section
+					class="rounded-[10px] border-hairline border-edge bg-surface shadow-card"
+					class:opacity-45={!locked && disabled}
+				>
 					<h3>
 						<button
 							type="button"
@@ -596,7 +598,7 @@
 					{#if step === index}
 						<div id={`${prefix}-panel-${index}`} class="px-[18px] pb-[18px]">
 							{#if index === 0}
-								<div class="mb-5 flex items-start gap-3 rounded-lg border border-line p-4">
+								<div class="mb-5 flex items-start gap-3 rounded-lg border-hairline border-line p-4">
 									<Avatar
 										name={catalog.delegate.name}
 										avatarUrl={catalog.delegate.avatarPath}
@@ -605,23 +607,23 @@
 									/>
 									<div class="min-w-0">
 										<p class="text-[12.5px] font-medium">{catalog.delegate.name}</p>
-										<p class="mt-1 text-[12.5px] leading-relaxed text-ink-muted">
+										<p class="mt-1 text-[12.5px] leading-[1.5] text-ink-muted">
 											{catalog.delegate.introduction}
 										</p>
 									</div>
 								</div>
-								<div class="relative mb-3">
+								<div
+									class={`${fieldShellClass} mb-3 flex h-9 items-center gap-2`}
+									aria-disabled={locked}
+								>
 									<MagnifyingGlassIcon
-										class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-muted"
+										class="shrink-0 text-ink-muted"
 										size={16}
 										aria-hidden="true"
 									/>
 									<input
 										bind:this={searchInput}
-										class={cn(
-											fieldClass,
-											'h-9 pl-9 pr-10 text-[12.5px] [&::-webkit-search-cancel-button]:hidden'
-										)}
+										class={fieldInputClass}
 										type="search"
 										aria-label="Search tasks"
 										placeholder="Search tasks"
@@ -632,7 +634,7 @@
 										<button
 											type="button"
 											aria-label="Clear search"
-											class="absolute top-1/2 right-2 flex size-6 -translate-y-1/2 items-center justify-center rounded-button-sm text-[#8a8a8a] transition-colors hover:bg-[#f3f3f3] hover:text-ink focus-visible:outline-1 focus-visible:outline-[#d5d5d5]"
+											class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-button-sm text-ink-muted transition-colors not-disabled:hover:bg-control-fill not-disabled:hover:text-ink focus-visible:outline-1 focus-visible:outline-line-strong/40"
 											disabled={locked}
 											onclick={() => {
 												search = '';
@@ -643,11 +645,13 @@
 										</button>
 									{/if}
 								</div>
-								<div class="divide-y divide-line overflow-hidden rounded-lg border border-line">
+								<div
+									class="divide-y-[length:var(--surface-border-width)] divide-line overflow-hidden rounded-lg border-hairline border-line"
+								>
 									{#each visibleTasks as option}
 										<button
 											type="button"
-											class="flex w-full items-center gap-3 p-[18px] text-left hover:bg-[#f5f5f5] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+											class="flex w-full items-center gap-3 p-[18px] text-left hover:bg-surface-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
 											onclick={() => selectTask(option)}
 											disabled={locked}
 										>
@@ -684,7 +688,7 @@
 											{#if question.kind === 'text'}
 												<input
 													id={`${prefix}-${question.key}`}
-													class={cn(fieldClass, 'h-10 text-[12.5px]')}
+													class={`${fieldClass} h-10`}
 													required={question.required}
 													maxlength={10000}
 													disabled={locked}
@@ -694,7 +698,7 @@
 											{:else}
 												<textarea
 													id={`${prefix}-${question.key}`}
-													class={cn(fieldClass, 'min-h-24 py-2.5 text-[12.5px]')}
+													class={`${fieldClass} min-h-24 py-2.5 leading-[1.45]`}
 													rows={3}
 													required={question.required}
 													maxlength={10000}
@@ -720,7 +724,7 @@
 										/>
 										<Button
 											variant="secondary"
-											class="w-full text-[12.5px]"
+											class="w-full"
 											disabled={locked || uploads.length >= ATTACHMENT_MAX_COUNT}
 											onclick={() => fileInput?.click()}
 											><PaperclipIcon size={16} aria-hidden="true" />Attach documents</Button
@@ -729,7 +733,9 @@
 											Up to 3 DOCX or PDF files, 10 MB each.
 										</p>
 										{#each attached as upload (upload.key)}
-											<div class="mt-2 flex items-start gap-2 rounded-lg border border-line p-3.5">
+											<div
+												class="mt-2 flex items-start gap-2 rounded-lg border-hairline border-line p-3.5"
+											>
 												<FileTextIcon size={16} class="mt-0.5 shrink-0" aria-hidden="true" />
 												<div class="min-w-0 flex-1">
 													<p class="truncate text-[12px]">{upload.file.name}</p>
@@ -750,7 +756,7 @@
 												</div>
 												<button
 													type="button"
-													class="rounded p-1 text-ink-muted hover:bg-fill-subtle disabled:opacity-40"
+													class="rounded p-1 text-ink-muted not-disabled:hover:bg-control-fill"
 													aria-label={`Remove ${upload.file.name}`}
 													disabled={locked ||
 														upload.status === 'uploading' ||
@@ -768,7 +774,7 @@
 									<Button
 										type="submit"
 										variant="primary"
-										class="w-full text-[12.5px]"
+										class="w-full"
 										disabled={locked || uploadsPending}>Continue</Button
 									>
 								</form>
@@ -795,11 +801,7 @@
 										<span class="text-ink">{formatDelegationDeadline(preview)}</span>.
 									</p>
 									{#if error}<p class="text-[12.5px] text-red-700" role="alert">{error}</p>{/if}
-									<Button
-										variant="primary"
-										class="w-full text-[12.5px]"
-										disabled={saving}
-										onclick={submit}
+									<Button variant="primary" class="w-full" disabled={saving} onclick={submit}
 										>{saving
 											? 'Delegating…'
 											: frozen

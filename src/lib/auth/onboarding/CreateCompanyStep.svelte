@@ -41,8 +41,8 @@
 		<AuthButton type="submit" disabled={pending || blocked || !name.trim()}
 			>{pending ? 'Creating…' : 'Create company'}</AuthButton
 		>
-		<p class="m-0 text-center text-xs leading-5 text-[#8f9297]">
-			You can invite your colleagues once your company is set up.
+		<p class="m-0 text-center text-xs leading-5 text-ink-muted">
+			Your new company can sign 5 contracts for free each month.
 		</p>
 		{#if error}<p role="alert" class="text-center text-sm leading-5 text-danger">{error}</p>{/if}
 	</form>

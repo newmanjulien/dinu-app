@@ -41,6 +41,7 @@
 			selectedConcessions={bindings?.selectedConcessions ?? entry.choices}
 			previewChanges={bindings?.previewChanges}
 			reviewTags={entry.active ? bindings?.reviewTags : undefined}
+			reviewGutter={entry.active ? bindings?.reviewGutter : undefined}
 			reviewNavigation={entry.active ? bindings?.reviewNavigation : undefined}
 			onReviewDecision={bindings?.onReviewDecision}
 			hasPanel={bindings?.hasPanel}

@@ -1,5 +1,5 @@
 {
-	"name": "agreed",
+	"name": "dinu",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
@@ -57,6 +57,7 @@
 		"convex-test": "^0.0.60",
 		"fake-indexeddb": "^6.2.5",
 		"jsdom": "^27.0.1",
+		"lightningcss": "^1.33.0",
 		"prettier": "^3.9.9",
 		"prettier-plugin-svelte": "^4.1.1",
 		"svelte": "^5.56.1",

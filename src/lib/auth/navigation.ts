@@ -1,8 +1,8 @@
 export function localReturn(value: string | null | undefined): string {
 	if (!value || !value.startsWith('/') || value.startsWith('//') || /[\\\r\n]/.test(value))
 		return '/';
-	const url = new URL(value, 'https://agreed.invalid');
-	if (url.origin !== 'https://agreed.invalid' || ['/login', '/join'].includes(url.pathname))
+	const url = new URL(value, 'https://dinu.invalid');
+	if (url.origin !== 'https://dinu.invalid' || ['/login', '/join'].includes(url.pathname))
 		return '/';
 	return url.pathname + url.search + url.hash;
 }
@@ -27,7 +27,7 @@ export function loginDestination(url: URL, recover: boolean): string {
 export function workspaceDestination(value: string | null | undefined): string {
 	const destination = localReturn(value);
 	return ['/onboarding', '/invitation'].includes(
-		new URL(destination, 'https://agreed.invalid').pathname
+		new URL(destination, 'https://dinu.invalid').pathname
 	)
 		? '/'
 		: destination;

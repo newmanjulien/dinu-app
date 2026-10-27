@@ -1,3 +1,4 @@
+import { immutable } from '../../playbook/draft';
 import { CompiledContract } from '../../contract/compiled-contract';
 import type { ContractBlock } from '../../contract/model';
 import type { PlaybookItemRecord } from '../../playbook/model';
@@ -34,6 +35,11 @@ export class DocumentDomain {
 	};
 	private baselineKey = '';
 	private accepted = new Map<string, AcceptedItem>();
+	/** Read the retained record and annotation projection without rebuilding either. */
+	lookup(id: string) {
+		const entry = this.accepted.get(id);
+		return entry ? { record: entry.record, annotations: entry.overlay.annotations } : null;
+	}
 	acceptBlocks(blocks: readonly ContractBlock[]) {
 		const key = JSON.stringify(blocks);
 		if (key === this.baselineKey) return;
@@ -64,7 +70,7 @@ export class DocumentDomain {
 				this.metrics.overlaysReused++;
 				continue;
 			}
-			const copy: PlaybookItemRecord = JSON.parse(JSON.stringify(record));
+			const copy: PlaybookItemRecord = immutable(JSON.parse(JSON.stringify(record)));
 			const projected = toDocumentOverlay(copy);
 			const overlayKey = JSON.stringify(projected);
 			const overlay = previous?.overlayKey === overlayKey ? previous.overlay : projected;

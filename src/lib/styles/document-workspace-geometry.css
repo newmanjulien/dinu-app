@@ -1,5 +1,13 @@
-/* Both the live document and its skeleton supply --page-width and the gutters. */
+/* Resolve container units inside the shared wrapper, including during loading. */
 .document-workspace-geometry {
+	--reserved-width: 30px;
+	--paper-width: min(
+		var(--paper-max-width),
+		max(var(--paper-min-width), calc(100cqw - var(--reserved-width) - var(--review-gutter)))
+	);
+	--page-width: calc(var(--paper-width) + var(--review-gutter));
+	--page-margin-left: auto;
+	--page-margin-right: auto;
 	--panel-width: clamp(
 		var(--panel-min-width),
 		calc(
@@ -11,4 +19,27 @@
 		calc(50cqw - var(--page-width) / 2),
 		calc(100cqw - var(--right-gutter) - var(--panel-width) - var(--panel-gap) - var(--page-width))
 	);
+}
+
+.document-workspace-page {
+	width: var(--page-width);
+	margin-left: var(--page-margin-left);
+	margin-right: var(--page-margin-right);
+}
+
+.document-workspace-paper {
+	width: var(--paper-width);
+	margin-left: var(--review-gutter);
+}
+
+/* Match the side-panel container queries in ContractWorkspaceLayout. */
+@container (min-width: 1150px) {
+	.document-workspace-geometry {
+		--reserved-width: var(--side-panel-reserved-width);
+	}
+
+	.document-workspace-geometry.has-panel {
+		--page-margin-left: var(--page-left);
+		--page-margin-right: 0;
+	}
 }

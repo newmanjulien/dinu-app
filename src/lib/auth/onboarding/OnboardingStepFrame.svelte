@@ -5,10 +5,10 @@
 		$props();
 </script>
 
-<h1 class="m-0 text-[30px] font-medium leading-[1.08] tracking-[-0.02em] text-[#08090a]">
+<h1 class="m-0 text-[30px] font-medium leading-[1.08] tracking-[-0.02em] text-ink">
 	{title}
 </h1>
-<p class="mx-auto mt-4 max-w-sm text-sm leading-[1.45] text-[#686b73]">
+<p class="mx-auto mt-4 max-w-sm text-sm leading-[1.45] text-ink-muted">
 	{description}
 </p>
 

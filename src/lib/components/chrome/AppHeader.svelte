@@ -19,13 +19,15 @@
 	];
 </script>
 
-<header class="sticky top-0 z-40 h-[var(--app-header-height)] border-b border-line/60 bg-surface">
-	<div class="flex h-full w-full items-stretch px-1.5 sm:px-2.5 md:px-4">
+<header
+	class="sticky top-0 z-40 h-[var(--app-header-height)] border-b-[length:var(--surface-border-width)] border-line bg-surface"
+>
+	<div class="flex h-full w-full items-stretch px-[3px] sm:px-[7px] md:px-[13px]">
 		<nav class="flex h-full shrink-0 items-stretch" aria-label="Primary navigation">
 			{#each navItems as item (item.href)}
 				{@const active = describeRoute(page.route.id).navigation === item.href}
 				<a
-					class="relative mr-0.5 flex items-center px-1.5 text-[13px] leading-none transition-colors sm:mr-3"
+					class="relative mr-0.5 flex items-center px-1.5 pt-0.5 text-[13px] leading-none transition-colors sm:mr-3"
 					class:text-ink={active}
 					class:text-ink-muted={!active}
 					aria-current={active ? 'page' : undefined}
@@ -41,7 +43,7 @@
 			{#if actions}{@render actions()}{/if}
 			<button
 				bind:this={trigger}
-				class="inline-flex size-6.5 cursor-pointer items-center justify-center rounded-full transition-shadow duration-150 hover:ring-3 hover:ring-[#f5f5f5] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+				class="inline-flex size-[25px] cursor-pointer items-center justify-center rounded-full transition-shadow duration-150 hover:ring-3 hover:ring-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 				aria-label="Your account"
 				aria-haspopup="menu"
 				aria-expanded={menuOpen}
@@ -50,7 +52,7 @@
 				><Avatar
 					name={viewer().profile.name || viewer().profile.email}
 					avatarUrl={viewer().profile.avatarUrl}
-					size={26}
+					size={25}
 				/></button
 			>
 			<Menu

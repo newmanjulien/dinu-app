@@ -9,7 +9,6 @@
 	import { InteractionController, setInteractionController } from '$lib/components/ui/interactions';
 	import { useViewer, useViewerSession } from './viewer-session.svelte';
 	import { setWorkspaceReadiness } from './workspace-readiness.svelte';
-	import WorkspaceHelp from './WorkspaceHelp.svelte';
 	let { children }: { children: Snippet } = $props();
 	const viewer = useViewer();
 	const session = useViewerSession();
@@ -42,7 +41,7 @@
 	{#snippet actions()}<WorkspaceSaveStatus />{/snippet}
 	{#if header.content}{@render header.content()}{/if}
 </AppHeader>
-<WorkspaceHelp>{@render children()}</WorkspaceHelp>
+{@render children()}
 {#if widgetAllowed && DelegationWidget}
 	{#key `${session.userId}:${viewer().membership.id}:${session.prepared}:${session.transportGeneration}`}
 		<DelegationWidget />

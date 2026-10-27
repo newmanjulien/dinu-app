@@ -40,7 +40,7 @@
 
 <article
 	use:observe={contract}
-	class="relative min-w-0 rounded-xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgb(0_0_0/4%)] transition-colors hover:border-[#d5d5d5]"
+	class="relative min-w-0 rounded-xl border-hairline border-edge bg-surface shadow-card transition-colors hover:bg-surface-hover"
 >
 	<a
 		href={`/contracts/${contract._id}`}
@@ -61,7 +61,7 @@
 			focused = false;
 			if (!hovered) onCool();
 		}}
-		class="flex min-h-[96px] flex-col justify-between gap-1.5 rounded-xl px-5 py-3 pr-12 outline-none focus-visible:ring-1 focus-visible:ring-[#d5d5d5]"
+		class="flex min-h-[96px] flex-col justify-between gap-1.5 rounded-xl px-3.5 py-3 pr-10.5 outline-none focus-visible:ring-1 focus-visible:ring-accent"
 		aria-label={`Open contract for ${contract.companyName}`}
 	>
 		<h2 class="line-clamp-2 break-words text-sm leading-5 font-medium" title={contract.companyName}>
@@ -83,7 +83,7 @@
 		</p>
 		{#if status}<p class="text-xs text-ink-muted" role="status">{status}</p>{/if}
 	</a>
-	<div class="absolute top-2 right-3">
+	<div class="absolute top-2 right-1.5">
 		<SquareIconButton
 			bind:element={trigger}
 			size="sm"

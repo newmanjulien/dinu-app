@@ -26,14 +26,19 @@
 	const descriptionLines = $derived(Array.isArray(description) ? description : [description]);
 </script>
 
-<article class={cn('overflow-hidden rounded-xl border border-[#e5e5e5] bg-surface', className)}>
+<article
+	class={cn(
+		'overflow-hidden rounded-xl border-hairline border-edge bg-surface shadow-card',
+		className
+	)}
+>
 	<div
 		class="flex min-h-36 flex-col gap-5 px-4 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-5"
 	>
 		<div class="min-w-0 flex-1">
-			<h2 class="text-[0.82rem] leading-5 text-stone-950">{title}</h2>
+			<h2 class="text-[0.82rem] leading-5 text-ink">{title}</h2>
 			{#if descriptionLines.length > 0}
-				<div class="mt-3 space-y-1.5 text-[0.74rem] leading-5 text-stone-600">
+				<div class="mt-3 space-y-1.5 text-[0.74rem] leading-5 text-ink-muted">
 					{#each descriptionLines as line, index (index)}
 						<p>{line}</p>
 					{/each}
@@ -52,9 +57,9 @@
 
 	{#if footer || action}
 		<footer
-			class="flex min-h-12 flex-col gap-3 border-t border-[#e5e5e5] bg-page px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5"
+			class="flex min-h-12 flex-col gap-3 border-t-[length:var(--surface-border-width)] border-line bg-page px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5"
 		>
-			<div class="min-w-0 text-[0.74rem] leading-5 text-stone-500">
+			<div class="min-w-0 text-[0.74rem] leading-5 text-ink-muted">
 				{@render footer?.()}
 			</div>
 

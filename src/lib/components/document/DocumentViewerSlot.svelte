@@ -4,7 +4,6 @@
 		DocumentAttachment,
 		ViewerBindings
 	} from '$lib/document/runtime/resources.svelte';
-	import LoadingPagination from './LoadingPagination.svelte';
 	import ContractViewer from './ContractViewer.svelte';
 	let {
 		entry,
@@ -19,10 +18,6 @@
 
 {#if entry}
 	<div bind:this={target}></div>
-	{#if !entry.workspace.viewer.visible && !entry.workspace.renderer.error && !entry.workspace.viewer.preparationBlocked}<LoadingPagination
-			embedded
-			hasPanel={bindings.hasPanel}
-		/>{/if}
 {:else}
 	<ContractViewer {...bindings} />
 {/if}

@@ -94,7 +94,7 @@
 		/>
 		<p
 			id={`${fieldId}-message`}
-			class="min-h-5 text-[0.72rem] leading-5 {shownErrorText ? 'text-danger' : 'text-stone-500'}"
+			class="min-h-5 text-[0.72rem] leading-5 {shownErrorText ? 'text-danger' : 'text-ink-muted'}"
 		>
 			{shownErrorText ?? ''}
 		</p>

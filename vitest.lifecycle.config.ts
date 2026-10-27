@@ -11,6 +11,7 @@ export default defineConfig({
 			'$app/environment': local('./tests/perf/browser-inputs.ts'),
 			'$env/dynamic/public': local('./tests/perf/browser-inputs.ts'),
 			'$app/state': local('./tests/lifecycle/navigation.svelte.ts'),
+			'$app/paths': local('./tests/lifecycle/navigation.svelte.ts'),
 			'$app/navigation': local('./tests/lifecycle/navigation.svelte.ts')
 		}
 	},

@@ -160,7 +160,9 @@
 			{#if colleaguesLoading}
 				<TeamRowsSkeleton />
 			{:else}
-				<ul class="divide-y divide-stone-200 rounded-xl border border-stone-200">
+				<ul
+					class="divide-y-[length:var(--surface-border-width)] divide-line rounded-xl border-hairline border-edge bg-surface shadow-card"
+				>
 					{#each colleagues.results as person (person.membershipId)}
 						<li class="flex flex-wrap items-center gap-3 p-4">
 							<Avatar
@@ -228,7 +230,9 @@
 				{#if invitationsLoading}
 					<TeamRowsSkeleton invitations />
 				{:else}
-					<ul class="divide-y divide-stone-200 rounded-xl border border-stone-200">
+					<ul
+						class="divide-y-[length:var(--surface-border-width)] divide-line rounded-xl border-hairline border-edge bg-surface shadow-card"
+					>
 						{#each invitations.results as invitation (invitation.id)}
 							<li class="flex flex-wrap items-center gap-3 p-4">
 								<div class="flex-1">
@@ -285,7 +289,7 @@
 			</section>
 		{/if}
 		{#if confirmAction}
-			<div class="rounded-xl border border-stone-200 p-4">
+			<div class="rounded-xl border-hairline border-edge bg-surface p-4 shadow-card">
 				<p class="mb-3 text-sm">{confirmAction.message}</p>
 				<div class="flex gap-2">
 					<Button disabled={busy} onclick={() => confirmAction && run(confirmAction.run)}
@@ -296,7 +300,7 @@
 				</div>
 			</div>
 		{/if}
-		<section class="border-t border-stone-200 pt-6">
+		<section class="border-t-[length:var(--surface-border-width)] border-line pt-6">
 			<h2 class="text-sm font-medium">Leave company</h2>
 			{#if isOwner}<p class="mt-2 text-sm text-ink-muted">
 					Transfer ownership to a colleague before leaving or deleting your account.

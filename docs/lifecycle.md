@@ -85,17 +85,25 @@ APIs and journal format are unchanged.
 
 # Playbook authoring and persistence
 
-`AdminWorkspace` owns one `AuthoringSession` and passes it the shared compiled contract, indexed geometry, and accepted records.
-The session owns one active local draft, validation, reconciliation and persistence.
-`AuthoringFlow` owns creation steps, staged concession additions, selected ranges,
-selection feedback and the last locally added concession preview. Components bind
-to draft content and own presentation state such as menus and focus. The Convex
-transport is a separate adapter. Neither the app layout nor the rep workspace owns
-an authoring session.
+`AdminWorkspace` owns one route-scoped `AuthoringController`. It owns every editing
+command, document-action decision, reconciliation, operation attempt and completion.
+Its `AuthoringContext` stores state and derives projections; it does not execute
+commands or transport. Workflow variants distinguish editing, explanation creation,
+concession creation and staged concession addition. Components receive read-only
+drafts and call narrow controller commands. They own presentation state such as
+menus and focus. The Convex transport remains a separate adapter. Neither the app
+layout nor the rep workspace owns an authoring context.
+
+Saved baselines, Triggers and accepted concessions are frozen and shared. Only
+instructions and the isolated concession composer are mutable. Dirty state compares
+visible instruction strings and ordered concession IDs. Restoring a visibly empty
+field also restores its saved absent-versus-empty representation. Pristine creation
+and staging remain protected independently of dirty state. The primary button and
+its handler consume one derived action, label, disabled flag and validation reason.
 
 The membership-scoped workspace retains the mounted Admin owner through a temporary
-company deletion hold and a Settings detour to cancel that hold. Its session, draft,
-creation flow, and immutable unresolved operation survive; document preparation and
+company deletion hold and a Settings detour to cancel that hold. Its controller, draft,
+creation workflow, and immutable unresolved operation survive; document preparation and
 new reads pause, and the hidden editor cannot start another operation. Returning to
 Admin restores the same owner. Ordinary departure still requires resolving an
 operation or confirming abandonment. Membership loss, account switching, and actual
@@ -119,6 +127,15 @@ discards only that addition. The added concession becomes read-only in the paren
 draft. Unrelated incomplete parent fields do not block Add;
 the parent must pass complete validation before Save. There are no per-field saves.
 
+Clicking another instruction box and starting authoring from selected text use the
+same transition assessment. A clean existing box can be replaced; dirty work stays
+open with a red warning. Moving among annotations in the same instruction box preserves
+its context, and selecting a concession's secondary passage modifies that context.
+Highlighting alone never opens or closes an editor. Selection detection remains enabled
+with an open editor; a blocked authoring attempt preserves the native selection and
+reports its restriction separately from source errors and operation status. Confirmation
+revalidates the source and transition before replacing a clean context.
+
 Outside clicks and Escape can dismiss a clean existing box. Dirty or unresolved
 work stays open with inline feedback. New creation requires an explicit action.
 Modal dialogs block underlying dismissal, and source picking includes the document
@@ -133,6 +150,11 @@ ends the workflow and closes the editor. The workspace restores the captured
 annotation focus after the DOM updates and shows completion feedback for 2.5 seconds.
 Operation errors and recovery actions remain beside the editor footer.
 
+An attempt identity covers transport, result handling, closure and cleanup. Restart
+invalidates that identity while preserving the frozen operation; late results cannot
+close a replacement context or clear another attempt's running promise. Context
+object identity also guards focus restoration, without a separate context UUID.
+
 An uncertain transport outcome retains the exact frozen operation for Retry; there
 is no new operation ID or queued replacement. A definite rejection leaves the draft
 editable. Correcting its content permits a new save operation. A revision conflict
@@ -140,14 +162,92 @@ retains local work and offers Use saved version; it never silently overwrites or
 merges another admin's edits. Missing records retain the local draft for explicit
 cancellation. Editing and ordinary departure remain blocked until an uncertain
 operation has a definite outcome. The company-hold Settings detour retains that
-operation without retrying or abandoning it.
+operation without retrying or abandoning it. A save rejection is associated with its
+exact payload and appears once as the primary action's reason. A delete rejection
+appears in operation status and does not prevent saving valid edits.
 
-Clean drafts adopt newer live records. Dirty drafts become conflicted, and conflicts
-track newer revisions and deletion. Updates received during an unresolved operation
-are retained and reconciled after its result. An existing record's observed deletion
-takes precedence over a conflict response. A creation conflict can arrive before
-that record's first live-query appearance, so absence at that response alone is not
-treated as deletion. Subsequent query updates reconcile it normally.
+Clean drafts adopt newer live records. Conflict is derived from the highest known
+remote revision and protected local work. Canceling an addition over a clean parent
+therefore adopts the remote record; canceling over a dirty parent retains conflict.
+Updates received during an unresolved operation are retained and reconciled after
+its result.
+
+Query absence proves deletion only after that query has observed at least the
+highest known revision. Opening an existing item establishes its accepted query
+revision; mutation conflict responses can advance the known record ahead of the
+query. Use saved version adopts that record immediately, even while the query lags.
+Old query absence and failures with retained data cannot turn it into a missing
+record. Once the query has caught up, subsequent absence is authoritative. A missing
+mutation result is authoritative immediately. No additional cache, timer or query
+coordinates this ordering.
+
+## Manual authoring acceptance checklist
+
+`npm run verify` passed 20 existing lifecycle tests and 24 performance tests, followed
+by type checking with zero errors or warnings and the production build. Existing
+assertions cover persistence/replay, caching, scheduling and workspace recovery.
+They do not directly exercise the new Admin controller or these browser interactions:
+
+- Open an unchanged box, then click another box. Highlight unattached text; the old
+  editor stays open until Explain or Add concession is chosen.
+- Edit a box, then click another box or highlight unattached text. Verify the red
+  warning, retained draft and retained highlight. Undo to saved content and retry.
+- Move among annotations of the same dirty box without losing edits.
+- Start a new creation and verify that incidental replacement requires finishing or
+  canceling it, including before text has been entered.
+- Add a concession with unrelated parent edits. Select its second passage, use Back,
+  and cancel the addition; parent edits remain. Add merges locally; Save writes once.
+- Save with a delayed or interrupted connection. Selection remains possible, context
+  replacement stays blocked, and Retry resolves the original operation.
+- Update or delete the record elsewhere while editing or staging a concession.
+  Local work remains available beside conflict/deletion feedback.
+- Cancel a staged addition after a remote update, with both a clean and a dirty
+  parent. The clean parent adopts the update; the dirty parent remains conflicted.
+- Receive a creation conflict before its query record appears, then choose Use saved
+  version. Repeat with an existing-item conflict whose response advances the query.
+  The adopted record remains editable through old query absence or a query error;
+  disappearance after the query catches up reports deletion.
+- Reject Save, change its payload, then restore it. Its reason follows that payload.
+  Reject Delete with valid local edits; Save remains available and neither rejection
+  renders twice.
+- Interrupt transport and Retry before the old response arrives. That response cannot
+  close the retry or clear its running state. Repeat with teardown during saving.
+- Add and then remove the previewed concession; its preview disappears immediately.
+- Escape and outside clicks dismiss only a clean box. Highlighting does not dismiss
+  it. Step changes and nested Add/Cancel do not restore focus to the document.
+- A temporary company-hold Settings detour retains the context. Ordinary departure
+  confirms abandonment; account teardown prevents late results reviving the context.
+
+No tests were added or expanded. The lifecycle harness supplies the shared Button's
+`$app/paths` dependency; its existing assertions are unchanged. The browser checks
+above remain unverified.
+
+## Review finding coverage
+
+All 20 findings are addressed, including those outside the main ownership refactor:
+
+| Finding                                                 | Implementation                                                                              |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1. Canceling a clean addition leaves sticky conflict    | Derive conflict; nested Cancel reconciles the clean parent.                                 |
+| 2. Undo to an absent field remains dirty                | Compare visible strings and restore the saved field representation.                         |
+| 3. Obsolete transaction entry arguments                 | Remove the transaction layer and its entry protocol.                                        |
+| 4. Delete rejection blocks Save                         | Separate delete status from payload-scoped save rejection.                                  |
+| 5. Staged validation runs twice                         | One derived addition validation feeds the action and handler.                               |
+| 6. Save rejection displays twice                        | Primary action owns save rejection; status owns delete rejection.                           |
+| 7. Dirty checks serialize full semantic content         | Compare instruction fields and ordered concession IDs.                                      |
+| 8. Unused outcomes and completion timestamp             | Keep only closed/retained outcomes and completion kind.                                     |
+| 9. Duplicate source-range comparison                    | Share `sameSourceRange` from `source-model.ts`.                                             |
+| 10. Use saved version falsely reports missing           | Require query catch-up before absence proves deletion.                                      |
+| 11. Transaction/controller completion race              | One controller owns attempt result, closure and cleanup.                                    |
+| 12. Workflow inferred from the first concession         | Explicit workflow with a separate composer.                                                 |
+| 13. Removed concession leaves a preview ID              | Clear the preview in the removal command.                                                   |
+| 14. Unused selected-Trigger getter                      | Keep selected Trigger state internal.                                                       |
+| 15. Redundant feedback clearing                         | Commands own clearing; remove duplicate field/component cleanup.                            |
+| 16. Reactive copies and retained-concession comparisons | Share frozen records and concessions; retain canonical backend validation.                  |
+| 17. Unrelated item updates rerun complete validation    | Derive capacity from count and geometry version; separate content, references and geometry. |
+| 18. Cached annotations are rebuilt                      | Read records and annotations through the domain's existing lookup.                          |
+| 19. Unused validation diagnostic object                 | Derive a reason string; keep the geometry memo's original failure.                          |
+| 20. Context UUID used only for identity                 | Use the context object; retain business and operation IDs.                                  |
 
 ## Backend contract
 
@@ -168,8 +268,7 @@ record is already absent. It does not queue behind another operation.
 
 Semantic comparison preserves business text and structured references while
 excluding persistence metadata. Creation mode is not part of the business payload.
-Live records and immutable snapshots contain no creation-mode field. Deploy schema
-and mutations with the frontend after clearing incompatible records and reseeding.
+Live records and immutable snapshots contain no creation-mode field.
 
 ## Source selection and validation
 
@@ -184,12 +283,15 @@ range. Changed endpoints invalidate actions; unchanged notifications, scroll and
 resize preserve acceptance. Confirmation checks endpoints again before workflow
 validation. Unsupported selection changes cannot confirm an earlier highlight.
 
-Creation readiness combines session validation with a required secondary selection
-on the other-part step. Complete session validation gates Save. Validation retains
-original failures in a single-draft geometry memo and the validation result's
-`diagnostic`, while `reason` contains safe
-loading/size, translated geometry or generic fallback feedback. Revalidation clears
-resolved feedback without changing transport or conflict outcomes.
+Creation readiness combines validation with a required secondary selection on the
+other-part step. Complete validation gates Save. Content/byte-size validation follows
+the payload; reference validation follows concessions and compiled source; geometry
+validation follows geometry version, Trigger/change shape and excluded item; capacity
+follows item count. Instruction typing shares normalized frozen structure and does
+not revalidate unchanged references or geometry. Staged Add validates its composer
+once independently of parent content. The geometry memo retains original failures;
+the context derives safe loading/size, translated geometry or fallback reason
+strings. Revalidation does not erase transport outcomes.
 
 ## Contract concession reviews
 
