@@ -1,0 +1,10 @@
+{
+	"$schema": "https://openapi.vercel.sh/vercel.json",
+	"git": {
+		"deploymentEnabled": {
+			"main": true,
+			"*": false
+		}
+	},
+	"buildCommand": "npx convex deploy --typecheck enable --cmd 'node scripts/check-deployment.mjs && npm run build' --cmd-url-env-var-name PUBLIC_CONVEX_URL --message \"$VERCEL_GIT_COMMIT_SHA\""
+}
