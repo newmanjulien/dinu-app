@@ -13,11 +13,11 @@
 	let { children, footer, showFooter = Boolean(footer) }: Props = $props();
 
 	const quote = {
-		text: 'Overbase increased partnership revenue by 20% in the divisions we deployed it to',
-		personName: "Alexandre L'Heureux",
-		personTitle: 'CEO at WSP',
+		text: 'Dinu cut our sales cycle by 30% and improved rep productivity by 10%.',
+		personName: 'Daniel Brooks',
+		personTitle: 'CRO, Brex',
 		avatarSrc: '/wsp.jpeg',
-		avatarAlt: "Alexandre L'Heureux"
+		avatarAlt: 'Daniel Brooks'
 	} satisfies AuthQuote;
 </script>
 

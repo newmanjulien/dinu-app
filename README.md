@@ -2,6 +2,9 @@
 
 A SvelteKit / Svelte 5 contract workspace backed by Convex.
 
+For production configuration and the coordinated Vercel/Convex release process,
+see [Production releases](docs/deployment.md).
+
 The immutable contract source is separate from the Playbook. A Playbook Item has
 one or more Triggers, optional instructions, and negotiation concessions. Each
 concession applies an atomic set of source-coordinate Contract Changes.
@@ -149,11 +152,11 @@ request reuses its event and snapshot. Contracts without previous requests need 
 Configure these **Convex backend environment variables** on the intended deployment
 with `npx convex env set NAME value` (not as public SvelteKit environment variables):
 
-| Variable            | Value                                                  |
-| ------------------- | ------------------------------------------------------ |
-| `SMTP_USER`         | `julien.newman@gmail.com`                              |
-| `SMTP_APP_PASSWORD` | Gmail app password for that account; setup deferred    |
-| `APP_URL`           | `https://app.dinu.co` in production; `http://localhost:5173` in development |
+| Variable            | Value                                                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `SMTP_USER`         | `julien.newman@gmail.com`                                                                                        |
+| `SMTP_APP_PASSWORD` | Gmail app password for that account; setup deferred                                                              |
+| `APP_URL`           | Production website origin from the [release runbook](docs/deployment.md); `http://localhost:5173` in development |
 
 Set each company’s approval recipient in Settings. Requests capture that recipient
 when queued. Invitations also use these SMTP credentials and `APP_URL`.
