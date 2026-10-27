@@ -6,5 +6,5 @@
 			"*": false
 		}
 	},
-	"buildCommand": "npx convex deploy --typecheck enable --cmd 'node scripts/check-deployment.mjs && npm run build' --cmd-url-env-var-name PUBLIC_CONVEX_URL --message \"$VERCEL_GIT_COMMIT_SHA\""
+	"buildCommand": "npx convex deploy --typecheck enable --cmd 'node scripts/check-deployment.mjs preflight && npm run build' --cmd-url-env-var-name PUBLIC_CONVEX_URL --message \"$VERCEL_GIT_COMMIT_SHA\" && node scripts/check-deployment.mjs smoke"
 }

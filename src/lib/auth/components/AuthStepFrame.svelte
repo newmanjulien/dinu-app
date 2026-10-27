@@ -15,7 +15,7 @@
 
 <div class="w-full">
 	<h1
-		class="m-0 text-center text-[30px] font-medium leading-[1.08] tracking-[-0.02em] text-ink sm:text-[clamp(28px,1.85vw,36px)]"
+		class="m-0 text-center text-[30px] font-[450] leading-[1.08] tracking-[-0.02em] text-ink sm:text-[clamp(28px,1.85vw,36px)]"
 	>
 		{title}
 	</h1>
