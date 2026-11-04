@@ -1,6 +1,6 @@
-import { resolvePoint, type SourceIndex } from '../contract/source-index';
-import { validateRange } from '../contract/ranges';
-import type { Concession, ContractChange, SourceRange } from './model';
+import type { SourceIndex } from '../contract/source-index';
+import { structuralBoundary, targetContainers, validateTarget } from '../contract/ranges';
+import type { Concession, ContractChange, SourceTarget } from './model';
 import type { PlaybookDraft } from './draft';
 import { GeometryError, triggersIntersect } from './geometry';
 import { changesConflict } from './conflicts';
@@ -15,9 +15,10 @@ export type SelectionIssue =
 	| { kind: 'unmappable'; diagnostic?: unknown }
 	| { kind: 'unavailable' }
 	| { kind: 'unexpected'; diagnostic: unknown };
+export type ActionEligibility = { enabled: true } | { enabled: false; reason: string };
+export type SelectionActions = Readonly<Record<AuthoringMode, ActionEligibility>>;
 export type SelectionEligibility =
-	| { allowed: true; modes: readonly AuthoringMode[]; concessionIssue?: SelectionIssue }
-	| { allowed: false; issue: SelectionIssue };
+	{ allowed: true; actions: SelectionActions } | { allowed: false; issue: SelectionIssue };
 /** Action restrictions stay distinct from source/geometry failures. */
 export type SelectionAvailability = SelectionEligibility | { allowed: false; reason: string };
 
@@ -28,9 +29,9 @@ export function selectionIssueMessage(issue: SelectionIssue): string {
 		case 'primary-change-overlap':
 			return "You can't highlight text this concession already changes.";
 		case 'cross-container':
-			return 'Select contract text within one clause.';
+			return 'Select a continuous passage of adjacent paragraphs, or text within one table cell.';
 		case 'unmappable':
-			return 'Select contract text within one clause, including any reference in full.';
+			return 'This selection can’t be attached to the current contract. Select contract text only.';
 		case 'unavailable':
 			return 'Wait for the current contract';
 		case 'unexpected':
@@ -55,6 +56,15 @@ function failureIssue(diagnostic: unknown): SelectionIssue {
 		: { kind: 'unexpected', diagnostic };
 }
 
+function selectionActions(disabled: Partial<Record<AuthoringMode, string>> = {}): SelectionActions {
+	return {
+		explain: disabled.explain ? { enabled: false, reason: disabled.explain } : { enabled: true },
+		concession: disabled.concession
+			? { enabled: false, reason: disabled.concession }
+			: { enabled: true }
+	};
+}
+
 function evaluate(check: () => SelectionEligibility): SelectionEligibility {
 	try {
 		return check();
@@ -63,21 +73,22 @@ function evaluate(check: () => SelectionEligibility): SelectionEligibility {
 	}
 }
 
-function sourceIssue(index: SourceIndex, range: SourceRange): SelectionIssue | undefined {
-	let start, end;
+function sourceIssue(index: SourceIndex, range: SourceTarget): SelectionIssue | undefined {
 	try {
-		validateRange(index, range);
-		start = resolvePoint(index, range.start);
-		end = resolvePoint(index, range.end);
+		validateTarget(index, range);
 	} catch {
 		return { kind: 'unmappable' };
 	}
-	if (start.containerKey !== end.containerKey) return { kind: 'cross-container' };
+	try {
+		targetContainers(index, range);
+	} catch {
+		return { kind: 'cross-container' };
+	}
 }
 
 export function evaluateSecondarySelection(
 	index: SourceIndex,
-	range: SourceRange,
+	range: SourceTarget,
 	draft: PlaybookDraft,
 	geometry: PlaybookGeometryIndex,
 	concession: Concession | undefined = draft.concessions[0]
@@ -92,39 +103,50 @@ export function evaluateSecondarySelection(
 		const proposed: ContractChange = { range, replacement: [] };
 		if (changesConflict(index, concession.changes[0], proposed))
 			return { allowed: false, issue: { kind: 'primary-change-overlap' } };
-		if (draft.triggers.some((trigger) => triggersIntersect(index, trigger.range, range)))
+		if (triggersIntersect(index, draft.trigger.range, range))
 			return { allowed: false, issue: { kind: 'instructions-overlap' } };
-		geometry.validateTriggersReplacing(draft.persistedId, draft.triggers);
-		geometry.validateChanges([concession.changes[0], proposed], draft.persistedId, draft.triggers);
-		return { allowed: true, modes: ['concession'] };
+		geometry.validateTriggersReplacing(draft.persistedId, [draft.trigger]);
+		geometry.validateChanges([concession.changes[0], proposed], draft.persistedId, [draft.trigger]);
+		return {
+			allowed: true,
+			actions: selectionActions({
+				explain: 'Choose a new clause to explain.'
+			})
+		};
 	});
 }
 
-/** A saved trigger is allowed to span containers; its first concession change is not. */
+/** Existing and new instructions use the same selection geometry. */
 export function evaluateConcessionAddition(
 	index: SourceIndex,
-	range: SourceRange,
+	range: SourceTarget,
 	draft: PlaybookDraft,
 	geometry: PlaybookGeometryIndex
 ): SelectionEligibility {
 	return evaluate(() => {
 		const issue = sourceIssue(index, range);
 		if (issue) return { allowed: false, issue };
-		geometry.validateTriggersReplacing(draft.persistedId, draft.triggers);
-		geometry.validateChanges([{ range, replacement: [] }], draft.persistedId, draft.triggers);
-		return { allowed: true, modes: ['concession'] };
+		geometry.validateTriggersReplacing(draft.persistedId, [draft.trigger]);
+		geometry.validateChanges([{ range, replacement: [] }], draft.persistedId, [draft.trigger]);
+		return {
+			allowed: true,
+			actions: selectionActions({
+				explain: 'Choose a new clause to explain.'
+			})
+		};
 	});
 }
 
 /** Evaluate common eligibility once, then only the concession-specific geometry. */
 export function evaluateInitialSelection(
 	index: SourceIndex,
-	range: SourceRange,
+	range: SourceTarget,
 	geometry: PlaybookGeometryIndex
 ): SelectionEligibility {
 	return evaluate(() => {
 		const issue = sourceIssue(index, range);
 		if (issue) return { allowed: false, issue };
+		const boundary = structuralBoundary(index, range);
 		if (geometry.triggersIntersecting(range).length)
 			return { allowed: false, issue: { kind: 'instructions-overlap' } };
 		let id = 'candidate-trigger';
@@ -132,9 +154,20 @@ export function evaluateInitialSelection(
 		geometry.validateTriggersReplacing(undefined, [{ id, range }]);
 		try {
 			validateChangeGeometry(index, [{ id, range }], [{ range, replacement: [] }]);
-			return { allowed: true, modes: ['explain', 'concession'] };
+			return {
+				allowed: true,
+				actions: selectionActions(
+					boundary ? { explain: 'Select contract text to explain a clause.' } : undefined
+				)
+			};
 		} catch (diagnostic) {
-			return { allowed: true, modes: ['explain'], concessionIssue: failureIssue(diagnostic) };
+			if (boundary) return { allowed: false, issue: failureIssue(diagnostic) };
+			return {
+				allowed: true,
+				actions: selectionActions({
+					concession: selectionIssueMessage(failureIssue(diagnostic))
+				})
+			};
 		}
 	});
 }

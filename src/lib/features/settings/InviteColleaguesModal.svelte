@@ -15,7 +15,7 @@
 	let { error, isAdding, open, value, onClose, onSubmit, onValueChange }: Props = $props();
 </script>
 
-<ModalShell {open} title="Invite colleagues" dismissible={!isAdding} {onClose}>
+<ModalShell {open} title="Invite" dismissible={!isAdding} {onClose}>
 	<label for="team-member-emails" class="block text-xs text-ink"
 		>List colleague emails separated by commas</label
 	>
@@ -35,7 +35,7 @@
 	{#snippet footer()}
 		<Button variant="secondary" disabled={isAdding} onclick={onClose}>Cancel</Button>
 		<Button disabled={isAdding} onclick={() => void onSubmit()}>
-			{isAdding ? 'Sending...' : 'Invite colleagues'}
+			{isAdding ? 'Sending...' : 'Invite'}
 		</Button>
 	{/snippet}
 </ModalShell>

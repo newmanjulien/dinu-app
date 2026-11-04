@@ -3,11 +3,13 @@
 		label,
 		checked,
 		onCheckedChange,
+		disabled = false,
 		className = ''
 	}: {
 		label: string;
 		checked: boolean;
 		onCheckedChange: (checked: boolean) => void;
+		disabled?: boolean;
 		className?: string;
 	} = $props();
 </script>
@@ -20,9 +22,10 @@
 		{checked}
 		onchange={(event) => onCheckedChange(event.currentTarget.checked)}
 		class="peer sr-only"
+		{disabled}
 	/>
 	<span
-		class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border border-line bg-surface transition-colors
+		class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border border-control-border bg-surface transition-colors
 			peer-checked:border-ink peer-checked:bg-ink
 			peer-checked:[&>svg]:opacity-100
 			peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent"

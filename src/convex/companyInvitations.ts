@@ -7,19 +7,21 @@ import {
 } from './invitationValidators';
 import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
-import { query, mutation, internalMutation, internalQuery } from './_generated/server';
+import {
+	query,
+	mutation,
+	internalMutation,
+	internalQuery,
+	type MutationCtx
+} from './_generated/server';
+import type { Doc } from './_generated/dataModel';
 import { internal } from './_generated/api';
+import { createDelivery, activeDelivery, cancelJob } from './emailDeliveries';
+import { removeDelivery } from './emailDisposal';
 import {
-	createDelivery,
-	activeDelivery,
-	removeDelivery,
-	cancelDelivery,
-	cancelJob
-} from './emailDeliveries';
-import {
-	requireProfile,
+	requireAccount,
+	membershipForProfile,
 	requirePermission,
-	verifiedIdentity,
 	availableCompany,
 	requireCompany
 } from './auth';
@@ -30,6 +32,21 @@ const invitationView = v.object({
 	expiresAt: v.number(),
 	deliveryStatus: v.union(v.literal('sending'), v.literal('sent'), v.literal('failed'))
 });
+async function cancelInvitation(ctx: MutationCtx, invitation: Doc<'companyInvitations'>) {
+	await cancelJob(ctx, invitation.expiryJobId);
+	if (invitation.deliveryId) {
+		const delivery = await ctx.db.get('emailDeliveries', invitation.deliveryId);
+		if (delivery) await removeDelivery(ctx, delivery);
+	}
+}
+export async function revokeInvitation(ctx: MutationCtx, invitation: Doc<'companyInvitations'>) {
+	if (invitation.status !== 'pending') return;
+	await cancelInvitation(ctx, invitation);
+	await ctx.db.patch('companyInvitations', invitation._id, {
+		status: 'revoked',
+		deliveryGeneration: invitation.deliveryGeneration + 1
+	});
+}
 export const list = query({
 	args: {
 		membershipId: v.id('memberships'),
@@ -67,13 +84,12 @@ export const inbox = query({
 		})
 	),
 	handler: async (ctx) => {
-		await requireProfile(ctx);
-		const identity = await verifiedIdentity(ctx);
+		const { identity } = await requireAccount(ctx);
 		const invitations = await ctx.db
 			.query('companyInvitations')
 			.withIndex('by_normalizedEmail_and_status_and_expired_and_expiresAt', (q) =>
 				q
-					.eq('normalizedEmail', emailAddress(identity.email!))
+					.eq('normalizedEmail', emailAddress(identity.email))
 					.eq('status', 'pending')
 					.eq('expired', false)
 			)
@@ -101,20 +117,16 @@ export const accept = mutation({
 	args: { invitationId: v.id('companyInvitations'), deliveryGeneration: v.optional(v.number()) },
 	returns: v.id('memberships'),
 	handler: async (ctx, args) => {
-		const profile = await requireProfile(ctx);
-		const identity = await verifiedIdentity(ctx);
+		const { identity, profile } = await requireAccount(ctx);
 		const invitation = await ctx.db.get('companyInvitations', args.invitationId);
-		if (!invitation || invitation.normalizedEmail !== emailAddress(identity.email!))
+		if (!invitation || invitation.normalizedEmail !== emailAddress(identity.email))
 			throw new ConvexError('Sign in with the email address this invitation was sent to.');
 		if (
 			args.deliveryGeneration !== undefined &&
 			args.deliveryGeneration !== invitation.deliveryGeneration
 		)
 			throw new ConvexError('This invitation was replaced. Open the latest invitation email.');
-		const membership = await ctx.db
-			.query('memberships')
-			.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
-			.unique();
+		const membership = await membershipForProfile(ctx, profile._id);
 		await requireCompany(ctx, invitation.companyId);
 		if (
 			invitation.status === 'accepted' &&
@@ -128,14 +140,11 @@ export const accept = mutation({
 			);
 		if (membership)
 			throw new ConvexError('Leave your current company before accepting this invitation.');
-		await cancelJob(ctx, invitation.expiryJobId);
-		if (invitation.deliveryId) {
-			const delivery = await ctx.db.get('emailDeliveries', invitation.deliveryId);
-			if (delivery) await cancelDelivery(ctx, delivery);
-		}
+		await cancelInvitation(ctx, invitation);
 		const id = await ctx.db.insert('memberships', {
 			companyId: invitation.companyId,
-			profileId: profile._id
+			profileId: profile._id,
+			role: 'rep'
 		});
 		await ctx.db.patch('companyInvitations', invitation._id, {
 			status: 'accepted',
@@ -153,17 +162,7 @@ export const revoke = mutation({
 		const invitation = await ctx.db.get('companyInvitations', args.invitationId);
 		if (!invitation || invitation.companyId !== access.companyId)
 			throw new ConvexError('This invitation is unavailable.');
-		if (invitation.status === 'pending') {
-			await cancelJob(ctx, invitation.expiryJobId);
-			if (invitation.deliveryId) {
-				const delivery = await ctx.db.get('emailDeliveries', invitation.deliveryId);
-				if (delivery) await cancelDelivery(ctx, delivery);
-			}
-			await ctx.db.patch('companyInvitations', invitation._id, {
-				status: 'revoked',
-				deliveryGeneration: invitation.deliveryGeneration + 1
-			});
-		}
+		await revokeInvitation(ctx, invitation);
 		return null;
 	}
 });
@@ -199,12 +198,7 @@ export const prepareDelivery = internalMutation({
 			.take(101);
 		if (profiles.length > 100) throw new ConvexError('Unable to verify this email address.');
 		const memberships = await Promise.all(
-			profiles.map((profile) =>
-				ctx.db
-					.query('memberships')
-					.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
-					.unique()
-			)
+			profiles.map((profile) => membershipForProfile(ctx, profile._id))
 		);
 		if (memberships.some((member) => member?.companyId === access.companyId))
 			throw new ConvexError('This colleague already belongs to your company.');
@@ -220,10 +214,7 @@ export const prepareDelivery = internalMutation({
 		if (
 			existing &&
 			((existing.deliveryStartedAt ?? 0) > Date.now() - 120_000 ||
-				(oldDelivery && (await activeDelivery(ctx, oldDelivery))) ||
-				(!existing.deliveryId &&
-					existing.deliveryStatus === 'sending' &&
-					(existing.deliveryStartedAt ?? 0) > Date.now() - 11 * 60_000))
+				(oldDelivery && (await activeDelivery(ctx, oldDelivery))))
 		)
 			throw new ConvexError('An invitation is already being sent. Please wait.');
 		if (
@@ -258,9 +249,8 @@ export const prepareDelivery = internalMutation({
 			});
 		const deliveryId = await createDelivery(ctx, {
 			companyId: access.companyId,
-			recipientEmail: email,
 			inlineDeadline: args.inlineDeadline,
-			event: { kind: 'invitation', invitationId: id, generation }
+			event: { kind: 'invitation', invitationId: id, generation, recipientEmail: email }
 		});
 		const expiryJobId = await ctx.scheduler.runAt(
 			data.expiresAt,
@@ -291,52 +281,6 @@ export const expire = internalMutation({
 	}
 });
 
-// Initialize existing records once when deploying scheduled expiry.
-export const initializeExpiration = internalMutation({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const result = await ctx.db
-			.query('companyInvitations')
-			.paginate({ cursor: args.cursor, numItems: 100 });
-		for (const invitation of result.page) {
-			if (invitation.status !== 'pending' || invitation.expired !== undefined) continue;
-			const expired = invitation.expiresAt <= Date.now();
-			await ctx.db.patch('companyInvitations', invitation._id, { expired });
-			if (!expired) {
-				const expiryJobId = await ctx.scheduler.runAt(
-					invitation.expiresAt,
-					internal.companyInvitations.expire,
-					{ id: invitation._id, expiresAt: invitation.expiresAt }
-				);
-				await ctx.db.patch('companyInvitations', invitation._id, { expiryJobId });
-			}
-		}
-		if (!result.isDone)
-			await ctx.scheduler.runAfter(0, internal.companyInvitations.initializeExpiration, {
-				cursor: result.continueCursor
-			});
-		return null;
-	}
-});
-// Old scheduled timeout callbacks can outlive an upgrade. They cannot finish a
-// new delivery or expire a running legacy SMTP exchange before its action ends.
-export const finishDelivery = internalMutation({
-	args: { id: v.id('companyInvitations'), generation: v.number(), sent: v.boolean() },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const invitation = await ctx.db.get('companyInvitations', args.id);
-		if (
-			invitation?.status === 'pending' &&
-			!invitation.deliveryId &&
-			invitation.deliveryGeneration === args.generation &&
-			args.sent
-		)
-			await ctx.db.patch('companyInvitations', invitation._id, { deliveryStatus: 'sent' });
-		return null;
-	}
-});
-
 // The random email token permits a minimal preview, never membership access.
 export const previewHash = internalQuery({
 	args: { tokenHash: v.string() },
@@ -363,23 +307,19 @@ export const resolveHash = internalQuery({
 	args: { tokenHash: v.string() },
 	returns: invitationResolutionData,
 	handler: async (ctx, args): Promise<InvitationResolutionData> => {
-		const identity = await verifiedIdentity(ctx);
-		const profile = await requireProfile(ctx);
+		const { identity, profile } = await requireAccount(ctx);
 		const invitation = await ctx.db
 			.query('companyInvitations')
 			.withIndex('by_tokenHash', (q) => q.eq('tokenHash', args.tokenHash))
 			.unique();
 		if (!invitation) return { status: 'unavailable', companyName: null };
-		if (invitation.normalizedEmail !== emailAddress(identity.email!))
+		if (invitation.normalizedEmail !== emailAddress(identity.email))
 			return { status: 'wrong-email', companyName: null };
 		const company = await availableCompany(ctx, invitation.companyId);
 		if (!company) return { status: 'unavailable', companyName: null };
 		const companyName = company.name;
 		if (invitation.status === 'revoked') return { status: 'revoked', companyName };
-		const membership = await ctx.db
-			.query('memberships')
-			.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
-			.unique();
+		const membership = await membershipForProfile(ctx, profile._id);
 		const sameCompany = membership?.companyId === invitation.companyId;
 		if (invitation.status === 'accepted')
 			return { status: sameCompany ? 'already-member' : 'accepted', companyName };

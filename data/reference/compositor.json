@@ -1,399 +1,398 @@
 [
 	{
 		"name": "baseline",
-		"view": "effective",
 		"selected": {},
-		"sha256": "d740ca27113e8e21d2354d1602a0a5e48676c77391deae2a9d58e0df0cf39e82",
-		"provenanceSha256": "3ad5dc059b3252f06d9fa81720df0d5a6723c525d432e5cd7b20ecf664f1e4b8"
+		"view": "effective",
+		"sha256": "92b7067912183e5c9dd98a362d804d3f140d18bc360fd389158243d39dfdbb7d",
+		"provenanceSha256": "640fc4e12d0c88d35b24f9eafe4f9d0c6dc64898bc0f021aa870e35db665bd32"
 	},
 	{
 		"name": "baseline",
-		"view": "redline",
 		"selected": {},
-		"sha256": "d740ca27113e8e21d2354d1602a0a5e48676c77391deae2a9d58e0df0cf39e82",
-		"provenanceSha256": "3ad5dc059b3252f06d9fa81720df0d5a6723c525d432e5cd7b20ecf664f1e4b8"
+		"view": "redline",
+		"sha256": "92b7067912183e5c9dd98a362d804d3f140d18bc360fd389158243d39dfdbb7d",
+		"provenanceSha256": "640fc4e12d0c88d35b24f9eafe4f9d0c6dc64898bc0f021aa870e35db665bd32"
 	},
 	{
 		"name": "annual-fee-increase-five-percent",
-		"view": "effective",
 		"selected": {
 			"seed-item-3": "annual-fee-increase-five-percent"
 		},
-		"sha256": "5fa01f06c3d6d00bf7748800777f556b9d34af22c5c826ec0e955dde8e58e234",
-		"provenanceSha256": "3f241f6093e44afee52c04251c261260a350275249e325bb238a2d213311a809"
+		"view": "effective",
+		"sha256": "f2b35e04dbdf02717ea148e4482345b81a4822e3003825c5f57a23fa20adb5bf",
+		"provenanceSha256": "b910af27be12767d8f7728988bc9a5dc189df63d8aac0e8ce8658f9b4c01ec6c"
 	},
 	{
 		"name": "annual-fee-increase-five-percent",
-		"view": "redline",
 		"selected": {
 			"seed-item-3": "annual-fee-increase-five-percent"
 		},
-		"sha256": "aae6f0c07bbb5c05d5a613196178c84855e86acb5d3ff929e1f61606ea7b6c87",
-		"provenanceSha256": "18333bee068ec1d0a4935c5cd6cc163f2fd9be2ab0db3996394c52598bc6983f"
+		"view": "redline",
+		"sha256": "d4f0cbab0802368a1940c096c39c0a471a003853d465d288b448cb198a9504b1",
+		"provenanceSha256": "fc1c7098f05700443486a95fa0d5ea69ad50ec45e8f123259640732035962fcc"
 	},
 	{
 		"name": "attorneys-fees-mutual",
-		"view": "effective",
 		"selected": {
 			"seed-item-5": "attorneys-fees-mutual"
 		},
-		"sha256": "681fff2f7f2d4607911eec250ecd4e0865275d053ecad520a3176770eee8c785",
-		"provenanceSha256": "9a16941809bb7dbfb4aefdf6bcf9aed67fd29a06b64c902b95d4fe7944614a05"
+		"view": "effective",
+		"sha256": "2b316e63e4f9bd6b88e32d78913757810a87b75e373f6ff6a663081a6599f5ef",
+		"provenanceSha256": "4718cb6643d930892d9696e311f852581148d5624f09ce1f974d253e9c29c770"
 	},
 	{
 		"name": "attorneys-fees-mutual",
-		"view": "redline",
 		"selected": {
 			"seed-item-5": "attorneys-fees-mutual"
 		},
-		"sha256": "e98a2f0b7a7901c7fa66c02506872c88f55e295b6595a207f27a9eeef1b952eb",
-		"provenanceSha256": "f33ad2fd7d89599f2bd5f85475aada0e68e9cd786661b5c23946fac18cb8379f"
+		"view": "redline",
+		"sha256": "e91daa0899ef695eaed659dedf883d99869d70cb4b36d8ea192b934ff03808d4",
+		"provenanceSha256": "d9af06110c76b9295d38e3768ae7a080317b7d7467b7df38b054a4e669db513c"
 	},
 	{
 		"name": "attorneys-fees-mutual-prevailing-party",
-		"view": "effective",
 		"selected": {
 			"seed-item-5": "attorneys-fees-mutual-prevailing-party"
 		},
-		"sha256": "dc82c0099352c327d386e2caa1985a499d9899aefee07f47b8af3bf095a2aa6c",
-		"provenanceSha256": "3e97fd3512bbf2c4da041d614c8113de4bb431eb6e020da57411ddbe67ec6037"
+		"view": "effective",
+		"sha256": "c28542d05fa40d11e8fc7221474b846a7b6623f46800e471cd128fc36005182b",
+		"provenanceSha256": "3fc0a72306679c3ef213fecf0956e4b271f57fcffe3cea574679636c2ab91460"
 	},
 	{
 		"name": "attorneys-fees-mutual-prevailing-party",
-		"view": "redline",
 		"selected": {
 			"seed-item-5": "attorneys-fees-mutual-prevailing-party"
 		},
-		"sha256": "60948cf2086e89d8a744c98e76f6c88390c4d5c27d03f1a70beaee38bdc99103",
-		"provenanceSha256": "fa13acea321f5589d63317174adc0ae0ab4dc79583daf1e2f0e17604da18e5bd"
+		"view": "redline",
+		"sha256": "1ce8826c4d2ef4beaadc2e5fb03e0dfe27104c9a653683288e0eca2e969c6a0c",
+		"provenanceSha256": "1ca1e96de9a583871193b9b3d56975c37311ff868be13c701a9c73a13ebea6f2"
 	},
 	{
 		"name": "equipment-fee-quarterly-installments",
-		"view": "effective",
 		"selected": {
 			"seed-item-12": "equipment-fee-quarterly-installments"
 		},
-		"sha256": "1dc091f00826b4805db933c5f6151ff779f7d1d71b52d4c4fbb3b8d7f7552e58",
-		"provenanceSha256": "00f517caa6d0754291bd4ca60aa0ea197dabc175bddedd15e765ea6aa1dbabde"
+		"view": "effective",
+		"sha256": "d773f7fab273ede53c18c3be373cdf8a8c56d9890b112b4bff72fdda0612a8de",
+		"provenanceSha256": "3e0126519bfef2d355a229e31c7c6638ee44813214b3fc2157433c4e7bdd7573"
 	},
 	{
 		"name": "equipment-fee-quarterly-installments",
-		"view": "redline",
 		"selected": {
 			"seed-item-12": "equipment-fee-quarterly-installments"
 		},
-		"sha256": "c1f6234f1c218983718a5a8f2c03b4663fbece74b54d74eb76edc5c986a2be00",
-		"provenanceSha256": "6d4607b496416a73896c65a6a3dc7666fb8df03d6bc541a452fe73a6e4b18b8d"
+		"view": "redline",
+		"sha256": "f518cb140266475941782715b03505640bb7cc176d4ce851ad1d386078b78181",
+		"provenanceSha256": "e5e263b83e2cb96648b5f3fdf3c5292a2318d96e016b059caf53567969fcd45e"
 	},
 	{
 		"name": "equipment-fee-half-amount",
-		"view": "effective",
 		"selected": {
 			"seed-item-12": "equipment-fee-half-amount"
 		},
-		"sha256": "86b7039535a0373dde058ab6c73265fe0ed1bc6e4b7e6723a2f45ee23bdaac02",
-		"provenanceSha256": "89bf1971687ed3ed983aec864b37dd9955d5a5b94492c54a8b083b51d14bf472"
+		"view": "effective",
+		"sha256": "9730ac1c982562981ef19e1dd9931bbec8d2cf5ebef9959b640edd64039a1e25",
+		"provenanceSha256": "38e25173f0eefc56cc006b6b2b2b5e37ad9b17dcc4c6823757a89147f8e4eaec"
 	},
 	{
 		"name": "equipment-fee-half-amount",
-		"view": "redline",
 		"selected": {
 			"seed-item-12": "equipment-fee-half-amount"
 		},
-		"sha256": "6ec3329fdb898a2d663915ddbd114897505af160b455ed575641e29dec448a38",
-		"provenanceSha256": "c00f8c7e68781fb42a193588ebdf0a87734b22973495a15a8ae44c911d322b80"
+		"view": "redline",
+		"sha256": "551fdfc44f9d81f443d02d3138a17d6371d263e5b7159bcccd70be054bd8def5",
+		"provenanceSha256": "3d2f3b17c76c75acdd01cd1afe80d12a19c87ebf9665d2ec5ed40024c30dc15d"
 	},
 	{
 		"name": "equipment-fee-refundable-at-end",
-		"view": "effective",
 		"selected": {
 			"seed-item-12": "equipment-fee-refundable-at-end"
 		},
-		"sha256": "703939b6168e07d65518c5b88a6b5ec8f323466f1103af43052ed4159c96dc2e",
-		"provenanceSha256": "dfc10f029038196121974d6677347edf0a7097bfaa842f476d77fc9f1896a59d"
+		"view": "effective",
+		"sha256": "a3696439a01859bd86cbee78ae41f50c3262bde1a2c2e64252d4ecd162913c6d",
+		"provenanceSha256": "11367c7f8d678493ac66696653e317a2c3af6a7135c5933fe24471e7df9a817b"
 	},
 	{
 		"name": "equipment-fee-refundable-at-end",
-		"view": "redline",
 		"selected": {
 			"seed-item-12": "equipment-fee-refundable-at-end"
 		},
-		"sha256": "ddeb50c774da01771cd96575aefa100aad2f5a16f33f62f7e94162e4d229200a",
-		"provenanceSha256": "13e49969c8a945078e5ec25e4412bf3da84bcbfecfe9db7909a14cd8501f4807"
+		"view": "redline",
+		"sha256": "4ab301ad95f5483413980b4323864bd9a063522e34ba3b124c553bcdbda7d337",
+		"provenanceSha256": "4cf44d375ef9f9de538e55739ed36d86e7344a9af378f2ca010ca675418192b2"
 	},
 	{
 		"name": "governing-law-delaware",
-		"view": "effective",
 		"selected": {
 			"seed-item-19": "governing-law-delaware"
 		},
-		"sha256": "3bcfede1e60a97acef054933d5e1f3c1c74a219973348af4868123e3023014d0",
-		"provenanceSha256": "76750dc3a711f1fc109da6a54c182848fc73d28225716f15d857243e38cb3c42"
+		"view": "effective",
+		"sha256": "03b3528f9d9aac2918f1a258d55479bb02140abf4febe0d73ab9e842599a5ee9",
+		"provenanceSha256": "1b817216f7dbe6930b6cdc6cded4d071aa7a929c0e4f338bf0eabd5380dc1981"
 	},
 	{
 		"name": "governing-law-delaware",
-		"view": "redline",
 		"selected": {
 			"seed-item-19": "governing-law-delaware"
 		},
-		"sha256": "11179f8aae896780632f92878a60f8cc1878501b3aed667ba448cabc8c9c4564",
-		"provenanceSha256": "4e4a45154f77034acb5939359c1b8bd4c52a2589fad6bdf9884d8f4865b34169"
+		"view": "redline",
+		"sha256": "91806545f5eda7048d80f0b137bf5df3b9fc6da6c382d3fb8c5e6f957dc1ed37",
+		"provenanceSha256": "43c3acde0c5373551237dc585b15ea79f1e2ada9f630b6d0a51e56d9ec83b78b"
 	},
 	{
 		"name": "limitations-of-liability-mutual",
-		"view": "effective",
 		"selected": {
 			"seed-item-23": "limitations-of-liability-mutual"
 		},
-		"sha256": "1c20cdc64988eac07d1fd65ca1af77b076b95058f419f44dd41dd1f0adc50d46",
-		"provenanceSha256": "80b690e7c011cfa971191f7707e4c91bd754186d7707d93eb7d187836c15b306"
+		"view": "effective",
+		"sha256": "99bb70ec806c0b8db8a9933f04599d2c8c73cb9901d9717631d9369a77fdf636",
+		"provenanceSha256": "dab04e99eef1855b675baa7474bc33f9f62daa4e5ee0fbb77dfc8ae8c3074f15"
 	},
 	{
 		"name": "limitations-of-liability-mutual",
-		"view": "redline",
 		"selected": {
 			"seed-item-23": "limitations-of-liability-mutual"
 		},
-		"sha256": "14b4369cc27c7db74b8f2246b4641f8f8f3f30a48bd634f3bd7dd7563abaadf8",
-		"provenanceSha256": "fc5c9790abebc1b0b1ed786b2c5ee73eb9f9c78f421213728a02d58aa7e4abdf"
+		"view": "redline",
+		"sha256": "3c9e98d51526ca7d650f29e5aa5d1c581017d8f37d2e9e381dcd1f957a628948",
+		"provenanceSha256": "aabc65d857e05117ee0c60f2f9a4b3e3dd4835e1dede9e717d44f5217748ab54"
 	},
 	{
 		"name": "limitations-of-liability-cap-12-months",
-		"view": "effective",
 		"selected": {
 			"seed-item-23": "limitations-of-liability-cap-12-months"
 		},
-		"sha256": "5a7d8c50201c5b618d871399acb45780016dc3eb484c78b9b27499563bcd8dae",
-		"provenanceSha256": "ba3e266fb9a7e2cc538d84065229ee070ce6b9ce08b554708d80bf5c14d55616"
+		"view": "effective",
+		"sha256": "e3cde01789bd08bbca2e6682e215418646b57666332142b8e4091909ddad8303",
+		"provenanceSha256": "37f6dfdf328050c38ac31d1647cd21ac53ed3610072743660b35172f9bf3c853"
 	},
 	{
 		"name": "limitations-of-liability-cap-12-months",
-		"view": "redline",
 		"selected": {
 			"seed-item-23": "limitations-of-liability-cap-12-months"
 		},
-		"sha256": "8aed6de9de711b2aa8747c38dd681e86926bb90bc4c83c73469368c2ab70fccc",
-		"provenanceSha256": "15aa07115b574d4e51b724e85f9ec009f2f83cd78ad9a7b47329497cb40b1cee"
+		"view": "redline",
+		"sha256": "94fa53d5ce125e15dd6d7fb53a831e108221ec6576348338a449c37cb0942bbe",
+		"provenanceSha256": "46ffe7f827cc8dc877d40b1015d4f47f4b78eeb5008748bf30efa403a2d804fc"
 	},
 	{
 		"name": "limitations-of-liability-data-security-carveout",
-		"view": "effective",
 		"selected": {
 			"seed-item-23": "limitations-of-liability-data-security-carveout"
 		},
-		"sha256": "ffa3f035b5d3633f403baf906254944a98a5c451bb5a98de016ac78d5fa6be2a",
-		"provenanceSha256": "125acfeb9cf1971748aa2d223adc784f97315045bf727a3827187f5352726230"
+		"view": "effective",
+		"sha256": "3c4428c786d67f3425143310649f8aa6d90dd0ec8c96b51058541fe70b3b2057",
+		"provenanceSha256": "3dc868e4359525640f1662f680877e2771f99246554b8bd5ed10a450f869318d"
 	},
 	{
 		"name": "limitations-of-liability-data-security-carveout",
-		"view": "redline",
 		"selected": {
 			"seed-item-23": "limitations-of-liability-data-security-carveout"
 		},
-		"sha256": "85bb839bce4d748beea4f3266a86173c67e0ff3389104a02a7be674096d0157f",
-		"provenanceSha256": "c8b7717ed1b2fff7620fd7b6b39766b9f9cd1f8de02767da7de7ed05b0f08f5a"
+		"view": "redline",
+		"sha256": "3c10f0c0a196c98e679b394170afe69148a78698c5583d2ccb671aafde0b12bb",
+		"provenanceSha256": "ba8bf70bbb3c6b267abb9821c613dbc5d9860be4427d68ebe863d367904cd2e8"
 	},
 	{
 		"name": "monthly-fee-first-month-discount-1000",
-		"view": "effective",
 		"selected": {
 			"seed-item-26": "monthly-fee-first-month-discount-1000"
 		},
-		"sha256": "7160543b4d4b1d0c66512902c9795d2ef5163712d0c076ecd41b78695f307954",
-		"provenanceSha256": "10ae4222db5a61e6f2deb6f053a21f651057393332df7a769cca26797ab237cd"
+		"view": "effective",
+		"sha256": "a19cd99dbf48c5f474419dfb4c0b86f9bb3507036c4261af9f3adb51383d0ddc",
+		"provenanceSha256": "882e4d86a3e444ebd1f81b67078e90098ddd13d1c2e3ac5e6d18454af7a129bb"
 	},
 	{
 		"name": "monthly-fee-first-month-discount-1000",
-		"view": "redline",
 		"selected": {
 			"seed-item-26": "monthly-fee-first-month-discount-1000"
 		},
-		"sha256": "fee732b859cde6ecb15d688ce688dd894ab2c0cd60f1e60282428ed8bb7b31c8",
-		"provenanceSha256": "6d1c0d867c6f439981f6b802392f38e0d498d5e3d782d0910914680583fa3098"
+		"view": "redline",
+		"sha256": "c0d3b275d952012bc3f13717e1d0a50972298fec2d4ed7bbbdbb3e6834293ce6",
+		"provenanceSha256": "48fe525d116c40e39da3316693523f9ad622836976835af268d71d8740f3f29e"
 	},
 	{
 		"name": "monthly-fee-first-month-discount-1750",
-		"view": "effective",
 		"selected": {
 			"seed-item-26": "monthly-fee-first-month-discount-1750"
 		},
-		"sha256": "6bdf5eef4ad4684d50f68f844c167f65519899e0d9a77a1192bbbfa74c8a0597",
-		"provenanceSha256": "696aa976bc2a2d0c5df614d9ba01c0357da6694c7660d3d4b222268024a5e934"
+		"view": "effective",
+		"sha256": "51129d85c52a6e3f5c708d5d3d7a85e666d586294a7c344332404c5386b47bcc",
+		"provenanceSha256": "3bf7b13f0764bc4d0c9a4e28489f2bcf0e6d92ad5f4e25e5ca344e7bdbb4e748"
 	},
 	{
 		"name": "monthly-fee-first-month-discount-1750",
-		"view": "redline",
 		"selected": {
 			"seed-item-26": "monthly-fee-first-month-discount-1750"
 		},
-		"sha256": "0bfd3630c6de925eb5cafdf98e149dec5abe018c7ddb3034801e2bb546777d1f",
-		"provenanceSha256": "75a41a8a888f872e8530b75dea8f984174930eb49e5028ab5a2055593c842a4b"
+		"view": "redline",
+		"sha256": "2689fc21af9a8b63a8e0f7ba6f387183ebe1f585f07364ebcacb23f5333477f7",
+		"provenanceSha256": "1a594b7ed51c9656bd34af07e2626d60befd82b3c6497c66c6edfb7fc06ffccd"
 	},
 	{
 		"name": "monthly-fee-first-month-discount-100-percent",
-		"view": "effective",
 		"selected": {
 			"seed-item-26": "monthly-fee-first-month-discount-100-percent"
 		},
-		"sha256": "1ea5929c88a1bc979cdfd2b38874732e0de36d8d171831c3668d3646a0407a18",
-		"provenanceSha256": "95fedcfedf4e8329977a39c4de4889c5e0ba8a99e70ab91c6dbfb99246194d23"
+		"view": "effective",
+		"sha256": "c20920d1fc1a58fac7923b7fa25a1f77574efbc689022e6686c04c925e6b34b0",
+		"provenanceSha256": "685ef445b68e9985df75c0a4ac46b0fa590db675ffdc5fed9b06bee955cd66a0"
 	},
 	{
 		"name": "monthly-fee-first-month-discount-100-percent",
-		"view": "redline",
 		"selected": {
 			"seed-item-26": "monthly-fee-first-month-discount-100-percent"
 		},
-		"sha256": "3b249695cbb688a296afca5f57a794208ec72ae2896ae53a78ec72936b80716c",
-		"provenanceSha256": "565c5321c0422276c5c9b0105864d1afc749360a9d8ad9f3665d4a9662725478"
+		"view": "redline",
+		"sha256": "1ddca5aa9be9411b9615d449693d7946cb6c133c6964ef76f0540c0c32d36da3",
+		"provenanceSha256": "73163d1a26d3bb16ab1a22fa4410400b7162ee39e45e5f9b2d762afa5f813722"
 	},
 	{
 		"name": "monthly-fee-initial-term-monthly-discount-500",
-		"view": "effective",
 		"selected": {
 			"seed-item-26": "monthly-fee-initial-term-monthly-discount-500"
 		},
-		"sha256": "fdb43c0ad53840f2f96ac51b9279c22034cd0e45cde9be5719149d4f291f6eba",
-		"provenanceSha256": "d479375256fb089dc67d6b8d3124cbb4f0d96f871dc34ccdd9807d01a4b07a81"
+		"view": "effective",
+		"sha256": "1af2faf3fae671a6798093d4d52ce74cfe4487c686d89cc728da3f4ef03a5280",
+		"provenanceSha256": "96d0b7e539dd5030c55ef26b2efa7622e11d6e7b50fe38fcd73d4075e24205f4"
 	},
 	{
 		"name": "monthly-fee-initial-term-monthly-discount-500",
-		"view": "redline",
 		"selected": {
 			"seed-item-26": "monthly-fee-initial-term-monthly-discount-500"
 		},
-		"sha256": "ff79ec8ebe52b576c995fa7517865523ba5a5fe9fab301593d85195ea77d2054",
-		"provenanceSha256": "a8145fc506e15ad7ad7fcc50a3ce2e74d69b47dd0b86a7b3537230108acf054d"
+		"view": "redline",
+		"sha256": "238e728fa3b36ecf9d007b22f796640030feb7e5b8cc6a82c12b3411ae742db8",
+		"provenanceSha256": "f5135d1e6f384c8e14e690b4e59a96419ee52ec47111bb05d0616e78693982a4"
 	},
 	{
 		"name": "monthly-fee-initial-term-monthly-discount-1000",
-		"view": "effective",
 		"selected": {
 			"seed-item-26": "monthly-fee-initial-term-monthly-discount-1000"
 		},
-		"sha256": "4e2ac032f33313f9d320dadaaafe995c153978d645670bbc3c5cfaf095dd987c",
-		"provenanceSha256": "dc2a6714457669a4b14278902e9077e0bfab17534438f1a77df2d30ccba837be"
+		"view": "effective",
+		"sha256": "ad524cb1460cf70b735bbdfe9415e7a26df954315d4d330b16b6cbe7d556db7e",
+		"provenanceSha256": "e865923c378695773d887075eff74e4bfac5006610b54c375b283e3b1f43869c"
 	},
 	{
 		"name": "monthly-fee-initial-term-monthly-discount-1000",
-		"view": "redline",
 		"selected": {
 			"seed-item-26": "monthly-fee-initial-term-monthly-discount-1000"
 		},
-		"sha256": "aeead1678d9d969ed4ba3208ff0e9eec0530c584606eab83fedd74c9c1e8095c",
-		"provenanceSha256": "f067217b5fd1c66e21ebc987915437a0884d1ee3b03598267e5a095ffb17c738"
+		"view": "redline",
+		"sha256": "7b002e661e8ce6d3fb7baa886c16a55026e11b31b89428ced49da0f60731d964",
+		"provenanceSha256": "3f8c1ac89be5dd02e0cefdda2d3993acc1cc1bed4bbc2e4fa24701c7ea89f1d6"
 	},
 	{
 		"name": "mutual-indemnification",
-		"view": "effective",
 		"selected": {
 			"seed-item-27": "mutual-indemnification"
 		},
-		"sha256": "02bee1f8c9af8410a0607e3cbc24a727537e43bd565efb822560a8657f1dabec",
-		"provenanceSha256": "57732976de6a4491e39488c55312a1cd5843a6b09c960d827533d047643b33af"
+		"view": "effective",
+		"sha256": "9aa7a35c808f6b43e566cad8134f20958e0cf192b632a73d84cc7bf6dcd19c8e",
+		"provenanceSha256": "b095a2eabdfbb006fffcc68585a9b65609be5198865434534326ffc5eaf3f2f5"
 	},
 	{
 		"name": "mutual-indemnification",
-		"view": "redline",
 		"selected": {
 			"seed-item-27": "mutual-indemnification"
 		},
-		"sha256": "732115aa4404067b9efa903b3054be2ce6a8fb5d52e8a3ac0515905ff64344ff",
-		"provenanceSha256": "556725bd83350be56c6ebae3239ea0d3785c87aedcb7e1528c458c1725e51840"
+		"view": "redline",
+		"sha256": "d4da5614f16c7a739f0d43299594b3116b02c71e9a472227fff4a6058ec755cf",
+		"provenanceSha256": "3d5cfc367b5568f1dfbb031fd9b3aad1805a344ff7856c49246a986090de90af"
 	},
 	{
 		"name": "replacement-commercially-viable",
-		"view": "effective",
 		"selected": {
 			"seed-item-40": "replacement-commercially-viable"
 		},
-		"sha256": "3af4b5e01e7e73e1220597619a83614aafbff7bc8ec0e4de3fdc75811643a7d5",
-		"provenanceSha256": "34e06cbf38b96a4dff3528c73643483e3b7646b360313e624ac421beb6504998"
+		"view": "effective",
+		"sha256": "ace068b28525bb976603db7b26fd5a8fe021d55724e598d32266d2cd6e1537a5",
+		"provenanceSha256": "1390f9cb25317fca64d40a949f6c7220f420d91fefd25a17045488f005d0e75c"
 	},
 	{
 		"name": "replacement-commercially-viable",
-		"view": "redline",
 		"selected": {
 			"seed-item-40": "replacement-commercially-viable"
 		},
-		"sha256": "75c8659ab0ef56b6a80fcd9804fb733c1fc229eb7a824bf0b5be707439b9eef3",
-		"provenanceSha256": "e628326e2ede2f8fca608e31abc49241edfaadbde985c766c237f63250e3cbb0"
+		"view": "redline",
+		"sha256": "e98c0a7e6b928fea7966e4a5c9bde63b0360ea9fb88e30c2bf99f5ac34a0d4f2",
+		"provenanceSha256": "c3bf37252f59920d2b3ec8324e175f84d1796078c0d2759522b719f689ba6a05"
 	},
 	{
 		"name": "replacement-mutual-agreement",
-		"view": "effective",
 		"selected": {
 			"seed-item-40": "replacement-mutual-agreement"
 		},
-		"sha256": "65295f1748ff8bfcb43d73327f108f49ac70b0ec0b39c0cc5135f5086fcf81c2",
-		"provenanceSha256": "be525a0c020a7e96c1de5a65832f4f02d2546c6861b13cb55014a02d888ab55b"
+		"view": "effective",
+		"sha256": "d69a7393a5443f6ba98372121fd18e9fba9a3db2b913e9c1ca46f57d1cfeed5f",
+		"provenanceSha256": "56817234b70f099785a605eb0ca948dcf0ce552dca44592cee2e11d73c5af4d2"
 	},
 	{
 		"name": "replacement-mutual-agreement",
-		"view": "redline",
 		"selected": {
 			"seed-item-40": "replacement-mutual-agreement"
 		},
-		"sha256": "8276f112a6508cbd01f6530004dfa89384bb470aa6f2d520ff5af398441abc86",
-		"provenanceSha256": "3f689ad717bad15920e7873e63da00a8fd043d62a987a16b6cb72ef9c5187346"
+		"view": "redline",
+		"sha256": "02201a8422fc70aa9ef4710fd71ee31f8010846075863b63191a3bd1fe4357b2",
+		"provenanceSha256": "ca04721d4470c3341c448fc1e2096eb5e727c1c3c067d4a198fbc2504bf4580e"
 	},
 	{
 		"name": "resale-ordinary-course-billing",
-		"view": "effective",
 		"selected": {
 			"seed-item-41": "resale-ordinary-course-billing"
 		},
-		"sha256": "b408cf254193aacd7cd61c1c34bf3372c77f2be7febc0af8cd7c9ca55d8581ff",
-		"provenanceSha256": "a555e7fc55312942bb80c8141685136e764af2711dca8296bb0308d8ae8f3ff4"
+		"view": "effective",
+		"sha256": "47718dc8b4374ce8e243ef42fd78f7f89b577f71814e4040f8fac67f5e32cdfc",
+		"provenanceSha256": "05e113befdb5e6eac513225a9a3968a9febd7954e262b930ebe7ed63b00960f3"
 	},
 	{
 		"name": "resale-ordinary-course-billing",
-		"view": "redline",
 		"selected": {
 			"seed-item-41": "resale-ordinary-course-billing"
 		},
-		"sha256": "24341d3ae04e01f49f2bc53ad200ae9528861d5f94e3da49ce1846bf2d7f32ad",
-		"provenanceSha256": "93397242534fde940a0e0194adc910cf5ce6bd10eb20731ce5ef6b8a5a0d6e0d"
+		"view": "redline",
+		"sha256": "40baec5898d8fb1aeeae3777d2adeb9fc61a296e7751d9c992540819b61858aa",
+		"provenanceSha256": "7c36cf587b09dcfb74a6966280f2a494bd18654989e163f1634beaba5fbd7371"
 	},
 	{
 		"name": "sharing-highly-sensitive-personal-information-split-responsibility",
-		"view": "effective",
 		"selected": {
 			"seed-item-46": "sharing-highly-sensitive-personal-information-split-responsibility"
 		},
-		"sha256": "56204bc28b2ef1894b82ddacc19d5aabea9f9c0729b8492b35e25fc3a8cc6150",
-		"provenanceSha256": "55c8dd0e9946269d11ec5787851f3cd02c3c295d2c5f98e282f78af7cd6c1a4b"
+		"view": "effective",
+		"sha256": "2e371b230290f9bc36e977a3e1ddcf4e73c7b203672a81d9c8eb3a57974da809",
+		"provenanceSha256": "d883be8ba247c2b0d8aeacb911b450e58e821ef792212558e844dc5476cae69d"
 	},
 	{
 		"name": "sharing-highly-sensitive-personal-information-split-responsibility",
-		"view": "redline",
 		"selected": {
 			"seed-item-46": "sharing-highly-sensitive-personal-information-split-responsibility"
 		},
-		"sha256": "bf0e85631df13625d7d8e5e521b7a38d36f47d4df661d2dbec6d4e442e1394da",
-		"provenanceSha256": "5fe7443eb0c1d9eaeb706251b1fee4be895ee8434ccecd20bd859812bd0a4d9a"
-	},
-	{
-		"name": "term-fee-payment-monthly-autopay",
-		"view": "effective",
-		"selected": {
-			"seed-item-50": "term-fee-payment-monthly-autopay"
-		},
-		"sha256": "45d1eb891aa1cd25f5b2add17372cfdf9b42aa9f87c18fae653868b3e2370447",
-		"provenanceSha256": "f923a4691824ef7ff60112828157caf60ebbf697444ef791ef3e219c587c37f9"
-	},
-	{
-		"name": "term-fee-payment-monthly-autopay",
 		"view": "redline",
+		"sha256": "1f8da4aea1b0423c005bbddbe0d927bbe42ba9aa0448233bb5c26abfbd7d6566",
+		"provenanceSha256": "d5f36d39a64a888d2c208c52b6f6ab89bdb56d9549196c3aeb5d330203445a79"
+	},
+	{
+		"name": "term-fee-payment-monthly-autopay",
 		"selected": {
 			"seed-item-50": "term-fee-payment-monthly-autopay"
 		},
-		"sha256": "0d50eade8749e8198f37ac3a94ba57f850be67e80b8b3773983511ff7680c90f",
-		"provenanceSha256": "de453a5e272ae0e5f3d0b2e3e39c5dd19501a9bef8b5087b644dfad5991344c7"
+		"view": "effective",
+		"sha256": "9e4871058966904cf763a6260004e0812c4aef5529406b45f3aa7ffddf785c34",
+		"provenanceSha256": "93299dcc319b47c6c3a292f772aeab36dd4a0acd5d408e77dd832b2918f7fd3c"
+	},
+	{
+		"name": "term-fee-payment-monthly-autopay",
+		"selected": {
+			"seed-item-50": "term-fee-payment-monthly-autopay"
+		},
+		"view": "redline",
+		"sha256": "7e4b0b77d3e3b8c9e8d190567688ffe7025964fc14257aee6e18e71544b44a7d",
+		"provenanceSha256": "29fd9bd839d756f71227f56d3e441b6f06c5d1f109e96d67582759025a369b25"
 	},
 	{
 		"name": "combined preferred",
-		"view": "effective",
 		"selected": {
 			"seed-item-3": "annual-fee-increase-five-percent",
 			"seed-item-5": "attorneys-fees-mutual",
@@ -406,12 +405,12 @@
 			"seed-item-41": "resale-ordinary-course-billing",
 			"seed-item-50": "term-fee-payment-monthly-autopay"
 		},
-		"sha256": "c99211ff8e14f6e9f6e50f820a286dad0495fc3d563e999787b2fc1a488fcd51",
-		"provenanceSha256": "29cfbce1ee9dc1bb7b393f1cc82ebd082b252f0527783a7410629f38ad32e2f6"
+		"view": "effective",
+		"sha256": "a180a9e2466a6b62732d87e73f88b62ed862c934ffab3022ad41b6056977af27",
+		"provenanceSha256": "ab1f9891340a8efc9a6503a9716ff4d4292e723aedf1623a293fe2b1cecf7bca"
 	},
 	{
 		"name": "combined preferred",
-		"view": "redline",
 		"selected": {
 			"seed-item-3": "annual-fee-increase-five-percent",
 			"seed-item-5": "attorneys-fees-mutual",
@@ -424,12 +423,12 @@
 			"seed-item-41": "resale-ordinary-course-billing",
 			"seed-item-50": "term-fee-payment-monthly-autopay"
 		},
-		"sha256": "b1a915245d9b101b7604df1b4c662234f16c49f7fb7fd8e3eacb99ff23ac08aa",
-		"provenanceSha256": "1d86854b61ba28fcca5841274937ca6d883dd11713b0055c62eeab9290cfeb9b"
+		"view": "redline",
+		"sha256": "3746e05ad680d2b67199255c77ade0ec3d29ab8e2ad8c3945c3484158f0cc891",
+		"provenanceSha256": "657965ad0f7795338cee38ace36ffbbf60e240164aa13e3eb570778b37b4d3d6"
 	},
 	{
 		"name": "combined alternatives",
-		"view": "effective",
 		"selected": {
 			"seed-item-3": "annual-fee-increase-five-percent",
 			"seed-item-5": "attorneys-fees-mutual-prevailing-party",
@@ -443,12 +442,12 @@
 			"seed-item-46": "sharing-highly-sensitive-personal-information-split-responsibility",
 			"seed-item-50": "term-fee-payment-monthly-autopay"
 		},
-		"sha256": "a0b4b478f70e9c289fcf95bfc36a82660ebfb8a7c85518645989cd8a505777c6",
-		"provenanceSha256": "686fead076fa98af4a02236b83075b2a6ee10b2ac3c011629dcbd1f68380329e"
+		"view": "effective",
+		"sha256": "ac5ae051fa4870ec021c91a8ea325442359385f03383f910866584a8aec34ff2",
+		"provenanceSha256": "c894c991a107690d04bc499cf673b0ee7704cc46ef48c145232050faaf325d7d"
 	},
 	{
 		"name": "combined alternatives",
-		"view": "redline",
 		"selected": {
 			"seed-item-3": "annual-fee-increase-five-percent",
 			"seed-item-5": "attorneys-fees-mutual-prevailing-party",
@@ -462,97 +461,98 @@
 			"seed-item-46": "sharing-highly-sensitive-personal-information-split-responsibility",
 			"seed-item-50": "term-fee-payment-monthly-autopay"
 		},
-		"sha256": "14c655be378863fb3837ae40a07609cf8daac800f0e9cb6c9749af54a69edd7e",
-		"provenanceSha256": "80ffc03b4560191a304338fbf0d38d8ad12310eb098d2fb7940a47ee71cdbc2a"
+		"view": "redline",
+		"sha256": "1d8a1ec2c0badae14aa1c3a5520e7fa82d106cb666abdcdf313d15ddb879b65a",
+		"provenanceSha256": "4cb537473f2b8741485ac7106892d84547bd03de89996ed95ac9a590bda6301f"
 	},
 	{
 		"name": "fees-net-20-days",
-		"view": "effective",
 		"selected": {
 			"seed-item-16": "fees-net-20-days"
 		},
-		"sha256": "deeacca134f83eb7978f1b342c23b07e4af827b535f7c0f3b782fcfff1debb2c",
-		"provenanceSha256": "80779064229c5a3d5560525ce9d98c55d2e960c70b698f75006d481d32a0f5aa"
+		"view": "effective",
+		"sha256": "0ade43586a3e35ecc1a658fc6aeada864372891c027f3b28a56bc6b2bd22f5dd",
+		"provenanceSha256": "25aea140f97a7601289775162eb3944245f990a9aa29555bc3c123b2d2b6de87"
 	},
 	{
 		"name": "fees-net-20-days",
-		"view": "redline",
 		"selected": {
 			"seed-item-16": "fees-net-20-days"
 		},
-		"sha256": "ad994d66a4bcdf2e3d33a7f908c25a1e4d035d02d1c455202fc1ee522ea568e9",
-		"provenanceSha256": "3a9616efc300338f71e48a8d07b7cdd4ea1f64e262f0d639564f9019b1bbc43f"
+		"view": "redline",
+		"sha256": "03faac0626e254a56f0c175852df81dd0e7b1438748eff200daca8b099091ed2",
+		"provenanceSha256": "3927615db83f0fa311be956000491876de20ecb33b1a0f39268aa283250aeab6"
 	},
 	{
 		"name": "fees-net-30-days",
-		"view": "effective",
 		"selected": {
 			"seed-item-16": "fees-net-30-days"
 		},
-		"sha256": "a4b33d08b50956999c1fb38c3cb712ebcda235c584069947ee1f3d3485acc0ea",
-		"provenanceSha256": "3217fb5750808f7b387f7349f09a13497105b5fce60a70e2636d68f26ced4efe"
+		"view": "effective",
+		"sha256": "760f1c439a00edcbbcb9cad5aafe87240cf13631296c6f6f5e2c7be3b07373c1",
+		"provenanceSha256": "63c6008137d7effc381826f921ff0b03f8a038b203b18b774bc3dc0c2f5b283c"
 	},
 	{
 		"name": "fees-net-30-days",
-		"view": "redline",
 		"selected": {
 			"seed-item-16": "fees-net-30-days"
 		},
-		"sha256": "d325ae639ae28c1e5522db8e7b1cf1594a3f41cec51a4c462951b3138d116727",
-		"provenanceSha256": "9e7ef76748bfb04e1755a0b6477bc499454e3a527a06195f6b5849ed406360a0"
+		"view": "redline",
+		"sha256": "5cb313ef45ec42c5956c49489d13942139ff22e431eee8942f6cc606b6253b23",
+		"provenanceSha256": "aa146b7bdbc1bdd2ab9211bd894a0defa5a25032f6a312cd0dc0ecee7e37ba1a"
 	},
 	{
 		"name": "insurance-coi-outline",
-		"view": "effective",
 		"selected": {
 			"seed-item-21": "insurance-coi-outline"
 		},
-		"sha256": "d5fc49af9d3502c616477dfa3756317b963eb5faab30a6753a0404b4dbf21cf7",
-		"provenanceSha256": "be0db930d17c9e5b1b9f7ef3a55667c68019ac9decc6d9cf3131fe364bfe195a"
+		"view": "effective",
+		"sha256": "57c2afa2c49100b5429304a0e6c50827de4a27db1698f1ece0381354d49c4a01",
+		"provenanceSha256": "04654705402c377de4c43bd6badbda5f75b8491fe54447550ddb78d1a65c0249"
 	},
 	{
 		"name": "insurance-coi-outline",
-		"view": "redline",
 		"selected": {
 			"seed-item-21": "insurance-coi-outline"
 		},
-		"sha256": "c55496192ed518851c69449e1245bb75d41978d15e1531c26a177968d9220ad6",
-		"provenanceSha256": "cdc0f3e8970f8e988c53b111fbfd925c2f9f4b8ac68c2a5b3db53edd37432c15"
+		"view": "redline",
+		"sha256": "87c7830ab037b8b707c2ea6a4f715034a7d8640035cb708f7450a1c53861047f",
+		"provenanceSha256": "a95fb84ddd259308101674f07d0c3488e66054de27463539bfd89be2dcc2e5b4"
 	},
 	{
 		"name": "marketing-rights-prior-written-approval",
-		"view": "effective",
 		"selected": {
 			"seed-item-24": "marketing-rights-prior-written-approval"
 		},
-		"sha256": "4ba4fa2d1c637775614fa28546ccddf5771f85d7415981494900e31cd8de211d",
-		"provenanceSha256": "017b555a82dcfb6913709d27b5e1302801d27d46335d069c8adae24164a09d03"
+		"view": "effective",
+		"sha256": "bc0423ddcf59556ff7416ae2892a9ba0f4e0dfdc039af0ef5ed769d96e77157e",
+		"provenanceSha256": "9cb9d68c0f4146c080feabe01b5b41e7c070254b3e125ca05f9504179c3bacd8"
 	},
 	{
 		"name": "marketing-rights-prior-written-approval",
-		"view": "redline",
 		"selected": {
 			"seed-item-24": "marketing-rights-prior-written-approval"
 		},
-		"sha256": "71c5ae3180c7ceefe3eaf02531cc1ed42738179e249e2980cb9ba955720e84d0",
-		"provenanceSha256": "0ae8ecd2028353ac3d92dc0d0bdf4d0be1790e1aa8dfd6fc4c418d99beb3c380"
-	},
-	{
-		"name": "term-fee-payment-monthly-autopay-after-initial-term",
-		"view": "effective",
-		"selected": {
-			"seed-item-50": "term-fee-payment-monthly-autopay-after-initial-term"
-		},
-		"sha256": "9f0e649d621671828e6383e641328dc84ad8d11a03495977a73a66308c9fbfdc",
-		"provenanceSha256": "c23a85553b4d9e12b56aef7ba53421a871d76a81b21fb74cd21763a1a9477083"
-	},
-	{
-		"name": "term-fee-payment-monthly-autopay-after-initial-term",
 		"view": "redline",
+		"sha256": "1391050f3dc0d800188c9294af299974c5152b319ceed0e517379e64b0e6ba45",
+		"provenanceSha256": "3a781bac3132bfd259c19bc40e13d76bd8738e3c413ca32a1d5dc74539c96c35"
+	},
+	{
+		"name": "term-fee-payment-monthly-autopay-after-initial-term",
 		"selected": {
 			"seed-item-50": "term-fee-payment-monthly-autopay-after-initial-term"
 		},
-		"sha256": "13ce70ea26faa35cf5ae940721f3dcbf93aff361330a1e6ff1e9f10f79944070",
-		"provenanceSha256": "da0ae584fded4b71f8331ac200a6bebe9008a8838fef094410c313f8b3993be8"
+		"view": "effective",
+		"sha256": "cd25e23c156248531f621ac7fcef6031aabadb4c69b161cb31a07fb3ca9c98df",
+		"provenanceSha256": "638d73caf26e77aa1f595a53e407ceeab543a074efefddcdf7ac16a58ea9c0a7"
+	},
+	{
+		"name": "term-fee-payment-monthly-autopay-after-initial-term",
+		"selected": {
+			"seed-item-50": "term-fee-payment-monthly-autopay-after-initial-term"
+		},
+		"view": "redline",
+		"sha256": "995dd6baa11d3048643fede627e01a1663f94de0752e9903b8ead5b4c552b9c4",
+		"provenanceSha256": "5e8e0fcdafaf1d75c2f931c3cb3b621d4ecd1b0266ee885b235fddc23018099b"
 	}
 ]

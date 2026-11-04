@@ -1,5 +1,13 @@
 import type { AnnotationRegistry } from './annotation-registry';
-import type { SourcePoint, SourceRange } from '$lib/contract/source-model';
+import {
+	isTextTarget,
+	normalizeSourceTarget,
+	sameSourceTarget,
+	type SourcePoint,
+	type SourceRange,
+	type SourceTarget,
+	type StoredSourceTarget
+} from '$lib/contract/source-model';
 import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
 import type { ResolvedRun } from '$lib/contract/model';
 
@@ -11,26 +19,42 @@ export interface AnnotationActivation {
 
 export interface AnnotationOccurrence {
 	annotationId: string;
-	point: SourcePoint;
-	visualSource?: SourceRange;
+	point?: SourcePoint;
+	visualSource?: SourceTarget;
 	generatedOffset?: number;
 	generated?: ResolvedRun['generated'];
 	pageNumber: number;
 }
 
-function tokenCoordinates(token: HTMLElement) {
-	const visualSource: SourceRange | undefined = token.dataset.visualSource
-		? JSON.parse(token.dataset.visualSource)
+type TokenCoordinates = {
+	point?: SourcePoint;
+	visualSource?: SourceTarget;
+	generated?: ResolvedRun['generated'];
+	generatedOffset?: number;
+};
+
+function tokenCoordinates(token: HTMLElement): TokenCoordinates | undefined {
+	let visualSource: SourceTarget | undefined;
+	try {
+		if (token.dataset.visualSource)
+			visualSource = normalizeSourceTarget(
+				JSON.parse(token.dataset.visualSource) as StoredSourceTarget
+			);
+	} catch {
+		return;
+	}
+	visualSource ??= token.dataset.annotationBoundary
+		? { kind: 'boundary', afterBlockKey: token.dataset.annotationBoundary }
 		: undefined;
 	const point =
-		visualSource?.start ??
+		(visualSource && isTextTarget(visualSource) ? visualSource.range.start : undefined) ??
 		(token.dataset.sourceStartKey
 			? {
 					sourceKey: token.dataset.sourceStartKey,
 					offset: Number(token.dataset.sourceStartOffset)
 				}
 			: undefined);
-	return point
+	return point || visualSource
 		? {
 				point,
 				visualSource,
@@ -68,7 +92,7 @@ export function annotationOccurrence(
 	let token: HTMLElement | undefined;
 	let nearest = Infinity;
 	for (const candidate of owner.querySelectorAll<HTMLElement>(
-		'[data-source-start-key], [data-visual-source]'
+		'[data-source-start-key], [data-visual-source], [data-annotation-boundary]'
 	)) {
 		const measured = distance(candidate);
 		if (!token || measured < nearest) {
@@ -95,30 +119,15 @@ export function annotationOccurrence(
 				Math.max(0, (token.textContent?.length ?? 0) - 1)
 			);
 	}
-	if (coordinates.visualSource) coordinates.generatedOffset! += offset;
-	else if (token.dataset.sourceKind === 'text') coordinates.point.offset += offset;
+	if (coordinates.visualSource)
+		coordinates.generatedOffset = (coordinates.generatedOffset ?? 0) + offset;
+	else if (coordinates.point && token.dataset.sourceKind === 'text')
+		coordinates.point.offset += offset;
 	return { annotationId, ...coordinates, pageNumber: pageNumber(owner) };
 }
 
 export interface AnnotationAnchor {
 	owner: HTMLElement;
-	token: HTMLElement;
-	characterOffset: number;
-}
-
-/** A character range keeps a wrapped token anchored to the selected line. */
-export function annotationAnchorBounds(anchor: AnnotationAnchor): DOMRect {
-	const { token, characterOffset } = anchor;
-	const text = token.firstChild;
-	if (text?.nodeType === Node.TEXT_NODE && text.textContent?.length) {
-		const offset = Math.max(0, Math.min(characterOffset, text.textContent.length - 1));
-		const range = token.ownerDocument.createRange();
-		range.setStart(text, offset);
-		range.setEnd(text, offset + 1);
-		const bounds = range.getClientRects()[0];
-		if (bounds?.height) return bounds;
-	}
-	return token.getBoundingClientRect();
 }
 
 function ranksBefore(rank: number[], previous: number[]): boolean {
@@ -126,7 +135,7 @@ function ranksBefore(rank: number[], previous: number[]): boolean {
 	return false;
 }
 
-/** Positioning and focus share membership-aware occurrence resolution. */
+/** Resolve a stable annotation owner for focus restoration across repagination. */
 export function resolveAnnotationAnchor(
 	registry: AnnotationRegistry,
 	index: SourceIndex,
@@ -142,26 +151,34 @@ export function resolveAnnotationAnchor(
 	let best: (AnnotationAnchor & { rank: number[] }) | undefined;
 	for (const owner of registry.forAnnotation(annotationId)) {
 		for (const token of owner.querySelectorAll<HTMLElement>(
-			'[data-source-start-key], [data-visual-source]'
+			'[data-source-start-key], [data-visual-source], [data-annotation-boundary]'
 		)) {
 			const coordinates = tokenCoordinates(token);
 			if (!coordinates) continue;
-			const source = coordinates.visualSource ?? {
-				start: coordinates.point,
-				end: {
-					sourceKey: token.dataset.sourceEndKey!,
-					offset: Number(token.dataset.sourceEndOffset)
-				}
-			};
-			const start = pointPosition(index, source.start),
-				end = pointPosition(index, source.end);
+			const source: SourceRange | undefined = coordinates.visualSource
+				? isTextTarget(coordinates.visualSource)
+					? coordinates.visualSource.range
+					: undefined
+				: coordinates.point && token.dataset.sourceEndKey
+					? {
+							start: coordinates.point,
+							end: {
+								sourceKey: token.dataset.sourceEndKey,
+								offset: Number(token.dataset.sourceEndOffset)
+							}
+						}
+					: undefined;
+			const start = source ? pointPosition(index, source.start) : undefined,
+				end = source ? pointPosition(index, source.end) : undefined;
 			const sourceDistance =
-				position === undefined ? 0 : Math.max(start - position, 0, position - end);
+				position === undefined || start === undefined || end === undefined
+					? 0
+					: Math.max(start - position, 0, position - end);
 			const sameReplacement =
 				preference?.visualSource &&
 				coordinates.visualSource &&
 				preference.generated === coordinates.generated &&
-				JSON.stringify(preference.visualSource) === JSON.stringify(coordinates.visualSource);
+				sameSourceTarget(preference.visualSource, coordinates.visualSource);
 			const offset = coordinates.generatedOffset ?? 0;
 			const generatedDistance = sameReplacement
 				? Math.max(
@@ -171,12 +188,17 @@ export function resolveAnnotationAnchor(
 					)
 				: 0;
 			const containsSource =
-				position !== undefined && position >= start && (position < end || start === end);
+				position !== undefined &&
+				start !== undefined &&
+				end !== undefined &&
+				position >= start &&
+				(position < end || start === end);
 			const containsGenerated =
 				(preference?.generatedOffset ?? 0) >= offset &&
 				(preference?.generatedOffset ?? 0) < offset + (token.textContent?.length ?? 0);
 			const exact = preference?.visualSource
-				? Boolean(sameReplacement) && containsGenerated
+				? Boolean(sameReplacement) &&
+					(isTextTarget(preference.visualSource) ? containsGenerated : true)
 				: !coordinates.visualSource && containsSource;
 			const matchingProvenance = preference?.visualSource
 				? Boolean(sameReplacement)
@@ -189,14 +211,7 @@ export function resolveAnnotationAnchor(
 				preference ? Math.abs(pageNumber(owner) - preference.pageNumber) : 0
 			];
 			if (!best || ranksBefore(rank, best.rank)) {
-				const characterOffset = sameReplacement
-					? (preference?.generatedOffset ?? 0) - offset
-					: !coordinates.visualSource &&
-						  token.dataset.sourceKind === 'text' &&
-						  point?.sourceKey === source.start.sourceKey
-						? point.offset - source.start.offset
-						: 0;
-				best = { owner, token, characterOffset, rank };
+				best = { owner, rank };
 			}
 		}
 	}

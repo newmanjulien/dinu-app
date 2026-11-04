@@ -3,9 +3,9 @@
 	import type { Snippet } from 'svelte';
 	import { PAGE_FORMAT } from '$lib/document/pagination/page-format';
 	import {
-		SIDE_PANEL_RESERVED_WIDTH,
 		RAIL_SAFE_GUTTER,
 		PANEL_MIN_WIDTH,
+		PANEL_COMFORTABLE_WIDTH,
 		PANEL_GAP,
 		RIGHT_GUTTER
 	} from './workspace-layout';
@@ -41,10 +41,10 @@
 		class:has-panel={hasPanel}
 		style:--paper-max-width={`${PAGE_FORMAT.width}px`}
 		style:--paper-min-width={`${reviewGutter ? 120 : 280}px`}
-		style:--review-gutter={`${reviewGutter}px`}
-		style:--side-panel-reserved-width={`${SIDE_PANEL_RESERVED_WIDTH}px`}
+		style:--review-gutter-max={`${reviewGutter}px`}
 		style:--rail-safe-gutter={`${RAIL_SAFE_GUTTER}px`}
-		style:--panel-min-width={`${PANEL_MIN_WIDTH}px`}
+		style:--panel-min-width-floor={`${PANEL_MIN_WIDTH}px`}
+		style:--panel-comfortable-width={`${PANEL_COMFORTABLE_WIDTH}px`}
 		style:--panel-gap={`${PANEL_GAP}px`}
 		style:--right-gutter={`${RIGHT_GUTTER}px`}
 	>

@@ -15,10 +15,18 @@ const numberPattern = v.array(
 // Immutable source coordinates, inline atoms, and baseline blocks.
 export const sourcePoint = v.object({ sourceKey: v.string(), offset: v.number() });
 export const sourceRange = v.object({ start: sourcePoint, end: sourcePoint });
-export const textMarks = v.object({
-	bold: v.optional(v.boolean()),
-	italic: v.optional(v.boolean())
-});
+/**
+ * Source text and document boundaries are different domains. `sourceRange` remains the
+ * immutable coordinate for text; a boundary identifies the physical edge after a block.
+ *
+ * The final union member is read compatibility for records written before boundaries were
+ * explicit. New writes always use one of the discriminated forms above it.
+ */
+export const sourceTarget = v.union(
+	v.object({ kind: v.literal('text'), range: sourceRange }),
+	v.object({ kind: v.literal('boundary'), afterBlockKey: v.string() }),
+	sourceRange
+);
 const referenceFields = {
 	kind: v.literal('reference'),
 	targetItemKey: v.string(),
@@ -28,19 +36,20 @@ const referenceFields = {
 		start: numberPattern,
 		end: v.optional(numberPattern),
 		separator: v.optional(v.string())
-	}),
-	marks: v.optional(textMarks)
+	})
 };
+// Canonical contract content is text, references, and structural boundaries; inline formatting is unsupported.
 export const replacementAtom = v.union(
-	v.object({ kind: v.literal('text'), text: v.string(), marks: v.optional(textMarks) }),
-	v.object(referenceFields)
+	v.object({ kind: v.literal('text'), text: v.string() }),
+	v.object(referenceFields),
+	// A paragraph boundary is structural, never a newline embedded in an inline atom.
+	v.object({ kind: v.literal('paragraph-break') })
 );
 export const inlineSource = v.union(
 	v.object({
 		kind: v.literal('text'),
 		sourceKey: v.string(),
-		text: v.string(),
-		marks: v.optional(textMarks)
+		text: v.string()
 	}),
 	v.object({ ...referenceFields, sourceKey: v.string() })
 );
@@ -53,7 +62,6 @@ export const sourceNumbering = v.object({
 	referencePattern: v.optional(numberPattern),
 	minimumDigits: v.optional(v.number()),
 	alphabeticStyle: v.optional(v.union(v.literal('sequential'), v.literal('repeated'))),
-	marks: v.optional(textMarks),
 	style: v.union(
 		v.literal('decimal'),
 		v.literal('lower-alpha'),
@@ -74,7 +82,6 @@ export const baselineBlock = v.union(
 	v.object({
 		...base,
 		kind: v.literal('paragraph'),
-		optional: v.optional(v.boolean()),
 		content: v.array(inlineSource)
 	}),
 	v.object({

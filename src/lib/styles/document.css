@@ -44,6 +44,8 @@
 }
 
 .contract-document {
+	font-weight: 400;
+	font-style: normal;
 	font-family: var(--font-document);
 	color: var(--color-ink);
 	user-select: text;
@@ -71,13 +73,6 @@
 	outline-offset: 2px;
 }
 
-/* An insertion slot occupies a complete text line even before it has content. */
-.contract-paragraph.is-empty-insertion-slot .playbook-trigger {
-	display: block;
-	width: 100%;
-	min-height: 1.46em;
-}
-
 .contract-revision-removed {
 	text-decoration: line-through;
 	user-select: none;
@@ -103,6 +98,7 @@
 
 .contract-document h1,
 .contract-document h2,
+.contract-document h3,
 .contract-document p {
 	flex: 0 0 auto;
 	margin-right: 0;
@@ -110,25 +106,39 @@
 }
 
 .contract-document h1 {
+	--document-block-margin-before: 0px;
+	--document-block-margin-after: 33px;
 	text-align: center;
-	margin-top: 0;
-	margin-bottom: 33px;
+	margin-top: var(--document-block-margin-before);
+	margin-bottom: var(--document-block-margin-after);
 	font-size: 20px;
 	line-height: 0;
 	letter-spacing: -0.4px;
 }
 
 .contract-document h2 {
-	margin-top: 34px;
-	margin-bottom: 10px;
+	--document-block-margin-before: 34px;
+	--document-block-margin-after: 10px;
+	margin-top: var(--document-block-margin-before);
+	margin-bottom: var(--document-block-margin-after);
 	font-size: 17px;
 	line-height: 1.25;
 	letter-spacing: -0.25px;
 }
 
+/* Keep the browser's h3 spacing explicit so a structural boundary can occupy its real margin. */
+.contract-document h3 {
+	--document-block-margin-before: 1em;
+	--document-block-margin-after: 1em;
+	margin-top: var(--document-block-margin-before);
+	margin-bottom: var(--document-block-margin-after);
+}
+
 .contract-document p {
-	margin-top: 0;
-	margin-bottom: 20px;
+	--document-block-margin-before: 0px;
+	--document-block-margin-after: 20px;
+	margin-top: var(--document-block-margin-before);
+	margin-bottom: var(--document-block-margin-after);
 	font-size: 15px;
 	line-height: 1.46;
 }
@@ -138,7 +148,26 @@
 }
 
 .contract-document .contract-paragraph:not(.is-final) {
-	margin-bottom: 0;
+	--document-block-margin-after: 0px;
+	margin-bottom: var(--document-block-margin-after);
+}
+
+/* Structural boundaries and their saved anchors never participate in pagination geometry. */
+.contract-document .contract-block.has-structural-boundary {
+	position: relative;
+	--structural-boundary-after: var(--document-block-margin-after);
+}
+
+.contract-document .structural-boundary-target {
+	position: absolute;
+	z-index: 1;
+	inset-inline: 0;
+	pointer-events: auto;
+}
+
+.contract-document .structural-boundary-target {
+	top: 100%;
+	height: var(--structural-boundary-after);
 }
 
 .contract-table {
@@ -161,6 +190,7 @@
 }
 
 .contract-table th {
+	font-weight: 400;
 	background: var(--color-fill-subtle);
 }
 

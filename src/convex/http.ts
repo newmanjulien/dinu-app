@@ -5,7 +5,10 @@ import { internal } from './_generated/api';
 import { Webhook } from 'svix';
 import { upload, preflight } from './baselineUploads';
 import { upload as delegationUpload, preflight as delegationPreflight } from './delegationUploads';
+import { readTextBody, readUploadBody } from './uploadHttp';
 const http = httpRouter();
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const CLERK_WEBHOOK_MAX_BYTES = 256 * 1024;
 http.route({ path: '/delegation-attachment', method: 'POST', handler: delegationUpload });
 http.route({ path: '/delegation-attachment', method: 'OPTIONS', handler: delegationPreflight });
 http.route({ path: '/baseline', method: 'POST', handler: upload });
@@ -17,7 +20,12 @@ http.route({
 		const secret = env.CLERK_WEBHOOK_SIGNING_SECRET;
 		const issuer = env.CLERK_JWT_ISSUER_DOMAIN;
 		if (!secret || !issuer) return new Response('Webhook is not configured', { status: 503 });
-		const body = await request.text();
+		if (Number(request.headers.get('content-length')) > CLERK_WEBHOOK_MAX_BYTES)
+			return new Response('Webhook payload too large', { status: 413 });
+		const reader = request.body?.getReader();
+		if (!reader) return new Response('Invalid event', { status: 400 });
+		const body = await readTextBody(reader, CLERK_WEBHOOK_MAX_BYTES);
+		if (body === null) return new Response('Webhook payload too large', { status: 413 });
 		try {
 			new Webhook(secret).verify(body, {
 				'svix-id': request.headers.get('svix-id') ?? '',
@@ -78,9 +86,13 @@ http.route({
 				!['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'].includes(contentType)
 			)
 				return new Response('Choose a JPEG, PNG, WebP, GIF or AVIF image.', { status: 400 });
-			const blob = await request.blob();
-			if (blob.size > 2 * 1024 * 1024)
-				return new Response('Avatar image must be 2 MB or smaller.', { status: 400 });
+			if (Number(request.headers.get('content-length')) > AVATAR_MAX_BYTES)
+				return new Response('Avatar image must be 2 MB or smaller.', { status: 413 });
+			const reader = request.body?.getReader();
+			if (!reader) return new Response('Avatar image is required.', { status: 400 });
+			const body = await readUploadBody(reader, AVATAR_MAX_BYTES);
+			if (!body) return new Response('Avatar image must be 2 MB or smaller.', { status: 413 });
+			const blob = new Blob(body.chunks, { type: contentType });
 			const avatarId = await ctx.storage.store(blob);
 			try {
 				await ctx.runMutation(internal.settings.setAvatar, {
@@ -90,7 +102,7 @@ http.route({
 				});
 			} catch (error) {
 				try {
-					await ctx.storage.delete(avatarId);
+					await ctx.runMutation(internal.storageOwnership.discardFile, { fileId: avatarId });
 				} catch (cleanupError) {
 					console.error('Unable to clean up avatar after failed save.', { error, cleanupError });
 				}

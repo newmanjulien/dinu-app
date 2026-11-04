@@ -1,4 +1,4 @@
-import { contractName, type ExportBlock, type ExportRun } from '../../../contract/export/content';
+import { contractName, type ExportBlock } from '../../../contract/export/content';
 
 export async function generateWord(blocks: ExportBlock[], companyName: string): Promise<Blob> {
 	const {
@@ -16,18 +16,12 @@ export async function generateWord(blocks: ExportBlock[], companyName: string): 
 		TableLayoutType,
 		WidthType
 	} = await import('docx');
-	const runs = (content: ExportRun[], header = false) =>
-		content.flatMap((run) =>
-			run.text.split(/\r\n|\r|\n/).map(
-				(text, index) =>
-					new TextRun({
-						text,
-						break: index ? 1 : undefined,
-						bold: run.bold ?? (header ? true : undefined),
-						italics: run.italic
-					})
-			)
-		);
+	const runs = (content: string) =>
+		content
+			? content
+					.split('\n')
+					.map((text, index) => new TextRun({ text, break: index ? 1 : undefined }))
+			: [];
 	const border = { style: BorderStyle.SINGLE, size: 6, color: '171717' };
 	const children = blocks.map((block) => {
 		if (block.kind !== 'table')
@@ -74,7 +68,7 @@ export async function generateWord(blocks: ExportBlock[], companyName: string): 
 										!signature && index < block.headerRowCount ? { fill: 'E8EAED' } : undefined,
 									children: [
 										new Paragraph({
-											children: runs(cell, index < block.headerRowCount),
+											children: runs(cell),
 											style: 'ContractTable',
 											keepNext: signature && index < block.rows.length - 1,
 											keepLines: signature
@@ -91,14 +85,14 @@ export async function generateWord(blocks: ExportBlock[], companyName: string): 
 		styles: {
 			default: {
 				document: {
-					run: { font: 'Arial', size: 23, color: '171717' },
+					run: { font: 'Arial', size: 23, color: '171717', bold: false, italics: false },
 					paragraph: {
 						alignment: AlignmentType.JUSTIFIED,
 						spacing: { after: 300, line: 350 }
 					}
 				},
 				heading1: {
-					run: { size: 30, bold: true },
+					run: { size: 30, bold: false, italics: false },
 					paragraph: {
 						alignment: AlignmentType.CENTER,
 						spacing: { before: 0, after: 495, line: 300 },
@@ -107,7 +101,7 @@ export async function generateWord(blocks: ExportBlock[], companyName: string): 
 					}
 				},
 				heading2: {
-					run: { size: 26, bold: true },
+					run: { size: 26, bold: false, italics: false },
 					paragraph: {
 						alignment: AlignmentType.LEFT,
 						spacing: { before: 510, after: 150, line: 300 },
@@ -116,7 +110,7 @@ export async function generateWord(blocks: ExportBlock[], companyName: string): 
 					}
 				},
 				heading3: {
-					run: { size: 24, bold: true },
+					run: { size: 24, bold: false, italics: false },
 					paragraph: {
 						alignment: AlignmentType.LEFT,
 						spacing: { before: 360, after: 150, line: 300 },
@@ -147,6 +141,5 @@ export async function generateWord(blocks: ExportBlock[], companyName: string): 
 			}
 		]
 	});
-	const blob = await Packer.toBlob(document);
-	return blob;
+	return Packer.toBlob(document);
 }

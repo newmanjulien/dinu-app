@@ -40,7 +40,6 @@ export function readParagraphBounds(
 	const style = getComputedStyle(element);
 	if (
 		!element.matches('p.contract-paragraph.is-final') ||
-		fragment.emptyInsertionSlot ||
 		style.display !== 'block' ||
 		style.whiteSpace !== 'normal' ||
 		style.wordBreak !== 'normal' ||
@@ -153,21 +152,13 @@ export function readParagraphProfile(
 	}
 	if (!observed.length) {
 		// Wholly collapsed whitespace retains its tokens without allocating a visual line.
-		// A block insertion trigger can allocate an empty line without visible glyphs.
-		requireLayout(
-			contentHeight === 0 ||
-				(fragment.emptyInsertionSlot === true && Math.abs(contentHeight - lineHeight) <= EPSILON),
-			'paragraph content height has no observed visual lines'
-		);
+		requireLayout(contentHeight === 0, 'paragraph content height has no observed visual lines');
 		return {
 			kind: 'paragraph',
 			tokenCount: fragment.tokens.length,
 			...margins(element),
 			contentHeight,
-			lines:
-				contentHeight > 0
-					? [{ startToken: 0, endToken: fragment.tokens.length, top: 0, bottom: contentHeight }]
-					: []
+			lines: []
 		};
 	}
 	const firstTop = observed[0].top;

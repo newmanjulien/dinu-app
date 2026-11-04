@@ -1,4 +1,5 @@
 import type { ResolvedRun } from '$lib/contract/model';
+import type { StructuralBoundary } from '$lib/contract/source-index';
 import type { AnnotationMembership } from '$lib/playbook/document-overlay';
 import type { PreparedBlock } from './prepare';
 
@@ -30,7 +31,6 @@ export interface ParagraphFragment {
 	readonly tokens: readonly InlineToken[];
 	readonly isContinuation: boolean;
 	readonly isFinal: boolean;
-	readonly emptyInsertionSlot?: boolean;
 }
 
 export interface TableFragment {
@@ -49,6 +49,8 @@ export interface TableFragment {
 export interface LayoutPlacement {
 	readonly prepared: PreparedBlock;
 	readonly fragment: PageFragment;
+	/** Explicit source-owned boundaries rendered by this exact physical fragment. */
+	readonly structuralBoundaries?: readonly StructuralBoundary[];
 }
 
 /** Complete candidate page produced by pure pagination. */

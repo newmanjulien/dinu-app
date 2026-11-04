@@ -238,7 +238,16 @@ export function positionFloating(surface: HTMLElement, options: FloatingOptions)
 			void update();
 		});
 	}
-	const release = autoUpdate(anchor, surface, scheduleUpdate, {
+	let initialized = false;
+	const release = autoUpdate(anchor, surface, () => {
+		// Floating UI invokes this once on setup. Position a new surface before the next paint;
+		// subsequent layout work remains frame-coalesced.
+		if (!initialized) {
+			initialized = true;
+			void update();
+		}
+		else scheduleUpdate();
+	}, {
 		animationFrame: false,
 		// A selection reference moves through its subscription, not its document-sized context.
 		layoutShift: anchor instanceof HTMLElement

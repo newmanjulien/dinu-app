@@ -2,7 +2,7 @@ import { v } from 'convex/values';
 import { baselineBlock } from './sourceValidators';
 import schema from './schema';
 import { historicalItem } from './playbookValidators';
-import { selections, concessionReviews } from './contractValidators';
+import { selections, storedContract } from './contractValidators';
 
 export { selections };
 export const snapshot = v.object({
@@ -17,13 +17,9 @@ export const contractCard = schema
 	.extend({
 		creator: v.object({ name: v.string(), avatarUrl: v.union(v.string(), v.null()) })
 	});
-export const contractState = v.object({
-	companyName: v.string(),
-	selectedConcessions: selections,
-	reviews: concessionReviews,
-	revision: v.number(),
-	lastOperationId: v.union(v.string(), v.null())
-});
+export const contractState = storedContract
+	.pick('companyName', 'selectedConcessions', 'reviews', 'revision')
+	.extend({ lastOperationId: v.union(v.string(), v.null()) });
 // Live reads include the immutable version reference, never the template content.
 export const contractMetadata = contractState.extend(
 	schema

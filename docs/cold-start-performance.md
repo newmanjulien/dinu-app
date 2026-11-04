@@ -1,5 +1,8 @@
 # Cold-start implementation and evidence
 
+**Historical implementation/evidence record, superseded for current backend instructions on 2026-10-30.** The [current architecture](backend-redesign/architecture.md), [17D2 local evidence](backend-redesign/phase-17d2-cross-workflow.md) and [Phase 18 activation procedure](backend-redesign/phase-18-activation.md) own present behavior/status. Older counts, formatting, indexes, attribution, probes and deployment results below describe their original revision; they do not certify the changed backend or authorize an old rollout recipe.
+
+
 ## Status
 
 This report records the earlier performance refactor. The subsequent
@@ -191,8 +194,9 @@ No shared semantic cache or broader renderer rewrite is justified by the availab
   is present in both modes.
 - `PUBLIC_CONTRACT_PERF=1`: enable diagnostics in production. Development already
   enables them. See `rendering-snappiness.md` for the fields and counter semantics.
-- Startup cleanup is isolated in `runtime/context.ts` and `runtime/source.svelte.ts`.
-  Their diff in `IMPLEMENTATION.patch` is an independent rollback boundary.
+- Startup cleanup is isolated in `runtime/workspace-context.ts`,
+  `runtime/workspace-factory.ts`, and `runtime/source.svelte.ts`. Their diff in
+  `IMPLEMENTATION.patch` is an independent rollback boundary.
 
 Build and start a production preview with the desired environment flags. Use the
 real authenticated source and a fixed browser, fonts, viewport, CPU/network profile,

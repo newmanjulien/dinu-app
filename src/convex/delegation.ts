@@ -2,7 +2,6 @@ import { ConvexError, v } from 'convex/values';
 import {
 	query,
 	mutation,
-	internalQuery,
 	internalMutation,
 	type QueryCtx,
 	type MutationCtx
@@ -10,6 +9,7 @@ import {
 import { internal } from './_generated/api';
 import type { Doc, Id } from './_generated/dataModel';
 import { requireMembership, scopedOperation } from './auth';
+import { deleteUnownedFile } from './storageOwnership';
 import {
 	catalog,
 	submission,
@@ -24,13 +24,16 @@ import {
 import {
 	ATTACHMENT_MAX_BYTES,
 	ATTACHMENT_MAX_COUNT,
-	DOCX_CONTENT_TYPE,
-	PDF_CONTENT_TYPE,
+	ATTACHMENT_FILENAME_MAX_LENGTH,
+	ATTACHMENT_TTL,
+	DELEGATION_MAX_ANSWERS,
+	DELEGATION_ANSWER_MAX_LENGTH,
+	isAttachmentContentType,
 	DELEGATION_TIMEZONE,
 	delegationDeadline
 } from '../lib/delegation';
 
-const UPLOAD_TTL = 24 * 60 * 60_000;
+const EXPIRY_BATCH_SIZE = 25;
 function canonical(value: unknown) {
 	return JSON.stringify(value, (_key, entry) =>
 		entry && typeof entry === 'object' && !Array.isArray(entry)
@@ -151,7 +154,7 @@ export const getCatalog = query({
 function normalize(payload: Submission): Submission {
 	identifier(payload.draftId);
 	if (
-		Object.keys(payload.answers).length > 20 ||
+		Object.keys(payload.answers).length > DELEGATION_MAX_ANSWERS ||
 		payload.attachmentIds.length > ATTACHMENT_MAX_COUNT
 	)
 		invalid('Check your answers and attachments.');
@@ -159,7 +162,8 @@ function normalize(payload: Submission): Submission {
 		Object.entries(payload.answers)
 			.sort(([a], [b]) => a.localeCompare(b))
 			.map(([key, value]) => {
-				if (value.length > 10000) invalid('Keep each answer under 10,000 characters.');
+				if (value.length > DELEGATION_ANSWER_MAX_LENGTH)
+					invalid('Keep each answer under 10,000 characters.');
 				return [key, value.trim()];
 			})
 	);
@@ -226,8 +230,7 @@ export const submit = mutation({
 				!storage ||
 				storage.size !== file.size ||
 				storage.size > ATTACHMENT_MAX_BYTES ||
-				storage.contentType !== file.contentType ||
-				![DOCX_CONTENT_TYPE, PDF_CONTENT_TYPE].includes(file.contentType)
+				storage.contentType !== file.contentType
 			)
 				rejected('An attachment is unavailable. Remove it and upload it again.');
 			attachments.push(file);
@@ -276,7 +279,7 @@ export const draftAttachments = query({
 	}
 });
 async function checkCancellation(
-	ctx: QueryCtx,
+	ctx: MutationCtx,
 	access: { companyId: Id<'company'>; _id: Id<'profiles'> },
 	draftId: string,
 	uploadId: string
@@ -298,7 +301,7 @@ async function checkCancellation(
 	if (markers.some((marker) => marker && marker.expiresAt > Date.now()))
 		invalid('This upload was cancelled. Select the file again.');
 }
-export const authorizeUpload = internalQuery({
+export const authorizeUpload = internalMutation({
 	args: uploadArgs.fields,
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -329,8 +332,8 @@ export const registerUpload = internalMutation({
 			!storage ||
 			storage.size <= 0 ||
 			storage.size > ATTACHMENT_MAX_BYTES ||
-			![DOCX_CONTENT_TYPE, PDF_CONTENT_TYPE].includes(storage.contentType ?? '') ||
-			args.filename.length > 255
+			!isAttachmentContentType(storage.contentType) ||
+			args.filename.length > ATTACHMENT_FILENAME_MAX_LENGTH
 		)
 			invalid('Choose a DOCX or PDF no larger than 10 MB.');
 		const existing = await ctx.db
@@ -375,18 +378,18 @@ export const registerUpload = internalMutation({
 			uploadId: args.uploadId,
 			filename: args.filename,
 			size: storage.size,
-			contentType: storage.contentType!,
+			contentType: storage.contentType,
 			sha256: storage.sha256,
 			state: 'staged',
-			expiresAt: Date.now() + UPLOAD_TTL
+			expiresAt: Date.now() + ATTACHMENT_TTL
 		});
 		return { attachmentId: id, storageId: args.storageId };
 	}
 });
 async function deleteStaged(ctx: MutationCtx, file: Doc<'delegationAttachments'>) {
 	if (file.state !== 'staged') return;
-	await ctx.storage.delete(file.storageId);
 	await ctx.db.delete('delegationAttachments', file._id);
+	await deleteUnownedFile(ctx, file.storageId);
 }
 export const discard = mutation({
 	args: {
@@ -415,7 +418,7 @@ export const discard = mutation({
 					.eq('uploadId', scope.uploadId)
 			)
 			.unique();
-		const expiresAt = Date.now() + UPLOAD_TTL;
+		const expiresAt = Date.now() + ATTACHMENT_TTL;
 		if (marker) await ctx.db.patch('delegationCancellations', marker._id, { expiresAt });
 		else await ctx.db.insert('delegationCancellations', { ...scope, expiresAt });
 		const files = await ctx.db
@@ -439,9 +442,9 @@ export const expireCancellations = internalMutation({
 		const markers = await ctx.db
 			.query('delegationCancellations')
 			.withIndex('by_expiresAt', (q) => q.lte('expiresAt', Date.now()))
-			.take(25);
+			.take(EXPIRY_BATCH_SIZE);
 		for (const marker of markers) await ctx.db.delete('delegationCancellations', marker._id);
-		if (markers.length === 25)
+		if (markers.length === EXPIRY_BATCH_SIZE)
 			await ctx.scheduler.runAfter(0, internal.delegation.expireCancellations, {});
 		return null;
 	}
@@ -455,9 +458,9 @@ export const expireAttachments = internalMutation({
 			.withIndex('by_state_and_expiresAt', (q) =>
 				q.eq('state', 'staged').lte('expiresAt', Date.now())
 			)
-			.take(25);
+			.take(EXPIRY_BATCH_SIZE);
 		for (const file of files) await deleteStaged(ctx, file);
-		if (files.length === 25)
+		if (files.length === EXPIRY_BATCH_SIZE)
 			await ctx.scheduler.runAfter(0, internal.delegation.expireAttachments, {});
 		return null;
 	}

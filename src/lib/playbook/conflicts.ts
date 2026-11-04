@@ -1,39 +1,40 @@
 import type { ContractChange } from './model';
-import { activatedBlock } from './geometry';
-import { pointPosition, resolvePoint, type SourceIndex } from '../contract/source-index';
-import { localContainer } from '../contract/ranges';
+import { pointPosition, type SourceIndex } from '../contract/source-index';
+import { isTextTarget } from '../contract/source-model';
+import { targetContainers } from '../contract/ranges';
 
-export interface ChangeFootprint {
-	start: number;
-	end: number;
-	block: string;
-	structuralBlock?: string;
-}
+export type ChangeFootprint =
+	| {
+			kind: 'text';
+			start: number;
+			end: number;
+	  }
+	| { kind: 'boundary'; afterBlockKey: string };
 
 export function changeFootprint(index: SourceIndex, change: ContractChange): ChangeFootprint {
-	localContainer(index, change.range);
-	const structuralBlock = activatedBlock(index, change);
+	targetContainers(index, change.range);
+	if (!isTextTarget(change.range))
+		return { kind: 'boundary', afterBlockKey: change.range.afterBlockKey };
 	return {
-		start: pointPosition(index, change.range.start),
-		end: pointPosition(index, change.range.end),
-		block: resolvePoint(index, change.range.start).blockKey,
-		structuralBlock
+		kind: 'text',
+		start: pointPosition(index, change.range.range.start),
+		end: pointPosition(index, change.range.range.end)
 	};
 }
 
 function footprintsConflict(x: ChangeFootprint, y: ChangeFootprint): boolean {
+	if (x.kind === 'boundary' || y.kind === 'boundary')
+		return x.kind === 'boundary' && y.kind === 'boundary' && x.afterBlockKey === y.afterBlockKey;
 	const xInsertion = x.start === x.end,
 		yInsertion = y.start === y.end;
 	return Boolean(
-		x.structuralBlock === y.block ||
-		y.structuralBlock === x.block ||
-		(xInsertion && yInsertion
+		xInsertion && yInsertion
 			? x.start === y.start
 			: xInsertion
 				? y.start <= x.start && x.start <= y.end
 				: yInsertion
 					? x.start <= y.start && y.start <= x.end
-					: x.start < y.end && y.start < x.end)
+					: x.start < y.end && y.start < x.end
 	);
 }
 

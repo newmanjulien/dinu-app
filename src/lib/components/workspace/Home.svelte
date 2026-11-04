@@ -52,8 +52,7 @@
 		api.savedContracts.browse,
 		() => ({
 			membershipId,
-			search: query,
-			directoryReady: viewer().company.contractDirectoryReady ?? false
+			search: query
 		}),
 		{ initialNumItems: 24 }
 	);
@@ -202,13 +201,6 @@
 		try {
 			await saves.rename(id, name);
 			if (!alive) return;
-			if (page)
-				page = {
-					...page,
-					cards: page.cards.map((card) =>
-						card._id === id ? { ...card, companyName: name, savedAt: Date.now() } : card
-					)
-				};
 			renaming = null;
 		} catch (error) {
 			if (alive) renameError = saveError(error, 'We couldn’t rename this contract. Try again.');
@@ -258,13 +250,13 @@
 					<button
 						type="button"
 						aria-label="Clear search"
-						class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-button-sm text-ink-muted transition-colors hover:bg-control-fill hover:text-ink focus-visible:outline-1 focus-visible:outline-line-strong/40"
+						class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-button-sm text-ink-muted transition-colors hover:bg-control-hover hover:text-ink focus-visible:outline-1 focus-visible:outline-line-strong/40"
 						onclick={() => {
 							search = '';
 							searchInput?.focus();
 						}}
 					>
-						<XIcon size={14} weight="regular" aria-hidden="true" />
+						<XIcon size={15} weight="regular" aria-hidden="true" />
 					</button>
 				{/if}
 			</div>
@@ -274,7 +266,7 @@
 				title={viewer().templateReady
 					? undefined
 					: 'An admin must upload your company’s baseline contract.'}
-				><PlusIcon size={15} aria-hidden="true" />Add New</Button
+				><PlusIcon size={15} aria-hidden="true" />New contract</Button
 			>
 		</div>
 		{#if !viewer().templateReady}<p class="mb-5 text-[13px] text-ink-muted">
@@ -284,7 +276,10 @@
 			</p>{/if}
 		<div class="mb-3 flex items-center gap-3">
 			<h1 class="text-sm font-medium">Contracts</h1>
-			{#if list.waiting && list.cards.length}<LoadingWheel label="Refreshing contracts" />{/if}
+			{#if list.waiting && list.cards.length}<LoadingWheel
+					label="Refreshing contracts"
+					size="size-5"
+				/>{/if}
 		</div>
 		{#if list.error && list.cards.length}<p class="mb-3 text-xs text-ink-muted" role="status">
 				We couldn’t refresh your contracts. Showing previous results.
@@ -316,7 +311,7 @@
 					</h2>
 					<p class="mt-2 text-[13px] text-ink-muted">
 						{viewer().templateReady
-							? 'Select Add New to start your first contract.'
+							? 'Click New contract to start your first contract.'
 							: viewer().profile.role === 'admin'
 								? 'This is where reps create contracts for customers. But first, you need to set up your company’s baseline contract.'
 								: 'This is where reps create contracts for customers. But first, an admin needs to set up your company’s baseline contract.'}

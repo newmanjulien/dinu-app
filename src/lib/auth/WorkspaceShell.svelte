@@ -15,12 +15,14 @@
 	const header = setHeaderContent();
 	const readiness = setWorkspaceReadiness();
 	const desktop = new MediaQuery('(min-width: 1000px)', false);
+	const delegationWidgetEnabled = false;
 	let widgetEligible = $state(false);
 	$effect(() => {
 		if (desktop.current) widgetEligible = true;
 	});
 	const widgetAllowed = $derived(
-		widgetEligible &&
+		delegationWidgetEnabled &&
+			widgetEligible &&
 			readiness.painted &&
 			viewer().profile.role === 'admin' &&
 			!session.blocked &&

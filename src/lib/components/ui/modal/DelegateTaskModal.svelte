@@ -17,6 +17,7 @@
 	import {
 		ATTACHMENT_MAX_BYTES,
 		ATTACHMENT_MAX_COUNT,
+		DELEGATION_ANSWER_MAX_LENGTH,
 		DOCX_CONTENT_TYPE,
 		PDF_CONTENT_TYPE,
 		delegationDeadline,
@@ -634,14 +635,14 @@
 										<button
 											type="button"
 											aria-label="Clear search"
-											class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-button-sm text-ink-muted transition-colors not-disabled:hover:bg-control-fill not-disabled:hover:text-ink focus-visible:outline-1 focus-visible:outline-line-strong/40"
+											class="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-button-sm text-ink-muted transition-colors not-disabled:hover:bg-control-hover not-disabled:hover:text-ink focus-visible:outline-1 focus-visible:outline-line-strong/40"
 											disabled={locked}
 											onclick={() => {
 												search = '';
 												searchInput?.focus();
 											}}
 										>
-											<XIcon size={14} weight="regular" aria-hidden="true" />
+											<XIcon size={15} weight="regular" aria-hidden="true" />
 										</button>
 									{/if}
 								</div>
@@ -690,7 +691,7 @@
 													id={`${prefix}-${question.key}`}
 													class={`${fieldClass} h-10`}
 													required={question.required}
-													maxlength={10000}
+													maxlength={DELEGATION_ANSWER_MAX_LENGTH}
 													disabled={locked}
 													bind:value={answers[question.key]}
 													oninput={changed}
@@ -701,7 +702,7 @@
 													class={`${fieldClass} min-h-24 py-2.5 leading-[1.45]`}
 													rows={3}
 													required={question.required}
-													maxlength={10000}
+													maxlength={DELEGATION_ANSWER_MAX_LENGTH}
 													disabled={locked}
 													bind:value={answers[question.key]}
 													oninput={changed}></textarea>
@@ -756,7 +757,7 @@
 												</div>
 												<button
 													type="button"
-													class="rounded p-1 text-ink-muted not-disabled:hover:bg-control-fill"
+													class="rounded p-1 text-ink-muted not-disabled:hover:bg-control-hover"
 													aria-label={`Remove ${upload.file.name}`}
 													disabled={locked ||
 														upload.status === 'uploading' ||

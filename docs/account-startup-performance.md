@@ -1,5 +1,8 @@
 # Account startup cleanup
 
+**Historical implementation/evidence record, superseded for current backend instructions on 2026-10-30.** The [current architecture](backend-redesign/architecture.md), [17D2 local evidence](backend-redesign/phase-17d2-cross-workflow.md) and [Phase 18 activation procedure](backend-redesign/phase-18-activation.md) own present behavior/status. Older counts, formatting, indexes, attribution, probes and deployment results below describe their original revision; they do not certify the changed backend or authorize an old rollout recipe.
+
+
 Updated on October 25, 2026. The backend changes and contract-directory backfill are on development deployment `scrupulous-squirrel-986`. Production has not been deployed or measured. [Account entry and workspace routes](account-routes.md) describes the route architecture; the earlier measurements below describe the preceding implementation.
 
 ## Resulting startup path

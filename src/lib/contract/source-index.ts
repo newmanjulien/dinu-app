@@ -25,49 +25,40 @@ export interface SourceIndex {
 	readonly byKey: ReadonlyMap<string, SourceUnit>;
 	readonly containers: ReadonlyMap<string, SourceContainer>;
 	readonly blocks: ReadonlyMap<string, BaselineBlock>;
+	readonly orderedBlocks: readonly BaselineBlock[];
+	readonly blockOrdinals: ReadonlyMap<string, number>;
+	readonly numberingItems: ReadonlyMap<string, BaselineBlock>;
+	/** Baseline numbering only; composed numbering and merge aliases are separate. */
+	readonly addresses: ReadonlyMap<string, Address>;
+	/** Selectable document boundaries. They are never source units or source containers. */
+	readonly structuralBoundaries: ReadonlyMap<string, StructuralBoundary>;
 }
-export function sourceAddresses(
-	blocks: readonly BaselineBlock[],
-	activeBlocks: ReadonlySet<string> = new Set()
-): Map<string, Address> {
-	const iterator = iterateSourceAddresses(blocks, activeBlocks);
-	let next = iterator.next();
-	while (!next.done) next = iterator.next();
-	return next.value;
+export interface StructuralBoundary {
+	/** The boundary is the trailing edge of this real source block. */
+	readonly afterBlockKey: string;
+	/** The next baseline block, when the boundary is internal rather than document-final. */
+	readonly nextBlockKey?: string;
 }
-export function* iterateSourceAddresses(
-	blocks: readonly BaselineBlock[],
-	activeBlocks: ReadonlySet<string> = new Set()
-): Generator<undefined, Map<string, Address>> {
-	const active: BaselineBlock[] = [];
-	for (const block of blocks) {
-		if (block.kind !== 'paragraph' || !block.optional || activeBlocks.has(block.blockKey))
-			active.push(block);
-		yield undefined;
-	}
-	return yield* iterateNumberAddresses(active);
-}
-
 /** Copies display/coordinate data; generated display changes never change source coordinates. */
-export function buildSourceIndex(
-	blocks: readonly BaselineBlock[],
-	addresses?: Map<string, Address>
-): SourceIndex {
-	const iterator = iterateSourceIndex(blocks, addresses);
+export function buildSourceIndex(blocks: readonly BaselineBlock[]): SourceIndex {
+	const iterator = iterateSourceIndex(blocks);
 	let next = iterator.next();
 	while (!next.done) next = iterator.next();
 	return next.value;
 }
 
 export function* iterateSourceIndex(
-	blocks: readonly BaselineBlock[],
-	addresses?: Map<string, Address>
+	blocks: readonly BaselineBlock[]
 ): Generator<undefined, SourceIndex> {
-	const currentAddresses = addresses ?? (yield* iterateSourceAddresses(blocks));
+	const addresses = yield* iterateNumberAddresses(blocks);
 	const units: SourceUnit[] = [];
 	const byKey = new Map<string, SourceUnit>();
 	const containers = new Map<string, SourceContainer>();
 	const blockMap = new Map<string, BaselineBlock>();
+	const orderedBlocks: BaselineBlock[] = [];
+	const blockOrdinals = new Map<string, number>();
+	const numberingItems = new Map<string, BaselineBlock>();
+	const structuralBoundaries = new Map<string, StructuralBoundary>();
 	let position = 0;
 	let previousOrder = -1;
 	function* container(
@@ -100,17 +91,17 @@ export function* iterateSourceIndex(
 				numberSourceKey(block.numbering.itemKey),
 				'number',
 				1,
-				currentAddresses.get(block.numbering.itemKey)?.label ?? ''
+				addresses.get(block.numbering.itemKey)?.label ?? ''
 			);
 		for (const atom of content) {
 			yield undefined;
-			if (atom.sourceKey.startsWith('number:'))
+			if (atom.sourceKey.startsWith('number:') || atom.sourceKey.startsWith('gap:'))
 				throw new PlaybookValidationError(`Reserved source namespace: ${atom.sourceKey}`);
 			add(
 				atom.sourceKey,
 				atom.kind,
 				atom.kind === 'text' ? atom.text.length : 1,
-				atom.kind === 'text' ? atom.text : referenceText(atom, currentAddresses)
+				atom.kind === 'text' ? atom.text : referenceText(atom, addresses)
 			);
 		}
 		if (!local.length)
@@ -133,6 +124,8 @@ export function* iterateSourceIndex(
 	for (const block of blocks) {
 		if (
 			!block.blockKey.trim() ||
+			block.blockKey.startsWith('gap:') ||
+			block.blockKey.startsWith('insert:') ||
 			block.blockKey !== block.blockKey.trim() ||
 			blockMap.has(block.blockKey)
 		)
@@ -140,7 +133,10 @@ export function* iterateSourceIndex(
 		if (!Number.isSafeInteger(block.order) || block.order <= previousOrder)
 			throw new PlaybookValidationError(`Invalid block order: ${block.blockKey}`);
 		previousOrder = block.order;
+		blockOrdinals.set(block.blockKey, orderedBlocks.length);
+		orderedBlocks.push(block);
 		blockMap.set(block.blockKey, block);
+		if (block.numbering) numberingItems.set(block.numbering.itemKey, block);
 		if (block.kind === 'table') {
 			for (const [r, row] of block.rows.entries())
 				for (const [c, cell] of row.entries()) {
@@ -150,7 +146,36 @@ export function* iterateSourceIndex(
 		} else yield* container(block, block.blockKey, block.content, false);
 		yield undefined;
 	}
-	return { units: Object.freeze(units), byKey, containers, blocks: blockMap };
+	// Structural boundaries are metadata, not zero-length source text. In particular they never
+	// enter `units`, `byKey`, or `containers`, so text algorithms cannot mistake one for content.
+	for (let i = 0; i <= blocks.length; i++) {
+		const before = blocks[i - 1],
+			after = blocks[i];
+		// The first paragraph has no leading document margin to select. Every slot is anchored
+		// to a real trailing margin on its preceding paragraph or heading.
+		if (!before) continue;
+		if (before?.kind === 'table' || after?.kind === 'table') continue;
+		if (before?.kind !== 'paragraph' && after?.kind !== 'paragraph') continue;
+		structuralBoundaries.set(
+			before.blockKey,
+			Object.freeze({
+				afterBlockKey: before.blockKey,
+				...(after ? { nextBlockKey: after.blockKey } : {})
+			})
+		);
+		yield undefined;
+	}
+	return {
+		units: Object.freeze(units),
+		byKey,
+		containers,
+		blocks: blockMap,
+		orderedBlocks: Object.freeze(orderedBlocks),
+		blockOrdinals,
+		numberingItems,
+		addresses,
+		structuralBoundaries
+	};
 }
 export function resolvePoint(index: SourceIndex, point: SourcePoint): SourceUnit {
 	const unit = index.byKey.get(point.sourceKey);

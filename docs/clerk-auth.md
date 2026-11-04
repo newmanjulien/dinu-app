@@ -8,7 +8,7 @@ no discovery or email-domain matching. Accounts belong to one company at a time.
 Clerk owns identity and verified sign-in email. Convex owns profiles, memberships,
 roles, company settings, and invitation records. Settings never updates another
 user's profile or Clerk's name. See [the company schema and rollout
-runbook](private-companies-rollout.md) before updating an existing deployment.
+runbook](private-companies-rollout.md) and [current activation procedure](backend-redesign/phase-18-activation.md) before updating an existing deployment.
 
 ## Development configuration
 
@@ -58,7 +58,10 @@ Add a Clerk webhook for **user.deleted** at
 not `.cloud`. Copy its signing secret to the matching Convex deployment. A valid
 delivery is acknowledged only after the permanent deletion marker commits.
 
-Run `npx convex dev` against the intended development deployment, then `npm run dev`.
+For ordinary development after the authorized initial activation, run `npx convex dev`
+against the confirmed development target, then `npm run dev`. During the pre-customer
+redesign, use Phase 18's target/archive/reset/deploy gates first; do not use dev/codegen
+to bypass them.
 The browser uses Convex's authenticated Svelte integration with Clerk's `convex`
 token. Each Clerk session gets a fresh Convex client; local snapshot caches are
 scoped to profile and membership and cleared on logout, deletion, account changes,
@@ -129,9 +132,9 @@ backend after its cached database lookup; the anonymous flow uses the remaining
 duration rather than comparing expiry against the recipient's device clock.
 Resend rotates the hashed token and delivery generation; revoke invalidates the link.
 Old Clerk invitations do not create memberships and must be reissued through the
-company team page. Configure Gmail SMTP backend credentials for invitations and
-approvals, and set each company's approval recipient in Settings. See the runbook
-for expiry, cooldown, and queued-recipient behavior.
+company team page. Configure Loops backend credentials and the three repo-native
+LMX templates for invitations, approvals and completed reviews; set each company's approval recipient in Settings. See
+[email delivery](email-delivery.md) for setup, expiry, cooldown and recipient behavior.
 
 ## Session transitions and contract drafts
 
@@ -235,11 +238,12 @@ If its outcome is still uncertain, it retains the draft and reports failure.
 
 ## Fresh development reset
 
-Clear incompatible Convex records and stored files before deploying the canonical
-schema. Stop writes, deletion webhooks, and queued/recurring work first. Clerk
-accounts can remain: normal onboarding initializes a missing application profile
-and lets the user create a company. Then seed the actual company ID through the
-scoped importer. Follow [the reset procedure](private-companies-rollout.md#fresh-development-reset).
+Follow the [current Phase 18 procedure](backend-redesign/phase-18-activation.md):
+identify/inventory the exact target, establish archive/restoration evidence and
+review quiescence/reset/job/storage operations before authorization. Existing
+Clerk accounts remain independent; normal onboarding initializes a missing
+application profile and creates the company. The ordinary atomic bootstrap uses
+that real company ID. No current local check has performed this reset.
 
 ## Deletion and recovery
 
@@ -279,11 +283,15 @@ using bounded pagination, without role preference or changing the successor’s 
 exists, the company becomes ownerless and requires internal operator recovery;
 there is no public company claim flow. Details are in the company runbook.
 
-Every 15 minutes reconciliation checks registered profiles and dispatched company
-requests against Clerk with one batch lookup per 25-record page and resumes
-unfinished jobs. The company request scan works after the profile is gone. Only an account
-missing from a complete, successful batch response records a deletion; network
-errors and incomplete responses retain the account. Each deletion marker tracks
+Every 15 minutes reconciliation first discovers local unfinished work independently
+of Clerk credentials, then checks registered profiles and dispatched company requests.
+Native discovery targets 100 rows with explicit read caps; each provider request
+contains at most 100 deduplicated IDs, independently of native page length. Canonical
+writes use separate 25-identity batches. The company scan works after the profile
+is gone. Only a complete duplicate-free/requested-ID-only response whose count
+matches the filtered provider total establishes absence; failures and partial
+responses establish no deletion and do not starve later subsets/pages. Actual
+Clerk subset/count semantics remain Phase 18 acceptance. Each deletion marker tracks
 one cleanup job chain; repeated webhooks reuse an active chain, and stale jobs
 do no work. Recovery isolates individual failures and advances through all pages.
 Inspect `deletedUsers.complete`, `companyDeletions.status`, and scheduled-function
@@ -298,7 +306,7 @@ production build. Existing fixtures carry authenticated identities. Their saving
 conflict, retry, creation, immutable publication, scheduling, and cache assertions
 remain in place; no new test suite was added.
 
-Live configuration and browser checks need development Clerk keys and SMTP setup.
+Live configuration and browser checks need development Clerk keys and Loops setup.
 Use accounts in two companies plus an unaffiliated account. Verify email codes,
 signup/login, explicit invitation acceptance, wrong-email and rotated/revoked links,
 create/wait onboarding, role and ownership changes, company/personal avatar saves,
@@ -310,13 +318,14 @@ immediate access loss, draft/cache cleanup, rejected upload cleanup, retained
 company contracts, and former-colleague attribution. Check anonymously called
 Convex operations and the snapshot HTTP endpoint are rejected.
 
-On disposable development data, interrupt and resume the company seed import.
+On disposable development data, verify atomic company bootstrap failure/retry;
+there is no staged seed import to resume.
 Delete an owner externally, redeliver signed webhooks, and simulate a missed webhook
 through reconciliation. Check live successor selection and ownerless recovery.
 Compare scoped counts, snapshot links, historical creator IDs and selections.
 Confirm failed or incomplete Clerk lookups never start deletion, and an uncertain
 client deletion result preserves dispatched consent. Exercise the deletion races
-listed in [the deletion runbook](company-deletion.md#manual-verification).
+listed in [the deletion runbook](company-deletion.md#activation-and-verification).
 The local suite/build does not
 certify these live authorization and reset checks.
 
@@ -331,6 +340,6 @@ to `/login` without waiting for webhook cleanup or an extra sign-out call.
 
 Review mobile layouts, keyboard focus, Escape, and focus restoration for onboarding,
 settings, team confirmations, and modals. Verify actual invitation and approval
-SMTP delivery, including distinct recipients for two companies and a recipient
+Loops delivery, including distinct recipients for two companies and a recipient
 change while an approval is queued. These remain manual rollout gates; no new
 browser or backend test suite was added.

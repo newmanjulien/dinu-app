@@ -3,13 +3,17 @@ import {
 	rangePageNumbers,
 	selectedLineBounds,
 	measureRanges,
+	measureStructuralBoundaryTarget,
 	measureRevisions,
 	measureTriggers,
+	structuralBoundaryHighlight,
+	structuralBoundaryRect,
 	resolveOverlaps,
 	type PageGeometry,
 	type HighlightKind,
 	type MeasuredInterval,
-	type HighlightRect
+	type HighlightRect,
+	type StructuralBoundaryTarget
 } from './geometry';
 import { countOverlayWork } from '../runtime/render-perf';
 import { getDocumentViewportMetrics } from '../document-viewport';
@@ -102,6 +106,17 @@ type Group = {
 	ranges: Map<Range, RangeRecord>;
 	pages?: ReadonlySet<number>;
 };
+type BoundarySelection = {
+	key: string;
+	startRatio: number;
+	endRatio: number;
+};
+type BoundaryGroup = {
+	kind: HighlightKind;
+	selections: readonly BoundarySelection[];
+	rects: readonly HighlightRect[];
+	pages: ReadonlySet<number>;
+};
 function groupRangePages(range: Range, included?: ReadonlySet<number>) {
 	const pages = rangePageNumbers(range);
 	return new Set(included ? pages.filter((number) => included.has(number)) : pages);
@@ -115,6 +130,8 @@ export const EMPTY_HIGHLIGHTS: readonly HighlightRect[] = Object.freeze([]);
 export class DocumentHighlightController {
 	#stage: HTMLElement;
 	#groups = new Map<string, Group>();
+	#boundaryGroups = new Map<string, BoundaryGroup>();
+	#structuralBoundaries = new Map<string, StructuralBoundaryTarget>();
 	/** Range ownership survives unmeasured and dirty page geometry. */
 	#pageGroups = new Map<number, Map<string, Set<Range>>>();
 	#pages = new Map<number, PageRecord>();
@@ -135,9 +152,6 @@ export class DocumentHighlightController {
 	#paintDirty = new Set<number>();
 	#selectionDirty = true;
 	#nativeRanges: Range[] = [];
-	#selectionIntervals: MeasuredInterval[] = [];
-	#selectionBounds: DOMRect | null = null;
-	#selectionListeners = new Set<() => void>();
 	#frame: number | undefined;
 	#destroyed = false;
 	#events = new AbortController();
@@ -258,6 +272,145 @@ export class DocumentHighlightController {
 			if (this.#updateRange(name, group, range)) changed = true;
 		}
 		if (changed) this.#schedule();
+	}
+	/** Paint structural selections that have source coordinates but no text Range. */
+	setStructuralBoundaryGroup(name: string, kind: HighlightKind, selections: readonly BoundarySelection[]) {
+		if (this.#destroyed) return;
+		const next = selections.filter(
+			(selection) =>
+				selection.key &&
+				Number.isFinite(selection.startRatio) &&
+				Number.isFinite(selection.endRatio)
+		);
+		if (!next.length) {
+			this.clearStructuralBoundaryGroup(name);
+			return;
+		}
+		const previous = this.#boundaryGroups.get(name);
+		if (
+			previous?.kind === kind &&
+			previous.selections.length === next.length &&
+			previous.selections.every(
+				(selection, index) =>
+					selection.key === next[index].key &&
+					selection.startRatio === next[index].startRatio &&
+					selection.endRatio === next[index].endRatio
+			)
+		)
+			return;
+		this.#boundaryGroups.set(name, {
+			kind,
+			selections: next.map((selection) => ({ ...selection })),
+			rects: [],
+			pages: new Set()
+		});
+		this.#refreshStructuralBoundaryGroup(name);
+	}
+	clearStructuralBoundaryGroup(name: string) {
+		const group = this.#boundaryGroups.get(name);
+		if (group) {
+			this.#boundaryGroups.delete(name);
+			for (const rect of group.rects) this.#paintDirty.add(rect.page);
+		}
+		this.#pruneStructuralBoundaries();
+		if (group) this.#schedule();
+	}
+	/** Return the source-owned physical blank margin for the current pointer coordinates. */
+	structuralBoundaryAt(clientX: number, clientY: number): StructuralBoundaryTarget | null {
+		if (this.#destroyed) return null;
+		const boundary = document
+			.elementFromPoint(clientX, clientY)
+			?.closest<HTMLElement>('[data-structural-boundary]');
+		return boundary && this.#stage.contains(boundary)
+			? this.#measureStructuralBoundary(boundary)
+			: null;
+	}
+	structuralBoundary(key: string): StructuralBoundaryTarget | null {
+		if (this.#destroyed) return null;
+		const target = this.#structuralBoundaries.get(key) ?? this.#structuralBoundaryTarget(key);
+		return target ? (this.#projectStructuralBoundary(target) ?? null) : null;
+	}
+	structuralBoundarySelectionBounds(key: string, startRatio: number, endRatio: number): DOMRect | null {
+		const target =
+			this.#structuralBoundaries.get(key) ?? this.#structuralBoundaryTarget(key);
+		if (!target) return null;
+		const projection = this.#pageProjection(target.page);
+		if (!projection) return null;
+		const highlight = structuralBoundaryRect(target, startRatio, endRatio);
+		return new DOMRect(
+			projection.bounds.left + highlight.x * projection.scale,
+			projection.bounds.top + highlight.y * projection.scale,
+			highlight.width * projection.scale,
+			highlight.height * projection.scale
+		);
+	}
+	#pageProjection(number: number) {
+		const page = this.#pageElements.get(number);
+		if (!page) return null;
+		const bounds = page.getBoundingClientRect();
+		const scale = bounds.width / page.offsetWidth;
+		if (!Number.isFinite(scale) || scale <= 0) return null;
+		return { bounds, scale };
+	}
+	#projectStructuralBoundary(
+		target: StructuralBoundaryTarget,
+		projection = this.#pageProjection(target.page)
+	): StructuralBoundaryTarget | null {
+		if (!projection) return null;
+		return {
+			...target,
+			bounds: new DOMRect(
+				projection.bounds.left + target.left * projection.scale,
+				projection.bounds.top + target.top * projection.scale,
+				target.width * projection.scale,
+				target.height * projection.scale
+			)
+		};
+	}
+	#measureStructuralBoundary(element: HTMLElement): StructuralBoundaryTarget | null {
+		const target = measureStructuralBoundaryTarget(element);
+		if (!target) return null;
+		this.#structuralBoundaries.set(target.key, target);
+		return this.#projectStructuralBoundary(target);
+	}
+	#structuralBoundaryTarget(key: string) {
+		const cached = this.#structuralBoundaries.get(key);
+		if (cached) return cached;
+		const element = this.#stage.querySelector<HTMLElement>(
+			`[data-structural-boundary="${CSS.escape(key)}"]`
+		);
+		if (element) this.#measureStructuralBoundary(element);
+		return this.#structuralBoundaries.get(key);
+	}
+	#pruneStructuralBoundaries() {
+		const retained = new Set(
+			[...this.#boundaryGroups.values()].flatMap((group) =>
+				group.selections.map((selection) => selection.key)
+			)
+		);
+		for (const key of this.#structuralBoundaries.keys())
+			if (!retained.has(key)) this.#structuralBoundaries.delete(key);
+	}
+	#refreshStructuralBoundaryGroup(name: string) {
+		const group = this.#boundaryGroups.get(name);
+		if (!group) return;
+		const pages = new Set<number>();
+		const rects = group.selections.flatMap((selection) => {
+			const target = this.#structuralBoundaryTarget(selection.key);
+			if (target) pages.add(target.page);
+			return target
+				? [structuralBoundaryHighlight(target, selection.startRatio, selection.endRatio, group.kind)]
+				: [];
+		});
+		if (sameHighlights(group.rects, rects) && samePages(group.pages, pages)) return;
+		for (const rect of group.rects) this.#paintDirty.add(rect.page);
+		group.rects = rects;
+		group.pages = pages;
+		for (const rect of rects) this.#paintDirty.add(rect.page);
+		this.#schedule();
+	}
+	#refreshStructuralBoundaryGroups() {
+		for (const name of this.#boundaryGroups.keys()) this.#refreshStructuralBoundaryGroup(name);
 	}
 	#updateRange(name: string, group: Group, range: Range, measuredPages?: ReadonlySet<number>) {
 		const previous = group.ranges.get(range);
@@ -449,12 +602,6 @@ export class DocumentHighlightController {
 		if (this.#destroyed) return;
 		this.#ensureGeometry(new Set(rangePageNumbers(range)));
 	}
-	subscribeSelection(listener: () => void) {
-		this.#selectionListeners.add(listener);
-		return () => {
-			this.#selectionListeners.delete(listener);
-		};
-	}
 	#selectionChanged = () => {
 		if (!this.#selectionDirty) {
 			const selection = document.getSelection();
@@ -486,42 +633,29 @@ export class DocumentHighlightController {
 		if (!unchanged) this.#nativeRanges = ranges.map((range) => range.cloneRange());
 		this.setGroup('native-selection', 'native-selection', this.#nativeRanges);
 		this.#selectionDirty = false;
-		const intervals = [...this.#pages.values()]
-			.filter((page) => !this.#geometryDirty.has(page.geometry.number))
-			.sort((a, b) => a.geometry.number - b.geometry.number)
-			.flatMap((page) => [...(page.groups.get('native-selection')?.values() ?? [])].flat());
-		const last = intervals.at(-1);
-		this.#selectionIntervals = last
-			? intervals.filter(
-					(interval) => interval.container === last.container && interval.band === last.band
-				)
-			: [];
-		this.#updateSelectionBounds();
 	}
-	#updateSelectionBounds() {
-		const bounds = selectedLineBounds(this.#selectionIntervals),
-			previous = this.#selectionBounds;
-		this.#selectionBounds = bounds;
-		if (
-			bounds?.x !== previous?.x ||
-			bounds?.y !== previous?.y ||
-			bounds?.width !== previous?.width ||
-			bounds?.height !== previous?.height
-		) {
-			countOverlayWork('selectionUpdates');
-			for (const listener of this.#selectionListeners) listener();
-		}
-	}
-	finalLineBounds(ranges: Range[]) {
-		if (
-			this.#destroyed ||
-			ranges.length !== this.#nativeRanges.length ||
-			!ranges.every((range, i) => sameRange(range, this.#nativeRanges[i])) ||
-			!this.#selectionIntervals.at(-1)?.page.element.isConnected ||
-			this.#selectionIntervals.some((interval) => this.#geometryDirty.has(interval.page.number))
-		)
-			return null;
-		return selectedLineBounds(this.#selectionIntervals);
+	/**
+	 * The highlighter is the sole text-geometry owner. Consumers can position transient controls
+	 * from the same line maps used to paint selection highlights without repeating DOM rect scans.
+	 */
+	rangeBounds(ranges: readonly Range[]): DOMRect | null {
+		if (this.#destroyed) return null;
+		const owned = ranges.filter(
+			(range) =>
+				this.#stage.contains(range.startContainer) && this.#stage.contains(range.endContainer)
+		);
+		if (!owned.length) return null;
+		const pages = new Set(owned.flatMap(rangePageNumbers));
+		this.#ensureGeometry(pages);
+		const intervals = [...pages]
+			.sort((a, b) => a - b)
+			.flatMap((number) => {
+				const page = this.#pages.get(number);
+				return page && !this.#geometryDirty.has(number)
+					? measureRanges([page.geometry], owned, 'native-selection')
+					: [];
+			});
+		return selectedLineBounds(intervals);
 	}
 	contentCommitted(layoutEpoch: string, changedPages: readonly number[]) {
 		if (this.#destroyed) return;
@@ -538,6 +672,9 @@ export class DocumentHighlightController {
 	}
 	#invalidatePages(pages: readonly number[]) {
 		if (this.#destroyed || !pages.length) return;
+		const invalidated = new Set(pages);
+		for (const [key, target] of this.#structuralBoundaries)
+			if (invalidated.has(target.page)) this.#structuralBoundaries.delete(key);
 		let changed = false;
 		for (const number of pages) {
 			if (!this.#pageElements.has(number) || this.#geometryDirty.has(number)) continue;
@@ -579,7 +716,11 @@ export class DocumentHighlightController {
 			this.#geometryDirty.add(number);
 		}
 		this.#pageElements = elements;
+		for (const [key, target] of this.#structuralBoundaries)
+			if (removedPages.has(target.page) || !this.#pageElements.has(target.page))
+				this.#structuralBoundaries.delete(key);
 		this.#refreshPageRanges(removedPages);
+		this.#refreshStructuralBoundaryGroups();
 		this.#visibilityDirty = true;
 		const contents = new Set(
 			this.#stage.querySelectorAll('.document-page, .document-page__content')
@@ -658,6 +799,8 @@ export class DocumentHighlightController {
 			for (const record of group.ranges.values())
 				for (const number of record.pages) targets.add(number);
 		}
+		for (const group of this.#boundaryGroups.values())
+			for (const number of group.pages) targets.add(number);
 		return targets;
 	}
 
@@ -684,6 +827,7 @@ export class DocumentHighlightController {
 			});
 			this.#paintDirty.add(geometry.number);
 		}
+		this.#refreshStructuralBoundaryGroups();
 		// ResizeObserver may deliver the commit's dimension change after this frame.
 		// Cache the dimensions used by this measurement so that delivery cannot queue it again.
 		for (const [element, observed] of this.#observed) {
@@ -726,10 +870,7 @@ export class DocumentHighlightController {
 				this.#measureSelection(ranges);
 			}
 			const projectionChanged = this.#projectionDirty;
-			if (projectionChanged) {
-				this.#projectionDirty = false;
-				this.#updateSelectionBounds();
-			}
+			if (projectionChanged) this.#projectionDirty = false;
 			if (this.#geometryMeasured) {
 				this.#geometryMeasured = false;
 				this.#notifyGeometry('measure');
@@ -744,14 +885,19 @@ export class DocumentHighlightController {
 						changed = publication.delete(number) || changed;
 						continue;
 					}
-					const rects = resolveOverlaps(
-						[
-							...page.triggers,
-							...page.revisions,
-							...[...page.groups.values()].flatMap((ranges) => [...ranges.values()].flat())
-						],
-						this.#hoveredAnnotationId
-					);
+					const rects = [
+						...resolveOverlaps(
+							[
+								...page.triggers,
+								...page.revisions,
+								...[...page.groups.values()].flatMap((ranges) => [...ranges.values()].flat())
+							],
+							this.#hoveredAnnotationId
+						),
+						...[...this.#boundaryGroups.values()].flatMap((group) =>
+							group.rects.filter((rect) => rect.page === number)
+						)
+					];
 					if (!sameHighlights(publication.get(number) ?? EMPTY_HIGHLIGHTS, rects)) {
 						publication.set(number, rects);
 						changed = true;
@@ -778,8 +924,9 @@ export class DocumentHighlightController {
 		this.#listeners.clear();
 		this.#geometryListeners.clear();
 		this.#eagerPageListeners.clear();
-		this.#selectionListeners.clear();
 		this.#groups.clear();
+		this.#boundaryGroups.clear();
+		this.#structuralBoundaries.clear();
 		this.#pageGroups.clear();
 		this.#pages.clear();
 		this.#pageElements.clear();
@@ -788,8 +935,6 @@ export class DocumentHighlightController {
 		this.#visiblePages.clear();
 		this.#paintDirty.clear();
 		this.#nativeRanges = [];
-		this.#selectionIntervals = [];
-		this.#selectionBounds = null;
 		this.#publication = new Map();
 		this.#hoveredAnnotationId = null;
 		controllers.delete(this.#stage);

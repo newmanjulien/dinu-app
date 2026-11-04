@@ -14,6 +14,35 @@ export const concessionReview = v.object({
 });
 export const concessionReviews = v.record(v.id('playbookItems'), concessionReview);
 export const selectionLifecycles = v.record(v.id('playbookItems'), v.string());
+export const storedContract = v.object({
+	companyId: v.id('company'),
+	creatorId: v.id('profiles'),
+	templateVersionId: v.id('templateVersions'),
+	companyName: v.string(),
+	savedAt: v.number(),
+	selectedConcessions: selections,
+	reviews: concessionReviews,
+	revision: v.number(),
+	reviewGeneration: v.number(),
+	// A replay identity is absent or complete; its caller is always server-derived.
+	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') }))
+});
+export const storedDecision = v.object({
+	companyId: v.id('company'),
+	contractId: v.id('savedContracts'),
+	itemId: v.id('playbookItems'),
+	concessionId: v.string(),
+	lifecycle: v.string(),
+	adminId: v.id('profiles'),
+	adminName: v.string(),
+	adminEmail: v.string(),
+	operationId: v.string(),
+	previousStatus: reviewStatus,
+	status: reviewDecision,
+	decidedAt: v.number(),
+	changed: v.boolean(),
+	reviewCompleted: v.boolean()
+});
 // The item identity is resolved within this contract's immutable snapshot, even
 // when the corresponding live playbook item has been deleted.
 export const approvalSelection = v.object({
@@ -38,62 +67,12 @@ export const approvalRequest = v.object({
 	retryAt: v.optional(v.number()),
 	retryEligible: v.boolean()
 });
-const legacyApprovalRequest = approvalRequest.extend({
+export const storedApprovalRequest = v.object({
+	id: v.string(),
+	companyName: v.string(),
 	recipientEmail: v.string(),
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	sendJobId: v.id('_scheduled_functions'),
-	dispatchStarted: v.boolean(),
-	messageId: v.optional(v.string())
-});
-// Existing deployments can be upgraded before running emailMigration.upgrade.
-export const storedApprovalRequest = v.union(
-	legacyApprovalRequest,
-	v.object({
-		id: v.string(),
-		companyName: v.string(),
-		recipientEmail: v.string(),
-		companyId: v.id('company'),
-		contractId: v.id('savedContracts'),
-		requestedAt: v.number(),
-		deliveryId: v.id('emailDeliveries')
-	})
-);
-
-// Retained only to read and migrate records from existing deployments.
-const notificationDecision = v.object({
-	itemId: v.id('playbookItems'),
-	concessionId: v.string(),
-	lifecycle: v.string(),
-	status: reviewDecision,
-	reviewerId: v.optional(v.id('profiles')),
-	reviewerName: v.optional(v.string())
-});
-const notificationOutcome = v.union(
-	v.literal('sent'),
-	v.literal('partial'),
-	v.literal('failed'),
-	v.literal('uncertain'),
-	v.literal('skipped')
-);
-export const storedDecisionNotification = v.object({
-	companyId: v.id('company'),
-	contractId: v.id('savedContracts'),
-	companyName: v.string(),
-	templateVersionId: v.id('templateVersions'),
-	fingerprint: v.string(),
-	decisions: v.array(notificationDecision),
-	status: v.union(v.literal('sending'), notificationOutcome),
-	createdAt: v.number(),
-	completedAt: v.optional(v.number()),
-	sendJobId: v.optional(v.id('_scheduled_functions')),
-	recoveryJobId: v.optional(v.id('_scheduled_functions')),
-	dispatchStarted: v.boolean(),
-	recipientEmail: v.optional(v.string()),
-	cc: v.optional(v.array(v.string())),
-	recipientAccepted: v.optional(v.boolean()),
-	accepted: v.optional(v.array(v.string())),
-	rejected: v.optional(v.array(v.string())),
-	error: v.optional(v.string()),
-	messageId: v.optional(v.string())
+	requestedAt: v.number(),
+	deliveryId: v.id('emailDeliveries')
 });

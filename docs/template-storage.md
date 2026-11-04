@@ -1,122 +1,63 @@
 # Template storage
 
-Each company has one permanent baseline. Its ordered blocks are shared by every
-published template version. A version holds a complete rule-ID-to-revision manifest;
-immutable revisions retain historical content and authoring metadata, excluding the
-revision head. Authoring records keep stable rule IDs, required revision counters,
-and operation receipts. Save and Delete publish immediately and atomically through
-the existing interface.
+Current architecture entry point: [backend model](backend-redesign/architecture.md). Current local implementation: [Phases 9C](backend-redesign/phase-09c-publication-history.md) and [9D](backend-redesign/phase-09d-authoring-performance.md), reviewed in [9E acceptance](backend-redesign/phase-09e-authoring-acceptance.md). Phase 9 is complete locally. The schema and consumers have changed during the pre-customer cleanup; deployment remains a separate Phase 18 gate.
 
-Admin saves and seed append share revision creation. New rules start at revision 1;
-updates advance the counter and create one immutable revision. Publication validates
-one captured playbook, writes its complete manifest, and advances the pointer.
-It never repairs heads or rereads live content. Deleting a live rule retains its
-historical revisions and manifests until company deletion.
+Each company owns one permanent baseline stored in ordered chunks. Mutable playbook heads own current rules and authoring retry state. Immutable revisions hold business content and the original rule identity. An immutable version contains ordered rule/revision references. A saved contract captures that version and continues to use its exact historical content after later authoring or live rule deletion.
 
-## Read boundary
+```mermaid
+flowchart LR
+    Company[Company] --> Baseline[Permanent baseline chunks]
+    Pointer[Current company pointer] --> Version[Immutable version]
+    Contract[Saved contract] --> Version
+    Version --> Baseline
+    Version --> Revision[Immutable business revisions]
+    Head[Mutable rule head] --> Revision
+```
 
-`savedContracts.state` returns the live contract metadata, including its immutable
-`templateVersionId`. `templates.current` returns only the current version ID;
-`templates.version` authenticates the membership and resolves immutable content.
-There is no full-contract snapshot query or SvelteKit snapshot proxy.
+`playbookItemRevisions` stores `companyId,itemId,itemCreatedAt,revision,body`. Its `body` contains only the canonical rule business fields. The captured revision number describes that historical content. Mutable `playbookItems` retain operation ID/caller and the published revision head. History has no replay metadata or duplicated identity inside the body.
 
-The browser cache shares pending version reads, immutable object identity, and
-stored versions across new-contract previews, creation handoff, opening, and
-prewarming. Cancelling one reader does not cancel a shared read with other consumers.
-Memory retains at most 24 contract entries and 24 versions within a combined 32 MiB
-budget. Optional IndexedDB reads have a short deadline and fall through to Convex;
-confirmed state writes do not rewrite immutable content. Each contract route still
-waits for fresh live metadata before accepting a cached document.
-Malformed versions are removed in their validation transaction so a verified
-network read can repair them. Invalid metadata is removed without discarding valid
-shared content. Identity setup clears obsolete v1/v2 caches, including stored versions.
+`templateVersions` stores company/baseline IDs, publication time, counts, historical JSON/read-byte totals and `items:[{itemId,revisionId}]`. `currentTemplate` stores only `companyId,versionId`. The old per-rule manifest table and import/maintenance pointer state are removed.
 
-Word generation captures a full immutable snapshot and saved selections on the
-server only when requested. It rejects unavailable concessions, pending/rejected
-required reviews, stale revisions, deleted contracts, and invalid membership.
-After generation and storage, a final mutation rechecks access, revision, version,
-and the captured required approval lifecycles, then issues the URL and schedules
-cleanup atomically. Review decisions can change without advancing the content revision.
-Temporary files are removed after one hour, including abandoned downloads. Access
-is enforced when issuing the URL; an already issued URL retains its existing lifetime.
+## Publication and reads
 
-## Supported envelope
+Save and Delete publish synchronously in the same native Convex transaction as the live-head, immutable revision and receipt changes. Existing-rule saves have four primary document writes: head, revision, version and pointer. Creation allocates a head and its durable receipt; deletion retains immutable history. Replay/stale results keep their existing precedence. Explicit same-value rule Save still publishes.
 
-A playbook supports at most 4,000 rules and an 8,000,000-byte historical JSON
-snapshot. Existing baseline limits remain in place. Full readers resolve revisions
-in batches of 64: 4,000 revision lookups leave 96 native queries for manifests,
-baseline, authorization, and other parent reads. Selected reads retain their
-1,024-selection limit and concession validation. Full, selected, and approval
-reads use the same manifest/revision ownership checks.
+Instruction-only saves validate local content and compare complete ordered trigger/concession structure. Exact equality carries the prior canonical audit forward: read the current pointer/version, permanent baseline metadata and edited head; replace one revision reference using exact historical/native byte deltas. They read no source chunks or unrelated rule bodies and retain the four-write atomic publication. Creation, deletion and structural saves read and audit the complete candidate source/playbook.
 
-Publication measures stored documents with Convex's document-size helper.
-Each write group checks the remaining transaction budget after preceding work;
-queries, documents, and bytes are accounted separately. Checks
-reserve two metadata writes and 64 KiB beyond explicitly counted work. Read capacity
-includes revision and manifest wrappers and baseline metadata. A rejection rolls
-back authoring, revisions, receipts, manifest, version, and pointer together.
+`savedContracts.state` returns fresh mutable metadata and the captured version ID. `templates.current` returns the current version ID; `templates.version` authenticates membership and resolves historical content. The historical result remains `{blockCount,itemCount,blocks,items}` with original item IDs/creation times/company/captured revision and business fields.
 
-Save/Delete validate and manifest the whole playbook. Their work scales with its
-complete size within this envelope.
+A reader validates the version and its ordered unique references once, then uses one item-ID map and transaction-local resolution cache. Selected reads fetch only selected revision bodies and check concession membership. Full reads resolve all revisions in reference order, in batches of 64, and read the shared baseline. A deleted live head does not affect historical access. All resolved revisions must match the version's company/item identity.
 
-## Upload and deletion operations
+## Baseline integrity encoding
 
-An upload authenticates, checks company eligibility, receives at most 10 MiB, and
-hashes accepted chunks incrementally, without assembling another flat buffer.
-An authoritative reuse transaction matches company, uploader,
-file hash, parser version, and expiration before another copy is stored or parsed.
-New originals are stored and parsed in an internal Node action; the committing
-mutation rechecks permissions, eligibility, file metadata/hash, diagnostics, and
-canonical blocks. Cleanup is dispatched separately and checks references again;
-cleanup or dispatch failure does not change a successful preparation response.
+[Phase 17B](backend-redesign/phase-17b-baseline-encoding.md) derives the permanent source fingerprint and `blocksJsonBytes` from one canonical UTF-8 JSON encoding. Field ordering is canonical; array/source order is preserved. DOCX preparation and atomic operator bootstrap set both values together; chunk writing owns native chunk count/read-byte accounting. Readers retain ownership, sequence, completeness, count, read-byte and fingerprint checks. Stored values and chunk layout are unchanged, with no additional schema/cache/reset consequence. JSON byte length remains separate from native document/transaction admission. Existing and independent seed checks pass; native boundary/OCC/remote operator acceptance stays in 17D1/17D2/18.
 
-Prepared DOCX uploads expire after 24 hours. Scheduled cleanup and recurring sweeps
-remove their blocks and originals. At 04:00 UTC a bounded creation-time-index scan
-removes old unreferenced DOCX files. A durable cursor and fixed cutoff resume an
-interrupted sweep; its completed creation-time watermark excludes previously
-scanned intervals. Duplicate continuations do no work. Published originals are
-retained until company deletion.
+## Baseline indexing
 
-Operator audits and seed reconciliation read business projections through
-`companyTemplateImport:readPage`. Initial seed imports retain their content
-fingerprint and committed counters for resumption; existing template data prevents
-replacement. Company deletion drains baseline blocks, immutable revisions,
-manifests, prepared uploads, and retained originals in bounded batches.
+[C4A](backend-redesign/cleanup-c4a-source-index.md) completes the existing in-memory `SourceIndex`: source units/coordinates/containers/gaps, ordered blocks, block ordinals, numbering-item lookup and baseline addresses. One `CompiledContract` validates and owns the accepted baseline; `DocumentDomain` retains it until baseline content changes and shares its index with rendering/prewarming. Reference validation and range checks reuse those lookups. Composition derives separate active numbering and merge aliases only when paragraph structure changes, reusing indexed baseline addresses otherwise. [C4B](backend-redesign/cleanup-c4b-canonical-references.md) stores baseline-valid reference patterns and stable targets; editor display and effective export use composed numbering and merge aliases. No index data is persisted, no cache/schema format changes, and selection/output behavior remains unchanged.
 
-## Reset and reseed
+## Browser persistence
 
-The schema accepts only canonical records. Use the
-[fresh reset procedure](private-companies-rollout.md#fresh-development-reset)
-before deploying over incompatible data. There are no runtime conversion workers,
-copied version blocks, inline manifest payloads, or revision fingerprint indexes.
-The original archive and its independent output oracle remain offline seed inputs.
+An open editing session establishes fresh contract metadata and current access before admitting cached content. Speculative warming can reuse disposable cached metadata; it does not authorize opening or confirm edits. Shared version flights and object identity serve preview, creation handoff, opening and warming. Cancellation of one consumer preserves other consumers' shared read.
 
-## Verification
+Memory/disk caches retain their 24-contract/24-version and combined 32 MiB bounds, optional-storage fallback, bounded deadlines, malformed repair and metadata-only updates. Confirmed IndexedDB format **6** retires obsolete snapshot/metadata stores. The separate tab-scoped sessionStorage intent journal is preserved; a confirmed-cache upgrade never clears pending edits. [11B](backend-redesign/phase-11b-cache-recovery.md) replaces private Convex validator introspection with explicit bounded persisted checks and shares saved-state validation with draft recovery. Confirmed metadata updates include complete reviews while retaining immutable identity and metadata-only disk writes. Formats and journal behavior remain unchanged; desktop Chrome/Edge and Safari are primary.
 
-`npm run verify` runs the existing 24 performance checks, frontend types, and
-production build. Backend TypeScript is checked separately. The maintained rollback
-fixture checks changed-rule revision creation and partial publication rollback.
-`npm run seed:verify` checks 56 mutation/business-field round trips and 58 output
-states, including source/token provenance, against the independent historical oracle.
+## Capacity and lifecycle
 
-A local export smoke check generated and inspected Word content, rejected stale
-revisions and unauthorized callers, checked pending/rejected reviews and revocation
-without a revision change, and verified scheduled cleanup and file removal.
+Existing bounds remain: 4,000 rules, 4,096 baseline blocks, 500,000 business JSON bytes per rule, 8,000,000 bytes of historical JSON and 1,024 selected concessions. Native document/array/query/read/write limits apply independently. Publication measures complete version/revision/source wrappers, checks remaining transaction capacity and preserves metadata/read headroom. Any rejection rolls back the complete publication. 9D documents exact representation/work/array/nesting calculations and local delta checks. [17D1](backend-redesign/phase-17d1-native-admission.md) accounts complete native wrappers and logical/native intersections and aligns snapshot entry admission with the 1 MiB document bound. The 128 KiB packing target is not a per-entry limit. Native metrics, assigned IDs, extreme boundaries and arbitrary parent/access metadata remain Phase 18 acceptance gaps; count/UTF-16 maxima and retained margins are not universal native-size guarantees.
 
-After this cleanup, temporary probes exercised the actual export action with
-contract deletion, revoked membership, revision changes, review changes, lifecycle
-replacement, and version deletion during file storage. Delivery was refused and
-failed files removed; a cleanup failure preserved the original error. Cache probes
-checked atomic malformed-version removal and repair, metadata-only removal,
-shared-version deduplication, cancelled reads, and obsolete-cache cleanup without
-an identity change. Upload probes checked chunked 10 MiB byte/hash equality and
-oversize rejection. Sweep probes checked bounded pages, cron resumption, stale
-continuations, referenced originals, watermark advancement, and equal timestamps
-across page boundaries. These probes were not added to the repository test suite.
+Prepared DOCX conversion is separate from permanent publication. One atomic publication establishes company baseline ownership and the initial version/pointer. Originals and preparation expiry retain their existing lifecycle. Operator bootstrap uses the same canonical writers and refuses changed/incomplete state; `operator.readSeed` provides the scoped business projection for independent reconciliation. No staging or maintenance pointer is needed.
 
-The development schema was deployed and its database reset/reseeded during the
-server split. This cleanup also deployed successfully to
-`dev:scrupulous-squirrel-986` without another reset or reseed.
-Import interruption/resumption, live HTTP authentication,
-concurrent uploads, browser behavior, and adversarial parser memory bounds are not
-certified by these local checks. No new repository tests or browser harness were added.
+Live rule/contract deletion retains referenced immutable history. Company deletion drains source chunks, rules, receipts, versions, revisions and retained originals through its bounded worker. [16A](backend-redesign/phase-16a-deletion-recovery.md) completes durable bounded child cleanup and its complete table/file/job matrix locally; [16B](backend-redesign/phase-16b-identity-orphan-recovery.md) completes all-kind orphan recovery. Native failure/OCC/storage/frontier acceptance remains Phase 18.
+
+[17D2](backend-redesign/phase-17d2-cross-workflow.md) implements private selected-rule Word capture with the complete baseline/manifest and unchanged access/revision/version/lifecycle/approval finalization. Historical body reads fall from 56 to K in canonical scenarios; all 29 Word document/styles XML pairs remain exact. Approved joined newline semantics are independent of unused highlights. Public snapshots and cache formats are unchanged. Native/browser/Word visual and file-retirement acceptance remain Phase 18.
+
+## Verification and rollout
+
+Phases 9C–9D passed the existing 20 lifecycle tests, 24 performance tests, frontend/backend types, production build and 58 seed output states with zero independent reconciliation mismatches. Existing assertions preserve atomic/replayed publication, stale handling, deletion history, selected-only save work, content-free creation, cache sharing and partial-publication rollback.
+
+9E reviews the unchanged final implementation and those results, without test reruns or further runtime changes. Its acceptance matrix records the ordinary range/gap/reference paths, historical isolation, counted work and later verification owners. The user confirms the seed is broadly representative of customer baselines.
+
+No new tests, browser automation or deployment occurred. A real cache upgrade with pending edits, deployed resource boundaries, remote bootstrap/read-back, arbitrary authoring interactions and Word visual output remain unverified. Earlier deployment/probe reports described older representations and do not certify this schema.
+
+The user confirmed there are no external Convex readers/writers. Old deployment data is intentionally incompatible; use the [current target-specific Phase 18 procedure](backend-redesign/phase-18-activation.md). Do not run Convex dev/codegen or an old reset recipe to bypass that gate. Original archives and independent reconciliation inputs remain intact.

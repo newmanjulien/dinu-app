@@ -7,13 +7,13 @@
 	import { api } from '../../../convex/_generated/api';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import ArrowUpRightIcon from 'phosphor-svelte/lib/ArrowUpRightIcon';
-	import ListBulletsIcon from 'phosphor-svelte/lib/ListBulletsIcon';
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 
 	const DISMISSAL_KEY = 'dinu:admin-book-demo-dismissed';
+	const iconMaskId = $props.id();
 	let expanded = $state<boolean | null>(null);
 	let trigger = $state<HTMLButtonElement>();
 	let action = $state<HTMLButtonElement>();
@@ -113,6 +113,41 @@
 	}
 </script>
 
+{#snippet delegationIcon(size: number)}
+	<svg
+		xmlns="http://www.w3.org/2000/svg"
+		width={size}
+		height={size}
+		viewBox="0 0 256 256"
+		fill="currentColor"
+		aria-hidden="true"
+		focusable="false"
+	>
+		<defs>
+			<mask id={iconMaskId} maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+				<rect width="256" height="256" fill="white" />
+				<g fill="black">
+					<path
+						d="M192,168H144a8,8,0,0,1,0-16h48a8,8,0,0,1,0,16Zm0-64H144a8,8,0,0,1,0-16h48a8,8,0,0,1,0,16Z"
+					/>
+					<path
+						class="delegation-check"
+						d="M117.66,85.66l-32,32a8,8,0,0,1-11.32,0l-16-16A8,8,0,0,1,69.66,90.34L80,100.69l26.34-26.35a8,8,0,0,1,11.32,11.32Z"
+					/>
+					<path
+						class="delegation-check delegation-check-second"
+						d="M117.66,149.66l-32,32a8,8,0,0,1-11.32,0l-16-16a8,8,0,0,1,11.32-11.32L80,164.69l26.34-26.35a8,8,0,0,1,11.32,11.32Z"
+					/>
+				</g>
+			</mask>
+		</defs>
+		<path
+			mask={`url(#${iconMaskId})`}
+			d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Z"
+		/>
+	</svg>
+{/snippet}
+
 {#if expanded !== null}
 	<div class="delegation-widget" class:expanded>
 		{#if expanded}
@@ -125,7 +160,7 @@
 				aria-label="We'll take care of it — delegate"
 			>
 				<div class="flex min-h-[110px] flex-col items-start gap-[10px] p-4">
-					<ListBulletsIcon size={22} weight="fill" aria-hidden="true" focusable="false" />
+					{@render delegationIcon(22)}
 					<span class="font-editorial text-[22px] leading-[1.1] tracking-[-0.035em]">
 						We'll take care of it
 					</span>
@@ -154,7 +189,7 @@
 				aria-expanded="false"
 				onclick={expand}
 			>
-				<ListBulletsIcon size={23} weight="fill" aria-hidden="true" focusable="false" />
+				{@render delegationIcon(23)}
 			</button>
 		{/if}
 	</div>
@@ -258,8 +293,25 @@
 	}
 
 	@media (prefers-reduced-motion: no-preference) {
+		.delegation-widget.expanded:hover .delegation-check {
+			animation: check-off 400ms ease-out backwards;
+		}
+
+		.delegation-widget.expanded:hover .delegation-check-second {
+			animation-delay: 160ms;
+		}
+
 		.delegation-action:hover :global(.delegation-arrow) {
 			transform: translate(2px, -2px);
+		}
+	}
+
+	@keyframes check-off {
+		from {
+			clip-path: inset(0 100% 0 0) fill-box;
+		}
+		to {
+			clip-path: inset(0) fill-box;
 		}
 	}
 

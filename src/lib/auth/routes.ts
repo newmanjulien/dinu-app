@@ -9,35 +9,35 @@ export interface RouteDescription {
 
 const routes: Record<string, RouteDescription> = {
 	'/(workspace)': {
-		title: 'Home | Dinu',
+		title: 'Find or start a contract',
 		navigation: '/',
 		description: 'Find, save, and negotiate your contracts.'
 	},
 	'/(workspace)/admin': {
-		title: 'Edit contract instructions | Dinu',
+		title: 'Edit contract instructions',
 		navigation: '/admin',
 		document: 'admin',
 		baseline: true
 	},
 	'/(workspace)/contracts/new': {
-		title: 'New contract | Dinu',
+		title: 'Create a contract',
 		navigation: '/',
 		document: 'new',
 		baseline: true
 	},
 	'/(workspace)/contracts/[id]': {
-		title: 'Contract | Dinu',
+		title: 'Review and negotiate a contract',
 		navigation: '/',
 		document: 'saved'
 	},
-	'/(workspace)/settings': { title: 'Settings | Dinu', availableDuringHold: true },
-	'/(workspace)/team': { title: 'Company team | Dinu' },
-	'/(entry)/login': { title: 'Log in | Dinu' },
-	'/(entry)/join': { title: 'Join | Dinu' },
-	'/(entry)/invitation': { title: 'Company invitation | Dinu' },
-	'/(onboarding)/onboarding': { title: 'Set up your company | Dinu' }
+	'/(workspace)/settings': { title: 'Manage your settings', availableDuringHold: true },
+	'/(workspace)/team': { title: 'Manage your team' },
+	'/(entry)/login': { title: 'Sign in' },
+	'/(entry)/join': { title: 'Create your account' },
+	'/(entry)/invitation': { title: 'Join your team' },
+	'/(onboarding)/onboarding': { title: 'Set up your workspace' }
 };
-const fallback: RouteDescription = { title: 'Dinu' };
+const fallback: RouteDescription = { title: 'Welcome' };
 
 export function describeRoute(id: string | null): RouteDescription {
 	return (id && routes[id]) || fallback;

@@ -1,27 +1,19 @@
 import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
-import { internalMutation, mutation, query } from './_generated/server';
+import { mutation, query } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
-import schema from './schema';
-import {
-	contractCard,
-	contractState,
-	contractMetadata,
-	saveResult,
-	selections
-} from './savedContractValidators';
+import { contractCard, contractMetadata, saveResult, selections } from './savedContractValidators';
 import { currentPointer, snapshotReader } from './templates';
 import { CompiledContract } from '../lib/contract/compiled-contract';
 import { toDocumentOverlay } from '../lib/playbook/document-overlay';
 import { activeConflicts } from '../lib/playbook/selection-conflicts';
 import { sameSelection } from '../lib/playbook/model';
 import { requireMembership, accessibleContract, scopedOperation } from './auth';
-import { internal } from './_generated/api';
 import { selectionLifecycles, type concessionReviews } from './contractValidators';
 import type { Infer } from 'convex/values';
-import { attribution, updateAttributions } from './reviewAttributions';
-import { cancelJob } from './emailDeliveries';
+import { reviewsForSelections, recordDecision } from './reviews';
 import { readDirectory, writeDirectory, removeDirectoryEntry } from './contractDirectory';
+import { ensureContractCleanup } from './contractCleanup';
 
 function companyName(value: string) {
 	const name = value.trim();
@@ -36,7 +28,19 @@ function stateOf(contract: Doc<'savedContracts'>) {
 		selectedConcessions: contract.selectedConcessions,
 		reviews: contract.reviews,
 		revision: contract.revision,
-		lastOperationId: contract.lastOperationId ?? null
+		lastOperationId: contract.lastOperation?.id ?? null
+	};
+}
+
+function metadataOf(contract: Doc<'savedContracts'>) {
+	return {
+		...stateOf(contract),
+		_id: contract._id,
+		_creationTime: contract._creationTime,
+		companyId: contract.companyId,
+		creatorId: contract.creatorId,
+		templateVersionId: contract.templateVersionId,
+		savedAt: contract.savedAt
 	};
 }
 
@@ -49,19 +53,12 @@ export const browse = query({
 	args: {
 		membershipId: v.id('memberships'),
 		search: v.string(),
-		directoryReady: v.optional(v.boolean()),
 		paginationOpts: paginationOptsValidator
 	},
 	returns: paginationResultValidator(contractCard),
 	handler: async (ctx, args) => {
 		const profile = await requireMembership(ctx, args.membershipId);
-		return readDirectory(
-			ctx,
-			profile.company,
-			args.search,
-			args.paginationOpts,
-			args.directoryReady === true
-		);
+		return readDirectory(ctx, profile.companyId, args.search, args.paginationOpts);
 	}
 });
 
@@ -75,17 +72,7 @@ export const state = query({
 		const contract = contractId
 			? accessibleContract(await ctx.db.get('savedContracts', contractId), profile)
 			: null;
-		return contract
-			? {
-					...stateOf(contract),
-					_id: contract._id,
-					_creationTime: contract._creationTime,
-					companyId: contract.companyId,
-					creatorId: contract.creatorId,
-					templateVersionId: contract.templateVersionId,
-					savedAt: contract.savedAt
-				}
-			: null;
+		return contract ? metadataOf(contract) : null;
 	}
 });
 
@@ -95,7 +82,7 @@ export const create = mutation({
 		v.object({
 			status: v.literal('created'),
 			id: v.id('savedContracts'),
-			contract: schema.doc('savedContracts')
+			contract: contractMetadata
 		}),
 		v.object({ status: v.literal('deleted') })
 	),
@@ -114,12 +101,10 @@ export const create = mutation({
 				profile
 			);
 			if (!contract) return { status: 'deleted' as const };
-			return { status: 'created' as const, id: receipt.contractId, contract };
+			return { status: 'created' as const, id: receipt.contractId, contract: metadataOf(contract) };
 		}
 		const name = companyName(args.companyName);
 		const pointer = await currentPointer(ctx, profile.companyId);
-		if (pointer?.maintenance)
-			throw new ConvexError('Template maintenance is in progress. Try again shortly.');
 		const version = pointer?.versionId
 			? await ctx.db.get('templateVersions', pointer.versionId)
 			: null;
@@ -133,6 +118,7 @@ export const create = mutation({
 			selectedConcessions: {},
 			reviews: {},
 			revision: 0,
+			reviewGeneration: 0,
 			templateVersionId: version._id
 		});
 		await ctx.db.insert('contractCreationReceipts', {
@@ -140,9 +126,10 @@ export const create = mutation({
 			operationId: scopedOperation(profile, args.operationId),
 			contractId: id
 		});
+		if (version.draft) await ctx.db.patch('templateVersions', version._id, { draft: false });
 		const contract = (await ctx.db.get('savedContracts', id))!;
 		await writeDirectory(ctx, contract);
-		return { status: 'created' as const, id, contract };
+		return { status: 'created' as const, id, contract: metadataOf(contract) };
 	}
 });
 
@@ -174,61 +161,43 @@ export const saveChoices = mutation({
 		const contract = accessibleContract(await ctx.db.get('savedContracts', id), profile);
 		if (!contract) return { status: 'deleted' as const };
 		// A replay is acknowledged before checking its now-stale expected revision.
-		if (contract.lastOperationId === operationId && contract.lastOperationCaller === profile._id)
+		if (
+			contract.lastOperation?.id === operationId &&
+			contract.lastOperation.callerId === profile._id
+		)
 			return { status: 'saved' as const, state: stateOf(contract) };
 		if (contract.revision !== expectedRevision)
 			return { status: 'conflict' as const, state: stateOf(contract) };
 		// An unchanged save acknowledges current state without consuming a revision or
 		// operation ID. A retry after an intervening change still follows conflict rules.
+		const choicesUnchanged = sameSelection(contract.selectedConcessions, selectedConcessions);
 		if (
-			sameSelection(contract.selectedConcessions, selectedConcessions) &&
-			sameSelection(
-				lifecycles,
-				Object.fromEntries(
-					Object.entries(contract.reviews).map(([id, review]) => [id, review.lifecycle])
-				)
+			choicesUnchanged &&
+			Object.keys(lifecycles).length === Object.keys(contract.reviews).length &&
+			Object.entries(contract.reviews).every(
+				([id, review]) => lifecycles[id as Id<'playbookItems'>] === review.lifecycle
 			)
 		)
 			return { status: 'saved' as const, state: stateOf(contract) };
 		// Snapshots are validated once at publication and never edited. Validate membership
 		// first; baseline compilation is only needed to check conflicts between items.
-		const reviews: Infer<typeof concessionReviews> = {};
-		const attributions: ReturnType<typeof attribution>[] = [];
+		let reviews: Infer<typeof concessionReviews> = {};
+		let autoApprovedItemIds: Id<'playbookItems'>[] = [];
 		if (Object.keys(selectedConcessions).length) {
 			const reader = await snapshotReader(ctx, contract);
 			const items = await reader.selectedItems(selectedConcessions);
-			for (const item of items) {
-				if (!item.instructions?.changesNeedApproval?.trim()) continue;
-				const concessionId = selectedConcessions[item._id];
-				const previous = contract.reviews[item._id];
-				const lifecycle = lifecycles[item._id];
-				if (!lifecycle?.trim() || lifecycle.length > 300)
-					throw new ConvexError('Invalid concession application.');
-				const unchanged =
-					previous?.concessionId === concessionId && previous.lifecycle === lifecycle;
-				reviews[item._id] = unchanged
-					? previous
-					: { concessionId, lifecycle, status: profile.role === 'admin' ? 'approved' : 'pending' };
-				if (!unchanged && profile.role === 'admin') {
-					attributions.push(attribution(item._id, concessionId, lifecycle, profile));
-					await ctx.db.insert('concessionDecisions', {
-						companyId: profile.companyId,
-						contractId: id,
-						itemId: item._id,
-						concessionId,
-						lifecycle,
-						adminId: profile._id,
-						adminName: profile.name,
-						adminEmail: profile.email,
-						operationId: scopedOperation(profile, JSON.stringify(['save', operationId, item._id])),
-						previousStatus: 'pending',
-						status: 'approved',
-						decidedAt: Date.now(),
-						changed: true
-					});
-				}
-			}
-			if (items.length > 1) {
+			const application = reviewsForSelections(
+				items,
+				selectedConcessions,
+				lifecycles,
+				contract.reviews,
+				profile.role
+			);
+			reviews = application.reviews;
+			autoApprovedItemIds = application.autoApprovedItemIds;
+			// Existing choices have already passed this check against the same immutable
+			// version. A new application identity changes reviews, never document geometry.
+			if (items.length > 1 && !choicesUnchanged) {
 				const blocks = await reader.blocks();
 				const compiled = new CompiledContract(blocks);
 				if (
@@ -239,30 +208,33 @@ export const saveChoices = mutation({
 		}
 		if (Object.keys(lifecycles).some((id) => !reviews[id as Id<'playbookItems'>]))
 			throw new ConvexError('Invalid concession application.');
-		const revision = expectedRevision + 1;
-		const reviewGeneration = (contract.reviewGeneration ?? 0) + 1;
-		await updateAttributions(ctx, contract, reviews, attributions);
-		const savedAt = Date.now();
-		await ctx.db.patch('savedContracts', id, {
+		// All input and conflict validation precedes writes, including auto-approval audit.
+		const changes = {
 			selectedConcessions,
 			reviews,
-			revision,
-			reviewGeneration,
-			lastOperationId: operationId,
-			lastOperationCaller: profile._id,
-			savedAt
-		});
-		await writeDirectory(ctx, { ...contract, savedAt });
-		return {
-			status: 'saved' as const,
-			state: stateOf({
-				...contract,
-				selectedConcessions,
-				reviews,
-				revision,
-				lastOperationId: operationId
-			})
+			revision: contract.revision + 1,
+			reviewGeneration: contract.reviewGeneration + 1,
+			lastOperation: { id: operationId, callerId: profile._id },
+			savedAt: Date.now()
 		};
+		for (const itemId of autoApprovedItemIds) {
+			const { concessionId, lifecycle } = reviews[itemId];
+			await recordDecision(ctx, contract, profile, {
+				itemId,
+				concessionId,
+				lifecycle,
+				operationId: scopedOperation(profile, JSON.stringify(['save', operationId, itemId])),
+				previousStatus: 'pending',
+				status: 'approved',
+				decidedAt: changes.savedAt,
+				changed: true,
+				reviewCompleted: false
+			});
+		}
+		await ctx.db.patch('savedContracts', id, changes);
+		const next = { ...contract, ...changes };
+		await writeDirectory(ctx, next);
+		return { status: 'saved' as const, state: stateOf(next) };
 	}
 });
 
@@ -287,35 +259,16 @@ export const remove = mutation({
 	returns: v.null(),
 	handler: async (ctx, { id, membershipId }) => {
 		const profile = await requireMembership(ctx, membershipId);
-		if (!accessibleContract(await ctx.db.get('savedContracts', id), profile)) return null;
+		const contract = accessibleContract(await ctx.db.get('savedContracts', id), profile);
+		await ensureContractCleanup(ctx, profile.companyId, id, Boolean(contract));
+		if (!contract) return null;
 		const request = await ctx.db
 			.query('approvalRequests')
 			.withIndex('by_contractId', (q) => q.eq('contractId', id))
 			.unique();
-		if (request) {
-			if (!('deliveryId' in request)) await cancelJob(ctx, request.sendJobId);
-			await ctx.db.delete('approvalRequests', request._id);
-		}
-		await ctx.scheduler.runAfter(0, internal.savedContracts.removeDecisionHistory, { id });
-		await ctx.scheduler.runAfter(0, internal.emailDeliveries.removeForContract, { id });
+		if (request) await ctx.db.delete('approvalRequests', request._id);
 		await removeDirectoryEntry(ctx, id);
 		await ctx.db.delete('savedContracts', id);
-		return null;
-	}
-});
-
-/** Bounded cleanup: history grows independently of the contract document. */
-export const removeDecisionHistory = internalMutation({
-	args: { id: v.id('savedContracts') },
-	returns: v.null(),
-	handler: async (ctx, { id }) => {
-		const rows = await ctx.db
-			.query('concessionDecisions')
-			.withIndex('by_contractId', (q) => q.eq('contractId', id))
-			.take(100);
-		for (const row of rows) await ctx.db.delete('concessionDecisions', row._id);
-		if (rows.length === 100)
-			await ctx.scheduler.runAfter(0, internal.savedContracts.removeDecisionHistory, { id });
 		return null;
 	}
 });

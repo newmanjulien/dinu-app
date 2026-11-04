@@ -1,5 +1,9 @@
 # Lightweight performance checks
 
+Current automated guarantee reference; [architecture](backend-redesign/architecture.md)
+and [Phase 18 acceptance](backend-redesign/phase-18-activation.md) own the model and
+remaining native/browser/provider checks. Latest runtime results are in [17D2](backend-redesign/phase-17d2-cross-workflow.md).
+
 Run `npm run test:perf` once for all five performance test files (24 tests). Use this same command when CI is
 introduced; no CI configuration is currently added. Vitest runs saving tests in
 the edge runtime through `convex-test`, and scheduling/cache/startup tests in Node with
@@ -26,7 +30,7 @@ upload limits, and the browser download helper remain outside that directory.
 | Scheduling | Foreground dispatches before queued background work. Aborted queued callbacks never run. Destroy rejects queued work and cancels dispatch.                                                                                                                                                                                                                                                                                                                       |
 | Caching    | Compact metadata and an immutable template load once through Convex; the snapshot reopens from memory without another request, then from IndexedDB after memory release without downloading. Confirmed state updates survive reopening without rewriting the immutable snapshot store.                                                                                                                                                                           |
 | Creation   | Creation retains two contract/receipt writes and adds one compact directory write without template-content reads or compilation. Existing checks cover publication replay, rollback, immutable versions, import races, creation retries, and saved-version reads.                                                                                                                                                                                                |
-| Startup    | Repeated opening requests navigate once. Returning accounts do not provision; confirmed missing state initializes once per transport generation without restarting attribution.                                                                                                                                                                                                                                                                                  |
+| Startup    | Repeated opening requests navigate once. Returning accounts do not provision; confirmed missing state initializes once per transport generation without unnecessary initialization writes.                                                                                                                                                                                                                                                                                  |
 
 Saving observers count directory writes separately while preserving the original
 contract-write assertions. Unchanged saves and replays perform zero writes to either
@@ -41,8 +45,10 @@ Tests observe work at database/compiler/storage boundaries, retain real
 implementations, and restore timers, globals, cache ownership, and isolated storage.
 The performance suite does not cover candidate deduplication, preparation
 retention/eviction, cache format invalidation, exhaustive failures, document reuse,
-or search/geometry. The server startup snapshot, directory backfill/pagination
-transition, and adaptive device/interaction policy have no dedicated coverage.
+or search/geometry. The server startup snapshot, native directory search/reactive pagination,
+and adaptive device/interaction policy have no dedicated coverage. Obsolete
+directory backfill/readiness paths are removed locally; there is no transition
+reader to certify in the current model.
 Saving races and subscription ownership have focused lifecycle
 coverage in the separate Svelte suite.
 

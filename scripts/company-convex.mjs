@@ -1,15 +1,5 @@
-import { execFile } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { convexToJson, jsonToConvex } from 'convex/values';
 import { configuredEnv } from './convex-env.mjs';
-
-const require = createRequire(import.meta.url);
-const convexCli = resolve(
-	dirname(require.resolve('convex/package.json')),
-	require('convex/package.json').bin.convex
-);
-const runCli = promisify(execFile);
 
 export function companyArguments({ audit = false } = {}) {
 	const args = process.argv.slice(2);
@@ -27,10 +17,19 @@ export function companyArguments({ audit = false } = {}) {
 	return { companyId, exactSeed };
 }
 
-export async function companyDeployment({ readOnly = false } = {}) {
-	const { PUBLIC_CONVEX_URL: url, CONVEX_DEPLOYMENT: deployment } = await configuredEnv(
+export async function companyDeployment({ companyId, readOnly = false }) {
+	if (typeof companyId !== 'string' || !companyId.trim())
+		throw new Error('An explicit company ID is required.');
+	const {
+		PUBLIC_CONVEX_URL: url,
+		CONVEX_DEPLOYMENT: deployment,
+		CONVEX_DEPLOY_KEY: deployKey,
+		CONVEX_SELF_HOSTED_ADMIN_KEY: localKey
+	} = await configuredEnv(
 		'PUBLIC_CONVEX_URL',
-		'CONVEX_DEPLOYMENT'
+		'CONVEX_DEPLOYMENT',
+		'CONVEX_DEPLOY_KEY',
+		'CONVEX_SELF_HOSTED_ADMIN_KEY'
 	);
 	const match = deployment?.match(/^(dev|local|prod):([^:]+)$/);
 	if (!url || !match || (!readOnly && match[1] === 'prod')) {
@@ -41,46 +40,67 @@ export async function companyDeployment({ readOnly = false } = {}) {
 		);
 	}
 	const [, kind, name] = match;
-	const hostname = new URL(url).hostname;
-	const isLocal = ['127.0.0.1', 'localhost'].includes(hostname);
-	if ((kind === 'local' && !isLocal) || (kind !== 'local' && hostname !== `${name}.convex.cloud`)) {
+	const target = new URL(url);
+	const isLocal = ['127.0.0.1', 'localhost'].includes(target.hostname);
+	if (
+		target.username ||
+		target.password ||
+		target.search ||
+		target.hash ||
+		target.pathname !== '/' ||
+		(kind === 'local'
+			? !isLocal || !['http:', 'https:'].includes(target.protocol)
+			: target.protocol !== 'https:' || target.port || target.hostname !== `${name}.convex.cloud`)
+	) {
 		throw new Error('PUBLIC_CONVEX_URL does not match CONVEX_DEPLOYMENT. No operation was run.');
 	}
-	const target = kind === 'local' ? [] : ['--deployment', name];
+	const key = kind === 'local' ? localKey : deployKey;
+	const keyParts = key?.split('|');
+	if (
+		!key ||
+		(kind !== 'local' &&
+			(keyParts.length !== 2 || keyParts[0] !== `${kind}:${name}` || !keyParts[1]))
+	)
+		throw new Error(
+			kind === 'local'
+				? 'Configure CONVEX_SELF_HOSTED_ADMIN_KEY for the explicit local target.'
+				: 'Configure a CONVEX_DEPLOY_KEY for this exact deployment. No operation was run.'
+		);
 	console.log(
-		`target: ${deployment} (${kind === 'prod' ? 'production, read-only' : kind === 'local' ? 'local' : 'personal dev'})`
+		`target: ${deployment} (${kind === 'prod' ? 'production, read-only' : kind === 'local' ? 'local' : 'personal dev'}), company ${companyId}`
 	);
 	return {
-		url,
+		url: target.origin,
 		async run(functionName, args) {
-			if (readOnly && functionName !== 'companyTemplateImport:readPage')
-				throw new Error('This audit allows only the scoped read query.');
-			let stdout;
-			try {
-				({ stdout } = await runCli(
-					process.execPath,
-					[convexCli, 'run', functionName, JSON.stringify(args), ...target],
-					{ encoding: 'utf8', maxBuffer: 8_000_000 }
-				));
-			} catch (error) {
-				throw new Error(`${functionName} failed: ${error.stderr?.trim() || error.code}`);
-			}
-			return stdout.trim() ? JSON.parse(stdout) : null;
+			const operation =
+				functionName === 'operator:readSeed'
+					? 'query'
+					: !readOnly && functionName === 'operator:bootstrap'
+						? 'mutation'
+						: null;
+			if (!operation || args.companyId !== companyId)
+				throw new Error('This operator allows only its explicitly scoped seed functions.');
+			// Convex's function HTTP protocol and public value codec avoid CLI login,
+			// implicit targets, provisioning, command-line payloads and automatic retries.
+			const response = await fetch(`${target.origin}/api/${operation}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Convex ${key}` },
+				body: JSON.stringify({
+					path: functionName,
+					format: 'convex_encoded_json',
+					args: [convexToJson(args)]
+				}),
+				redirect: 'error',
+				signal: AbortSignal.timeout(60_000)
+			});
+			if (!response.ok && response.status !== 605)
+				throw new Error(`${functionName} failed: HTTP ${response.status}.`);
+			const result = await response.json();
+			if (result.status === 'error')
+				throw new Error(`${functionName} failed: ${result.errorMessage}`);
+			if (!response.ok || result.status !== 'success')
+				throw new Error(`${functionName} returned an invalid response.`);
+			return jsonToConvex(result.value);
 		}
 	};
-}
-
-export async function companyRows(deployment, companyId, table) {
-	const rows = [];
-	let cursor = null;
-	while (true) {
-		const result = await deployment.run('companyTemplateImport:readPage', {
-			companyId,
-			table,
-			paginationOpts: { cursor, numItems: 25 }
-		});
-		rows.push(...result.page);
-		if (result.done) return rows;
-		cursor = result.cursor;
-	}
 }

@@ -13,6 +13,8 @@ export type Address = {
 	label: string;
 	tokens: string[];
 	pattern: NumberPatternPart[];
+	/** Transient identity after a paragraph merge; stored reference targets stay unchanged. */
+	redirectedTo?: string;
 };
 
 function itemAddress(
@@ -49,10 +51,25 @@ export function numberAddresses(
 }
 
 export function* iterateNumberAddresses(
-	blocks: readonly Pick<ContractBlock, 'numbering'>[]
+	blocks: readonly Pick<ContractBlock, 'numbering'>[],
+	aliases: ReadonlyMap<string, string> = new Map()
 ): Generator<undefined, Map<string, Address>> {
 	const result = new Map<string, Address>();
 	const positions = new Map<string, number>();
+	const redirected = new Map<string, string[]>();
+	for (const [from, to] of aliases) {
+		const seen = new Set([from]);
+		let target = to;
+		while (aliases.has(target)) {
+			if (seen.has(target)) throw new PlaybookValidationError('Cyclic paragraph merge.');
+			seen.add(target);
+			target = aliases.get(target)!;
+		}
+		const sources = redirected.get(target) ?? [];
+		sources.push(from);
+		redirected.set(target, sources);
+		yield undefined;
+	}
 	for (const block of blocks) {
 		const item = block.numbering;
 		yield undefined;
@@ -65,17 +82,37 @@ export function* iterateNumberAddresses(
 		if (item.minimumDigits) token = token.padStart(item.minimumDigits, '0');
 		const values = [...(parent?.tokens ?? []), token];
 		const format = (pattern: NumberPattern) => formatNumberPattern(pattern, values);
-		const labelPattern = item.labelPattern;
+		const originalDepth = Math.max(
+			...item.labelPattern.map((part) => ('level' in part ? part.level : 0))
+		);
+		const depthChanged = originalDepth !== values.length;
+		function adapt(pattern: NumberPattern): NumberPattern {
+			if (!depthChanged) return pattern;
+			const ancestor = pattern.findLastIndex(
+				(part) => 'level' in part && part.level < originalDepth
+			);
+			return [
+				...(ancestor >= 0 ? (parent?.pattern ?? []) : []),
+				...pattern
+					.slice(ancestor + 1)
+					.map((part) => ('level' in part ? { ...part, level: values.length } : part))
+			];
+		}
+		const labelPattern = adapt(item.labelPattern);
 		const label = format(labelPattern);
 		const address = item.referencePattern
-			? { pattern: item.referencePattern, address: format(item.referencePattern) }
+			? { pattern: adapt(item.referencePattern), address: format(adapt(item.referencePattern)) }
 			: itemAddress(parent, labelPattern, label);
 		positions.set(item.sequenceKey, position);
-		result.set(item.itemKey, {
+		const resolved: Address = {
 			label,
 			tokens: values,
-			...address
-		});
+			...address,
+			...(depthChanged ? { redirectedTo: item.itemKey } : {})
+		};
+		result.set(item.itemKey, resolved);
+		for (const key of redirected.get(item.itemKey) ?? [])
+			result.set(key, { ...resolved, redirectedTo: item.itemKey });
 	}
 	return result;
 }
@@ -95,16 +132,21 @@ export function referenceText(
 		throw new PlaybookValidationError('Unresolved reference.');
 	if (atom.display.separator && !/^[ \t]*[-–—][ \t]*$/u.test(atom.display.separator))
 		throw new PlaybookValidationError('Invalid reference range separator.');
+	const startPattern = first.redirectedTo ? first.pattern : atom.display.start;
+	const endPattern = last?.redirectedTo ? last.pattern : atom.display.end;
 	for (const [pattern, target] of [
-		[atom.display.start, first],
-		[atom.display.end, last]
+		[startPattern, first],
+		[endPattern, last]
 	] as const)
 		if (target) {
 			if (!pattern) throw new PlaybookValidationError('Missing reference display.');
 			validateNumberPattern(pattern, target.tokens.length, true);
 		}
-	return (
-		formatNumberPattern(atom.display.start, first.tokens) +
-		(last ? atom.display.separator + formatNumberPattern(atom.display.end!, last.tokens) : '')
-	);
+	const start = formatNumberPattern(startPattern, first.tokens);
+	if (
+		!last ||
+		(first.redirectedTo ?? atom.targetItemKey) === (last.redirectedTo ?? atom.endTargetItemKey)
+	)
+		return start;
+	return start + atom.display.separator + formatNumberPattern(endPattern!, last.tokens);
 }

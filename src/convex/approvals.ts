@@ -6,15 +6,10 @@ import type { Doc, Id } from './_generated/dataModel';
 import { approvalRequest, reviewDecision } from './contractValidators';
 import { snapshotReader } from './templates';
 import { queueCompletedReview } from './decisionNotifications';
-import { attribution, updateAttributions } from './reviewAttributions';
+import { recordDecision } from './reviews';
 import { emailAddress, type EmailSelection } from './emailValidators';
-import {
-	activeDelivery,
-	createDelivery,
-	removeDelivery,
-	restartDelivery,
-	UNCERTAIN_COOLDOWN
-} from './emailDeliveries';
+import { activeJob, createDelivery, restartDelivery, UNCERTAIN_COOLDOWN } from './emailDeliveries';
+import { removeDelivery } from './emailDisposal';
 import { selectionsFor } from './emailSnapshots';
 
 type Request = Doc<'approvalRequests'>;
@@ -24,33 +19,8 @@ function latestFor(ctx: QueryCtx, id: Id<'savedContracts'>) {
 		.withIndex('by_contractId', (q) => q.eq('contractId', id))
 		.unique();
 }
-async function requestForClient(
-	ctx: QueryCtx,
-	request: Request
-): Promise<Infer<typeof approvalRequest>> {
-	if (!('deliveryId' in request)) {
-		const job = await ctx.db.system.get('_scheduled_functions', request.sendJobId);
-		return {
-			id: request.id,
-			companyName: request.companyName,
-			selectedConcessions: request.selectedConcessions,
-			status: request.status,
-			requestedAt: request.requestedAt,
-			completedAt: request.completedAt,
-			error: request.error,
-			retryAt: request.retryAt,
-			retryEligible:
-				(request.status === 'failed' || request.retryEligible) &&
-				job?.state.kind !== 'pending' &&
-				job?.state.kind !== 'inProgress'
-		};
-	}
-	const delivery = await ctx.db.get('emailDeliveries', request.deliveryId);
-	const status =
-		delivery?.status === 'partial' || delivery?.status === 'skipped' || !delivery
-			? 'failed'
-			: delivery.status;
-	const selectedConcessions = (await selectionsFor(ctx, request.deliveryId)).map((s) => {
+function selectedForClient(selections: EmailSelection[]) {
+	return selections.map((s) => {
 		if (s.concessionPosition === undefined)
 			throw new Error('Approval snapshot position is missing.');
 		return {
@@ -60,24 +30,30 @@ async function requestForClient(
 			reviewStatus: s.reviewStatus
 		};
 	});
-	return {
+}
+async function readRequest(ctx: QueryCtx, request: Request) {
+	const delivery = await ctx.db.get('emailDeliveries', request.deliveryId);
+	if (delivery && delivery.execution.kind !== 'scheduled')
+		throw new Error('Approval delivery execution is invalid.');
+	const state = delivery?.state;
+	const status = state?.kind === 'skipped' || !state ? 'failed' : state.kind;
+	const selectedConcessions = selectedForClient(await selectionsFor(ctx, request.deliveryId));
+	const view: Infer<typeof approvalRequest> = {
 		id: request.id,
 		companyName: request.companyName,
 		selectedConcessions,
 		requestedAt: request.requestedAt,
 		status,
-		completedAt: delivery?.completedAt,
-		error: delivery?.error,
-		retryAt:
-			status === 'uncertain' && delivery?.completedAt !== undefined
-				? delivery.completedAt + UNCERTAIN_COOLDOWN
-				: undefined,
+		completedAt: state?.kind !== 'sending' ? state?.completedAt : undefined,
+		error: state?.kind !== 'sending' ? state?.error : undefined,
+		retryAt: state?.kind === 'uncertain' ? state.completedAt + UNCERTAIN_COOLDOWN : undefined,
 		retryEligible: Boolean(
-			delivery &&
-			(status === 'failed' || delivery.retryable) &&
-			!(await activeDelivery(ctx, delivery))
+			delivery?.execution.kind === 'scheduled' &&
+			(status === 'failed' || (state?.kind === 'uncertain' && state.retryEligible)) &&
+			!(await activeJob(ctx, delivery.execution.sendJobId))
 		)
 	};
+	return { delivery, view };
 }
 export const latest = query({
 	args: { membershipId: v.id('memberships'), id: v.id('savedContracts') },
@@ -86,7 +62,7 @@ export const latest = query({
 		const access = await requireMembership(ctx, membershipId);
 		if (!accessibleContract(await ctx.db.get('savedContracts', id), access)) return null;
 		const request = await latestFor(ctx, id);
-		return request ? requestForClient(ctx, request) : null;
+		return request ? (await readRequest(ctx, request)).view : null;
 	}
 });
 export const request = mutation({
@@ -110,7 +86,8 @@ export const request = mutation({
 				'This contract changed. Wait for the latest saved version before requesting approval.'
 			);
 		const previous = await latestFor(ctx, id);
-		const previousView = previous ? await requestForClient(ctx, previous) : null;
+		const previousContext = previous ? await readRequest(ctx, previous) : null;
+		const previousView = previousContext?.view;
 		if (
 			previousView &&
 			(previousView.status === 'sending' ||
@@ -154,8 +131,8 @@ export const request = mutation({
 			approvalCoversPending(pending, previousView.selectedConcessions)
 		)
 			return previousView;
-		if (previous && 'deliveryId' in previous) {
-			const old = await ctx.db.get('emailDeliveries', previous.deliveryId);
+		if (previous) {
+			const old = previousContext?.delivery;
 			if (
 				old &&
 				previous.recipientEmail === recipientEmail &&
@@ -163,7 +140,14 @@ export const request = mutation({
 				approvalCoversPending(pending, previousView.selectedConcessions) &&
 				(await restartDelivery(ctx, old))
 			)
-				return requestForClient(ctx, previous);
+				return {
+					...previousView,
+					status: 'sending',
+					completedAt: undefined,
+					error: undefined,
+					retryAt: undefined,
+					retryEligible: false
+				};
 			if (old) await removeDelivery(ctx, old);
 		}
 		const requestedAt = Date.now();
@@ -172,14 +156,13 @@ export const request = mutation({
 			ctx,
 			{
 				companyId: access.companyId,
-				contractId: id,
-				recipientEmail,
 				event: {
 					kind: 'approval',
 					contractId: id,
 					requestId,
 					companyName: contract.companyName,
-					templateVersionId: contract.templateVersionId
+					templateVersionId: contract.templateVersionId,
+					recipientEmail
 				}
 			},
 			selections
@@ -193,9 +176,17 @@ export const request = mutation({
 			requestedAt,
 			deliveryId
 		};
-		const requestRecordId = previous ? previous._id : await ctx.db.insert('approvalRequests', next);
 		if (previous) await ctx.db.replace('approvalRequests', previous._id, next);
-		return requestForClient(ctx, { ...next, _id: requestRecordId, _creationTime: requestedAt });
+		else await ctx.db.insert('approvalRequests', next);
+		// The transaction just captured this context and scheduled its pending attempt.
+		return {
+			id: requestId,
+			companyName: contract.companyName,
+			selectedConcessions: selectedForClient(selections),
+			requestedAt,
+			status: 'sending',
+			retryEligible: false
+		};
 	}
 });
 
@@ -234,7 +225,7 @@ export const decide = mutation({
 				receipt.status !== args.status
 			)
 				throw new ConvexError('This review operation was already used.');
-			return { reviewCompleted: receipt.reviewCompleted ?? false };
+			return { reviewCompleted: receipt.reviewCompleted };
 		}
 		if (contract.selectedConcessions[args.itemId] !== args.concessionId)
 			throw new ConvexError('This concession changed. Review its current version.');
@@ -256,27 +247,19 @@ export const decide = mutation({
 				...contract.reviews,
 				[args.itemId]: { concessionId: args.concessionId, lifecycle, status: args.status }
 			};
-			const reviewGeneration = (contract.reviewGeneration ?? 0) + 1;
-			await updateAttributions(ctx, contract, reviews, [
-				attribution(args.itemId, args.concessionId, lifecycle, access)
-			]);
+			const reviewGeneration = contract.reviewGeneration + 1;
 			await ctx.db.patch('savedContracts', args.id, { reviews, reviewGeneration });
-			const notificationQueued = await queueCompletedReview(ctx, {
-				...contract,
-				reviews,
-				reviewGeneration
-			});
+			const notificationQueued = await queueCompletedReview(
+				ctx,
+				{ ...contract, reviews, reviewGeneration },
+				access._id
+			);
 			reviewCompleted = previousStatus === 'pending' && notificationQueued;
 		}
-		await ctx.db.insert('concessionDecisions', {
-			companyId: access.companyId,
-			contractId: args.id,
+		await recordDecision(ctx, contract, access, {
 			itemId: args.itemId,
 			concessionId: args.concessionId,
 			lifecycle,
-			adminId: access._id,
-			adminName: access.name,
-			adminEmail: access.email,
 			operationId,
 			previousStatus,
 			status: args.status,

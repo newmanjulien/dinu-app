@@ -3,16 +3,16 @@
 	import { restoreDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	import {
 		annotationOccurrence,
-		annotationAnchorBounds,
 		resolveAnnotationAnchor,
 		type AnnotationActivation,
 		type AnnotationOccurrence
 	} from '$lib/document/annotation-anchor';
-	import { triggerAnnotationId } from '$lib/playbook/document-overlay';
+	import { triggerAnnotationId, type AnnotationMembership } from '$lib/playbook/document-overlay';
 	import { tick, untrack, onMount, onDestroy, type Snippet } from 'svelte';
-	import type { ContractChange, SourcePoint, SourceRange } from '$lib/playbook/model';
+	import type { ContractChange, SourceTarget } from '$lib/playbook/model';
+	import { isTextTarget, sameSourceTarget } from '$lib/contract/source-model';
 	import { pointPosition } from '$lib/contract/source-index';
-	import { unitsInRange } from '$lib/contract/ranges';
+	import { unitsInRange, validateTarget } from '$lib/contract/ranges';
 	import { EMPTY_PREVIEW_CHANGES, type ConcessionSelection } from '$lib/document/runtime/types';
 	import { afterPaint, type Priority } from '$lib/document/runtime/scheduler';
 	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
@@ -25,16 +25,20 @@
 	import {
 		sourcePointBounds,
 		sourceRangeToDomRanges,
-		sourceOccurrence
+		sourceOccurrence,
+		sourceTargetBounds
 	} from '$lib/document/selection/dom-selection';
 	import {
 		DocumentHighlightController,
 		EMPTY_HIGHLIGHTS,
 		type PageHighlights
 	} from '$lib/document/highlights/controller';
-	import { DocumentClauseInteractions } from '$lib/document/highlights/interactions';
+	import {
+		DocumentGestureInteractions,
+		type DocumentGestureIntent
+	} from '$lib/document/highlights/interactions';
 	import { getContractLayoutProfiles } from '$lib/document/runtime/layout-context.svelte';
-	import { getContractWorkspace } from '$lib/document/runtime/context';
+	import { getContractWorkspace } from '$lib/document/runtime/workspace-context';
 	import { activeConflicts } from '$lib/playbook/selection-conflicts';
 	import { getDocumentViewportMetrics } from '$lib/document/document-viewport';
 	import type { PaginatedPage } from '$lib/document/pagination/types';
@@ -71,11 +75,12 @@
 		selectedAnnotationId = null,
 		selectedRanges = [],
 		previewChanges = EMPTY_PREVIEW_CHANGES,
-		panelSource,
+		panelTarget,
 		picking = false,
 		allowPlaybookNavigation = true,
 		playbookNavigationReady = true,
-		onSelect
+		onSelect,
+		onDocumentBackground
 	}: {
 		active?: boolean;
 		interactive?: boolean;
@@ -93,13 +98,15 @@
 		selectedConcessions: ConcessionSelection;
 		onRemoveConcession: (itemId: string) => void;
 		selectedAnnotationId?: string | null;
-		selectedRanges?: readonly SourceRange[];
+		selectedRanges?: readonly SourceTarget[];
 		previewChanges?: readonly ContractChange[];
-		panelSource?: SourcePoint;
+		/** The selected clause's stable source target; click position never affects panel geometry. */
+		panelTarget?: SourceTarget;
 		picking?: boolean;
 		allowPlaybookNavigation?: boolean;
 		playbookNavigationReady?: boolean;
 		onSelect: (itemId: string, annotationId: string) => boolean | void;
+		onDocumentBackground?: () => void;
 	} = $props();
 	const { source, renderer, viewer } = getContractWorkspace();
 	restoreDocumentNavigation(viewer);
@@ -108,13 +115,32 @@
 	let activationComplete = $state(false);
 	let mountedPages = $state.raw<readonly PaginatedPage[]>([]);
 	let pageElementsSnapshot = $state.raw<typeof snapshot>();
+	const structuralBoundaryAnnotations = $derived.by(() => {
+		const byKey = new Map<string, AnnotationMembership[]>();
+		const boundaries = pageElementsSnapshot?.source.sourceIndex.structuralBoundaries;
+		for (const item of pageElementsSnapshot?.source.items ?? [])
+			for (const annotation of item.annotations) {
+				if (annotation.range.kind !== 'boundary') continue;
+				const boundary = boundaries?.get(annotation.range.afterBlockKey);
+				if (!boundary) continue;
+				const annotations = byKey.get(boundary.afterBlockKey) ?? [];
+				if (!byKey.has(boundary.afterBlockKey)) byKey.set(boundary.afterBlockKey, annotations);
+				annotations.push({
+					...annotation,
+					applied:
+						annotation.kind === 'concession-effect' &&
+						pageElementsSnapshot?.concessions[item.itemId] === annotation.concessionId
+				});
+			}
+		return byKey;
+	});
 	let mountedGeneration = $state(0);
 	$effect(() => {
 		if (!active) activationComplete = false;
 		else if (viewer.prepared && viewer.visible) activationComplete = true;
 	});
 	let highlights = $state<DocumentHighlightController>();
-	let clauseInteractions = $state<DocumentClauseInteractions>();
+	let documentGestures = $state<DocumentGestureInteractions>();
 	let highlightRects = $state.raw<PageHighlights>(new Map());
 	$effect(() => {
 		const stage = viewer.documentStageElement;
@@ -145,11 +171,11 @@
 		const stage = viewer.documentStageElement,
 			controller = highlights;
 		if (!active || !stage || !controller) return;
-		const interactions = new DocumentClauseInteractions(stage, controller, selectAnnotation);
-		clauseInteractions = interactions;
+		const interactions = new DocumentGestureInteractions(stage, controller, handleDocumentIntent);
+		documentGestures = interactions;
 		return () => {
 			interactions.destroy();
-			clauseInteractions = undefined;
+			documentGestures = undefined;
 		};
 	});
 	let notifiedController: DocumentHighlightController | undefined;
@@ -178,7 +204,7 @@
 		highlights?.projectionChanged();
 	});
 	const authoringRanges = new Map<
-		SourceRange,
+		SourceTarget,
 		{
 			sourceIndex: NonNullable<typeof snapshot>['source']['sourceIndex'];
 			ranges: Range[];
@@ -193,14 +219,21 @@
 		const selected = new Set(selectedRanges);
 		for (const range of authoringRanges.keys())
 			if (!selected.has(range)) authoringRanges.delete(range);
-		const ranges = selectedRanges.flatMap((sourceRange) => {
+		const boundarySelections: { key: string; startRatio: number; endRatio: number }[] = [];
+		const ranges = selectedRanges.flatMap((target) => {
 			const index = commit.source.sourceIndex;
+			if (!isTextTarget(target)) {
+				if (index.structuralBoundaries.has(target.afterBlockKey))
+					boundarySelections.push({ key: target.afterBlockKey, startRatio: 0, endRatio: 0 });
+				return [];
+			}
+			const sourceRange = target.range;
 			let start: number, end: number;
 			try {
 				start = pointPosition(index, sourceRange.start);
 				end = pointPosition(index, sourceRange.end);
 			} catch {
-				authoringRanges.delete(sourceRange);
+				authoringRanges.delete(target);
 				return [];
 			}
 			const keys = new Set(
@@ -209,7 +242,7 @@
 			const pages = commit.pages.filter((page) =>
 				page.placements.some(({ fragment }) => keys.has(fragment.blockKey))
 			);
-			let cached = authoringRanges.get(sourceRange);
+			let cached = authoringRanges.get(target);
 			if (
 				!cached ||
 				cached.sourceIndex !== index ||
@@ -224,11 +257,16 @@
 					ranges: sourceRangeToDomRanges(root, sourceRange, index),
 					pages
 				};
-				authoringRanges.set(sourceRange, cached);
+				authoringRanges.set(target, cached);
 			}
 			return cached.ranges;
 		});
 		controller.setGroup('authoring', 'authoring-selection', ranges);
+		controller.setStructuralBoundaryGroup(
+			'authoring-structural-boundaries',
+			'authoring-selection',
+			boundarySelections
+		);
 	});
 	$effect(() => {
 		const stage = viewer.documentStageElement;
@@ -419,12 +457,20 @@
 	const canOpenPlaybookItems = $derived(
 		interacting && viewer.prepared && current && navigationCapable && playbookNavigationReady
 	);
+	const documentBackgroundDismissalEnabled = $derived(hasPanel && Boolean(onDocumentBackground));
+	const protectDocumentStage = $derived(hasPanel);
 	$effect(() => {
-		clauseInteractions?.setEnabled(canOpenPlaybookItems);
+		documentGestures?.setPolicy({
+			clauseActivation: canOpenPlaybookItems,
+			backgroundActivation: documentBackgroundDismissalEnabled
+		});
 	});
 	let layoutElement = $state<HTMLDivElement>();
 	let displayWidth = $state<number>(PAGE_FORMAT.width);
-	let panelTop = $state(0);
+	let panelPosition = $state.raw<{ target: SourceTarget; top: number }>();
+	const panelTop = $derived(panelPosition?.top);
+	const panelResolved = $derived(Boolean(panelPosition));
+	let panelPositionChange = $state(0);
 	let selectedOccurrence = $state.raw<AnnotationOccurrence | null>(null);
 	let pageViewport = $state<HTMLDivElement>();
 	const loading = $derived(
@@ -440,26 +486,23 @@
 	function annotationAnchor(
 		annotationId = selectedAnnotationId,
 		occurrence = selectedOccurrence,
-		point = panelSource
+		target = panelTarget
 	) {
 		const root = viewer.documentStageElement,
 			index = snapshot?.source.sourceIndex;
 		if (!root || !index) return;
-		// A removed effect leaves the owning item open at its first real trigger.
-		const fallbackTrigger = point
+		// If selection identity is temporarily absent, recover its matching trigger from the target.
+		const fallbackTrigger = target
 			? source.geometry
-					?.triggersContainingPoint(point)
-					.find(
-						(trigger) =>
-							trigger.range.start.sourceKey === point.sourceKey &&
-							trigger.range.start.offset === point.offset
-					)
+					?.triggersIntersecting(target)
+					.find((trigger) => sameSourceTarget(trigger.range, target))
 			: undefined;
 		const fallback = fallbackTrigger
 			? [...(source.geometry?.triggerIds.get(fallbackTrigger.id) ?? [])][0]
 			: undefined;
 		const id =
 			annotationId ?? (fallback ? triggerAnnotationId(fallback.itemId, fallback.trigger.id) : null);
+		const point = target && isTextTarget(target) ? target.range.start : undefined;
 		return resolveAnnotationAnchor(
 			annotationRegistry,
 			index,
@@ -472,25 +515,58 @@
 	function captureAnnotationFocus() {
 		const id = selectedAnnotationId,
 			occurrence = selectedOccurrence,
-			point = panelSource;
+			target = panelTarget;
 		return () => {
 			if (!active) return;
-			const anchor = annotationAnchor(id, occurrence, point);
+			const anchor = annotationAnchor(id, occurrence, target);
 			(anchor?.owner ?? viewer.documentStageElement)?.focus({ preventScroll: true });
 		};
 	}
 	function restoreAnnotationFocus() {
 		captureAnnotationFocus()();
 	}
-	async function positionPanel() {
+	function panelPositionRequest() {
+		const target = panelTarget,
+			stage = viewer.documentStageElement,
+			index = snapshot?.source.sourceIndex,
+			layout = layoutElement;
+		return active && hasPanel && target && stage && index && layout
+			? { target, stage, index, layout }
+			: undefined;
+	}
+	function panelPositionRequestIsCurrent(
+		request: NonNullable<ReturnType<typeof panelPositionRequest>>
+	) {
+		return (
+			active &&
+			hasPanel &&
+			Boolean(panelTarget && sameSourceTarget(panelTarget, request.target)) &&
+			viewer.documentStageElement === request.stage &&
+			snapshot?.source.sourceIndex === request.index &&
+			layoutElement === request.layout
+		);
+	}
+	async function positionPanel(request = panelPositionRequest()) {
+		if (!request) return;
+		try {
+			validateTarget(request.index, request.target);
+		} catch {
+			if (panelPositionRequestIsCurrent(request)) panelPosition = undefined;
+			return;
+		}
 		await tick();
-		if (!active || !viewer.documentStageElement || !hasPanel) return;
-		const anchor = annotationAnchor();
-		const bounds =
-			(anchor ? annotationAnchorBounds(anchor) : null) ??
-			(panelSource ? sourcePointBounds(viewer.documentStageElement, panelSource, true) : null);
-		const stageTop = viewer.documentStageElement.getBoundingClientRect().top;
-		panelTop = Math.max(0, (bounds?.top ?? getDocumentViewportMetrics().top) - stageTop);
+		if (!panelPositionRequestIsCurrent(request)) return;
+		const bounds = sourceTargetBounds(request.stage, request.target, request.index);
+		// A prior resolved position remains during a clause switch until the new page DOM commits.
+		// An initial panel has no fallback position, so it never renders at an arbitrary page top.
+		if (!bounds) return;
+		const top = Math.max(0, bounds.top - request.layout.getBoundingClientRect().top);
+		if (
+			!panelPosition ||
+			!sameSourceTarget(panelPosition.target, request.target) ||
+			Math.abs(panelPosition.top - top) > 0.5
+		)
+			panelPosition = { target: request.target, top };
 	}
 	function selectAnnotation(
 		itemId: string,
@@ -500,8 +576,18 @@
 		if (!canOpenPlaybookItems) return;
 		if (onSelect(itemId, annotationId) === false) return;
 		selectedOccurrence = annotationOccurrence(annotationId, activation);
-		void positionPanel();
+		if (panelPosition) panelPositionChange += 1;
 	}
+	function handleDocumentIntent(intent: DocumentGestureIntent) {
+		if (intent.kind === 'activate-background') {
+			if (hasPanel) onDocumentBackground?.();
+			return;
+		}
+		selectAnnotation(intent.itemId, intent.annotationId, intent.activation);
+	}
+	$effect(() => {
+		if (!active || !hasPanel || !panelTarget) panelPosition = undefined;
+	});
 	$effect(() => {
 		const selected = selectedAnnotationId,
 			open = hasPanel;
@@ -510,13 +596,13 @@
 		});
 	});
 	$effect(() => {
-		void snapshot?.id;
-		void selectedAnnotationId;
-		void selectedOccurrence;
-		void panelSource;
-		void hasPanel;
+		const request = panelPositionRequest();
+		// Page mounting and the final page-elements commit can both make a previously unresolved
+		// semantic target measurable. They must independently retry the anchor lookup.
+		void mountedPages;
+		void pageElementsSnapshot;
 		void pageScale;
-		if (active) void positionPanel();
+		if (request) void positionPanel(request);
 	});
 	async function keepPanelVisible() {
 		const panel = layoutElement?.querySelector<HTMLElement>('[data-workspace-panel]');
@@ -841,6 +927,7 @@
 								{selectedAnnotationId}
 								{navigationCapable}
 								{canOpenPlaybookItems}
+								{structuralBoundaryAnnotations}
 								onAnnotationSelect={selectAnnotation}
 							/>
 						{/each}
@@ -872,11 +959,14 @@
 		{/snippet}
 		<ContractWorkspaceLayout
 			{hasPanel}
+			{protectDocumentStage}
 			{loading}
 			interactive={!loading && active && (interactive || allowPlaybookNavigation)}
 			{followScroll}
 			documentHeight={loading ? PAGE_FORMAT.height * pageScale : displayHeight}
 			{panelTop}
+			{panelResolved}
+			{panelPositionChange}
 			bind:layoutElement
 			bind:documentStageElement={viewer.documentStageElement}
 			{documentContent}

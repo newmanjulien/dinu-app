@@ -2,6 +2,7 @@ import type { CompiledContract } from '../contract/compiled-contract';
 import type { PlaybookGeometryIndex } from './geometry-index';
 import type { Concession, Instructions, PlaybookItemRecord } from './model';
 import {
+	equalConcession,
 	immutable,
 	semanticInstructions,
 	semanticPlaybookDraft,
@@ -14,15 +15,15 @@ import { geometrySelectionIssue, selectionIssueMessage } from './source-picking'
 import {
 	validatePlaybookItemContent,
 	validateChangeReferences,
-	validateNewConcessions,
+	validateConcessions,
 	PlaybookValidationError,
 	MAX_PLAYBOOK_ITEMS,
 	MAX_CONTRACT_BLOCKS
 } from './validation';
 import type { Operation } from './save-transport';
-import type { SourceRange } from './model';
 
 type Composition = {
+	baseline: Concession;
 	concession: Concession;
 	step: 'concession' | 'other-part';
 	affectsOtherParts: boolean;
@@ -55,13 +56,11 @@ export class AuthoringContext {
 	confirmed = $state.raw<PlaybookItemRecord | null>(null);
 	remote = $state.raw<PlaybookItemRecord | null>(null);
 	instructions: Instructions = $state({});
-	triggers = $state.raw<PlaybookDraft['triggers']>([]);
+	trigger = $state.raw<PlaybookDraft['trigger']>()!;
 	concessions = $state.raw<Concession[]>([]);
 	workflow: Workflow = $state({ kind: 'editing' });
 	operation = $state.raw<OperationState>({ kind: 'editing' });
-	selectedTriggerId = $state<string | null>(null);
 	selectedAnnotationId = $state<string | null>(null);
-	initialSelection = $state<SourceRange | null>(null);
 	previewConcessionId = $state<string | null>(null);
 	// Absence only proves deletion after the query has observed the highest known revision.
 	queryRevision = 0;
@@ -78,7 +77,7 @@ export class AuthoringContext {
 		// An existing editor opens from the domain's previously accepted query record.
 		this.queryRevision = confirmed?.revision ?? 0;
 		this.instructions = { ...draft.instructions };
-		this.triggers = immutable(confirmed?.triggers ?? draft.triggers);
+		this.trigger = immutable(confirmed?.trigger ?? draft.trigger);
 		this.concessions = immutable(confirmed?.concessions ?? draft.concessions);
 		this.workflow = workflow;
 	}
@@ -87,24 +86,43 @@ export class AuthoringContext {
 			? this.workflow.concession
 			: undefined
 	);
+	// The draft owns source locations; highlighting is a projection of that structure.
+	initialSelection = $derived(
+		this.workflow.kind === 'editing'
+			? null
+			: (this.composer?.changes[0]?.range ?? this.trigger.range ?? null)
+	);
 	draft: ReadonlyDraft = $derived({
 		...(this.confirmed ? { persistedId: this.confirmed._id } : {}),
 		instructions: this.instructions,
-		triggers: this.triggers,
+		trigger: this.trigger,
 		concessions: this.concessions
 	});
-	dirty = $derived(
+	private persistedDirty = $derived(
 		instructionsFields.some(
 			({ key }) => (this.instructions[key] ?? '') !== (this.confirmed?.instructions?.[key] ?? '')
 		) ||
 			this.concessions.length !== (this.confirmed?.concessions.length ?? 0) ||
 			this.concessions.some((concession, i) => concession.id !== this.confirmed?.concessions[i]?.id)
 	);
+	private compositionDirty = $derived(
+		this.workflow.kind === 'creating-concession' || this.workflow.kind === 'adding-concession'
+			? !equalConcession(this.workflow.concession, this.workflow.baseline) ||
+					this.workflow.affectsOtherParts
+			: false
+	);
+	dirty = $derived(this.persistedDirty || this.compositionDirty);
+	get hasPersistedChanges() {
+		return this.persistedDirty;
+	}
+	get hasCompositionChanges() {
+		return this.compositionDirty;
+	}
 	// Normalization follows structure changes; typing instructions shares the frozen structure.
 	private structure = $derived(
 		immutable(
 			semanticPlaybookDraft({
-				triggers: this.triggers,
+				trigger: this.trigger,
 				concessions:
 					this.workflow.kind === 'creating-concession'
 						? [this.workflow.concession]
@@ -117,13 +135,11 @@ export class AuthoringContext {
 		this.workflow.kind === 'creating-concession'
 			? this.structure
 			: this.composer
-				? immutable(
-						semanticPlaybookDraft({ triggers: this.triggers, concessions: [this.composer] })
-					)
+				? immutable(semanticPlaybookDraft({ trigger: this.trigger, concessions: [this.composer] }))
 				: null
 	);
 	private composerLimitReason = $derived(
-		this.composer ? validationReason(() => validateNewConcessions([this.composer!])) : ''
+		this.composer ? validationReason(() => validateConcessions([this.composer!])) : ''
 	);
 	private contentReason = $derived(
 		validationReason(() => validatePlaybookItemContent(this.payload))
@@ -189,7 +205,6 @@ export class AuthoringContext {
 		return this.contract
 			? validationReason(() =>
 					validateChangeReferences(this.contract!, {
-						triggers: [],
 						concessions
 					})
 				)
@@ -207,7 +222,7 @@ export class AuthoringContext {
 			this.validateGeometry!(
 				this.confirmed?._id,
 				{
-					triggers: this.triggers,
+					trigger: this.trigger,
 					concessions
 				},
 				isolated

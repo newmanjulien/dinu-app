@@ -13,7 +13,10 @@ export const item: Omit<
 	Doc<'playbookItems'>,
 	'_id' | '_creationTime' | 'companyId' | 'revision' | 'publishedRevisionId'
 > = {
-	triggers: [],
+	trigger: {
+		id: 'trigger',
+		range: { start: { sourceKey: 'text-1', offset: 0 }, end: { sourceKey: 'text-1', offset: 9 } }
+	},
 	concessions: [
 		{ id: 'preferred', tier: 'preferred', description: 'Synthetic choice.', changes: [] }
 	]

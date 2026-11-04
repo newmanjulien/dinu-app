@@ -66,7 +66,7 @@
 			variant === 'secondary' &&
 				`${secondaryButtonClass} text-ink disabled:shadow-none aria-disabled:shadow-none`,
 			variant === 'ghost' &&
-				'text-ink-secondary not-disabled:not-aria-disabled:hover:bg-control-fill disabled:bg-transparent aria-disabled:bg-transparent',
+				'text-ink-secondary not-disabled:not-aria-disabled:hover:bg-control-hover disabled:bg-transparent aria-disabled:bg-transparent',
 			className
 		)
 	);

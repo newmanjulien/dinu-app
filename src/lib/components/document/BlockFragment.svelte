@@ -1,6 +1,9 @@
 <script lang="ts">
 	import type { AnnotationActivation } from '$lib/document/annotation-anchor';
+	import type { StructuralBoundary } from '$lib/contract/source-index';
+	import type { AnnotationMembership } from '$lib/playbook/document-overlay';
 	import InlineContent from './InlineContent.svelte';
+	import StructuralBoundaryAnchor from './StructuralBoundaryAnchor.svelte';
 	import { fragmentKey, type PageFragment } from '$lib/document/pagination/types';
 
 	let {
@@ -10,6 +13,8 @@
 		navigationCapable = false,
 		selectedAnnotationId,
 		canOpenPlaybookItems,
+		structuralBoundaries = [],
+		structuralBoundaryAnnotations = new Map(),
 		onAnnotationSelect
 	}: {
 		fragment: PageFragment;
@@ -19,6 +24,9 @@
 		navigationCapable?: boolean;
 		selectedAnnotationId: string | null;
 		canOpenPlaybookItems: boolean;
+		/** Metadata only; the page highlighter measures each boundary's adjacent margin. */
+		structuralBoundaries?: readonly StructuralBoundary[];
+		structuralBoundaryAnnotations?: ReadonlyMap<string, readonly AnnotationMembership[]>;
 		onAnnotationSelect: (
 			itemId: string,
 			annotationId: string,
@@ -27,11 +35,34 @@
 	} = $props();
 </script>
 
+{#snippet structuralBoundaryElements()}
+	{#each structuralBoundaries as boundary (boundary.afterBlockKey)}
+		<span
+			class="structural-boundary-target"
+			data-structural-boundary={boundary.afterBlockKey}
+			aria-hidden="true"
+		></span>{#if !profileMode}
+			<StructuralBoundaryAnchor
+				boundary={boundary}
+				annotations={structuralBoundaryAnnotations.get(boundary.afterBlockKey) ?? []}
+				selected={(structuralBoundaryAnnotations.get(boundary.afterBlockKey) ?? []).some(
+					(annotation) => annotation.id === selectedAnnotationId
+				)}
+				{interactive}
+				{navigationCapable}
+				{canOpenPlaybookItems}
+				{onAnnotationSelect}
+			/>
+		{/if}
+	{/each}
+{/snippet}
+
 {#if fragment.type === 'heading'}
 	<svelte:element
 		this={`h${fragment.level}`}
 		id={profileMode ? undefined : fragment.anchor}
 		class="contract-block contract-heading"
+		class:has-structural-boundary={Boolean(structuralBoundaries.length)}
 		data-block-key={fragment.blockKey}
 		data-source-fragment-key={fragmentKey(fragment)}
 		tabindex={interactive && !profileMode ? -1 : undefined}
@@ -44,14 +75,14 @@
 			{selectedAnnotationId}
 			canOpenPlaybookItems={canOpenPlaybookItems && interactive && !profileMode}
 			{onAnnotationSelect}
-		/>
+		/>{@render structuralBoundaryElements()}
 	</svelte:element>
 {:else if fragment.type === 'paragraph'}
 	<p
 		class="contract-block contract-paragraph"
 		class:is-continuation={fragment.isContinuation}
 		class:is-final={fragment.isFinal}
-		class:is-empty-insertion-slot={fragment.emptyInsertionSlot}
+		class:has-structural-boundary={Boolean(structuralBoundaries.length)}
 		data-block-key={fragment.blockKey}
 		data-source-fragment-key={fragmentKey(fragment)}
 	>
@@ -63,7 +94,7 @@
 			{selectedAnnotationId}
 			canOpenPlaybookItems={canOpenPlaybookItems && interactive && !profileMode}
 			{onAnnotationSelect}
-		/>
+		/>{@render structuralBoundaryElements()}
 	</p>
 {:else}
 	<table

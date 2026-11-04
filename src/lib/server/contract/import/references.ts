@@ -1,15 +1,14 @@
-import type { ReplacementAtom } from '../../../contract/source-model';
+import type { ReplacementInline } from '../../../contract/source-model';
 import { numberAddresses, referenceText, type Address } from '../../../contract/numbering';
 import type { Block, Bookmark, Paragraph } from './document';
 import type { Issue } from './format';
 import { validateNumberPattern, type NumberPatternPart } from '../../../contract/number-pattern';
 import { PlaybookValidationError } from '../../../playbook/validation-error';
-import { equalMarks } from '../../../contract/marks';
 import { addressKey, labelTokens, numberSyntax, numberToken } from './labels';
 type Replacement = {
 	start: number;
 	end: number;
-	atom: Extract<ReplacementAtom, { kind: 'reference' }>;
+	atom: Extract<ReplacementInline, { kind: 'reference' }>;
 };
 
 function reproducesReference(
@@ -529,14 +528,14 @@ function replaceSpans(
 	paragraph: Paragraph,
 	replacements: Replacement[],
 	issue: Issue
-): ReplacementAtom[] {
+): ReplacementInline[] {
 	replacements.sort((a, b) => a.start - b.start);
-	const result: ReplacementAtom[] = [];
+	const result: ReplacementInline[] = [];
 	let runIndex = 0,
 		runStart = 0,
 		cursor = 0;
-	function take(end: number): ReplacementAtom[] {
-		const atoms: ReplacementAtom[] = [];
+	function take(end: number): ReplacementInline[] {
+		const atoms: ReplacementInline[] = [];
 		while (cursor < end && runIndex < paragraph.content.length) {
 			const run = paragraph.content[runIndex];
 			if (run.kind !== 'text') throw new Error('References must resolve from original Word text.');
@@ -563,15 +562,8 @@ function replaceSpans(
 			continue;
 		}
 		for (const atom of take(replacement.start)) result.push(atom);
-		const selected = take(replacement.end);
-		const marks = selected[0]?.marks;
-		if (!selected.length || selected.some((run) => !equalMarks(run.marks, marks))) {
-			issue(
-				paragraph.location,
-				'Use consistent bold and italic formatting throughout this clause reference in Word.'
-			);
-			for (const atom of selected) result.push(atom);
-		} else result.push({ ...replacement.atom, ...(marks ? { marks } : {}) });
+		take(replacement.end);
+		result.push(replacement.atom);
 	}
 	for (const atom of take(paragraph.plain.length)) result.push(atom);
 	return result.length ? result : [{ kind: 'text', text: '' }];

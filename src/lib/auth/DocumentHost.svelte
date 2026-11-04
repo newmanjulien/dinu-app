@@ -1,7 +1,3 @@
-<script module lang="ts">
-	export { createContractWorkspace } from '$lib/document/runtime/context';
-</script>
-
 <script lang="ts">
 	import RetainedViewer from '$lib/components/document/RetainedViewer.svelte';
 	import LayoutProfileSurface from '$lib/components/document/LayoutProfileSurface.svelte';

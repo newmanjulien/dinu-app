@@ -1,5 +1,8 @@
 # Phase 8 development rollout results
 
+**Historical implementation/evidence record, superseded for current backend instructions on 2026-10-30.** The [current architecture](backend-redesign/architecture.md), [17D2 local evidence](backend-redesign/phase-17d2-cross-workflow.md) and [Phase 18 activation procedure](backend-redesign/phase-18-activation.md) own present behavior/status. Older counts, formatting, indexes, attribution, probes and deployment results below describe their original revision; they do not certify the changed backend or authorize an old rollout recipe.
+
+
 Target: development `shiny-buzzard-89`, 2026-10-05. Browser checks used local Vite
 and Chrome with the existing 113-block document, rendered across 18 mounted pages.
 No tests were added or expanded; no Playwright or test suite was run.

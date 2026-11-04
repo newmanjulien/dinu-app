@@ -1,6 +1,28 @@
 import { v, type Infer } from 'convex/values';
 export { emailAddress } from './emailValidators';
 
+const invitationFields = v.object({
+	companyId: v.id('company'),
+	normalizedEmail: v.string(),
+	inviterProfileId: v.id('profiles'),
+	tokenHash: v.string(),
+	expiresAt: v.number(),
+	expired: v.boolean(),
+	deliveryStatus: v.union(v.literal('sending'), v.literal('sent'), v.literal('failed')),
+	deliveryGeneration: v.number(),
+	deliveryStartedAt: v.optional(v.number()),
+	deliveryId: v.optional(v.id('emailDeliveries')),
+	expiryJobId: v.optional(v.id('_scheduled_functions'))
+});
+export const storedInvitation = v.union(
+	invitationFields.extend({ status: v.union(v.literal('pending'), v.literal('revoked')) }),
+	invitationFields.extend({
+		status: v.literal('accepted'),
+		acceptedByProfileId: v.id('profiles'),
+		acceptedAt: v.number()
+	})
+);
+
 export const invitationDelivery = v.object({
 	email: v.string(),
 	error: v.union(v.string(), v.null())

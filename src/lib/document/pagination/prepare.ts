@@ -1,5 +1,6 @@
 import { annotationSegment } from '$lib/playbook/document-overlay';
 import type { ResolvedBlock } from '$lib/contract/model';
+import type { StructuralBoundary } from '$lib/contract/source-index';
 import { tokenizeInline } from './tokenize';
 import type { InlineToken, PageFragment, ParagraphFragment } from './types';
 
@@ -8,6 +9,8 @@ import type { InlineToken, PageFragment, ParagraphFragment } from './types';
 export interface PreparedBlock {
 	readonly fragment: PageFragment;
 	readonly geometryFingerprint: string;
+	/** Composition supplies the real owner; pagination never infers it from nearby output. */
+	readonly boundariesAfter?: readonly StructuralBoundary[];
 }
 
 // Preserve token/span and revision boundaries. Occurrence names and source coordinates
@@ -19,14 +22,7 @@ function geometryTokens(tokens: readonly InlineToken[]) {
 		const descriptor = annotationSegment(token.annotations);
 		if (!index || previous !== descriptor.membershipKey) segment++;
 		previous = descriptor.membershipKey;
-		return [
-			token.value,
-			token.revision ?? null,
-			segment,
-			Boolean(descriptor.target),
-			token.marks?.bold ?? null,
-			token.marks?.italic ?? null
-		];
+		return [token.value, token.revision ?? null, segment, Boolean(descriptor.target)];
 	});
 }
 
@@ -85,8 +81,7 @@ export class LayoutPreparationEngine {
 							blockKey: block.blockKey,
 							tokens: inline,
 							isContinuation: false,
-							isFinal: true,
-							emptyInsertionSlot: Boolean(block.emptyInsertionSlot)
+							isFinal: true
 						};
 		}
 		const geometryFingerprint = JSON.stringify(
@@ -99,11 +94,17 @@ export class LayoutPreparationEngine {
 					]
 				: [
 						fragment.type,
-						fragment.type === 'heading' ? fragment.level : Boolean(fragment.emptyInsertionSlot),
+						fragment.type === 'heading' ? fragment.level : null,
 						geometryTokens(fragment.tokens)
 					]
 		);
-		const prepared = { fragment, geometryFingerprint };
+		const prepared = {
+			fragment,
+			geometryFingerprint,
+			...(block.kind !== 'table' && block.boundariesAfter?.length
+				? { boundariesAfter: block.boundariesAfter }
+				: {})
+		};
 		this.#blocks.set(block, prepared);
 		return prepared;
 	}

@@ -1,7 +1,8 @@
 import { measureStartupWork, recordColdStart, recordDomainWork } from './render-perf';
 import type { ContractBlock } from '$lib/contract/model';
 import type { CompiledContract } from '$lib/contract/compiled-contract';
-import type { PlaybookItemRecord } from '$lib/playbook/model';
+import type { PlaybookItemRecord, StoredPlaybookItemRecord } from '$lib/playbook/model';
+import { normalizePlaybookItemRecord } from '$lib/playbook/model';
 import type { PlaybookGeometryIndex } from '$lib/playbook/geometry-index';
 import { DocumentDomain } from '../domain/document-domain';
 import type { ContractRenderSource, SourceIssue } from './types';
@@ -9,7 +10,8 @@ import type { ContractRenderSource, SourceIssue } from './types';
 type QueryValue<T> = { data?: T; error?: unknown };
 export interface ContractSourceInput {
 	blocks: QueryValue<ContractBlock[]>;
-	items: QueryValue<PlaybookItemRecord[]>;
+	/** Query and snapshot payloads may still contain legacy serialized target ranges. */
+	items: QueryValue<(StoredPlaybookItemRecord | PlaybookItemRecord)[]>;
 }
 
 /** Workspace-owned source semantics. Query failures retain accepted data. */
@@ -50,7 +52,7 @@ export class ContractSourceController {
 		}
 		if (input.items.data && !itemsFailed) {
 			try {
-				this.domain.acceptItems(input.items.data);
+				this.domain.acceptItems(input.items.data.map(normalizePlaybookItemRecord));
 			} catch {
 				itemsFailed = true;
 			}

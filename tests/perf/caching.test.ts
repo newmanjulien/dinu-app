@@ -11,6 +11,7 @@ import type { Id } from '../../src/convex/_generated/dataModel';
 import { block, item } from './fixtures';
 import { observeSnapshotStorage } from './snapshot-storage-observer';
 import { setCacheIdentity } from '../../src/lib/contract/browser-storage';
+import { normalizePlaybookItem } from '../../src/lib/playbook/model';
 
 const id = 'synthetic-contract' as Id<'savedContracts'>;
 const itemId = 'synthetic-item' as Id<'playbookItems'>;
@@ -29,13 +30,22 @@ function fixture(): ReadyContract {
 			savedAt: 123,
 			reviews: {},
 			selectedConcessions: {},
-			revision: 0
+			revision: 0,
+			lastOperationId: null
 		},
 		snapshot: {
 			blockCount: 1,
 			itemCount: 1,
 			blocks: [block],
-			items: [{ ...item, revision: 1, companyId, _id: itemId, _creationTime: 1 }]
+			items: [
+				{
+					...normalizePlaybookItem(item),
+					revision: 1,
+					companyId,
+					_id: itemId,
+					_creationTime: 1
+				}
+			]
 		}
 	};
 }
@@ -129,7 +139,13 @@ describe('snapshot caching work', () => {
 		if (first.status !== 'ready') throw new Error('Expected a ready fixture.');
 		const confirmedState = {
 			companyName: 'Confirmed Buyer',
-			reviews: {},
+			reviews: {
+				[itemId]: {
+					concessionId: 'preferred',
+					lifecycle: 'synthetic-application',
+					status: 'approved' as const
+				}
+			},
 			selectedConcessions: { [itemId]: 'preferred' },
 			revision: 1,
 			lastOperationId: 'confirmed-operation'

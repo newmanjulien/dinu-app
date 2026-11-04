@@ -56,7 +56,14 @@ export function* iteratePreparedDocument(
 		remaining = capacityAt(page.number - 1);
 	}
 	function accept(prepared: PreparedBlock, fragment: PageFragment, height: number) {
-		page.placements.push({ prepared, fragment });
+		const carriesBoundaries =
+			fragment.type === 'heading' || (fragment.type === 'paragraph' && fragment.isFinal);
+		const boundaries = carriesBoundaries ? prepared.boundariesAfter ?? [] : [];
+		page.placements.push({
+			prepared,
+			fragment,
+			...(boundaries.length ? { structuralBoundaries: boundaries } : {})
+		});
 		remaining -= height;
 	}
 	for (let index = 0; index < blocks.length; index++) {

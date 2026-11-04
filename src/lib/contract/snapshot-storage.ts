@@ -1,9 +1,7 @@
-import { concessionReviews } from '../../convex/contractValidators';
-import { baselineBlock } from '../../convex/sourceValidators';
-import { historicalItem } from '../../convex/playbookValidators';
-import type { ValidatorJSON } from 'convex/values';
-import type { ContractSnapshotResult, ContractSnapshot } from './saved';
+import type { ContractSnapshotResult, StoredContractSnapshot } from './saved';
 import { CACHE_NAMESPACE } from './browser-storage';
+import { validContractMetadata, validTemplate } from './persisted-values';
+export { validSnapshot, validTemplate } from './persisted-values';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 
 export type ReadyContract = Extract<ContractSnapshotResult, { status: 'ready' }>;
@@ -23,7 +21,8 @@ type Write = (
 ) & { valid: () => boolean };
 const writeBytes = (write: Write) =>
 	write.kind === 'put' ? write.entry.bytes : write.kind === 'update' ? write.bytes : 0;
-type StoredSnapshot = { id: string; snapshot: ReadyContract['snapshot'] };
+/** Disk payload is untrusted and may use the legacy source-target representation. */
+type StoredSnapshot = { id: string; snapshot: StoredContractSnapshot };
 type StoredMetadata = {
 	id: string;
 	contract: ReadyContract['contract'];
@@ -31,113 +30,19 @@ type StoredMetadata = {
 	immutableBytes: number;
 	usedAt: number;
 };
-// Convex exposes these runtime shapes but omits the getter from its public declarations.
-const blockShape = (baselineBlock as unknown as { json: ValidatorJSON }).json;
-const itemShape = (historicalItem as unknown as { json: ValidatorJSON }).json;
-const reviewsShape = (concessionReviews as unknown as { json: ValidatorJSON }).json;
-function matches(value: unknown, shape: ValidatorJSON): boolean {
-	switch (shape.type) {
-		case 'string':
-		case 'id':
-			return typeof value === 'string';
-		case 'number':
-			return typeof value === 'number' && Number.isFinite(value);
-		case 'boolean':
-			return typeof value === 'boolean';
-		case 'literal':
-			return value === shape.value;
-		case 'null':
-			return value === null;
-		case 'union':
-			return shape.value.some((part) => matches(value, part));
-		case 'array':
-			return Array.isArray(value) && value.every((part) => matches(part, shape.value));
-		case 'record':
-			return (
-				!!value &&
-				typeof value === 'object' &&
-				!Array.isArray(value) &&
-				Object.values(value).every((part) => matches(part, shape.values.fieldType))
-			);
-		case 'object':
-			return (
-				!!value &&
-				typeof value === 'object' &&
-				!Array.isArray(value) &&
-				Object.entries(shape.value).every(
-					([key, field]) =>
-						(field.optional && (value as Record<string, unknown>)[key] === undefined) ||
-						matches((value as Record<string, unknown>)[key], field.fieldType)
-				)
-			);
-		default:
-			return false;
-	}
-}
-// Templates are immutable. Only reuse validation for the exact object and company.
-const validatedTemplates = new WeakMap<object, string>();
-export function validTemplate(value: unknown, companyId: string): value is ContractSnapshot {
-	if (!value || typeof value !== 'object') return false;
-	if (validatedTemplates.get(value) === companyId) return true;
-	const snapshot = value as ContractSnapshot;
-	const valid =
-		Number.isSafeInteger(snapshot.blockCount) &&
-		Number.isSafeInteger(snapshot.itemCount) &&
-		Array.isArray(snapshot.blocks) &&
-		Array.isArray(snapshot.items) &&
-		snapshot.blockCount === snapshot.blocks.length &&
-		snapshot.itemCount === snapshot.items.length &&
-		snapshot.blocks.every((block) => matches(block, blockShape)) &&
-		snapshot.items.every(
-			(item) => !!item && item.companyId === companyId && matches(item, itemShape)
-		);
-	if (valid) validatedTemplates.set(value, companyId);
-	return valid;
-}
-export function validSnapshot(value: unknown, id: string): value is ReadyContract {
-	if (!value || typeof value !== 'object') return false;
-	const data = value as ReadyContract;
-	return (
-		data.status === 'ready' &&
-		data.id === id &&
-		validContract(data.contract, id) &&
-		validTemplate(data.snapshot, data.contract.companyId)
-	);
-}
-function validContract(value: unknown, id: string): value is ReadyContract['contract'] {
-	const contract = value as ReadyContract['contract'] | undefined;
-	return (
-		!!contract &&
-		typeof contract.creatorId === 'string' &&
-		contract._id === id &&
-		typeof contract.companyName === 'string' &&
-		Number.isFinite(contract._creationTime) &&
-		Number.isFinite(contract.savedAt) &&
-		typeof contract.templateVersionId === 'string' &&
-		typeof contract.companyId === 'string' &&
-		(contract.lastOperationId === undefined || typeof contract.lastOperationId === 'string') &&
-		Number.isSafeInteger(contract.revision) &&
-		contract.revision >= 0 &&
-		matches(contract.reviews, reviewsShape) &&
-		!!contract.selectedConcessions &&
-		typeof contract.selectedConcessions === 'object' &&
-		!Array.isArray(contract.selectedConcessions) &&
-		Object.values(contract.selectedConcessions).every((choice) => typeof choice === 'string')
-	);
-}
 function validMetadata(value: unknown, id: string): value is StoredMetadata {
 	const metadata = value as StoredMetadata | undefined;
 	return (
 		!!metadata &&
 		metadata.id === id &&
-		validContract(metadata.contract, id) &&
 		Number.isFinite(metadata.bytes) &&
 		metadata.bytes >= 0 &&
 		metadata.bytes <= SNAPSHOT_BYTES &&
 		Number.isFinite(metadata.immutableBytes) &&
 		metadata.immutableBytes >= 0 &&
 		metadata.immutableBytes <= metadata.bytes &&
-		Number.isFinite(metadata.usedAt)
+		Number.isFinite(metadata.usedAt) &&
+		validContractMetadata(metadata.contract, id)
 	);
 }
 function result<T>(request: IDBRequest<T>): Promise<T> {
@@ -181,9 +86,10 @@ export class SnapshotStorage {
 			opening.signal.addEventListener('abort', failed, { once: true });
 			this.lifetime.signal.addEventListener('abort', failed, { once: true });
 			try {
-				const request = indexedDB.open(`${this.namespace}:snapshots`, 5);
+				const request = indexedDB.open(`${this.namespace}:snapshots`, 6);
 				request.onupgradeneeded = () => {
-					// Rebuild the optional cache with one immutable record per version.
+					// Retire obsolete confirmed history/metadata only. The sessionStorage
+					// intent journal has independent ownership and is never migrated here.
 					for (const name of ['snapshots', 'metadata'])
 						if (request.result.objectStoreNames.contains(name))
 							request.result.deleteObjectStore(name);
@@ -263,7 +169,7 @@ export class SnapshotStorage {
 		id: string,
 		companyId: string,
 		signal?: AbortSignal
-	): Promise<ContractSnapshot | undefined> {
+	): Promise<StoredContractSnapshot | undefined> {
 		try {
 			const db = await this.open();
 			if (!db || signal?.aborted) return;
@@ -388,6 +294,11 @@ export class SnapshotStorage {
 		} else {
 			const metadata = await result<StoredMetadata | undefined>(store.get(id));
 			if (!validMetadata(metadata, id) || !write.valid()) return;
+			if (
+				write.contract.templateVersionId !== metadata.contract.templateVersionId ||
+				write.contract.revision < metadata.contract.revision
+			)
+				return;
 			store.put({
 				...metadata,
 				contract: write.contract,

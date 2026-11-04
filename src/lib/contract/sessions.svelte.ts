@@ -15,7 +15,7 @@ import type { getContractSnapshotCache } from './snapshot-cache';
 type Metadata = NonNullable<FunctionReturnType<typeof api.savedContracts.state>>;
 type SnapshotCache = Pick<
 	ReturnType<typeof getContractSnapshotCache>,
-	'loadVersion' | 'seedConfirmed' | 'updateState' | 'remove' | 'rename'
+	'loadVersion' | 'seedConfirmed' | 'updateState' | 'confirmMetadata' | 'remove'
 >;
 export type SaveStatus = 'Checking' | 'Saving' | 'Paused' | 'Save failed' | 'Conflict' | 'Saved';
 export type SaveNotice = {
@@ -336,7 +336,7 @@ export class ContractSession {
 				id: this.id,
 				status: 'ready',
 				snapshot,
-				contract: { ...latest, lastOperationId: latest.lastOperationId ?? undefined }
+				contract: latest
 			});
 			attempt.complete();
 			this.resume();
@@ -425,11 +425,6 @@ export class ContractSession {
 		this.error = null;
 		this.stopReads();
 	}
-	rename(name: string) {
-		if (this.metadata) this.metadata = { ...this.metadata, companyName: name };
-		if (this.persistence)
-			this.persistence.accept({ ...this.persistence.confirmed, companyName: name });
-	}
 	/** View data follows demand; submitted writes and flushes retain only the session. */
 	private retain() {
 		if (!this.alive) return;
@@ -481,6 +476,7 @@ export class ContractSessions {
 	private started = false;
 	private available = false;
 	private accountReady = false;
+	private renameSubscriptions = new Set<() => void>();
 	constructor(readonly options: Options) {}
 	start() {
 		if (this.started || !this.alive) return;
@@ -631,6 +627,8 @@ export class ContractSessions {
 		}
 	}
 	private interrupt() {
+		for (const unsubscribe of this.renameSubscriptions) unsubscribe();
+		this.renameSubscriptions.clear();
 		for (const entry of this.entries) entry.interrupt();
 	}
 	retry(id?: string) {
@@ -695,22 +693,56 @@ export class ContractSessions {
 	}
 	async rename(id: Id<'savedContracts'>, name: string) {
 		const generation = this.generation;
-		await this.options.client.mutation(api.savedContracts.rename, {
-			membershipId: this.options.membershipId,
-			id,
-			companyName: name
-		});
-		if (!this.alive || generation !== this.generation)
-			throw new Error('Your connection changed. Check the name before trying again.');
-		this.options.cache.rename(id, name);
-		this.byId.get(id)?.rename(name);
-		this.recent = this.recent.map((notice) => (notice.id === id ? { ...notice, name } : notice));
+		const confirm = (state: Metadata | null) => {
+			if (!this.alive || generation !== this.generation) return;
+			if (!state) {
+				this.deleted(id);
+				return;
+			}
+			this.options.cache.confirmMetadata(state);
+			this.recent = this.recent.map((notice) =>
+				notice.id === id ? { ...notice, name: state.companyName } : notice
+			);
+		};
+		// Home may have no editing session. Subscribe before submitting the command:
+		// Convex delivers query transitions before resolving the mutation promise.
+		const unsubscribe = this.options.client.onUpdate(
+			api.savedContracts.state,
+			{ membershipId: this.options.membershipId, id },
+			confirm,
+			() => {
+				// Cache refresh is optional. The mutation reports command failures,
+				// and an editing session always checks fresh state on opening.
+			}
+		);
+		this.renameSubscriptions.add(unsubscribe);
+		try {
+			await this.options.client.mutation(api.savedContracts.rename, {
+				membershipId: this.options.membershipId,
+				id,
+				companyName: name
+			});
+			if (!this.alive || generation !== this.generation)
+				throw new Error('Your connection changed. Check the name before trying again.');
+			try {
+				// A no-op may resolve before the SDK's deferred cached-result callback.
+				const current = unsubscribe.getCurrentValue();
+				if (current !== undefined) confirm(current);
+			} catch {
+				// An optional query failure must not turn a committed rename into an error.
+			}
+		} finally {
+			this.renameSubscriptions.delete(unsubscribe);
+			unsubscribe();
+		}
 	}
 	destroy() {
 		this.alive = false;
 		this.ready = false;
 		clearTimeout(this.timer);
 		this.unregister?.();
+		for (const unsubscribe of this.renameSubscriptions) unsubscribe();
+		this.renameSubscriptions.clear();
 		for (const entry of this.entries) entry.destroy();
 		this.byId.clear();
 		this.queue.clear();

@@ -390,7 +390,17 @@
     },
     {
       "oldId": "j97a1pw8qq0vxeahxxvyeznn4s8fa50d",
-      "blockKey": "paragraph-mutual-indemnification"
+      "blockKey": "paragraph-mutual-indemnification",
+      "virtualInsertion": {
+        "start": {
+          "sourceKey": "gap:paragraph-equitable-relief",
+          "offset": 0
+        },
+        "end": {
+          "sourceKey": "gap:paragraph-equitable-relief",
+          "offset": 0
+        }
+      }
     },
     {
       "oldId": "j9786ea1h4t52x0vyyq6rgnk5s8fbwrs",
@@ -481,6 +491,9 @@
       "triggerIds": [
         "annual-fee-increase-main",
         "annual-fee-increase-exhibit-a"
+      ],
+      "coordinatedTriggerIds": [
+        "annual-fee-increase-exhibit-a"
       ]
     },
     {
@@ -495,6 +508,32 @@
       "clauseKey": "attorneys-fees",
       "triggerIds": [
         "attorneys-fees"
+      ],
+      "authoredLocations": [
+        {
+          "concessionId": "attorneys-fees-mutual",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3
+            ]
+          ]
+        },
+        {
+          "concessionId": "attorneys-fees-mutual-prevailing-party",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          ]
+        }
       ]
     },
     {
@@ -545,6 +584,37 @@
       "triggerIds": [
         "equipment-fee-main",
         "equipment-fee-exhibit-a"
+      ],
+      "authoredLocations": [
+        {
+          "concessionId": "equipment-fee-quarterly-installments",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2
+            ],
+            [
+              3
+            ]
+          ]
+        },
+        {
+          "concessionId": "equipment-fee-refundable-at-end",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2
+            ],
+            [
+              3
+            ]
+          ]
+        }
+      ],
+      "coordinatedTriggerIds": [
+        "equipment-fee-exhibit-a"
       ]
     },
     {
@@ -594,6 +664,20 @@
       "clauseKey": "governing-law-dispute-resolution",
       "triggerIds": [
         "governing-law-dispute-resolution"
+      ],
+      "authoredLocations": [
+        {
+          "concessionId": "governing-law-delaware",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          ]
+        }
       ]
     },
     {
@@ -622,6 +706,19 @@
       "clauseKey": "limitations-of-liability",
       "triggerIds": [
         "limitations-of-liability"
+      ],
+      "authoredLocations": [
+        {
+          "concessionId": "limitations-of-liability-mutual",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3
+            ]
+          ]
+        }
       ]
     },
     {
@@ -742,6 +839,9 @@
       "triggerIds": [
         "replacement-professional-initial-term",
         "replacement-professional-renewal-term"
+      ],
+      "coordinatedTriggerIds": [
+        "replacement-professional-renewal-term"
       ]
     },
     {
@@ -812,6 +912,48 @@
       "clauseKey": "term-fee-payment",
       "triggerIds": [
         "term-fee-payment-initial-main",
+        "term-fee-payment-renewal-main",
+        "term-fee-payment-initial-exhibit-a",
+        "term-fee-payment-renewal-exhibit-a"
+      ],
+      "authoredLocations": [
+        {
+          "concessionId": "term-fee-payment-monthly-autopay-after-initial-term",
+          "archivedEdits": [
+            [
+              0,
+              1
+            ],
+            [
+              2,
+              3,
+              4,
+              5
+            ]
+          ]
+        },
+        {
+          "concessionId": "term-fee-payment-monthly-autopay",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3
+            ],
+            [
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          ]
+        }
+      ],
+      "coordinatedTriggerIds": [
         "term-fee-payment-renewal-main",
         "term-fee-payment-initial-exhibit-a",
         "term-fee-payment-renewal-exhibit-a"

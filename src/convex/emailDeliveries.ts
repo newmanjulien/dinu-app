@@ -2,31 +2,35 @@ import { v, type Infer } from 'convex/values';
 import { internal } from './_generated/api';
 import { internalMutation, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
-import { availableCompany, liveProfile } from './auth';
+import { availableCompany, liveCompanyMember } from './auth';
 import {
 	emailAttempt,
-	emailDelivery,
 	emailOutcome,
 	emailRecipients,
 	emailAddress,
 	emailSelection,
-	type EmailOutcome
+	type EmailOutcome,
+	type EmailEvent,
+	emailState
 } from './emailValidators';
-import { storeSelections, selectionsFor, deleteSelections } from './emailSnapshots';
-import { completedReview, decisionSelections } from './decisionNotifications';
+import { storeSelections, selectionsFor } from './emailSnapshots';
+import { completedReview, decisionSelections } from './reviews';
 import schema from './schema';
+import { CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
 
 const RECOVERY_INTERVAL = 60_000;
+const DECISION_MAX_ATTEMPTS = 3;
 export const UNCERTAIN_COOLDOWN = 10 * 60_000;
+export const RETIRED_DELIVERY_RECHECK = RECOVERY_INTERVAL;
 // Inline actions may run for ten minutes. Recovery waits beyond that hard limit,
-// rather than treating SMTP's inactivity timeout or the resend cooldown as a lease.
+// rather than treating the provider timeout or the resend cooldown as a lease.
 const INLINE_RECOVERY_GRACE = 7 * 60_000;
 
 type Delivery = Doc<'emailDeliveries'>;
-type NewDelivery = Pick<
-	Infer<typeof emailDelivery>,
-	'companyId' | 'event' | 'contractId' | 'recipientEmail' | 'inlineDeadline'
->;
+type NewDelivery = { companyId: Id<'company'> } & (
+	| { event: Exclude<EmailEvent, { kind: 'invitation' }> }
+	| { event: Extract<EmailEvent, { kind: 'invitation' }>; inlineDeadline: number }
+);
 
 export async function cancelJob(ctx: MutationCtx, id?: Id<'_scheduled_functions'>) {
 	if (!id) return;
@@ -34,18 +38,28 @@ export async function cancelJob(ctx: MutationCtx, id?: Id<'_scheduled_functions'
 	if (job?.state.kind === 'pending' || job?.state.kind === 'inProgress')
 		await ctx.scheduler.cancel(id);
 }
-export async function cancelDelivery(ctx: MutationCtx, delivery: Delivery) {
-	await cancelJob(ctx, delivery.sendJobId);
-	await cancelJob(ctx, delivery.recoveryJobId);
+export function providerDispatchInProgress(delivery: Delivery) {
+	return delivery.state.kind === 'sending' && delivery.state.dispatch.kind === 'dispatching';
 }
-export async function activeDelivery(ctx: QueryCtx, delivery: Delivery) {
-	if (delivery.sendJobId) {
-		const job = await ctx.db.system.get('_scheduled_functions', delivery.sendJobId);
-		return job?.state.kind === 'pending' || job?.state.kind === 'inProgress';
+export async function cancelDelivery(ctx: MutationCtx, delivery: Delivery) {
+	// Once the action has crossed the final provider-dispatch barrier, preserve it
+	// and its recovery job until its outcome is recorded.
+	if (!providerDispatchInProgress(delivery)) {
+		if (delivery.execution.kind === 'scheduled') await cancelJob(ctx, delivery.execution.sendJobId);
+		await cancelJob(ctx, delivery.execution.recoveryJobId);
+		await cancelJob(ctx, delivery.disposal?.jobId);
 	}
+}
+export async function activeJob(ctx: QueryCtx, id?: Id<'_scheduled_functions'>) {
+	const job = id ? await ctx.db.system.get('_scheduled_functions', id) : null;
+	return job?.state.kind === 'pending' || job?.state.kind === 'inProgress';
+}
+export async function activeDelivery(ctx: MutationCtx, delivery: Delivery) {
+	if (delivery.disposal && !providerDispatchInProgress(delivery)) return false;
+	if (delivery.execution.kind === 'scheduled') return activeJob(ctx, delivery.execution.sendJobId);
 	return (
-		delivery.status === 'sending' &&
-		Date.now() < (delivery.inlineDeadline ?? 0) + INLINE_RECOVERY_GRACE
+		delivery.state.kind === 'sending' &&
+		Date.now() < delivery.execution.deadline + INLINE_RECOVERY_GRACE
 	);
 }
 async function scheduleRecovery(
@@ -57,43 +71,69 @@ async function scheduleRecovery(
 		id: delivery._id,
 		attempt: delivery.attempt
 	});
-	await ctx.db.patch('emailDeliveries', delivery._id, { recoveryJobId });
+	// Keep whole patch branches narrowed for Convex's union-table patch type.
+	await ctx.db.patch(
+		'emailDeliveries',
+		delivery._id,
+		delivery.execution.kind === 'scheduled'
+			? { execution: { ...delivery.execution, recoveryJobId } }
+			: { execution: { ...delivery.execution, recoveryJobId } }
+	);
 }
 export async function createDelivery(
 	ctx: MutationCtx,
 	data: NewDelivery,
 	selections?: Infer<typeof emailSelection>[]
 ) {
-	const id = await ctx.db.insert('emailDeliveries', {
-		...data,
-		status: 'sending',
+	const pending = {
+		companyId: data.companyId,
 		attempt: 1,
-		dispatchStarted: false,
-		retryable: false
-	});
+		state: { kind: 'sending' as const, dispatch: { kind: 'pending' as const } }
+	};
+	const value =
+		'inlineDeadline' in data
+			? {
+					...pending,
+					event: data.event,
+					execution: { kind: 'inline' as const, deadline: data.inlineDeadline }
+				}
+			: {
+					...pending,
+					event: data.event,
+					contractId: data.event.contractId,
+					execution: { kind: 'scheduled' as const }
+				};
+	const id = await ctx.db.insert('emailDeliveries', value);
 	if (selections) await storeSelections(ctx, data.companyId, id, selections);
-	const delivery = (await ctx.db.get('emailDeliveries', id))!;
-	if (data.event.kind !== 'invitation') {
-		const sendJobId = await ctx.scheduler.runAfter(0, internal.contractEmail.send, {
-			id,
-			attempt: 1
-		});
-		await ctx.db.patch('emailDeliveries', id, { sendJobId });
-	}
-	await scheduleRecovery(
-		ctx,
-		delivery,
-		data.event.kind === 'invitation'
-			? (data.inlineDeadline ?? Date.now()) + INLINE_RECOVERY_GRACE
-			: undefined
+	const sendJobId =
+		value.execution.kind === 'scheduled'
+			? await ctx.scheduler.runAfter(0, internal.contractEmail.send, {
+					id,
+					attempt: 1
+				})
+			: undefined;
+	const recoveryJobId = await ctx.scheduler.runAt(
+		value.execution.kind === 'inline'
+			? value.execution.deadline + INLINE_RECOVERY_GRACE
+			: Date.now() + RECOVERY_INTERVAL,
+		internal.emailDeliveries.recover,
+		{ id, attempt: 1 }
+	);
+	await ctx.db.patch(
+		'emailDeliveries',
+		id,
+		value.execution.kind === 'inline'
+			? { execution: { ...value.execution, recoveryJobId } }
+			: { execution: { ...value.execution, sendJobId, recoveryJobId } }
 	);
 	return id;
 }
 
-async function eligibleContract(ctx: QueryCtx, delivery: Delivery) {
+async function eligibleContract(ctx: MutationCtx, delivery: Delivery) {
 	if (!(await availableCompany(ctx, delivery.companyId))) return null;
 	const event = delivery.event;
 	if (event.kind === 'invitation') {
+		if (delivery.execution.kind !== 'inline') throw new Error('Invitation execution is invalid.');
 		const invitation = await ctx.db.get('companyInvitations', event.invitationId);
 		return invitation?.companyId === delivery.companyId &&
 			invitation.status === 'pending' &&
@@ -101,7 +141,7 @@ async function eligibleContract(ctx: QueryCtx, delivery: Delivery) {
 			invitation.expiresAt > Date.now() &&
 			invitation.deliveryGeneration === event.generation &&
 			invitation.deliveryId === delivery._id &&
-			Date.now() < (delivery.inlineDeadline ?? 0)
+			Date.now() < delivery.execution.deadline
 			? invitation
 			: null;
 	}
@@ -113,43 +153,28 @@ async function eligibleContract(ctx: QueryCtx, delivery: Delivery) {
 	)
 		return null;
 	if (event.kind === 'decision')
-		return (contract.reviewGeneration ?? 0) === event.reviewGeneration && completedReview(contract)
+		return contract.reviewGeneration === event.reviewGeneration && completedReview(contract)
 			? contract
 			: null;
 	const request = await ctx.db
 		.query('approvalRequests')
 		.withIndex('by_contractId', (q) => q.eq('contractId', event.contractId))
 		.unique();
-	return request?.id === event.requestId &&
-		'deliveryId' in request &&
-		request.deliveryId === delivery._id
-		? contract
-		: null;
+	return request?.id === event.requestId && request.deliveryId === delivery._id ? contract : null;
 }
 async function memberEmail(ctx: QueryCtx, companyId: Id<'company'>, profileId: Id<'profiles'>) {
-	const [profile, membership] = await Promise.all([
-		liveProfile(ctx, profileId),
-		ctx.db
-			.query('memberships')
-			.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
-			.unique()
-	]);
-	if (!profile || membership?.companyId !== companyId) return null;
+	const profile = await liveCompanyMember(ctx, companyId, profileId);
+	if (!profile) return null;
 	try {
 		return emailAddress(profile.email);
 	} catch {
 		return null;
 	}
 }
-async function recipients(
-	ctx: QueryCtx,
-	delivery: Delivery,
-	selections: Infer<typeof emailSelection>[],
-	creatorId?: Id<'profiles'>
-) {
+async function recipients(ctx: QueryCtx, delivery: Delivery, creatorId?: Id<'profiles'>) {
 	if (delivery.event.kind !== 'decision') {
 		try {
-			return { recipientEmail: emailAddress(delivery.recipientEmail ?? ''), cc: [] };
+			return { recipientEmail: emailAddress(delivery.event.recipientEmail), cc: [] };
 		} catch {
 			return null;
 		}
@@ -157,19 +182,14 @@ async function recipients(
 	if (!creatorId) return null;
 	const recipientEmail = await memberEmail(ctx, delivery.companyId, creatorId);
 	if (!recipientEmail) return null;
-	const reviewerIds = [
-		...new Set(
-			selections.flatMap((s) => (s.reviewerId && s.reviewerId !== creatorId ? [s.reviewerId] : []))
-		)
-	];
-	const cc = new Set<string>();
-	for (let offset = 0; offset < reviewerIds.length; offset += 16) {
-		const emails = await Promise.all(
-			reviewerIds.slice(offset, offset + 16).map((id) => memberEmail(ctx, delivery.companyId, id))
-		);
-		for (const email of emails) if (email && email !== recipientEmail) cc.add(email);
-	}
-	return { recipientEmail, cc: [...cc] };
+	const reviewerEmail =
+		delivery.event.reviewerId === creatorId
+			? null
+			: await memberEmail(ctx, delivery.companyId, delivery.event.reviewerId);
+	return {
+		recipientEmail,
+		cc: reviewerEmail && reviewerEmail !== recipientEmail ? [reviewerEmail] : []
+	};
 }
 
 /** Freeze bounded snapshots outside the decision transaction; check cheap eligibility first. */
@@ -183,9 +203,10 @@ export const prepare = internalMutation({
 		const delivery = await ctx.db.get('emailDeliveries', args.id);
 		if (
 			!delivery ||
+			delivery.disposal ||
 			delivery.attempt !== args.attempt ||
-			delivery.status !== 'sending' ||
-			delivery.dispatchStarted
+			delivery.state.kind !== 'sending' ||
+			delivery.state.dispatch.kind !== 'pending'
 		)
 			return null;
 		const context = await eligibleContract(ctx, delivery);
@@ -196,9 +217,10 @@ export const prepare = internalMutation({
 				!(await memberEmail(ctx, delivery.companyId, context.creatorId)))
 		)
 			return null;
-		let selections = await selectionsFor(ctx, delivery._id);
+		let selections =
+			delivery.event.kind === 'invitation' ? [] : await selectionsFor(ctx, delivery._id);
 		if (delivery.event.kind === 'decision' && !selections.length && 'reviews' in context) {
-			selections = await decisionSelections(ctx, context);
+			selections = decisionSelections(context);
 			await storeSelections(ctx, delivery.companyId, delivery._id, selections);
 		}
 		return { delivery, selections };
@@ -211,39 +233,65 @@ export const claim = internalMutation({
 		const delivery = await ctx.db.get('emailDeliveries', args.id);
 		if (
 			!delivery ||
+			delivery.disposal ||
 			delivery.attempt !== args.attempt ||
-			delivery.status !== 'sending' ||
-			delivery.dispatchStarted
+			delivery.state.kind !== 'sending' ||
+			delivery.state.dispatch.kind !== 'pending'
 		)
 			return null;
 		const context = await eligibleContract(ctx, delivery);
 		const to = context
-			? await recipients(
-					ctx,
-					delivery,
-					await selectionsFor(ctx, delivery._id),
-					'creatorId' in context ? context.creatorId : undefined
-				)
+			? await recipients(ctx, delivery, 'creatorId' in context ? context.creatorId : undefined)
 			: null;
 		if (!to) {
 			await recordOutcome(ctx, delivery, { status: 'skipped' });
-			await cancelJob(ctx, delivery.recoveryJobId);
+			await cancelJob(ctx, delivery.execution.recoveryJobId);
 			return null;
 		}
-		await ctx.db.patch('emailDeliveries', delivery._id, { dispatchStarted: true, ...to });
+		await ctx.db.patch('emailDeliveries', delivery._id, {
+			state: { kind: 'sending', dispatch: { kind: 'claimed', ...to } }
+		});
+		return to;
+	}
+});
+/** Revalidate immediately before an irreversible provider request. */
+export const beginDispatch = internalMutation({
+	args: emailAttempt.fields,
+	returns: v.union(emailRecipients, v.null()),
+	handler: async (ctx, args): Promise<Infer<typeof emailRecipients> | null> => {
+		const delivery = await ctx.db.get('emailDeliveries', args.id);
+		if (
+			!delivery ||
+			delivery.disposal ||
+			delivery.attempt !== args.attempt ||
+			delivery.state.kind !== 'sending' ||
+			delivery.state.dispatch.kind !== 'claimed'
+		)
+			return null;
+		const context = await eligibleContract(ctx, delivery);
+		const to = context
+			? await recipients(ctx, delivery, 'creatorId' in context ? context.creatorId : undefined)
+			: null;
+		if (!to) return null;
+		await ctx.db.patch('emailDeliveries', delivery._id, {
+			state: { kind: 'sending', dispatch: { kind: 'dispatching', ...to } }
+		});
 		return to;
 	}
 });
 async function recordOutcome(ctx: MutationCtx, delivery: Delivery, outcome: EmailOutcome) {
-	await ctx.db.patch('emailDeliveries', delivery._id, {
-		status: outcome.status,
+	const details = {
 		completedAt: Date.now(),
-		error: outcome.error,
-		messageId: outcome.messageId,
-		recipientAccepted: outcome.recipientAccepted,
-		rejected: outcome.rejected,
-		retryable: outcome.retryable ?? false
-	});
+		dispatch: delivery.state.dispatch?.kind === 'pending' ? undefined : delivery.state.dispatch,
+		error: outcome.error
+	};
+	const state: Infer<typeof emailState> =
+		outcome.status === 'failed'
+			? { ...details, kind: 'failed', retryable: outcome.retryable ?? false }
+			: outcome.status === 'uncertain'
+				? { ...details, kind: 'uncertain', retryEligible: false }
+				: { ...details, kind: outcome.status };
+	await ctx.db.patch('emailDeliveries', delivery._id, { state });
 	if (delivery.event.kind === 'invitation') {
 		const invitation = await ctx.db.get('companyInvitations', delivery.event.invitationId);
 		if (
@@ -254,6 +302,7 @@ async function recordOutcome(ctx: MutationCtx, delivery: Delivery, outcome: Emai
 				deliveryStatus: outcome.status === 'sent' ? 'sent' : 'failed'
 			});
 	}
+	return { ...delivery, state };
 }
 export const complete = internalMutation({
 	args: { ...emailAttempt.fields, outcome: emailOutcome, dispatched: v.boolean() },
@@ -263,20 +312,20 @@ export const complete = internalMutation({
 		if (
 			!delivery ||
 			delivery.attempt !== attempt ||
-			!['sending', 'uncertain'].includes(delivery.status)
+			(delivery.state.kind !== 'sending' && delivery.state.kind !== 'uncertain')
 		)
 			return null;
-		if (!dispatched && delivery.dispatchStarted) return null;
-		if (delivery.status === 'uncertain' && !['sent', 'partial'].includes(outcome.status))
-			return null;
+		if (!dispatched && delivery.state.dispatch?.kind !== 'pending') return null;
+		if (delivery.state.kind === 'uncertain' && outcome.status !== 'sent') return null;
 		await recordOutcome(ctx, delivery, outcome);
-		await cancelJob(ctx, delivery.recoveryJobId);
+		await cancelJob(ctx, delivery.execution.recoveryJobId);
 		if (
-			(delivery.event.kind === 'decision' &&
+			!delivery.disposal &&
+			((delivery.event.kind === 'decision' &&
 				outcome.status === 'failed' &&
 				outcome.retryable &&
-				attempt < 3) ||
-			(delivery.event.kind === 'approval' && outcome.status === 'uncertain')
+				attempt < DECISION_MAX_ATTEMPTS) ||
+				(delivery.event.kind === 'approval' && outcome.status === 'uncertain'))
 		)
 			await scheduleRecovery(
 				ctx,
@@ -294,75 +343,183 @@ export const recover = internalMutation({
 		if (
 			!delivery ||
 			delivery.attempt !== attempt ||
-			['sent', 'partial', 'skipped'].includes(delivery.status)
+			['sent', 'skipped'].includes(delivery.state.kind)
 		)
 			return null;
+		if (delivery.disposal && !providerDispatchInProgress(delivery)) return null;
 		if (await activeDelivery(ctx, delivery)) {
 			await scheduleRecovery(ctx, delivery);
 			return null;
 		}
-		if (delivery.status === 'sending') {
-			const outcome: EmailOutcome = delivery.dispatchStarted
-				? {
-						status: 'uncertain',
-						error:
-							'Gmail delivery could not be confirmed; another attempt may deliver a duplicate email.'
-					}
-				: { status: 'failed', error: 'The email stopped before Gmail dispatch.', retryable: true };
-			await recordOutcome(ctx, delivery, outcome);
-			delivery = (await ctx.db.get('emailDeliveries', id))!;
-			console.warn('email_delivery', { id, attempt, stage: 'recovery', status: delivery.status });
+		if (delivery.state.kind === 'sending') {
+			const outcome: EmailOutcome =
+				delivery.state.dispatch.kind === 'claimed' || delivery.state.dispatch.kind === 'dispatching'
+					? {
+							status: 'uncertain',
+							error:
+								'Email delivery could not be confirmed; another attempt may deliver a duplicate email.'
+						}
+					: {
+							status: 'failed',
+							error: 'The email stopped before dispatch.',
+							retryable: true
+						};
+			delivery = await recordOutcome(ctx, delivery, outcome);
+			console.warn('email_delivery', {
+				id,
+				attempt,
+				stage: 'recovery',
+				status: delivery.state.kind
+			});
 		}
 		if (
 			delivery.event.kind === 'decision' &&
-			delivery.status === 'failed' &&
-			delivery.retryable &&
-			attempt < 3
+			delivery.state.kind === 'failed' &&
+			delivery.state.retryable &&
+			attempt < DECISION_MAX_ATTEMPTS
 		) {
 			if (!(await restartDelivery(ctx, delivery, true)))
 				await recordOutcome(ctx, delivery, { status: 'skipped' });
 		} else if (
 			delivery.event.kind === 'approval' &&
-			delivery.status === 'uncertain' &&
-			!delivery.retryable
+			delivery.state.kind === 'uncertain' &&
+			!delivery.state.retryEligible
 		) {
-			const retryAt = (delivery.completedAt ?? Date.now()) + UNCERTAIN_COOLDOWN;
-			if (Date.now() >= retryAt) await ctx.db.patch('emailDeliveries', id, { retryable: true });
+			const retryAt = delivery.state.completedAt + UNCERTAIN_COOLDOWN;
+			if (Date.now() >= retryAt)
+				await ctx.db.patch('emailDeliveries', id, {
+					state: { ...delivery.state, retryEligible: true }
+				});
 			else await scheduleRecovery(ctx, delivery, retryAt);
 		}
 		return null;
 	}
 });
+
+function needsRecovery(delivery: Delivery) {
+	if (delivery.disposal && !providerDispatchInProgress(delivery)) return false;
+	const state = delivery.state;
+	return (
+		state.kind === 'sending' ||
+		(state.kind === 'failed' &&
+			delivery.event.kind === 'decision' &&
+			state.retryable &&
+			delivery.attempt < DECISION_MAX_ATTEMPTS) ||
+		(state.kind === 'uncertain' && delivery.event.kind === 'approval' && !state.retryEligible)
+	);
+}
+
+/** Restore the existing recovery rule, never infer failure from a missing job. */
+export const resumeOne = internalMutation({
+	args: { id: v.id('emailDeliveries') },
+	returns: v.null(),
+	handler: async (ctx, { id }) => {
+		const delivery = await ctx.db.get('emailDeliveries', id);
+		if (
+			delivery &&
+			needsRecovery(delivery) &&
+			!(await activeJob(ctx, delivery.execution.recoveryJobId))
+		) {
+			const when =
+				delivery.state.kind === 'uncertain'
+					? delivery.state.completedAt + UNCERTAIN_COOLDOWN
+					: delivery.execution.kind === 'inline'
+						? delivery.execution.deadline + INLINE_RECOVERY_GRACE
+						: Date.now();
+			await scheduleRecovery(ctx, delivery, Math.max(Date.now(), when));
+		}
+		return null;
+	}
+});
+
+export const recoveryStates = ['sending', 'failed', 'uncertain'] as const;
+
+/** The idle probe and paginated worker use the same work-only index ranges. */
+export function recoveryRows(ctx: QueryCtx, state: (typeof recoveryStates)[number]) {
+	return state === 'uncertain'
+		? ctx.db
+				.query('emailDeliveries')
+				.withIndex('by_state_kind_and_event_kind_and_state_retryEligible', (q) =>
+					q.eq('state.kind', state).eq('event.kind', 'approval').eq('state.retryEligible', false)
+				)
+		: ctx.db
+				.query('emailDeliveries')
+				.withIndex('by_state_kind_and_event_kind_and_state_retryable_and_attempt', (q) =>
+					state === 'sending'
+						? q.eq('state.kind', state)
+						: q
+								.eq('state.kind', state)
+								.eq('event.kind', 'decision')
+								.eq('state.retryable', true)
+								.lt('attempt', DECISION_MAX_ATTEMPTS)
+				);
+}
+
+/** Discover each unfinished family independently of sent history and Clerk access. */
+export const resume = internalMutation({
+	args: {
+		state: v.union(...recoveryStates.map((state) => v.literal(state))),
+		cursor: v.optional(v.union(v.string(), v.null()))
+	},
+	returns: v.null(),
+	handler: async (ctx, { state, cursor }) => {
+		const rows = recoveryRows(ctx, state);
+		const result = await rows.paginate({
+			cursor: cursor ?? null,
+			numItems: CLEANUP_DISCOVERY_PAGE_SIZE,
+			maximumRowsRead: CLEANUP_DISCOVERY_PAGE_SIZE,
+			maximumBytesRead: 2 * 1024 * 1024
+		});
+		for (const delivery of result.page) {
+			if (!needsRecovery(delivery)) continue;
+			try {
+				await ctx.runMutation(internal.emailDeliveries.resumeOne, { id: delivery._id });
+			} catch (error) {
+				console.error('Unable to resume email delivery recovery', delivery._id, error);
+			}
+		}
+		if (!result.isDone)
+			await ctx.scheduler.runAfter(0, internal.emailDeliveries.resume, {
+				state,
+				cursor: result.continueCursor
+			});
+		return null;
+	}
+});
+
 /** Explicit retries reuse the event and snapshot, with a new guarded attempt. */
 export async function restartDelivery(ctx: MutationCtx, delivery: Delivery, fromRecovery = false) {
 	const explicitApprovalRetry =
-		delivery.event.kind === 'approval' && delivery.status === 'uncertain' && delivery.retryable;
+		delivery.event.kind === 'approval' &&
+		delivery.state.kind === 'uncertain' &&
+		delivery.state.retryEligible;
 	if (
-		delivery.event.kind === 'invitation' ||
-		(delivery.status !== 'failed' && !explicitApprovalRetry) ||
+		delivery.disposal ||
+		delivery.execution.kind !== 'scheduled' ||
+		(delivery.state.kind !== 'failed' && !explicitApprovalRetry) ||
 		(await activeDelivery(ctx, delivery)) ||
 		!(await eligibleContract(ctx, delivery))
 	)
 		return false;
-	if (!fromRecovery) await cancelJob(ctx, delivery.recoveryJobId);
+	if (!fromRecovery) await cancelJob(ctx, delivery.execution.recoveryJobId);
 	const attempt = delivery.attempt + 1;
 	const sendJobId = await ctx.scheduler.runAfter(0, internal.contractEmail.send, {
 		id: delivery._id,
 		attempt
 	});
+	const recoveryJobId = await ctx.scheduler.runAfter(
+		RECOVERY_INTERVAL,
+		internal.emailDeliveries.recover,
+		{
+			id: delivery._id,
+			attempt
+		}
+	);
 	await ctx.db.patch('emailDeliveries', delivery._id, {
 		attempt,
-		sendJobId,
-		status: 'sending',
-		dispatchStarted: false,
-		retryable: false,
-		error: undefined,
-		messageId: undefined,
-		rejected: undefined,
-		recipientAccepted: undefined,
-		completedAt: undefined
+		execution: { kind: 'scheduled', sendJobId, recoveryJobId },
+		state: { kind: 'sending', dispatch: { kind: 'pending' } }
 	});
-	await scheduleRecovery(ctx, { ...delivery, attempt });
 	return true;
 }
 export const retry = internalMutation({
@@ -370,35 +527,9 @@ export const retry = internalMutation({
 	returns: v.boolean(),
 	handler: async (ctx, { id }) => {
 		const delivery = await ctx.db.get('emailDeliveries', id);
-		// Decision uncertainty and partial acceptance must never be automatically resent.
-		return delivery?.event.kind === 'decision' && delivery.status === 'failed'
+		// Decision uncertainty must never be automatically resent.
+		return delivery?.event.kind === 'decision' && delivery.state.kind === 'failed'
 			? restartDelivery(ctx, delivery)
 			: false;
-	}
-});
-export async function removeDelivery(ctx: MutationCtx, delivery: Delivery) {
-	await cancelDelivery(ctx, delivery);
-	await deleteSelections(ctx, delivery._id);
-	await ctx.db.delete('emailDeliveries', delivery._id);
-}
-export const removeForContract = internalMutation({
-	args: { id: v.id('savedContracts') },
-	returns: v.null(),
-	handler: async (ctx, { id }): Promise<null> => {
-		const row = await ctx.db
-			.query('emailDeliveries')
-			.withIndex('by_contractId', (q) => q.eq('contractId', id))
-			.first();
-		if (row) {
-			await removeDelivery(ctx, row);
-			await ctx.scheduler.runAfter(0, internal.emailDeliveries.removeForContract, { id });
-		} else {
-			const rows = await ctx.db
-				.query('reviewAttributions')
-				.withIndex('by_contractId', (q) => q.eq('contractId', id))
-				.take(32);
-			for (const row of rows) await ctx.db.delete('reviewAttributions', row._id);
-		}
-		return null;
 	}
 });

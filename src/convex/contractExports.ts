@@ -1,7 +1,9 @@
 import { ConvexError, v, type Infer } from 'convex/values';
 import { internalMutation, internalQuery, type QueryCtx } from './_generated/server';
 import { requireMembership, accessibleContract } from './auth';
-import { exportRequest, snapshot } from './savedContractValidators';
+import { exportRequest } from './savedContractValidators';
+import { baselineBlock } from './sourceValidators';
+import { historicalItem } from './playbookValidators';
 import schema from './schema';
 import { snapshotReader } from './templates';
 import { savedReviews } from '../lib/contract/approval';
@@ -31,24 +33,27 @@ export const source = internalQuery({
 	args: exportRequest.fields,
 	returns: v.object({
 		contract: schema.doc('savedContracts'),
-		snapshot,
+		blocks: v.array(baselineBlock),
+		items: v.array(historicalItem),
 		requiredReviews: v.array(requiredReview)
 	}),
 	handler: async (ctx, args) => {
 		const contract = await currentContract(ctx, args);
-		const snapshot = await (await snapshotReader(ctx, contract)).read();
-		const items = new Map(snapshot.items.map((item) => [item._id, item]));
-		for (const [id, concessionId] of Object.entries(contract.selectedConcessions)) {
-			const item = items.get(id as (typeof snapshot.items)[number]['_id']);
-			if (!item?.concessions.some((concession) => concession.id === concessionId))
-				throw new ConvexError('This contract contains an unavailable concession.');
-		}
-		const reviews = savedReviews(snapshot.items, contract);
+		const reader = await snapshotReader(ctx, contract);
+		const [blocks, items] = await Promise.all([
+			reader.blocks(),
+			reader.selectedItems(
+				contract.selectedConcessions,
+				'This contract contains an unavailable concession.'
+			)
+		]);
+		const reviews = savedReviews(items, contract);
 		if (reviews.some((review) => review.status !== 'approved'))
 			throw new ConvexError('All selected concessions must be approved before downloading.');
 		return {
 			contract,
-			snapshot,
+			blocks,
+			items,
 			requiredReviews: reviews.map(({ itemId, concessionId, lifecycle }) => ({
 				itemId,
 				concessionId,
@@ -89,18 +94,9 @@ export const finalize = internalMutation({
 			throw new ConvexError('All selected concessions must be approved before downloading.');
 		const url = await ctx.storage.getUrl(args.fileId);
 		if (!url) throw new ConvexError('We couldn’t prepare this download. Try again.');
-		await ctx.scheduler.runAfter(60 * 60_000, internal.contractExports.removeFile, {
+		await ctx.scheduler.runAfter(60 * 60_000, internal.storageOwnership.discardFile, {
 			fileId: args.fileId
 		});
 		return url;
-	}
-});
-
-export const removeFile = internalMutation({
-	args: { fileId: v.id('_storage') },
-	returns: v.null(),
-	handler: async (ctx, { fileId }) => {
-		await ctx.storage.delete(fileId);
-		return null;
 	}
 });

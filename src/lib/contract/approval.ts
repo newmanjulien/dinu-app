@@ -1,4 +1,4 @@
-import type { SourceRange } from './source-model';
+import type { SourceTarget } from './source-model';
 import type { ContractSnapshot, ContractState } from './saved';
 import type { Id } from '../../convex/_generated/dataModel';
 
@@ -12,7 +12,7 @@ export type ReviewTag = {
 	status: ReviewStatus;
 	description: string;
 	/** The main edit anchors the single tag; approval covers every concession change. */
-	range: SourceRange;
+	range: SourceTarget;
 	admin: boolean;
 	disabled: boolean;
 };
@@ -28,7 +28,7 @@ export function selectedReviewApplications(
 		const concessionPosition = item.concessions.findIndex((c) => c.id === selected);
 		const concession = item.concessions[concessionPosition];
 		if (!concession) return [];
-		const range = concession.changes[0]?.range ?? item.triggers[0]?.range;
+		const range = concession.changes[0]?.range ?? item.trigger.range;
 		if (!range) return [];
 		return [{ item, concession, concessionPosition, range }];
 	});

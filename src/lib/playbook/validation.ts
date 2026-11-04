@@ -5,27 +5,23 @@ export { PlaybookValidationError } from './validation-error';
 import type { SourceIndex } from '../contract/source-index';
 import type { CompiledContract } from '../contract/compiled-contract';
 import type { Concession, ContractChange, PlaybookItem, Trigger } from './model';
-import {
-	activatedBlock,
-	changeTriggerOwner,
-	triggersIntersect,
-	validateTriggerRange
-} from './geometry';
+import { changeTriggerOwner, triggersIntersect, validateTriggerRange } from './geometry';
 import { createChangeConflictChecker } from './conflicts';
 import { equalConcession } from './draft';
+import { isTextTarget } from '../contract/source-model';
+import { targetContainers } from '../contract/ranges';
+import { hasMeaningfulReplacement } from '../contract/replacement-content';
 
-// Leave headroom under Convex's document limit for its system fields and encoding.
-export const MAX_PLAYBOOK_ITEM_BYTES = 500_000;
-export const MAX_PLAYBOOK_ITEMS = 4000;
-export const MAX_CONTRACT_BLOCKS = 4096;
+import { MAX_PLAYBOOK_ITEM_BYTES } from './limits';
+export { MAX_PLAYBOOK_ITEM_BYTES, MAX_PLAYBOOK_ITEMS, MAX_CONTRACT_BLOCKS } from './limits';
 
-export function validateNewConcessions(concessions: readonly Concession[]): void {
+export function validateConcessions(concessions: readonly Concession[]): void {
 	for (const concession of concessions)
 		if (concession.changes.length > 2)
-			throw new PlaybookValidationError('A concession can affect at most two clauses');
+			throw new PlaybookValidationError('A concession can affect at most two selections');
 }
 
-/** Retained concessions are read-only; creation limits apply only to new IDs. */
+/** Retained concessions are read-only. All content uses the same authoring limits. */
 export function validateConcessionUpdate(saved: PlaybookItem, proposed: PlaybookItem): void {
 	const retained = new Map(saved.concessions.map((concession) => [concession.id, concession]));
 	for (const concession of proposed.concessions) {
@@ -35,7 +31,6 @@ export function validateConcessionUpdate(saved: PlaybookItem, proposed: Playbook
 				'Existing concessions are read-only. Delete the concession and add a new one to change it.'
 			);
 	}
-	validateNewConcessions(proposed.concessions.filter((concession) => !retained.has(concession.id)));
 }
 
 function unique(seen: Set<string>, id: string, label: string): void {
@@ -64,12 +59,33 @@ export function validateChangeGeometry(
 ): void {
 	const conflicts = createChangeConflictChecker(index);
 	for (const [i, change] of changes.entries()) {
+		if (
+			change.replacement.some((atom) => atom.kind === 'paragraph-break') &&
+			targetContainers(index, change.range).some(
+				(container) =>
+					change.range.kind !== 'boundary' &&
+					index.blocks.get(container.blockKey)?.kind !== 'paragraph'
+			)
+		)
+			throw new PlaybookValidationError('Paragraph replacements must target contract paragraphs');
 		changeTriggerOwner(index, triggers, change);
-		activatedBlock(index, change);
 		for (let j = 0; j < i; j++)
 			if (conflicts(changes[j], change))
 				throw new PlaybookValidationError(`Conflicting changes: ${i + 1}`);
 	}
+}
+
+/** Final items cannot reserve a structural location without changing the contract. */
+export function validateStructuralReplacementContent(
+	index: SourceIndex,
+	item: Pick<PlaybookItem, 'concessions'>
+): void {
+	for (const concession of item.concessions)
+		for (const change of concession.changes)
+			if (change.range.kind === 'boundary' && !hasMeaningfulReplacement(change.replacement))
+				throw new PlaybookValidationError(
+					'A structural concession needs text or a reference before it can be saved.'
+				);
 }
 
 /** Source-independent checks shared by structural validation and instructions-only saves. */
@@ -77,8 +93,8 @@ export function validatePlaybookItemContent(item: PlaybookItem): void {
 	validateStorageArrays(item);
 	if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_PLAYBOOK_ITEM_BYTES)
 		throw new PlaybookValidationError('Playbook Item exceeds 500 KB');
-	if (!item.triggers.length)
-		throw new PlaybookValidationError('A Playbook Item needs at least one Trigger');
+	unique(new Set(), item.trigger.id, 'Trigger ID');
+	validateConcessions(item.concessions);
 	const concessionIds = new Set<string>();
 	for (const concession of item.concessions) {
 		unique(concessionIds, concession.id, 'concession ID');
@@ -90,7 +106,7 @@ export function validatePlaybookItemContent(item: PlaybookItem): void {
 /** Reference checks are independent of cross-item geometry and safe on every keystroke. */
 export function validateChangeReferences(
 	{ validateReference }: Pick<CompiledContract, 'validateReference'>,
-	item: PlaybookItem
+	item: Pick<PlaybookItem, 'concessions'>
 ): void {
 	for (const concession of item.concessions)
 		for (const change of concession.changes)

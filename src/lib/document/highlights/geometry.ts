@@ -15,6 +15,23 @@ export interface HighlightRect {
 	triggerState?: 'default' | 'hover' | 'selected';
 }
 
+/**
+ * A real structural margin has no DOM range, so it is measured as an explicit page-local target.
+ * `bounds` remains in viewport coordinates for pointer input and floating UI positioning.
+ */
+export interface StructuralBoundaryTarget {
+	key: string;
+	page: number;
+	bounds: DOMRect;
+	left: number;
+	top: number;
+	width: number;
+	height: number;
+	minimumSelectionWidth: number;
+}
+
+export type StructuralBoundaryRect = Pick<HighlightRect, 'x' | 'y' | 'width' | 'height'>;
+
 interface Band {
 	y: number;
 	height: number;
@@ -79,6 +96,66 @@ function pageSpace(page: HTMLElement) {
 	const bounds = page.getBoundingClientRect();
 	const scale = bounds.width / page.offsetWidth;
 	return { bounds, scale };
+}
+
+/** Measure the explicit hit target placed over a source-owned structural margin. */
+export function measureStructuralBoundaryTarget(target: HTMLElement): StructuralBoundaryTarget | null {
+	const key = target.dataset.structuralBoundary;
+	const page = target.closest<HTMLElement>('.document-page');
+	const content = target.closest<HTMLElement>('.document-page__content');
+	if (!key || !page || !content || !target.isConnected)
+		return null;
+	const pageSpace = page.getBoundingClientRect();
+	const contentBounds = content.getBoundingClientRect();
+	const targetBounds = target.getBoundingClientRect();
+	const scale = pageSpace.width / page.offsetWidth;
+	if (!Number.isFinite(scale) || scale <= 0) return null;
+	const top = Math.max(targetBounds.top, contentBounds.top, pageSpace.top);
+	const bottom = Math.min(targetBounds.bottom, contentBounds.bottom, pageSpace.bottom);
+	const left = Math.max(targetBounds.left, contentBounds.left, pageSpace.left);
+	const right = Math.min(targetBounds.right, contentBounds.right, pageSpace.right);
+	if (bottom - top < 1 || right - left < 1) return null;
+	const fontSize = parseFloat(getComputedStyle(target).fontSize);
+	return {
+		key,
+		page: Number(page.dataset.pageNumber),
+		bounds: new DOMRect(left, top, right - left, bottom - top),
+		left: (left - pageSpace.left) / scale,
+		top: (top - pageSpace.top) / scale,
+		width: (right - left) / scale,
+		height: (bottom - top) / scale,
+		// In this document font, one em is the visual width of two ordinary spaces.
+		minimumSelectionWidth: Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 15
+	};
+}
+
+/** Project a dragged position in a structural gap onto a compact, two-space selection rectangle. */
+export function structuralBoundaryRect(
+	target: StructuralBoundaryTarget,
+	startRatio: number,
+	endRatio: number
+): StructuralBoundaryRect {
+	const clamp = (value: number) => Math.max(0, Math.min(1, value));
+	const start = target.left + clamp(startRatio) * target.width;
+	const end = target.left + clamp(endRatio) * target.width;
+	const minimum = Math.min(target.minimumSelectionWidth, target.width);
+	const width = Math.max(minimum, Math.abs(end - start));
+	const preferredLeft = end >= start ? start : start - width;
+	const left = Math.max(target.left, Math.min(preferredLeft, target.left + target.width - width));
+	return { x: left, y: target.top, width, height: target.height };
+}
+
+export function structuralBoundaryHighlight(
+	target: StructuralBoundaryTarget,
+	startRatio: number,
+	endRatio: number,
+	kind: HighlightKind
+): HighlightRect {
+	return {
+		page: target.page,
+		...structuralBoundaryRect(target, startRatio, endRatio),
+		kind
+	};
 }
 
 /** All text on a container's line supplies the same band, including unhighlighted runs. */
@@ -347,7 +424,7 @@ export function measureTriggers(pages: PageGeometry[]): MeasuredInterval[] {
 			const intervals: MeasuredInterval[] = [];
 			for (const entry of container.texts) {
 				const owner = entry.trigger;
-				if (!owner || owner.closest('.is-empty-insertion-slot')) continue;
+				if (!owner) continue;
 				const ids = annotationIds(owner);
 				for (const rect of entry.rects)
 					intervals.push({
@@ -360,28 +437,6 @@ export function measureTriggers(pages: PageGeometry[]): MeasuredInterval[] {
 						owner,
 						annotationIds: ids
 					});
-			}
-			// Empty insertion slots have no text rectangles and occupy a full line.
-			for (const owner of container.element.querySelectorAll<HTMLElement>('.playbook-trigger')) {
-				if (
-					!owner.closest('.is-empty-insertion-slot') ||
-					owner.closest(TEXT_CONTAINER_SELECTOR) !== container.element
-				)
-					continue;
-				const { bounds, scale } = pageSpace(page.element),
-					box = owner.getBoundingClientRect();
-				const y = (box.top - bounds.top) / scale,
-					height = box.height / scale;
-				intervals.push({
-					page,
-					container,
-					band: { y, height, center: y + height / 2 },
-					left: (box.left - bounds.left) / scale,
-					right: (box.right - bounds.left) / scale,
-					kind: 'trigger',
-					owner,
-					annotationIds: annotationIds(owner)
-				});
 			}
 			return mergeIntervals(intervals);
 		})

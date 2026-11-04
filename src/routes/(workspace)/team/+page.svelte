@@ -5,6 +5,7 @@
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { useConvexClient, usePaginatedQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
+	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import TeamRowsSkeleton from '$lib/components/workspace/TeamRowsSkeleton.svelte';
 	import InviteColleaguesModal from '$lib/features/settings/InviteColleaguesModal.svelte';
@@ -152,7 +153,7 @@
 					onclick={() => {
 						modalError = null;
 						modalOpen = true;
-					}}>Invite colleagues</Button
+					}}><PlusIcon size={15} aria-hidden="true" />Invite</Button
 				>{/if}
 		</div>
 		<section aria-labelledby="colleagues-heading">

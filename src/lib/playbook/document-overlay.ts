@@ -1,9 +1,9 @@
-import type { ContractChange, PlaybookItemRecord, SourceRange, Trigger } from './model';
+import type { ContractChange, PlaybookItemRecord, SourceTarget, Trigger } from './model';
 
 export type DocumentAnnotation = {
 	id: string;
 	itemId: string;
-	range: SourceRange;
+	range: SourceTarget;
 } & (
 	| { kind: 'trigger'; triggerId: string }
 	| { kind: 'concession-effect'; concessionId: string; changeIndex: number }
@@ -15,16 +15,16 @@ export const triggerAnnotationId = (itemId: string, triggerId: string) =>
 	JSON.stringify(['trigger', itemId, triggerId]);
 
 export function documentAnnotations(
-	record: Pick<PlaybookItemRecord, '_id' | 'triggers' | 'concessions'>
+	record: Pick<PlaybookItemRecord, '_id' | 'trigger' | 'concessions'>
 ): DocumentAnnotation[] {
 	return [
-		...record.triggers.map((trigger): DocumentAnnotation => ({
-			id: triggerAnnotationId(record._id, trigger.id),
+		{
+			id: triggerAnnotationId(record._id, record.trigger.id),
 			kind: 'trigger',
 			itemId: record._id,
-			triggerId: trigger.id,
-			range: trigger.range
-		})),
+			triggerId: record.trigger.id,
+			range: record.trigger.range
+		},
 		...record.concessions.flatMap((concession) =>
 			concession.changes.slice(1).map((change, i): DocumentAnnotation => ({
 				id: JSON.stringify(['concession-effect', record._id, concession.id, i + 1]),
@@ -77,7 +77,7 @@ export function annotationSegment(
 export type DocumentOverlayItem = {
 	itemId: string;
 	annotations: DocumentAnnotation[];
-	triggers: Trigger[];
+	trigger: Trigger;
 	concessions: { id: string; changes: ContractChange[] }[];
 };
 
@@ -86,7 +86,7 @@ export function toDocumentOverlay(record: PlaybookItemRecord): DocumentOverlayIt
 	return {
 		itemId: record._id,
 		annotations: documentAnnotations(record),
-		triggers: record.triggers,
+		trigger: record.trigger,
 		concessions: record.concessions.map(({ id, changes }) => ({ id, changes }))
 	};
 }

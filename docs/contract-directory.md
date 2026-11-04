@@ -1,44 +1,40 @@
 # Contract directory
 
-Home lists and searches compact `contractDirectory` records instead of reading full
-`savedContracts` documents. Each record contains the contract, company, and creator
-IDs, the displayed company name, save time, and original creation time. Selections,
-review state, and template content remain outside the directory. Creator names and
-avatars are resolved from current company membership when reading cards.
+Current architecture: [backend model](backend-redesign/architecture.md). Target/archive/reset/deploy and remaining native/browser/provider verification: [Phase 18](backend-redesign/phase-18-activation.md). Local implementation evidence does not establish deployment.
 
-Creation, changed saving, renaming, and deletion maintain the directory in the same
-transaction as the contract. Unchanged saves and replayed operations retain their
-existing zero-write behavior. Company deletion drains directory entries after
-contracts using its existing bounded cleanup budget.
 
-New companies start ready. Existing companies browse the original source until a
-bounded backfill completes. `contractDirectory:backfillAll` scans 25 companies per
-batch and schedules `contractDirectory:backfill` in batches of eight contracts.
-Backfill keeps its cursor and schedules a continuation after 60 seconds during
-preparation or dispatch holds. Cancellation or expiry lets that continuation resume;
-confirmed cleanup terminates it. The worker can restart safely, and concurrent
-contract mutations maintain the same entries. Completion marks the company ready.
+`contractDirectory` is the sole source for Home browsing and customer-name search.
+It stores contract/company/creator IDs, displayed company name, save time and the
+contract's original creation time. Selections, review state and immutable template
+content remain outside the directory. There is no readiness flag, source-selection
+argument, fallback reader or backfill worker.
 
-Home includes the readiness flag in its live browse arguments, so pagination starts
-again when the source changes. Previously displayed cards remain while that first
-page loads. Clients omitting the flag retain the original source, preserving their
-existing pagination cursors during rollout. Both sources apply the same company
-authorization and return the same card shape.
+Creation, changed saving, renaming and deletion maintain the projection in the same
+transaction as the contract. Unchanged saves and replayed operations preserve their
+zero-write behavior. A source-contract company index remains for deletion; browse
+and search indexes belong only to the directory.
 
-After identifying and announcing the intended development deployment, start backfill
-with:
+Both startup and live browsing use the same authorized reader. Blank browsing sorts
+by descending save time and original creation time; nonblank search uses Convex's
+company-filtered full-text index. Native pagination options and result split
+metadata pass through unchanged. Names and avatars resolve from current company
+membership, once per distinct creator per page; former colleagues retain the
+existing label.
 
-```sh
-npx convex run contractDirectory:backfillAll '{}'
-```
+Contract deletion removes its directory row immediately and leaves a durable
+company-scoped cleanup marker for decisions, deliveries and their snapshots.
+Company deletion drains directory rows and cleanup markers with the shared bounded
+worker budget.
 
-On October 25, 2026, the backend was deployed to development deployment
-`scrupulous-squirrel-986` and both companies completed backfill. Its one directory
-record was 299 JSON bytes and contained only the expected metadata fields. These
-counts describe that development dataset, not production scale or latency.
+[Phase 10](backend-redesign/phase-10-contracts.md) records the implementation and
+acceptance limits. All 24 existing performance tests, backend TypeScript, Svelte
+checks and production build passed locally. Creation still requires two
+contract/receipt writes and one directory write without reading/compiling template
+content. No tests were added or assertions weakened.
 
-The existing 24 performance and 20 lifecycle tests, Svelte/type checks, production
-build, and Convex type check passed. Affected saving and creation assertions retain
-their existing guarantees and separately count directory writes. No tests were
-added. Browser search/pagination, concurrent backfill edits, company deletion, and
-before/after load timing remain unverified for this change. Production is unchanged.
+The October 25, 2026 development observation of one 299-JSON-byte directory record
+is historical context only; it is not a current scale or latency measurement.
+Deployed search/pagination, cleanup interruption/company overlap and actual
+opening timing remain unverified. The earlier readiness/backfill rollout procedure
+is retired. Source/schema changes have not been deployed; Phase 18 owns the agreed
+target-specific fresh reset and bootstrap.

@@ -2,8 +2,9 @@ import { PlaybookValidationError } from '../playbook/validation-error';
 import type { BaselineBlock, ReplacementAtom } from './source-model';
 import { buildSourceIndex } from './source-index';
 import { validateStorageArrays } from './storage-limits';
-import { numberAddresses, referenceText } from './numbering';
+import { referenceText } from './numbering';
 import { patternKey, validateNumberPattern } from './number-pattern';
+import { canReferenceRange, normalizeReferenceAddress } from './reference-catalog';
 
 const MAX_BLOCK_BYTES = 900_000; // Leave room for Convex metadata and version wrappers.
 
@@ -24,7 +25,7 @@ export function validateBaseline(blocks: readonly BaselineBlock[]) {
 	validateStorageArrays(blocks);
 	if (!blocks.length) throw new PlaybookValidationError('Contract has no blocks');
 	const anchors = new Set<string>();
-	const items = new Map<string, { block: BaselineBlock; position: number }>();
+	const items = new Map<string, BaselineBlock>();
 	const sequences = new Map<
 		string,
 		{
@@ -37,7 +38,7 @@ export function validateBaseline(blocks: readonly BaselineBlock[]) {
 		}
 	>();
 	const references: Extract<ReplacementAtom, { kind: 'reference' }>[] = [];
-	for (const [position, block] of blocks.entries()) {
+	for (const block of blocks) {
 		if (new TextEncoder().encode(JSON.stringify(block)).length > MAX_BLOCK_BYTES)
 			throw new PlaybookValidationError(`Contract block exceeds storage size: ${block.blockKey}`);
 		const item = block.numbering;
@@ -53,7 +54,7 @@ export function validateBaseline(blocks: readonly BaselineBlock[]) {
 			let ancestor = item.parentItemKey;
 			while (ancestor && depth <= 9) {
 				depth++;
-				ancestor = items.get(ancestor)?.block.numbering?.parentItemKey;
+				ancestor = items.get(ancestor)?.numbering?.parentItemKey;
 			}
 			if (depth > 9) throw new PlaybookValidationError('Numbering supports up to nine levels.');
 			if (
@@ -73,11 +74,9 @@ export function validateBaseline(blocks: readonly BaselineBlock[]) {
 				throw new PlaybookValidationError(`Invalid numbering item: ${item.itemKey}`);
 			if (item.parentItemKey !== undefined) {
 				key(item.parentItemKey, 'numbering parent');
-				const parent = items.get(item.parentItemKey)?.block;
-				if (!parent || (parent.kind === 'paragraph' && parent.optional))
-					throw new PlaybookValidationError(
-						`Missing, late or optional numbering parent: ${item.itemKey}`
-					);
+				const parent = items.get(item.parentItemKey);
+				if (!parent)
+					throw new PlaybookValidationError(`Missing or late numbering parent: ${item.itemKey}`);
 			}
 			const sequence = sequences.get(item.sequenceKey);
 			if (
@@ -98,18 +97,9 @@ export function validateBaseline(blocks: readonly BaselineBlock[]) {
 				minimumDigits: item.minimumDigits,
 				alphabeticStyle: item.alphabeticStyle
 			});
-			items.set(item.itemKey, { block, position });
+			items.set(item.itemKey, block);
 		}
 		if (block.kind === 'heading') unique(anchors, block.anchor, 'heading anchor');
-		if (
-			block.kind === 'paragraph' &&
-			block.optional &&
-			(!item ||
-				block.content.length !== 1 ||
-				block.content[0].kind !== 'text' ||
-				block.content[0].text !== '')
-		)
-			throw new PlaybookValidationError(`Invalid optional block: ${block.blockKey}`);
 		if (block.kind === 'table') {
 			if (
 				!block.rows.length ||
@@ -131,28 +121,28 @@ export function validateBaseline(blocks: readonly BaselineBlock[]) {
 		} else inspect(block.content);
 	}
 	const index = buildSourceIndex(blocks);
-	const addresses = numberAddresses(blocks);
+	const referenceAddresses = new Map<string, string>();
+	for (const [itemKey, address] of index.addresses) {
+		if (!address.address) continue;
+		const normalized = normalizeReferenceAddress(address.address);
+		const previous = referenceAddresses.get(normalized);
+		if (previous && previous !== itemKey)
+			throw new PlaybookValidationError(`Ambiguous reference address: ${address.address}`);
+		referenceAddresses.set(normalized, itemKey);
+	}
 	function validateReference(ref: Reference): void {
 		key(ref.targetItemKey, 'reference target');
 		if (ref.endTargetItemKey !== undefined) key(ref.endTargetItemKey, 'reference end target');
-		const start = items.get(ref.targetItemKey),
-			end = ref.endTargetItemKey !== undefined ? items.get(ref.endTargetItemKey) : undefined;
-		const optional = (entry: typeof start) =>
-			entry?.block.kind === 'paragraph' && entry.block.optional;
-		if (
-			!start ||
-			optional(start) ||
-			(ref.endTargetItemKey !== undefined && (!end || optional(end)))
-		)
+		const start = index.numberingItems.get(ref.targetItemKey),
+			end =
+				ref.endTargetItemKey !== undefined
+					? index.numberingItems.get(ref.endTargetItemKey)
+					: undefined;
+		if (!start || (ref.endTargetItemKey !== undefined && !end))
 			throw new PlaybookValidationError(`Unresolved reference: ${ref.targetItemKey}`);
-		if (
-			end &&
-			(end.position <= start.position ||
-				end.block.numbering!.sequenceKey !== start.block.numbering!.sequenceKey ||
-				end.block.numbering!.parentItemKey !== start.block.numbering!.parentItemKey)
-		)
+		if (end && !canReferenceRange(index, ref.targetItemKey, ref.endTargetItemKey!))
 			throw new PlaybookValidationError(`Invalid reference range: ${ref.targetItemKey}`);
-		referenceText(ref, addresses);
+		referenceText(ref, index.addresses);
 	}
 	for (const ref of references) validateReference(ref);
 	return { index, validateReference };

@@ -13,6 +13,7 @@
 	import ChooseCompanyStep from './ChooseCompanyStep.svelte';
 	import CreateCompanyStep from './CreateCompanyStep.svelte';
 	import JoinCompanyStep from './JoinCompanyStep.svelte';
+	import RouteTitle from '../RouteTitle.svelte';
 
 	type Step = 'choose' | 'create' | 'join';
 	const account = useAccount();
@@ -26,6 +27,15 @@
 	let completionDestination: string | undefined;
 	let alive = true;
 	let completionAttempted = false;
+	const title = $derived(
+		account()?.membership
+			? 'Opening your workspace'
+			: step === 'choose'
+				? 'Choose how to get started'
+				: step === 'create'
+					? 'Name your company'
+					: 'Join your team'
+	);
 	const canPreload = $derived(
 		step !== 'join' && !session.blocked && !session.error && !pending && !account()?.membership
 	);
@@ -85,6 +95,8 @@
 	}
 </script>
 
+<RouteTitle {title} />
+
 {#if step === 'create' && !account()?.membership}
 	<div class="mx-auto h-5 w-full max-w-190">
 		<button
@@ -128,7 +140,6 @@
 </div>
 
 <footer class="translate-y-2 text-center text-xs leading-5 text-ink-muted">
-	<p class="break-words">Signed in as {account()?.profile.email}</p>
 	<button
 		type="button"
 		class="mt-1 cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted"

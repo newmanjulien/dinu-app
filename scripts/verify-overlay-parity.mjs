@@ -7,14 +7,13 @@ import { readFile } from 'node:fs/promises';
 export function normalize(blocks) {
 	const runs = (content) => {
 		const result = [];
-		for (const { text, revision, annotations, marks } of content) {
+		for (const { text, revision, annotations } of content) {
 			if (!text) continue;
 			const { itemId, triggerId } = annotations?.find((a) => a.kind === 'trigger') ?? {};
 			const previous = result.at(-1);
 			if (
 				previous &&
 				previous.revision === revision &&
-				JSON.stringify(previous.marks) === JSON.stringify(marks) &&
 				previous.itemId === itemId &&
 				previous.triggerId === triggerId
 			)
@@ -24,8 +23,7 @@ export function normalize(blocks) {
 					text,
 					revision,
 					itemId,
-					triggerId,
-					...(marks !== undefined ? { marks } : {})
+					triggerId
 				});
 		}
 		return result;

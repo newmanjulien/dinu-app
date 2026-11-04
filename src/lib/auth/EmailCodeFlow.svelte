@@ -288,7 +288,13 @@
 </script>
 
 <RouteTitle
-	title={`${step === 'code' ? 'Enter your code' : invitation ? `Join ${invitation.companyName}` : joining ? 'Join' : 'Log in'} | Dinu`}
+	title={step === 'code'
+		? 'Enter your sign-in code'
+		: invitation
+			? `Join ${invitation.companyName}`
+			: joining
+				? 'Create your account'
+				: 'Sign in'}
 />
 
 {#snippet accountFooter()}
@@ -317,13 +323,9 @@
 		</AuthStepFrame>
 	{:else if step === 'login'}
 		<AuthStepFrame
-			title={invitation
-				? `Join ${invitation.companyName}`
-				: joining
-					? 'Join Dinu'
-					: 'Log in to Dinu'}
+			title={invitation ? `Welcome to Dinu` : joining ? 'Join Dinu' : 'Log in to Dinu'}
 			description={invitation
-				? 'Verify your invited email to continue. We’ll create your Dinu account if you need one.'
+				? `You’ll be joining ${invitation.companyName}’s workspace and we’ll create your account if you don’t have one yet.`
 				: undefined}
 		>
 			<form
@@ -335,11 +337,8 @@
 					}
 				}}
 			>
-				{#if invitation}
-					<p class="m-0 text-center text-sm leading-5 break-words text-ink-muted">
-						{invitation.email}
-					</p>
-				{:else}<AuthTextInput
+				{#if !invitation}
+					<AuthTextInput
 						label="Your work email"
 						bind:value={email}
 						type="email"
@@ -347,7 +346,8 @@
 						required
 						autofocus
 						invalid={Boolean(authErrorText)}
-					/>{/if}
+					/>
+				{/if}
 				{#if readiness.error || authErrorText}
 					<p role="alert" class="m-0 text-sm leading-5 text-danger">
 						{readiness.error || authErrorText}
@@ -363,16 +363,13 @@
 						? readiness.status === 'ready'
 							? 'Sending…'
 							: 'Connecting…'
-						: invitation
-							? 'Continue'
-							: 'Email me a code'}
+						: 'Email me a code'}
 				</AuthHotkeyButton>
 			</form>
 		</AuthStepFrame>
 	{:else}
 		<AuthCodeStep
 			{email}
-			description={invitation ? `Verify your email to join ${invitation.companyName}.` : undefined}
 			bind:code={verificationCode}
 			errorText={authErrorText}
 			isSubmitting={isSubmittingCode}

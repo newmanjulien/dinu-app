@@ -1,0 +1,15 @@
+{
+	"invitation": {
+		"name": "Dinu: invitation",
+		"subject": "Join {data.companyName} on Dinu"
+	},
+	"approval": {
+		"name": "Dinu: approval requested",
+		"subject": "Approval requested — {data.companyName}'s contract"
+	},
+	"decision": {
+		"name": "Dinu: concessions reviewed",
+		"subject": "Concessions reviewed — {data.companyName}'s contract",
+		"ccEmail": "{data.cc}"
+	}
+}

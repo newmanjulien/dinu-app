@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../src/convex/_generated/api';
 import type { MutationCtx } from '../../src/convex/_generated/server';
 import schema from '../../src/convex/schema';
-import { canonicalBaselineFingerprint } from '../../src/convex/baselineStorage';
+import { baselineIntegrity, writeBaselineChunks } from '../../src/convex/baselineStorage';
 import { storeItemRevision } from '../../src/convex/playbookItemRevisions';
 import { saveChoices } from '../../src/convex/savedContracts';
 import { writeDirectory } from '../../src/convex/contractDirectory';
@@ -21,25 +21,41 @@ async function fixture(selected = false) {
 	const { profileId, companyId, membershipId } = await t.run(initializeViewer);
 	const ids = await t.run(async (ctx) => {
 		const { db } = ctx;
-		await db.patch('company', companyId, { contractDirectoryReady: true });
 		const baselineId = await db.insert('baselines', {
 			companyId,
 			state: 'published',
 			source: 'seed',
-			fingerprint: canonicalBaselineFingerprint([block]),
+			...baselineIntegrity([block]),
 			issues: [],
-			blockCount: 1
+			blockCount: 1,
+			bootstrapKey: 'a'.repeat(64),
+			publishedAt: 123,
+			chunkCount: 0,
+			chunkReadBytes: 0
 		});
+		await db.patch(
+			'baselines',
+			baselineId,
+			await writeBaselineChunks(ctx, { companyId, baselineId, blocks: [block] })
+		);
+		await db.patch('company', companyId, { baselineId });
 		const first = await db.insert('playbookItems', { ...item, companyId, revision: 1 });
 		const second = await db.insert('playbookItems', { ...item, companyId, revision: 1 });
 		const foreign = await db.insert('playbookItems', { ...item, companyId, revision: 1 });
 		const choices = { [first]: 'preferred', [second]: 'preferred' };
+		const references = [];
+		for (const itemId of [first, second]) {
+			const document = (await db.get('playbookItems', itemId))!;
+			references.push({ itemId, revisionId: await storeItemRevision(ctx, document) });
+		}
 		const versionId = await db.insert('templateVersions', {
 			companyId,
 			publishedAt: 123,
 			blockCount: 1,
 			itemCount: 2,
 			snapshotBytes: 0,
+			contentReadBytes: 0,
+			items: references,
 			baselineId
 		});
 		const id = await db.insert('savedContracts', {
@@ -49,21 +65,12 @@ async function fixture(selected = false) {
 			templateVersionId: versionId,
 			savedAt: 123,
 			revision: 7,
-			lastOperationId: 'previous-operation',
+			reviewGeneration: 0,
+			lastOperation: { id: 'previous-operation', callerId: profileId },
 			reviews: {},
 			selectedConcessions: selected ? choices : {}
 		});
-		await db.insert('contractBlocks', { companyId, baselineId, ...block });
 		await writeDirectory(ctx, (await db.get('savedContracts', id))!);
-		for (const itemId of [first, second]) {
-			const document = (await db.get('playbookItems', itemId))!;
-			await db.insert('templateVersionItems', {
-				companyId,
-				versionId,
-				itemId,
-				revisionId: await storeItemRevision(ctx, document)
-			});
-		}
 		return { id, first, second, foreign, choices };
 	});
 	return { t, membershipId, ...ids };
@@ -87,13 +94,13 @@ function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs
 			get(target, key, receiver) {
 				if (key === 'query')
 					return (table: Parameters<MutationCtx['db']['query']>[0]) => {
-						if (table === 'templateVersionItems') counts.snapshotItems++;
-						if (table === 'contractBlocks') counts.snapshotBlocks++;
+						if (table === 'baselineChunks') counts.snapshotBlocks++;
 						return target.query(table);
 					};
 				const value = Reflect.get(target, key, receiver);
 				if (typeof value !== 'function') return value;
 				return (...values: unknown[]) => {
+					if (key === 'get' && values[0] === 'playbookItemRevisions') counts.snapshotItems++;
 					if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
 						if (values[0] === 'contractDirectory') counts.directoryWrites++;
 						else counts.writes++;
@@ -184,7 +191,7 @@ describe('saving work', () => {
 			expect(stored).toMatchObject({
 				selectedConcessions,
 				revision: 8,
-				lastOperationId: 'changed-operation'
+				lastOperation: { id: 'changed-operation' }
 			});
 			expect(stored!.savedAt).toBeGreaterThan(123);
 		}

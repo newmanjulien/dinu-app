@@ -13,14 +13,14 @@ export const generate = action({
 	args: exportRequest.fields,
 	returns: v.object({ url: v.string(), filename: v.string() }),
 	handler: async (ctx, args): Promise<{ url: string; filename: string }> => {
-		const { contract, snapshot, requiredReviews } = await ctx.runQuery(
+		const { contract, blocks, items, requiredReviews } = await ctx.runQuery(
 			internal.contractExports.source,
 			args
 		);
 		const blob = await generateWord(
 			composeExport({
-				blocks: snapshot.blocks,
-				items: snapshot.items.map(toDocumentOverlay),
+				blocks,
+				items: items.map(toDocumentOverlay),
 				activeConcessions: contract.selectedConcessions
 			}),
 			contract.companyName
@@ -41,7 +41,7 @@ export const generate = action({
 			return { url, filename: `${contractName(contract.companyName)} - ${timestamp}.docx` };
 		} catch (error) {
 			try {
-				await ctx.storage.delete(fileId);
+				await ctx.runMutation(internal.storageOwnership.discardFile, { fileId });
 			} catch (cleanupError) {
 				console.error('Unable to delete failed contract export.', cleanupError);
 			}

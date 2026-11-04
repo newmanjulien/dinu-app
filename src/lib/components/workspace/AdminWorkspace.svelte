@@ -3,14 +3,17 @@
 	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
-	import { createContractWorkspace, setContractWorkspace } from '$lib/document/runtime/context';
+	import { createContractWorkspace } from '$lib/document/runtime/workspace-factory';
+	import { setContractWorkspace } from '$lib/document/runtime/workspace-context';
 	import {
 		recordAdminQueryOwner,
 		recordAdminSourceUpdate,
 		recordContractInput
 	} from '$lib/document/runtime/render-perf';
 	import { EMPTY_PREVIEW_CHANGES } from '$lib/document/runtime/types';
-	import { sameSourceRange } from '$lib/contract/source-model';
+	import { sameSourceTarget } from '$lib/contract/source-model';
+	import { structuralBoundary } from '$lib/contract/ranges';
+	import type { SourceTarget } from '$lib/playbook/model';
 	import { immutable, semanticConcession } from '$lib/playbook/draft';
 	import { env } from '$env/dynamic/public';
 	import { useConvexClient, useQuery } from 'convex-svelte';
@@ -25,10 +28,10 @@
 	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import DocumentViewerSlot from '$lib/components/document/DocumentViewerSlot.svelte';
 	import SourceSelectionToolbar from '$lib/components/document/SourceSelectionToolbar.svelte';
-	import PlaybookEditor from '$lib/components/playbook/PlaybookEditor.svelte';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
+	import PlaybookEditor from '$lib/components/playbook/PlaybookEditor.svelte';
 	import WorkspaceChrome from './WorkspaceChrome.svelte';
-	import { getInteractionController, setInteractionOwner } from '$lib/components/ui/interactions';
+	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import InteractionInputScope from '$lib/components/ui/InteractionInputScope.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 
@@ -63,7 +66,6 @@
 		};
 	});
 	const interactionOwner = setInteractionOwner(resource?.owner ?? Symbol('authoring-workspace'));
-	const interactions = getInteractionController();
 	const workspace = setContractWorkspace(
 		resource?.workspace ?? untrack(() => createContractWorkspace(data))
 	);
@@ -75,6 +77,7 @@
 			geometry: source.geometry,
 			items: source.items,
 			itemsCurrent: source.itemsCurrent,
+			addresses: viewer.displayedSnapshot?.addresses,
 			lookup: (id) => source.lookup(id),
 			available: available && viewer.ready
 		})
@@ -107,6 +110,15 @@
 		recordAdminSourceUpdate();
 	});
 	const entry = $derived(authoring.entry);
+	let animateEditorContent = $state(false);
+	let previousEditorEntry: object | null = null;
+	$effect(() => {
+		const currentEntry = entry;
+		animateEditorContent = Boolean(
+			previousEditorEntry && currentEntry && previousEditorEntry !== currentEntry
+		);
+		previousEditorEntry = currentEntry;
+	});
 	const draft = $derived(authoring.draft);
 	const previewConcession = $derived(
 		authoring.creationConcession ??
@@ -117,7 +129,8 @@
 			? immutable(
 					semanticConcession(previewConcession).changes.filter((change) =>
 						change.replacement.some(
-							(atom) => atom.kind === 'reference' || Boolean(atom.text.trim())
+							(atom) =>
+								atom.kind === 'reference' || (atom.kind === 'text' && Boolean(atom.text.trim()))
 						)
 					)
 				)
@@ -140,20 +153,29 @@
 		})
 	);
 	onDestroy(() => authoring.discard());
-	$effect(() => {
-		const stage = viewer.documentStageElement;
-		// Document gestures propose actions; they do not dismiss the working context.
-		if (stage && available && entry) return interactions.protect(stage, interactionOwner);
-	});
-	// Each selection stays blue until its own replacement participates in the preview.
+	function isSelectedInsertionBoundary(range: SourceTarget) {
+		const index = viewer.displayedSnapshot?.source.sourceIndex;
+		if (!index) return false;
+		try {
+			return Boolean(structuralBoundary(index, range));
+		} catch {
+			return false;
+		}
+	}
+	// Text selections yield to their replacement preview; insertion boundaries stay visibly selected.
 	const authoringHighlightRanges = $derived(
 		authoring.selectedRanges.filter(
-			(range) => !previewChanges.some((change) => sameSourceRange(range, change.range))
+			(range) =>
+				isSelectedInsertionBoundary(range) ||
+				!previewChanges.some((change) => sameSourceTarget(range, change.range))
 		)
 	);
 	/** Restore the captured annotation only when an action actually closes the editor. */
-	async function runEditorAction(action: () => AuthoringOutcome | Promise<AuthoringOutcome>) {
-		const restore = viewer.captureAnnotationFocus?.();
+	async function runEditorAction(
+		action: () => AuthoringOutcome | Promise<AuthoringOutcome>,
+		restoreFocus = true
+	) {
+		const restore = restoreFocus ? viewer.captureAnnotationFocus?.() : undefined;
 		if ((await action()) !== 'closed' || authoring.entry) return;
 		await tick();
 		if (!authoring.entry) restore?.();
@@ -161,9 +183,8 @@
 	function cancel() {
 		void runEditorAction(() => authoring.cancel());
 	}
-	function dismiss(restoreFocus: boolean) {
-		if (restoreFocus) void runEditorAction(() => (authoring.dismiss() ? 'closed' : 'retained'));
-		else authoring.dismiss();
+	function dismiss(restoreFocus = false) {
+		void runEditorAction(() => authoring.dismissFromOutside(), restoreFocus);
 	}
 	function remove() {
 		if (!authoring.canDelete) return;
@@ -230,13 +251,18 @@
 				<h1 class="px-2 text-center text-[13px] text-ink-muted">
 					Edit the instructions reps will see
 				</h1>
-				{#snippet panelContent()}{#if entry && source.renderSource}{#key entry}<PlaybookEditor
-								controller={authoring}
-								onCancel={cancel}
-								onPrimary={() => runEditorAction(() => authoring.primary())}
-								onRetry={() => runEditorAction(() => authoring.retry())}
-								onDelete={remove}
-							/>{/key}{/if}{/snippet}
+				{#snippet panelContent()}
+					{#if source.renderSource && entry}
+						<PlaybookEditor
+							controller={authoring}
+							animateContent={animateEditorContent}
+							onCancel={cancel}
+							onPrimary={() => runEditorAction(() => authoring.primary())}
+							onRetry={() => runEditorAction(() => authoring.retry())}
+							onDelete={remove}
+						/>
+					{/if}
+				{/snippet}
 				{#if !entry && authoring.feedback}<p
 						class="mx-auto max-w-3xl px-6 text-sm text-danger"
 						role="status"
@@ -249,49 +275,60 @@
 					active={available}
 					prepare={!runtime.paused}
 					interactive={available}
-					hasPanel={Boolean(draft)}
-					followScroll={authoring.otherClauseActive}
+					hasPanel={Boolean(entry)}
+					followScroll={authoring.locationPicking}
 					{panelContent}
 					selectedAnnotationId={authoring.selectedAnnotationId}
 					selectedRanges={authoringHighlightRanges}
 					{previewChanges}
 					selectedConcessions={{}}
 					onRemoveConcession={() => authoring.clearPreview()}
-					panelSource={draft?.triggers[0]?.range.start}
-					picking={authoring.picking}
+					panelTarget={draft?.trigger.range}
+					picking={authoring.locationPicking}
 					allowPlaybookNavigation={true}
-					onSelect={(itemId, triggerId) => authoring.openItem(itemId, triggerId)}
+					onSelect={(itemId, triggerId) => authoring.requestItemSwitch(itemId, triggerId)}
+					onDocumentBackground={() => dismiss(false)}
 				/>
 			</main>
 		</InteractionInputScope>
 		{#if available && viewer.ready && viewer.displayedSnapshot}<SourceSelectionToolbar
 				container={viewer.documentStageElement}
 				snapshot={viewer.displayedSnapshot}
-				enabled={authoring.selectionEnabled}
-				autoConfirm={authoring.picking}
+				enabled={authoring.textSelectionEnabled}
+				autoConfirm={authoring.textSelectionAutoConfirm}
 				onSelectionIssue={(issue) => authoring.reportIssue(issue)}
 				onActionBlocked={(reason) => authoring.reportBlocked(reason)}
 				onGestureStart={() => authoring.clearFeedback()}
 				evaluate={(range) => authoring.selectionEligibility(range)}
-				onConfirm={(range, mode) => authoring.acceptSelection(range, mode)}
+				onConfirm={(range, mode) => {
+					if (mode === 'explain') return authoring.startExplanationFromSelection(range);
+					if (mode === 'concession') return authoring.startConcessionFromSelection(range);
+					return authoring.textSelectionPurpose === 'secondary-location'
+						? authoring.attachSecondaryLocation(range)
+						: authoring.startConcessionFromSelection(range);
+				}}
 			/>{/if}
 	{:else}<p role="alert">We couldn’t load this contract. Please refresh to try again.</p>{/if}
 </div>
 
 <style>
 	main {
-		--document-padding-top: calc(var(--spacing) * 14);
+		--document-padding-top: calc(var(--spacing) * 2);
 		--document-padding-bottom: calc(var(--spacing) * 12);
 		--heading-line-height: calc(var(--spacing) * 6);
-		--heading-margin-bottom: calc(var(--spacing) * 5);
+		--heading-margin-bottom: calc(var(--spacing) * 2);
+		--heading-block-height: var(--mobile-utility-rail-height);
 		--workspace-loading-inset: calc(
-			var(--document-padding-top) + var(--document-padding-bottom) + var(--heading-line-height) +
+			var(--document-padding-top) + var(--document-padding-bottom) + var(--heading-block-height) +
 				var(--heading-margin-bottom)
 		);
 		padding-block: var(--document-padding-top) var(--document-padding-bottom);
 	}
 
 	h1 {
+		display: grid;
+		min-height: var(--heading-block-height);
+		place-items: center;
 		line-height: var(--heading-line-height);
 		margin-bottom: var(--heading-margin-bottom);
 	}
@@ -299,6 +336,13 @@
 	@media (min-width: 1000px) {
 		main {
 			--document-padding-top: calc(var(--spacing) * 6);
+			--heading-margin-bottom: calc(var(--spacing) * 5);
+			--heading-block-height: var(--heading-line-height);
+		}
+
+		h1 {
+			display: block;
+			min-height: 0;
 		}
 	}
 </style>

@@ -34,8 +34,10 @@ type Env = {
   readonly CLERK_JWT_ISSUER_DOMAIN: string | undefined;
   readonly CLERK_SECRET_KEY: string | undefined;
   readonly CLERK_WEBHOOK_SIGNING_SECRET: string | undefined;
-  readonly SMTP_APP_PASSWORD: string | undefined;
-  readonly SMTP_USER: string | undefined;
+  readonly LOOPS_API_KEY: string | undefined;
+  readonly LOOPS_APPROVAL_ID: string | undefined;
+  readonly LOOPS_DECISION_ID: string | undefined;
+  readonly LOOPS_INVITATION_ID: string | undefined;
 };
 
 /**

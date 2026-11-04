@@ -1,8 +1,16 @@
-import type { Concession, Instructions, PlaybookItem, PlaybookItemId, SourceRange } from './model';
+import type {
+	Concession,
+	Instructions,
+	PlaybookItem,
+	PlaybookItemId,
+	SourceRange,
+	SourceTarget
+} from './model';
 import { newTriggerId } from './model';
 import { instructionsFields } from './instructions-fields';
-import { canonicalMarks } from '../contract/marks';
 import { canonicalNumberPattern } from '../contract/number-pattern';
+import { sameSourceTarget, textTarget } from '../contract/source-model';
+import { sameReplacementAtom } from '../contract/replacement-content';
 
 export type DeepReadonly<T> = T extends string | number | boolean | null | undefined
 	? T
@@ -31,27 +39,29 @@ function semanticRange({ start, end }: SourceRange): SourceRange {
 	};
 }
 
+function semanticTarget(target: SourceTarget): SourceTarget {
+	return target.kind === 'boundary'
+		? { kind: 'boundary', afterBlockKey: target.afterBlockKey }
+		: textTarget(semanticRange(target.range));
+}
+
 /** Explicit field selection strips nested UI keys, without normalizing text. */
 export function semanticConcession({
 	id,
 	tier,
 	description,
-	detail,
-	after,
 	changes
 }: DeepReadonly<Concession>): Concession {
 	return {
 		id,
 		tier,
 		description,
-		...(detail !== undefined ? { detail: [...detail] } : {}),
-		...(after !== undefined ? { after } : {}),
 		changes: changes.map(({ range, replacement }) => ({
-			range: semanticRange(range),
+			range: semanticTarget(range),
 			replacement: replacement.map((atom) => {
-				const marks = canonicalMarks(atom.marks);
+				if (atom.kind === 'paragraph-break') return { kind: 'paragraph-break' as const };
 				return atom.kind === 'text'
-					? { kind: 'text', text: atom.text, ...(marks ? { marks } : {}) }
+					? { kind: 'text', text: atom.text }
 					: {
 							kind: 'reference',
 							targetItemKey: atom.targetItemKey,
@@ -66,24 +76,39 @@ export function semanticConcession({
 							},
 							...(atom.endTargetItemKey !== undefined
 								? { endTargetItemKey: atom.endTargetItemKey }
-								: {}),
-							...(marks ? { marks } : {})
+								: {})
 						};
 			})
 		}))
 	};
 }
 
-/** Compare ordered business content independently of metadata and object key order. */
+/** Compare ordered business content without allocating normalized copies. */
 export function equalConcession(a: Concession, b: Concession): boolean {
-	return JSON.stringify(semanticConcession(a)) === JSON.stringify(semanticConcession(b));
+	return (
+		a === b ||
+		(a.id === b.id &&
+			a.tier === b.tier &&
+			a.description === b.description &&
+			a.changes.length === b.changes.length &&
+			a.changes.every(
+				(change, index) =>
+					sameSourceTarget(change.range, b.changes[index]!.range) &&
+					change.replacement.length === b.changes[index]!.replacement.length &&
+					change.replacement.every((atom, atomIndex) =>
+						sameReplacementAtom(atom, b.changes[index]!.replacement[atomIndex]!)
+					)
+			))
+	);
 }
 
 export function equalPlaybookStructure(a: PlaybookItem, b: PlaybookItem): boolean {
-	const triggers = (item: PlaybookItem) =>
-		item.triggers.map(({ id, range }) => ({ id, range: semanticRange(range) }));
+	const trigger = (item: PlaybookItem) => ({
+		id: item.trigger.id,
+		range: semanticTarget(item.trigger.range)
+	});
 	return (
-		JSON.stringify(triggers(a)) === JSON.stringify(triggers(b)) &&
+		JSON.stringify(trigger(a)) === JSON.stringify(trigger(b)) &&
 		a.concessions.length === b.concessions.length &&
 		a.concessions.every((concession, i) => equalConcession(concession, b.concessions[i]))
 	);
@@ -104,16 +129,16 @@ export function semanticInstructions(
 /** Strip UI keys without normalizing business text. */
 export function semanticPlaybookDraft(draft: DeepReadonly<PlaybookItem>): PlaybookItem {
 	return {
-		triggers: draft.triggers.map(({ id, range }) => ({ id, range: semanticRange(range) })),
+		trigger: { id: draft.trigger.id, range: semanticTarget(draft.trigger.range) },
 		...semanticInstructions(draft.instructions),
 		concessions: draft.concessions.map(semanticConcession)
 	};
 }
 
-export function newPlaybookDraft(range: SourceRange): PlaybookDraft {
+export function newPlaybookDraft(range: SourceTarget): PlaybookDraft {
 	return {
 		instructions: {},
-		triggers: [{ id: newTriggerId(), range: semanticRange(range) }],
+		trigger: { id: newTriggerId(), range: semanticTarget(range) },
 		concessions: []
 	};
 }

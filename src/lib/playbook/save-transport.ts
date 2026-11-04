@@ -2,7 +2,11 @@ import type { Id } from '../../convex/_generated/dataModel';
 import type { ConvexClient } from 'convex/browser';
 import { ConvexError } from 'convex/values';
 import { api } from '../../convex/_generated/api';
-import type { PlaybookItem, PlaybookItemRecord } from './model';
+import {
+	normalizePlaybookItemRecord,
+	type PlaybookItem,
+	type PlaybookItemRecord
+} from './model';
 
 export type SaveRequest = {
 	id?: PlaybookItemRecord['_id'];
@@ -22,13 +26,20 @@ export const convexSaveTransport =
 	(client: ConvexClient, membershipId: Id<'memberships'>): SaveTransport =>
 	async (operation) => {
 		try {
-			return await (operation.kind === 'save'
+			const result = await (operation.kind === 'save'
 				? client.mutation(api.admin.savePlaybookItem, { ...operation.request, membershipId })
 				: client.mutation(api.admin.deletePlaybookItem, {
 						membershipId,
 						id: operation.id,
 						expectedRevision: operation.expectedRevision
 					}));
+			if ('item' in result && result.item !== undefined)
+				return {
+					status: result.status as 'saved' | 'conflict',
+					item: normalizePlaybookItemRecord(result.item)
+				};
+			if (result.status === 'rejected') return { status: 'rejected', message: result.message };
+			return { status: result.status as 'deleted' | 'missing' };
 		} catch (error) {
 			if (
 				error instanceof ConvexError &&

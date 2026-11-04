@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { setContractWorkspace } from '$lib/document/runtime/context';
+	import { setContractWorkspace } from '$lib/document/runtime/workspace-context';
 	import type { DocumentResource } from '$lib/document/runtime/resources.svelte';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import ContractViewer from './ContractViewer.svelte';
@@ -48,12 +48,13 @@
 			followScroll={bindings?.followScroll}
 			selectedAnnotationId={bindings?.selectedAnnotationId}
 			selectedRanges={bindings?.selectedRanges}
-			panelSource={bindings?.panelSource}
+			panelTarget={bindings?.panelTarget}
 			picking={bindings?.picking}
 			allowPlaybookNavigation={bindings?.allowPlaybookNavigation ?? false}
 			playbookNavigationReady={bindings?.playbookNavigationReady}
 			onRemoveConcession={bindings?.onRemoveConcession ?? (() => {})}
 			onSelect={bindings?.onSelect ?? (() => false)}
+			onDocumentBackground={bindings?.onDocumentBackground}
 		>
 			{#snippet panelContent()}{#if entry.active && bindings}{@render bindings.panelContent()}{/if}{/snippet}
 			{#snippet footerContent()}{#if entry.active && bindings?.footerContent}{@render bindings.footerContent()}{/if}{/snippet}

@@ -1,161 +1,123 @@
 # Task delegation
 
-The admin-only `DelegationWidget` opens `DelegateTaskModal` using the shared
-`ModalShell` panel variant, aligned right with a 640px maximum width and 28px
-content padding. Help uses the centered panel variant with a 480px maximum width
-and the shared 24px padding default. All modal surfaces use the shared modal radius;
-panels fill the viewport with square corners on mobile. Selecting, configuring,
-and reviewing a task are local form state. Submission creates a request without
-notifications or task execution.
+Current architecture: [backend model](backend-redesign/architecture.md). Target/archive/reset/deploy and remaining native/browser/provider verification: [Phase 18](backend-redesign/phase-18-activation.md). Local implementation evidence does not establish deployment.
 
-## Catalog and loading
 
-The workspace imports the widget only for admins. Its module statically imports the
-modal, so modal code is ready before the widget becomes clickable. At the desktop
-breakpoint, including while collapsed, the widget owns one live catalog subscription
-and preloads the delegate's avatar using the same URL resolver as `Avatar`. The modal
-consumes that catalog. Early clicks retain the existing loading state.
+Delegation records an admin’s request and attachments. Submission intentionally
+sends no notification and executes no work. The current backend implementation
+and verification record are in [Phase 15](backend-redesign/phase-15-delegation.md).
 
-A derived enablement flag and query arguments keep the subscription stable through
-expansion, collapse, and breakpoint changes that leave it enabled. It remains enabled
-while the modal is open below the breakpoint. Reopening after an error or missing
-catalog changes a refresh token to avoid reusing a cached failure. A definitive stale
-submission rejection carries the rejecting transaction's catalog snapshot; recovery
-uses that snapshot directly and retains any newer live revision.
+## Catalog and form ownership
 
-Live catalog revisions retain answers for matching question keys, initialize new
-questions, drop obsolete answers, and invalidate configuration. Removing the selected
-task resets its form and discards staged files. An uncertain submission retains its
-frozen catalog, payload, and operation ID until its outcome is known.
+The admin-only workspace owns `DelegationWidget`. The widget keeps one live
+catalog subscription while enabled at the desktop breakpoint or while its modal
+is open. Enablement and arguments remain stable through expansion/collapse;
+reopening a failed/missing catalog changes the refresh token. The modal is loaded
+on demand with the shared component loader; its existing loading/retry state and
+transport-generation invalidation remain. The delegate’s avatar uses the shared
+avatar URL resolver.
 
-Task selection shows and searches titles only. Task icons are absent from the UI,
-catalog, and saved request snapshots. Each task's longer
-description appears at the top of Configure. The catalog defines one required,
-task-specific brief per task, alongside optional uploaded attachments. Submission
-validates the same catalog questions rendered by the form.
+Selecting, configuring and reviewing a task are local form state. Live catalog
+revisions reconcile matching question keys, remove obsolete answers and invalidate
+configuration. Removing the selected task resets its form and discards staged
+files. A definitive stale submission carries the rejecting transaction’s catalog
+snapshot; recovery retains a newer live revision. An uncertain submission retains
+its frozen catalog, normalized payload and operation ID until its outcome is known.
+
+The global catalog has three tasks, each with one required task-specific brief and
+a two-business-day deadline. `delegation.seedCatalog` is the sole catalog writer;
+unchanged content preserves its revision. Task titles, descriptions and question
+copy remain in [delegation.ts](../src/convex/delegation.ts).
 
 ## Data and transactions
 
-- `delegationCatalog`: one shared revisioned catalog with three tasks and Julien's
-  profile. Stable question keys connect answers to labels. The internal idempotent
-  `delegation:seedCatalog` keeps the revision when content is unchanged.
-- `delegationRequests`: company, authenticated submitter, scoped operation ID,
-  normalized payload, immutable task/person snapshot, submission time, and deadline.
-- `delegationAttachments`: company/uploader/draft ownership, upload ID, storage ID,
-  and metadata; either staged with a 24-hour expiry or submitted with a request reference.
-- `delegationCancellations`: company/uploader/draft/upload cancellation markers with
-  a 24-hour expiry. A null upload ID cancels the whole draft. This additive table
-  requires no backfill of existing requests or attachments.
+| Record | Ownership |
+| --- | --- |
+| `delegationCatalog` | Global revisioned delegate/tasks, retained through company deletion. |
+| `delegationRequests` | Company business record and scoped submission receipt; normalized answers, attachment IDs, immutable task/delegate snapshot, submitter and original deadline. |
+| `delegationAttachments` | Company/uploader/draft/upload/storage identity and metadata; staged with expiry or submitted with a request reference. |
+| `delegationCancellations` | Temporary company/uploader/draft/upload fences; null upload ID cancels the whole draft. |
 
-Every public query, mutation, and HTTP upload checks current membership and admin role.
-Submission looks up the scoped operation before business validation, then validates
-catalog/attachment ownership and creates the request and claims its files atomically.
-Existing operations require the same normalized payload. Only business rejection after
-an authorized lookup finding no existing request is marked definitive. Authorization,
-transport, and other uncertain failures preserve the frozen operation ID.
+Every public operation and upload checks current membership and admin role.
+Submission resolves its scoped receipt before current catalog/file checks.
+Matching normalized replay returns the original request/deadline; a different
+payload cannot reuse that operation. New submission validates catalog questions,
+staged ownership/expiry and actual storage metadata, then creates the request and
+claims its selected files atomically. Authorization/transport uncertainty retains
+the frozen operation; definitive business/stale rejection permits the existing
+form recovery. Account-only deletion retains submitted company business data;
+company deletion drains attachments, requests and cancellation markers.
 
-## Attachments and request lifetimes
+## Attachment lifecycle
 
-Draft IDs are allocated only for the first valid file or when freezing a submission.
-Opening the modal and selecting tasks create no empty drafts, queries, or cleanup calls.
-The live staged-file query returns only ID, upload ID, and expiry; it owns attachment
-readiness. Local rows retain their File and upload attempt information. Live confirmation
-settles the upload immediately even when HTTP is pending. A loading/error query is not
-treated as deletion. Disappearance or expiry of a confirmed file invalidates configuration;
-reupload uses a fresh upload ID. Registration removes expired staged rows from the bounded
-draft before enforcing its three-file limit.
+Shared limits in [delegation.ts](../src/lib/delegation.ts) retain three raw DOCX/PDF
+files of 10 MiB each, 255-character filenames, twenty answers and 10,000 characters
+per answer. The current catalog uses one answer per task. Draft IDs are allocated
+only for the first valid file or when freezing a submission; opening/selecting a
+task creates no empty draft or cleanup work.
 
-DOCX/PDF files remain raw documents, limited to three files of 10 MB each. PDF signature
-validation reads eight bytes; DOCX validation inspects the ZIP directory. Registration
-returns compact IDs without rereading its inserted document. Reference-aware orphan
-cleanup is scheduled only for failed/uncertain registration or duplicate storage.
+The live draft query returns only ID, upload ID and expiry and owns readiness.
+Local rows retain their File and current attempt. Live confirmation settles a
+pending upload; query loading/error is not treated as deletion. Disappearance or
+expiry invalidates configuration, and reupload uses a fresh upload ID. Registration
+reclaims expired staged rows before enforcing the existing three-file bound.
 
-Removal writes a cancellation marker and deletes matching staged files in one transaction,
-even without an attachment ID. Both upload authorization and registration check markers,
-so registration either precedes cancellation and is deleted, or follows it and is refused.
-The HTTP action mints a ten-minute registration deadline, shorter than marker retention,
-preventing a stalled action from outliving cancellation. Expiry cleanup uses indexed
-25-row batches. Company deletion drains files, requests, and cancellation markers.
-Submitted files cannot be discarded by the form.
+The HTTP action checks authorization before ingestion, bounds the body stream,
+checks the eight-byte PDF signature or full DOCX ZIP directory, and stores raw
+bytes. A fresh **internal mutation** checks cancellation before reading the body;
+registration independently rechecks current access, its action-minted ten-minute
+deadline, cancellation, MIME/size, retry identity and draft capacity. The approved
+expiry correction makes a cancelled ID eligible when its 24-hour marker expires,
+without waiting for marker deletion. Error wording/status precedence remains.
 
-Removal and submission waits time out after 30 seconds; HTTP upload waits after 60 seconds.
-A timed-out mutation remains tracked. Removal retries reattach to the pending mutation,
-and submission cannot proceed while removal remains unresolved. Submission retries
-reattach to the same pending promise; once it settles, any further retry uses the same
-frozen operation. Late success is accepted while the component's session lifetime remains
-valid. New operations are blocked during temporary authentication recovery; pending work
-may settle. Closing or changing membership, session preparation, or transport generation
-tears down the widget/modal and disposes local waits. Close/task changes cancel staged
-uploads; TTL cleanup handles interrupted or unauthorized cleanup.
+Discard writes an upload-specific or draft-wide marker and releases matching
+staged files in one transaction. Registration either precedes cancellation and
+gets removed, or follows it and is refused. Marker retention exceeds the action
+deadline so a stalled upload cannot outlive cancellation. Staged release removes
+its attachment reference before checking all indexed baseline/attachment/avatar
+owners and deleting unowned bytes. Submitted files cannot be discarded by the form.
+Failed/uncertain registration and duplicate bytes use the same scheduled
+reference-aware discard. Interrupted operations retain the existing expiry/orphan
+recovery; company-wide and all-kind recovery acceptance remains Phase 16.
 
-Deadlines count Monday–Friday in America/Toronto, excluding the submission date and
-without a holiday calendar. The server records the first submission's deadline. The
-client has one timer for the next Toronto midnight or nearest attachment expiry and
-refreshes on visibility, configuration, and submission; its date boundary handles DST.
+Staged files and cancellation markers expire after 24 hours. Each thirty-minute
+cron drains indexed 25-row batches and schedules a continuation when full. The
+daily orphan sweep is a separate recovery path; its all-kind completion belongs
+to Phase 16B.
 
-## Review coverage
+## Waits, sessions and dates
 
-All findings from the three review passes are implemented; grouping did not remove
-independent cleanup obligations.
+Upload waits remain sixty seconds; removal/submission waits remain thirty seconds.
+A timed-out mutation remains tracked. Removal and submission retries reattach to
+pending work, and submission retains the same frozen operation after settlement
+until its result is known. Unresolved removal blocks submission. Late success can
+settle during temporary auth recovery while the component’s session is still valid;
+new work remains blocked. Session/membership/preparation/transport changes tear
+down local waits. Close/task changes cancel staged work, with TTL recovery for
+interrupted or unauthorized cleanup.
 
-| Finding | Resolution / source evidence                                                                                                |
-| ------- | --------------------------------------------------------------------------------------------------------------------------- |
-| R1.1    | Error/null reopen changes `refreshToken` in the widget.                                                                     |
-| R1.2    | Derived `catalogEnabled` and `catalogArgs` stabilize the subscription.                                                      |
-| R1.3    | `DelegationWidget` and delegation CSS names replace booking names; the existing dismissal key remains compatible.           |
-| R2.1    | `discard` cancels by upload ID; `checkCancellation` guards both upload stages.                                              |
-| R2.2    | `attached` uses live staged rows/expiry; unavailable retries use new upload IDs.                                            |
-| R2.3    | The modal owns a disposable midnight/expiry timer and explicit clock refreshes.                                             |
-| R2.4    | Draft allocation occurs only in valid file selection or submission freezing.                                                |
-| R2.5    | Orphan cleanup runs only when registered storage differs or is unknown.                                                     |
-| R2.6    | PDF validation uses `blob.slice(0, 8)`.                                                                                     |
-| R2.7    | Registration returns `{ attachmentId, storageId }` directly.                                                                |
-| R2.8    | Nullable configuration revision replaces the boolean; typed staged files and the scoped index remove both redundant guards. |
-| R3.1    | Definitive rejection follows authorized operation lookup; pending submissions remain single flight.                         |
-| R3.2    | Live confirmation resolves/aborts the current upload wait.                                                                  |
-| R3.3    | Removal has a bounded local wait and separately observes eventual settlement.                                               |
-| R3.4    | Stale rejection includes a catalog snapshot; no cached query recovery remains.                                              |
-| R3.5    | Live revision reconciliation clears removed tasks and their drafts.                                                         |
-| R3.6    | `canDispatch` checks `session.blocked` separately from lifetime validity.                                                   |
-| R3.7    | The shared workspace dynamically imports delegation only inside its admin branch.                                           |
-| R3.8    | `draftAttachments` projects staged rows to three fields.                                                                    |
-| R3.9    | Widget preload and `Avatar` share `resolveAvatarUrl`.                                                                       |
+Deadlines exclude the submission date and count Monday–Friday in America/Toronto,
+without a holiday calendar. The server records the first submission’s deadline.
+The client keeps its existing midnight/nearest-expiry timer and visibility/configure/
+submit refreshes, including Toronto DST boundaries.
 
 ## Development and verification
 
-The catalog is stored on the development deployment `scrupulous-squirrel-986`.
-After editing its descriptions or questions in `src/convex/delegation.ts`, push the
-backend and refresh the stored catalog:
+Run `npm run verify` and
+`npx tsc --noEmit -p src/convex/tsconfig.json` for the required local checks.
+The existing suites cover contract lifecycle, saving, creation, caching, scheduling
+and account startup; they do not certify delegation races or browser/provider
+behavior. Phase 15 additionally records controlled local HTTP, replay/cancellation,
+state, ownership, batch and size diagnostics without adding persistent tests.
+The local storage runtime omits Blob MIME metadata, so those diagnostics supply
+it explicitly; native storage/HTTP/OCC and recovery remain separate acceptance.
 
-Publishing the Dinu rename also requires this refresh so the stored task
-descriptions use the new app name. The repository rename does not update deployed
-catalog content.
+Catalog edits require a target-specific backend deployment and seed refresh.
+Use the chosen Phase 18 activation procedure; no deployment is authorized by this
+document. The October 23, 2026 development checks and catalog revision 4 describe
+an earlier implementation and do not certify the current backend. No deployment,
+provider setup, email send or browser check occurred in Phase 15. Loops setup/live
+testing remains deliberately deferred to Phase 18.
 
-```sh
-npx convex run --deployment scrupulous-squirrel-986 delegation:seedCatalog '{}' --push --typecheck enable
-```
-
-The cleanup backend was pushed to this development deployment on October 23, 2026.
-Read-only live checks confirmed that `getCatalog` accepts both initial and retry
-refresh tokens and returns all three tasks for an authenticated admin. The deployed
-`discard`, `registerUpload`, and `draftAttachments` contracts also match the frontend.
-The catalog was subsequently refreshed to revision 2 with the longer Configure
-descriptions and one required brief per task. Existing requests retain their original
-task snapshots; open forms reconcile through the existing revision handling.
-
-Task icons were then removed. The icon field was briefly optional while
-the stored catalog was refreshed, then removed from the shared task validator used by
-both catalog and request snapshots. A live check found no existing requests to migrate.
-The final deployment has catalog revision 4. Its schema accepts no task icon field
-and retains no legacy compatibility path.
-
-Run `npm run verify` and `npx tsc --noEmit -p src/convex/tsconfig.json` after backend changes.
-The existing performance suite covers contract saving, creation, caching, scheduling,
-and account startup. It does not automatically prove delegation authorization, concurrent
-cancellation/registration, lost-response handling, or browser latency. Source review and
-build import-graph inspection supplement these checks. Live catalog and contract
-verification does not prove upload/submission races or browser behavior. No new tests
-or browser automation are part of this cleanup.
-
-The local portrait `static/delegation-julien.jpg` is an illustrative portrait downloaded
-from Unsplash, as requested, rather than a verified photo of Julien.
+The local portrait `static/delegation-julien.jpg` is an illustrative Unsplash image,
+not a verified photo of Julien.

@@ -8,6 +8,7 @@
 		trigger,
 		standalone = true,
 		enabled = true,
+		leaveDelay = 140,
 		onpointerdown,
 		class:
 			className = 'rounded-base border-0 bg-ink-secondary px-2.5 py-2 text-left text-xs leading-[1.4] text-surface',
@@ -18,6 +19,7 @@
 		trigger?: HTMLElement;
 		standalone?: boolean;
 		enabled?: boolean;
+		leaveDelay?: number;
 		onpointerdown?: (event: PointerEvent) => void;
 		class?: string;
 		children: Snippet<[string]>;
@@ -50,12 +52,19 @@
 	}
 	function settle() {
 		cancelTimer();
+		if (leaveDelay <= 0) {
+			if (!hovered && !focused && !tapped) {
+				open = false;
+				suppressed = false;
+			}
+			return;
+		}
 		timer = setTimeout(() => {
 			if (!hovered && !focused && !tapped) {
 				open = false;
 				suppressed = false;
 			}
-		}, 140);
+		}, leaveDelay);
 	}
 	function enter(event: PointerEvent) {
 		if (event.pointerType === 'touch') return;

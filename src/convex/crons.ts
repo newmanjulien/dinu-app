@@ -20,9 +20,9 @@ crons.interval(
 	{}
 );
 crons.cron(
-	'clean orphan baseline files',
+	'clean orphan storage files',
 	'0 4 * * *',
-	internal.baselineUploads.cleanOrphanFiles,
+	internal.storageOwnership.cleanOrphanFiles,
 	{}
 );
 crons.interval(

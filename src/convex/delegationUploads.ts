@@ -2,20 +2,19 @@ import { ConvexError } from 'convex/values';
 import { httpAction } from './_generated/server';
 import { internal } from './_generated/api';
 import type { Id } from './_generated/dataModel';
-import { ATTACHMENT_MAX_BYTES, DOCX_CONTENT_TYPE, PDF_CONTENT_TYPE } from '../lib/delegation';
-
-const cors = {
-	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Methods': 'POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-	'Cache-Control': 'no-store'
-};
-function response(body: unknown, status = 200) {
-	return new Response(JSON.stringify(body), {
-		status,
-		headers: { ...cors, 'Content-Type': 'application/json' }
-	});
-}
+import {
+	ATTACHMENT_MAX_BYTES,
+	ATTACHMENT_FILENAME_MAX_LENGTH,
+	UPLOAD_REGISTRATION_TIMEOUT,
+	DOCX_CONTENT_TYPE,
+	PDF_CONTENT_TYPE
+} from '../lib/delegation';
+import {
+	readUploadBody,
+	uploadErrorMessage,
+	uploadPreflightResponse,
+	uploadResponse as response
+} from './uploadHttp';
 // Inspect ZIP directory names without inflating or importing document content.
 function isDocx(bytes: Uint8Array): boolean {
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -25,7 +24,9 @@ function isDocx(bytes: Uint8Array): boolean {
 		const count = view.getUint16(offset + 10, true);
 		let cursor = view.getUint32(offset + 16, true);
 		if (count > 2000) return false;
-		const names = new Set<string>();
+		const decoder = new TextDecoder();
+		let hasContentTypes = false;
+		let hasDocument = false;
 		for (let i = 0; i < count; i++) {
 			if (cursor + 46 > offset || view.getUint32(cursor, true) !== 0x02014b50) return false;
 			const nameLength = view.getUint16(cursor + 28, true);
@@ -36,15 +37,17 @@ function isDocx(bytes: Uint8Array): boolean {
 				view.getUint16(cursor + 30, true) +
 				view.getUint16(cursor + 32, true);
 			if (next > offset) return false;
-			names.add(new TextDecoder().decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength)));
+			const name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+			if (name === '[Content_Types].xml') hasContentTypes = true;
+			if (name === 'word/document.xml') hasDocument = true;
 			cursor = next;
 		}
-		return names.has('[Content_Types].xml') && names.has('word/document.xml');
+		return hasContentTypes && hasDocument;
 	}
 	return false;
 }
 export const upload = httpAction(async (ctx, request) => {
-	const registrationDeadline = Date.now() + 10 * 60_000;
+	const registrationDeadline = Date.now() + UPLOAD_REGISTRATION_TIMEOUT;
 	try {
 		if (!(await ctx.auth.getUserIdentity())) return response({ error: 'Sign in required.' }, 401);
 		const params = new URL(request.url).searchParams;
@@ -53,7 +56,7 @@ export const upload = httpAction(async (ctx, request) => {
 		const uploadId = params.get('uploadId') ?? '';
 		const filename = params.get('filename') ?? '';
 		if (!membershipId) return response({ error: 'Company access is required.' }, 403);
-		await ctx.runQuery(internal.delegation.authorizeUpload, { membershipId, draftId, uploadId });
+		await ctx.runMutation(internal.delegation.authorizeUpload, { membershipId, draftId, uploadId });
 		const contentType = /\.docx$/i.test(filename)
 			? DOCX_CONTENT_TYPE
 			: /\.pdf$/i.test(filename)
@@ -61,7 +64,7 @@ export const upload = httpAction(async (ctx, request) => {
 				: null;
 		if (
 			!contentType ||
-			filename.length > 255 ||
+			filename.length > ATTACHMENT_FILENAME_MAX_LENGTH ||
 			request.headers.get('content-type')?.split(';')[0].trim() !== contentType
 		)
 			return response({ error: 'Choose a DOCX or PDF document.' }, 400);
@@ -69,22 +72,9 @@ export const upload = httpAction(async (ctx, request) => {
 			return response({ error: 'Choose a document no larger than 10 MB.' }, 413);
 		const reader = request.body?.getReader();
 		if (!reader) return response({ error: 'The document is empty.' }, 400);
-		const chunks: Uint8Array<ArrayBuffer>[] = [];
-		let size = 0;
-		try {
-			while (true) {
-				const chunk = await reader.read();
-				if (chunk.done) break;
-				size += chunk.value.byteLength;
-				if (size > ATTACHMENT_MAX_BYTES) {
-					await reader.cancel();
-					return response({ error: 'Choose a document no larger than 10 MB.' }, 413);
-				}
-				chunks.push(chunk.value);
-			}
-		} finally {
-			reader.releaseLock();
-		}
+		const body = await readUploadBody(reader, ATTACHMENT_MAX_BYTES);
+		if (!body) return response({ error: 'Choose a document no larger than 10 MB.' }, 413);
+		const { chunks, size } = body;
 		const blob = new Blob(chunks, { type: contentType });
 		const bytes = new Uint8Array(
 			await (contentType === PDF_CONTENT_TYPE ? blob.slice(0, 8) : blob).arrayBuffer()
@@ -112,7 +102,7 @@ export const upload = httpAction(async (ctx, request) => {
 			// Failed/uncertain registration and duplicate storage need reference-aware cleanup.
 			if (registeredStorageId !== storageId)
 				try {
-					await ctx.scheduler.runAfter(0, internal.baselineUploads.discardFile, {
+					await ctx.scheduler.runAfter(0, internal.storageOwnership.discardFile, {
 						fileId: storageId
 					});
 				} catch (error) {
@@ -121,15 +111,9 @@ export const upload = httpAction(async (ctx, request) => {
 		}
 	} catch (error) {
 		if (error instanceof ConvexError) {
-			const data = error.data;
 			return response(
 				{
-					error:
-						typeof data === 'string'
-							? data
-							: data && typeof data === 'object' && 'message' in data
-								? String(data.message)
-								: 'Unable to upload this document.'
+					error: uploadErrorMessage(error, 'Unable to upload this document.')
 				},
 				409
 			);
@@ -138,4 +122,4 @@ export const upload = httpAction(async (ctx, request) => {
 		return response({ error: 'Unable to upload this document. Try again.' }, 500);
 	}
 });
-export const preflight = httpAction(async () => new Response(null, { status: 204, headers: cors }));
+export const preflight = httpAction(async () => uploadPreflightResponse());

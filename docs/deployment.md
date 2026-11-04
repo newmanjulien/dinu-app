@@ -1,5 +1,7 @@
 # Production releases
 
+**Current release mechanics, 2026-10-30.** The pre-customer backend redesign changes strict data shapes. Before releasing it, follow the separately authorized [Phase 18 activation procedure](backend-redesign/phase-18-activation.md); an ordinary `main` push is a production deployment, not a reset or rehearsal. [Current architecture](backend-redesign/architecture.md) owns the backend model.
+
 Push to `main` to release Dinu. Vercel builds the website and deploys Convex from
 the same checkout. Automatic deployments from other branches are disabled by
 `vercel.json`. Vercel's project-level **Preview Deployments** setting is also
@@ -37,12 +39,17 @@ copy it directly into Vercel. The CLI alternative is
 `npx convex deployment token create vercel-production --deployment befitting-lyrebird-846`;
 its output is a secret and must not be saved in Git or shared in logs.
 
-Convex Production retains `CLERK_SECRET_KEY`, `CLERK_JWT_ISSUER_DOMAIN`,
-`CLERK_WEBHOOK_SIGNING_SECRET`, `APP_URL`, `SMTP_USER`, and `SMTP_APP_PASSWORD`.
+Convex Production requires `CLERK_SECRET_KEY`, `CLERK_JWT_ISSUER_DOMAIN`,
+`CLERK_WEBHOOK_SIGNING_SECRET` and `APP_URL` for identity, webhook and link configuration.
+Email activation additionally configures `LOOPS_API_KEY`, `LOOPS_INVITATION_ID`,
+`LOOPS_APPROVAL_ID` and `LOOPS_DECISION_ID`; see [email delivery](email-delivery.md).
 The Clerk secret belongs to the same production instance as Vercel's key; the two
 secrets may differ, allowing independent key rotation. Each distinct key is checked
 against the expected instance. The issuer matches the table above, and `APP_URL`
-is the website origin. SMTP credentials stay in Convex. Required checker values
+is the website origin. Loops secrets stay in Convex; the sender local part belongs
+in the template-publisher environment. The current release checker does not
+validate Loops IDs, template publication or delivery. Remove obsolete SMTP and
+whole-body-wrapper values during authorized email activation. Required checker values
 must have no leading or trailing whitespace; their raw values are never trimmed.
 
 During setup, verify the enabled Clerk `user.deleted` webhook destination is
@@ -109,17 +116,22 @@ release. The same recovery applies if Vercel fails to publish after smoke succee
 
 To roll back application code, revert the affected changes while retaining this
 deployment configuration, then push to `main`. That releases both parts from the
-reverted source. A Vercel-only rollback does not roll back Convex. This procedure
-does not migrate or restore data; migrations and backups are outside this setup.
+reverted source. A Vercel-only rollback does not roll back Convex. This ordinary release rollback does not migrate or restore data. The separately
+reviewed [activation recovery procedure](backend-redesign/phase-18-activation.md#18e--final-readiness-and-recovery-decision)
+must establish compatible code/data/storage/component restoration and explicit
+scheduler/external-outcome reconciliation before a destructive reset.
 
 Local `npm run dev` and `npm run build` are unchanged. Local development continues
 to use its existing configuration rather than the production release checker.
 
 ## Verification
 
-Before release, run `node --check scripts/check-deployment.mjs` and `npm run build`.
-These verify script syntax and the existing website type checks/build; they do not
-automatically exercise retry, deadline, or configuration-failure paths.
+Before release, run `node --check scripts/check-deployment.mjs`,
+`npm run verify` and `npx tsc --noEmit -p src/convex/tsconfig.json`.
+These verify script syntax, the existing 20 lifecycle/24 performance guarantees,
+frontend/backend type checks and the production build. They do not automatically
+exercise release-checker retry, deadline or configuration-failure paths, or native
+resource/provider/browser acceptance.
 
 After the first release, verify the Vercel production commit matches the Convex
 deployment message and the build log reports both `Production preflight checks

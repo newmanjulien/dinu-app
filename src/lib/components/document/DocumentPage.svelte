@@ -2,6 +2,7 @@
 	import type { AnnotationActivation } from '$lib/document/annotation-anchor';
 	import { PAGE_FORMAT } from '$lib/document/pagination/page-format';
 	import type { HighlightRect } from '$lib/document/highlights/geometry';
+	import type { AnnotationMembership } from '$lib/playbook/document-overlay';
 	import BlockFragment from './BlockFragment.svelte';
 	import { fragmentKey, type PaginatedPage } from '$lib/document/pagination/types';
 
@@ -12,7 +13,8 @@
 		navigationCapable = false,
 		selectedAnnotationId,
 		canOpenPlaybookItems,
-		onAnnotationSelect
+		onAnnotationSelect,
+		structuralBoundaryAnnotations = new Map()
 	}: {
 		page: PaginatedPage;
 		highlights?: readonly HighlightRect[];
@@ -25,6 +27,7 @@
 			annotationId: string,
 			activation: AnnotationActivation
 		) => void;
+		structuralBoundaryAnnotations?: ReadonlyMap<string, readonly AnnotationMembership[]>;
 	} = $props();
 </script>
 
@@ -35,7 +38,7 @@
 	data-page-number={page.number}
 >
 	<div class="document-page__content contract-document contract-flow">
-		{#each page.placements as { fragment } (fragmentKey(fragment))}
+		{#each page.placements as { fragment, structuralBoundaries } (fragmentKey(fragment))}
 			<BlockFragment
 				{fragment}
 				{interactive}
@@ -43,6 +46,8 @@
 				{selectedAnnotationId}
 				{canOpenPlaybookItems}
 				{onAnnotationSelect}
+				{structuralBoundaries}
+				{structuralBoundaryAnnotations}
 			/>
 		{/each}
 	</div>

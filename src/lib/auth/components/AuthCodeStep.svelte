@@ -40,7 +40,7 @@
 		}}
 	>
 		<p class="m-0 text-sm leading-5 text-ink-muted">
-			Sent a code to {email}
+			We sent a code to {email}
 		</p>
 		<AuthTextInput
 			label="Verification code"

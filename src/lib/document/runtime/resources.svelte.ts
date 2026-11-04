@@ -1,10 +1,11 @@
 import { getContext, setContext, untrack } from 'svelte';
 import type { Snippet } from 'svelte';
 import type { ReviewTag, ReviewDecision, ReviewNavigation } from '$lib/contract/approval';
-import type { ContractChange, SourcePoint, SourceRange } from '$lib/playbook/model';
+import type { ContractChange, SourceTarget } from '$lib/playbook/model';
 import type { ContractSnapshotResult } from '$lib/contract/saved';
 import type { ContractSourceInput } from './source.svelte';
-import type { createContractWorkspace, ContractWorkspace } from './context';
+import type { createContractWorkspace } from './workspace-factory';
+import type { ContractWorkspace } from './workspace-context';
 import type { ContractLayoutProfiles } from './layout-context.svelte';
 import { recordColdStart } from './render-perf';
 import { recentOpenings } from '$lib/contract/browser-storage';
@@ -26,9 +27,10 @@ export interface ViewerBindings {
 	interactive?: boolean;
 	followScroll?: boolean;
 	selectedAnnotationId?: string | null;
-	selectedRanges?: readonly SourceRange[];
+	selectedRanges?: readonly SourceTarget[];
 	previewChanges?: readonly ContractChange[];
-	panelSource?: SourcePoint;
+	/** The selected clause's stable source target; click position is intentionally not retained here. */
+	panelTarget?: SourceTarget;
 	picking?: boolean;
 	/** Whether this document offers playbook navigation, independent of temporary readiness. */
 	allowPlaybookNavigation?: boolean;
@@ -36,6 +38,8 @@ export interface ViewerBindings {
 	playbookNavigationReady?: boolean;
 	onRemoveConcession: (itemId: string) => void;
 	onSelect: (itemId: string, annotationId: string) => boolean | void;
+	/** A resolved click on ordinary document content, after selection/drag classification. */
+	onDocumentBackground?: () => void;
 }
 export interface DocumentAttachment {
 	readonly entry: DocumentResource;
@@ -93,7 +97,6 @@ export class DocumentResources {
 	warming = $state(true);
 	backgroundEnabled = $state(false);
 	paused = $state(false);
-	createWorkspace = $state.raw<typeof createContractWorkspace>();
 	#candidates = $state.raw<readonly string[]>([]);
 	#pending = $state.raw<readonly ReadyContract[]>([]);
 	#canConstruct = $state(false);
@@ -104,16 +107,21 @@ export class DocumentResources {
 	#destroyed = false;
 	#attachments = new Map<DocumentResource, DocumentAttachment>();
 	#release: () => void;
+	#getCreateWorkspace: () => typeof createContractWorkspace | undefined;
 	get preparationCandidates() {
 		return this.#candidates;
 	}
-	constructor(readonly profiles: ContractLayoutProfiles) {
+	constructor(
+		readonly profiles: ContractLayoutProfiles,
+		getCreateWorkspace: () => typeof createContractWorkspace | undefined
+	) {
+		this.#getCreateWorkspace = getCreateWorkspace;
 		this.#release = $effect.root(() => {
 			$effect(() => {
 				const profiler = profiles.profiler;
 				const backgroundEnabled = this.backgroundEnabled;
 				const paused = this.paused;
-				const createWorkspace = this.createWorkspace;
+				const createWorkspace = this.#getCreateWorkspace();
 				const states = this.entries.map((entry) => ({
 					entry,
 					active: entry.active,
@@ -224,8 +232,9 @@ export class DocumentResources {
 		let entry = this.entries.find((entry) => entry.id === id);
 		if (!entry) {
 			if (id !== 'admin') this.#makeRoom(id);
-			if (!this.createWorkspace) throw new Error('Document rendering is not loaded.');
-			entry = new DocumentResource(id, input, this.createWorkspace);
+			const createWorkspace = this.#getCreateWorkspace();
+			if (!createWorkspace) throw new Error('Document workspace is not loaded.');
+			entry = new DocumentResource(id, input, createWorkspace);
 			this.entries = [...this.entries, entry];
 		} else entry.workspace.accept(input);
 		entry.lastUsed = ++this.#clock;

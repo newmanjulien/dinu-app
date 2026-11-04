@@ -1,0 +1,3 @@
+<Paragraph>Approval was requested for contract that's being prepared for {data.companyName}.</Paragraph>
+<Paragraph>Concessions waiting for review: {data.pendingCount}<Br />Previously reviewed concessions: {data.reviewedCount}<Br />Concessions not requiring approval: {data.notRequiredCount}</Paragraph>
+<Paragraph>Open the contract to approve: {data.url}</Paragraph>

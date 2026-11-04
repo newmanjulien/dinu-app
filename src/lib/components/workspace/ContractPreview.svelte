@@ -2,7 +2,8 @@
 	import { untrack } from 'svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import type { ContractSnapshot } from '$lib/contract/saved';
-	import { createContractWorkspace, setContractWorkspace } from '$lib/document/runtime/context';
+	import { createContractWorkspace } from '$lib/document/runtime/workspace-factory';
+	import { setContractWorkspace } from '$lib/document/runtime/workspace-context';
 	import ContractViewer from '$lib/components/document/ContractViewer.svelte';
 	let { snapshot }: { snapshot: ContractSnapshot } = $props();
 	const runtime = getWorkspaceRuntime();

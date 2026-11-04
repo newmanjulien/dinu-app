@@ -1,5 +1,7 @@
 # Private companies and rollout
 
+**Current domain model, 2026-10-30.** [Current architecture](backend-redesign/architecture.md) is the model entry point; [Phase 18](backend-redesign/phase-18-activation.md) owns all target/reset/deploy/acceptance actions. Earlier development resets do not establish that the redesigned backend is deployed.
+
 Dinu supports many private companies and one company per account. Signup verifies
 identity; it does not create or join a company. An account without membership sees
 its invitations, can create a company, or can wait for a colleague's invitation.
@@ -53,8 +55,9 @@ happen before reading children or returning avatar
 URLs. Snapshot HTTP requests carry the cache instance's membership ID; one backend
 load validates that membership and reads the snapshot. Responses are authenticated
 and `private, no-store`.
-Every saved contract requires `templateVersionId`. The fresh reset retired the
-per-contract snapshot tables and unused snapshot hashes; immutable version items
+Every saved contract requires `templateVersionId`. The current local model removes
+per-contract snapshot tables and unused snapshot hashes; Phase 18 must clear any
+remaining physical legacy tables. Immutable version items
 retain their original playbook identities even after live-item deletion.
 Creation receipts include membership in their operation keys so retries cannot
 create data in a different company after membership changes. Item and contract
@@ -110,102 +113,47 @@ The inbox uses a server-maintained expiry flag and an index that excludes expire
 records before reading company and inviter details. Preparation schedules expiry
 atomically; the expiry mutation checks the stored deadline so resends remain valid.
 Subscriptions update when expiry runs, without device-clock checks or polling.
-When deploying this change to an existing deployment, run
-`companyInvitations:initializeExpiration` with `{"cursor":null}` once after the
-push. It initializes pending records and schedules their remaining lifetime in
-bounded, resumable batches. The optional expiry field permits existing records
-until initialization completes; they are excluded from the inbox during that window.
+The canonical expiry flag is required; the pre-customer reset/bootstrap establishes
+that shape without an initialization function or transitional reader.
 
-Delivery uses the same Gmail SMTP configuration as approvals. Sending is inline
-in one action per batch of up to 50 recipients, with a shared pool of at most five
-SMTP connections and no automatic requeue. Each recipient keeps independent
-delivery state and failures, and successful recipients are removed from the retry
-input. Five workers take the next recipient as soon as a delivery finishes;
-slow recipients do not hold up a whole group. Results retain input order, and
-preparation starts only when a worker is available. Delivery retains the two-minute
-resend cooldown.
-A four-minute batch deadline closes the pool and destroys active SMTP sockets.
-No further recipients start after that deadline; confirmed deliveries retain their
-success, and unstarted recipients return a retryable error. Connection setup has
-a separate 30-second deadline, including DNS and TLS negotiation.
-Preparation atomically schedules a generation-checked timeout after two minutes.
-It marks interrupted delivery as failed; a confirmed send is preserved, and a late
-confirmation can still mark the same generation as sent.
-Unconfirmed delivery requires explicit resend; there is no automatic SMTP retry.
-Resend can deliver an additional email, and the previous link becomes unusable.
+Delivery uses the same Loops transactional adapter as approvals and completed reviews.
+Three repo-owned native LMX templates use typed scalar notification data;
+see [email delivery](email-delivery.md) for secure configuration and activation.
+Sending is inline in one action per batch of up to 50 recipients, with five workers
+and no automatic resend. Each recipient keeps independent delivery state/results;
+workers take the next recipient as soon as a delivery finishes, and results retain
+input order. Preparation starts only when a worker is available. The two-minute
+resend checks remain.
+
+A four-minute batch deadline aborts active HTTP work and prevents further recipients
+from starting. Confirmed results remain; unstarted recipients return their existing
+retryable error. Provider requests have a 60-second timeout. Native quota reserves
+capacity before a fresh dispatch claim. Recovery waits beyond possible inline
+execution, using the deadline plus seven-minute grace; the resend cooldown is not
+an execution lease. Unconfirmed dispatch remains uncertain and requires explicit
+resend, which can deliver an additional email and rotates the previous link.
+
 Do not log raw tokens or include invitation URLs in analytics. The invitation
 component supplies a `no-referrer` policy.
 
 ## Fresh development reset
 
-The canonical schema requires baseline/revision links, contract creators and review
-maps, and structured numbering/reference patterns. Existing data is intentionally
-discarded before deployment; no backfill or transitional schema is needed. This
-procedure describes a development/local reset, not an action performed by the code.
+Use the [current Phase 18 procedure](backend-redesign/phase-18-activation.md), with separate inventory/archive, reset/deploy/bootstrap, native/browser and Loops checkpoints. It supersedes the staged-import and older reset recipes. Confirm the exact target, preserve a storage-inclusive archive and restoration evidence, inspect removed physical tables and native jobs, and prepare the actual reset mechanism before authorization. Schema deployment does not clear old tables, jobs, files or sweep frontiers. Preserve existing Clerk accounts and pending browser intent independently.
 
-1. Identify the exact Convex target from `.env.local`, process overrides, deployment
-   credentials, and the frontend URL without logging secrets. Confirm the matching
-   Clerk issuer. Do not infer a target from historical deployment notes.
-2. Run `npm run seed:verify`. The retained seed contains 113 contract blocks and
-   56 playbook items (62 triggers, 26 concessions, 66 changes).
-3. Stop application writes and deletion webhooks, pause crons, and cancel or drain
-   queued upload cleanup, company deletion, invitation, and approval jobs. Keep
-   incoming requests stopped until the empty database and final schema are ready.
-4. Clear every Convex application table and stored file, including physical tables
-   omitted from the current schema. Verify all application data and storage are
-   empty. Schema removal alone does not delete a physical table. No Clerk account
-   deletion is required for this database reset.
-5. Deploy the strict backend and matching frontend. Remove temporary reset helpers
-   if any were used. Browser caches and draft checkpoints use new format namespaces
-   and cannot restore incompatible records.
-6. Sign in or sign up through normal onboarding with verified email and create the
-   company. Existing Clerk users can initialize their missing application profile.
-   Obtain the actual Convex company ID; do not fabricate authentication metadata or
-   ownership records.
-7. Run the scoped seed and read-only audit below. Preserve fingerprint, committed
-   prefix, bounded batching, and publication checks. Resume any interrupted import
-   using the same command; never import the business JSONL directly into tables.
-8. Restore recurring work and access. Verify the published template, create/render
-   a contract, and check an admin Save/Delete. Record the target, company ID, and
-   check results.
-
-The seed restores the supplied baseline and playbook. Saved contracts, invitations,
-approval history, uploaded files, and later content edits are cleared. No database
-wipe, deployment, or live seed run is performed by local verification.
+The reset removes agreed disposable application records and uploaded files, including saved contracts and later edits, while preserving independent offline archives and the approved canonical dataset. No live reset/deployment/seed run has occurred during this redesign.
 
 ## Initial company template import
 
-For a fresh development/local deployment, configure Clerk, sign up, create a company,
-and copy its ID from the Convex dashboard. With matching `CONVEX_DEPLOYMENT` and
-`PUBLIC_CONVEX_URL`, run:
+After the authorized backend activation, use normal verified onboarding and obtain the real company ID. Securely configure its exact development/local deployment admin key together with matching `CONVEX_DEPLOYMENT` and `PUBLIC_CONVEX_URL`, then run:
 
 ```sh
 npm run convex:seed -- --company-id COMPANY_ID
 npm run db:audit -- --company-id COMPANY_ID --seed
 ```
 
-The seed script rejects production, mismatched targets, missing company IDs,
-existing content from a different import, and altered committed prefixes. It uses
-internal `companyTemplateImport:begin`, `append`, and `finish`, with a content SHA-256
-fingerprint and committed counts. Each append atomically inserts at most four
-records; the CLI further limits batches to 64 KB. Retrying the same seed resumes
-at the committed counts. Finishing validates and publishes an immutable template
-atomically before releasing maintenance. Interrupted imports remain in maintenance.
-An unchanged completed import is idempotent; edited or intentionally deleted data
-is never restored by reseeding.
+The seeder calls internal `operator:bootstrap` once with the complete canonical blocks/items. Bootstrap uses ordinary validated baseline/history writers and commits the baseline, live rules, immutable revisions, complete first version and current pointer atomically. Exact replay returns the committed state without writes; changed/incomplete content refuses without overwrite or restoration. An interrupted HTTP response does not establish rollback; inspect or repeat the exact bootstrap after resolving the outcome. There is no begin/append/finish import, committed prefix, maintenance pointer or CLI batch layout.
 
-`db:audit` is read-only, bounded, company-scoped, and uses the configured exact
-target. `--seed` requires an exact business-data comparison. It can read a configured
-production target; it cannot write or publish templates. It does not certify
-membership/authorization or snapshot relationship integrity.
-Audit and seed verification scan blocks and items concurrently through the installed
-Convex CLI, without invoking `npx` for each page. Seed mutations remain sequential.
-
-Production initial imports require an explicitly authorized, rehearsed operator
-workflow using the same scoped internal API with validated company-specific data,
-fingerprint, prefix checks, and finish validation. The development seed command
-has no production override. Do not load the unscoped JSONL fixtures with direct
-`convex import`; each company must have its own scope and template pointer.
+The runner uses the native internal function HTTP protocol/public value codec and allows only its explicitly scoped bootstrap/read functions. It rejects mismatched targets, missing company/key scope and production writes. The read-only audit permits correctly configured production reads, validates the current playbook and independently compares live/published business content. `--seed` additionally compares the approved canonical dataset: **112 blocks, 56 rules/highlights, 26 concessions and 34 affected locations**. It does not certify every public authorization/storage/scheduler/native-limit path. Production bootstrap requires its own reviewed invocation and exact-target authorization; do not weaken the development seeder's guard.
 
 ## Manual release checks
 
@@ -223,8 +171,7 @@ Select Admin as a Rep and verify immediate UI and backend access; switch back an
 verify denial. Confirm users cannot set another profile’s role. Check owner-to-Rep,
 role-preserving ownership transfer, owner/self removal protections, owner deletion
 with and without live colleagues, external deletion, successor paging, and internal
-ownerless recovery. Repeat import after
-interrupting batches and confirm counts and original records remain stable.
+ownerless recovery. Repeat the exact atomic bootstrap after a lost response and confirm readback and no-write replay.
 
 Check authentication retry, logout save/cancel/discard, leaving with pending saves,
 refresh recovery, and joining a different company without restoring old drafts.
@@ -236,5 +183,5 @@ The existing performance suite checks saving/conflicts/retries, creation/publica
 scheduling, and cache invariants. Type checks and production build check integration.
 The offline seed verifier checks the original business data, its preservation through
 playbook saves and publication, rendered text, and contract compositor parity.
-They do not certify the live reset, Clerk/SMTP configuration, browser UX, or
+They do not certify the live reset, Clerk/Loops configuration, browser interactions, or
 cross-company authorization scenarios above. No new tests were added for this task.

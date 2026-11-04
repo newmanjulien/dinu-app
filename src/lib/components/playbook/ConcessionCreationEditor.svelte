@@ -6,20 +6,29 @@
 	import { secondaryButtonClass } from '$lib/ui/button-styles';
 	import type { DeepReadonly } from '$lib/playbook/draft';
 	import type { Concession } from '$lib/playbook/model';
+	import type { ReplacementAtom } from '$lib/contract/source-model';
+	import type { ReferenceCatalog } from '$lib/contract/reference-catalog';
+	import ReplacementEditor from './ReplacementEditor.svelte';
 	let {
 		concession,
 		affectsOtherParts,
 		onAffectedPart,
 		onDescription,
 		onReplacement,
-		onTier
+		onTier,
+		disabled,
+		catalog,
+		paragraphs
 	}: {
 		concession: DeepReadonly<Concession>;
 		affectsOtherParts: boolean;
 		onAffectedPart: (value: boolean) => void;
 		onDescription: (text: string) => void;
-		onReplacement: (text: string) => void;
+		onReplacement: (atoms: ReplacementAtom[]) => void;
 		onTier: (tier: Concession['tier']) => void;
+		disabled: boolean;
+		catalog: ReferenceCatalog;
+		paragraphs: boolean;
 	} = $props();
 	const optionsId = $props.id();
 	let optionsOpen = $state(false);
@@ -34,18 +43,15 @@
 </script>
 
 <div class="flex flex-col gap-3 text-[14px] leading-[1.45] text-ink-muted">
-	<textarea
-		class={textareaClass}
-		aria-label="Primary replacement clause"
-		required
+	<ReplacementEditor
+		value={concession.changes[0].replacement}
+		label="Primary replacement clause"
 		placeholder="Write the text that would replace the clause you highlighted"
-		bind:value={
-			() =>
-				concession.changes[0].replacement
-					.map((atom) => (atom.kind === 'text' ? atom.text : ''))
-					.join(''),
-			onReplacement
-		}></textarea>
+		{disabled}
+		{catalog}
+		{paragraphs}
+		onChange={onReplacement}
+	/>
 	<textarea
 		class={textareaClass}
 		aria-label="Concession description"
@@ -93,13 +99,13 @@
 				label="This is a rare concession"
 				checked={concession.tier === 'rare'}
 				onCheckedChange={(checked) => onTier(checked ? 'rare' : 'preferred')}
-				className="rounded-button-sm px-3 py-2 hover:bg-control-fill"
+				className="rounded-button-sm px-3 py-2 hover:bg-surface-hover"
 			/>
 			<Checkbox
 				label="This concession affects another part of the contract"
 				checked={affectsOtherParts}
 				onCheckedChange={onAffectedPart}
-				className="rounded-button-sm px-3 py-2 hover:bg-control-fill"
+				className="rounded-button-sm px-3 py-2 hover:bg-surface-hover"
 			/>
 		</Popover>
 	</div>

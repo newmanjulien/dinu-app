@@ -1,8 +1,9 @@
 import { emailAddress } from './emailValidators';
 import { v, ConvexError } from 'convex/values';
 import { mutation, internalMutation, internalQuery, type QueryCtx } from './_generated/server';
-import { requirePermission, requireProfile } from './auth';
+import { requireMembership, requirePermission, requireProfile } from './auth';
 import { role } from './permissions';
+import { deleteUnownedFile } from './storageOwnership';
 function name(value: string, max = 32) {
 	const result = value.trim();
 	if (!result || result.length > max)
@@ -14,7 +15,8 @@ export const savePersonalName = mutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const profile = await requireProfile(ctx);
-		await ctx.db.patch('profiles', profile._id, { name: name(args.name) });
+		const value = name(args.name);
+		if (profile.name !== value) await ctx.db.patch('profiles', profile._id, { name: value });
 		return null;
 	}
 });
@@ -22,8 +24,13 @@ export const savePersonalRole = mutation({
 	args: { role },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const profile = await requireProfile(ctx);
-		await ctx.db.patch('profiles', profile._id, { role: args.role });
+		const access = await requireMembership(ctx);
+		// A member may never promote themself. Existing administrators can retain or
+		// relinquish their company role; ownership is always an administrator role.
+		if (args.role === 'admin' && access.role !== 'admin' && !access.isOwner)
+			throw new ConvexError('Only a company owner can grant administrator access.');
+		if (access.membership.role !== args.role)
+			await ctx.db.patch('memberships', access.membershipId, { role: args.role });
 		return null;
 	}
 });
@@ -32,7 +39,9 @@ export const saveCompanyName = mutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const access = await requirePermission(ctx, 'editCompanyProfile', args.membershipId);
-		await ctx.db.patch('company', access.companyId, { name: name(args.name, 120) });
+		const value = name(args.name, 120);
+		if (access.company.name !== value)
+			await ctx.db.patch('company', access.companyId, { name: value });
 		return null;
 	}
 });
@@ -69,8 +78,11 @@ export const setAvatar = internalMutation({
 	handler: async (ctx, args) => {
 		// Reauthorize in the committing transaction; the role may change during upload.
 		const { table, record } = await requireAvatarTarget(ctx, args.company, args.membershipId);
-		if (record.avatarId) await ctx.storage.delete(record.avatarId);
+		if (record.avatarId === args.avatarId) return null;
+		if (!(await ctx.db.system.get('_storage', args.avatarId)))
+			throw new Error('Avatar file is unavailable.');
 		await ctx.db.patch(table, record._id, { avatarId: args.avatarId });
+		if (record.avatarId) await deleteUnownedFile(ctx, record.avatarId);
 		return null;
 	}
 });
@@ -81,7 +93,8 @@ export const saveApprovalEmail = mutation({
 	handler: async (ctx, args) => {
 		const access = await requirePermission(ctx, 'editCompanyProfile', args.membershipId);
 		const email = emailAddress(args.email);
-		await ctx.db.patch('company', access.companyId, { approvalEmail: email });
+		if (access.company.approvalEmail !== email)
+			await ctx.db.patch('company', access.companyId, { approvalEmail: email });
 		return null;
 	}
 });

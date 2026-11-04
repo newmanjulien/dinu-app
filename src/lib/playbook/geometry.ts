@@ -1,14 +1,18 @@
 import { PlaybookValidationError } from './validation-error';
-import type { ContractChange, SourcePoint, SourceRange, Trigger } from './model';
+import { hasMeaningfulReplacement } from '../contract/replacement-content';
+import type { ContractChange, SourcePoint, SourceTarget, Trigger } from './model';
+import { isTextTarget } from '../contract/source-model';
 import type { SourceIndex, SourceContainer } from '../contract/source-index';
-import { resolvePoint } from '../contract/source-index';
 import {
 	containsPoint,
 	containsRange,
 	isEmptyRange,
 	localContainer,
 	rangesOverlap,
-	validateRange
+	targetContainers,
+	targetIsEmpty,
+	targetsOverlap,
+	validateTarget
 } from '../contract/ranges';
 
 export class GeometryError extends PlaybookValidationError {
@@ -21,15 +25,14 @@ export class GeometryError extends PlaybookValidationError {
 	}
 }
 
-/** The same empty-slot definition drives discovery and validation. */
+/** The same intentional-empty-text definition drives discovery and validation. */
 export function emptyTriggerPoint(
 	index: SourceIndex,
 	container: SourceContainer
 ): SourcePoint | undefined {
-	const block = index.blocks.get(container.blockKey)!;
 	const stored = container.units.filter((unit) => unit.kind !== 'number');
 	if (
-		(container.inTable || (block.kind === 'paragraph' && block.optional)) &&
+		container.inTable &&
 		stored.length === 1 &&
 		stored[0].kind === 'text' &&
 		stored[0].length === 0
@@ -38,14 +41,14 @@ export function emptyTriggerPoint(
 }
 
 /** Point discovery belongs to intentional empty source slots, not arbitrary carets. */
-export function validateTriggerRange(index: SourceIndex, range: SourceRange): void {
-	validateRange(index, range);
-	if (!isEmptyRange(index, range)) return;
-	const point = emptyTriggerPoint(index, index.containers.get(localContainer(index, range))!);
+export function validateTriggerRange(index: SourceIndex, target: SourceTarget): void {
+	validateTarget(index, target);
+	if (target.kind === 'boundary' || !isEmptyRange(index, target.range)) return;
+	const point = emptyTriggerPoint(index, index.containers.get(localContainer(index, target.range))!);
 	if (
 		!point ||
-		range.start.sourceKey !== point.sourceKey ||
-		range.end.sourceKey !== point.sourceKey
+		target.range.start.sourceKey !== point.sourceKey ||
+		target.range.end.sourceKey !== point.sourceKey
 	)
 		throw new GeometryError(
 			'invalid-slot',
@@ -53,11 +56,12 @@ export function validateTriggerRange(index: SourceIndex, range: SourceRange): vo
 		);
 }
 
-export function triggersIntersect(index: SourceIndex, a: SourceRange, b: SourceRange): boolean {
+export function triggersIntersect(index: SourceIndex, a: SourceTarget, b: SourceTarget): boolean {
+	if (!isTextTarget(a) || !isTextTarget(b)) return targetsOverlap(index, a, b);
 	return (
-		rangesOverlap(index, a, b) ||
-		(isEmptyRange(index, a) && containsPoint(index, b, a.start, true)) ||
-		(isEmptyRange(index, b) && containsPoint(index, a, b.start, true))
+		rangesOverlap(index, a.range, b.range) ||
+		(isEmptyRange(index, a.range) && containsPoint(index, b.range, a.range.start, true)) ||
+		(isEmptyRange(index, b.range) && containsPoint(index, a.range, b.range.start, true))
 	);
 }
 
@@ -67,12 +71,19 @@ export function changeTriggerOwner(
 	triggers: readonly Trigger[],
 	change: ContractChange
 ): Trigger | undefined {
-	localContainer(index, change.range);
-	const insertion = isEmptyRange(index, change.range);
+	targetContainers(index, change.range);
+	const insertion = targetIsEmpty(index, change.range);
 	const owners = triggers.filter((trigger) => {
-		if (insertion) return containsPoint(index, trigger.range, change.range.start, true);
-		if (!rangesOverlap(index, trigger.range, change.range)) return false;
-		if (!containsRange(index, trigger.range, change.range))
+		if (!isTextTarget(trigger.range) || !isTextTarget(change.range))
+			return targetsOverlap(index, trigger.range, change.range);
+		if (insertion) return containsPoint(index, trigger.range.range, change.range.range.start, true);
+		if (
+			isEmptyRange(index, trigger.range.range) &&
+			containsPoint(index, change.range.range, trigger.range.range.start, true)
+		)
+			throw new GeometryError('trigger-boundary', `Change crosses Trigger boundary: ${trigger.id}`);
+		if (!rangesOverlap(index, trigger.range.range, change.range.range)) return false;
+		if (!containsRange(index, trigger.range.range, change.range.range))
 			throw new GeometryError('trigger-boundary', `Change crosses Trigger boundary: ${trigger.id}`);
 		return true;
 	});
@@ -81,40 +92,19 @@ export function changeTriggerOwner(
 	return owners[0];
 }
 
-/** Optional paragraph activation is a consequence of a normal nonempty insertion. */
-export function activatedBlock(index: SourceIndex, change: ContractChange): string | undefined {
-	localContainer(index, change.range);
-	const unit = resolvePoint(index, change.range.start);
-	const block = index.blocks.get(unit.blockKey)!;
-	if (block.kind !== 'paragraph' || !block.optional) return;
-	if (
-		!isEmptyRange(index, change.range) ||
-		unit.kind !== 'text' ||
-		unit.length !== 0 ||
-		change.range.end.sourceKey !== unit.sourceKey
-	)
-		throw new GeometryError(
-			'invalid-slot',
-			'Optional paragraphs only accept insertions at their empty source slot'
-		);
-	return change.replacement.some((atom) => atom.kind === 'reference' || atom.text.length > 0)
-		? block.blockKey
-		: undefined;
-}
-
-/** Wording only affects geometry through empty-slot activation; IDs belong to Triggers. */
+/** Wording only affects geometry through gap insertion; IDs belong to Triggers. */
 export function playbookGeometryKey(item: {
-	triggers: readonly Trigger[];
+	trigger: Trigger;
 	concessions: readonly { changes: readonly ContractChange[] }[];
 }): string {
 	return JSON.stringify([
-		item.triggers,
+		item.trigger,
 		item.concessions.map((concession) =>
 			concession.changes.map((change) => ({
 				range: change.range,
-				hasContent: change.replacement.some(
-					(atom) => atom.kind === 'reference' || atom.text.length > 0
-				)
+				paragraphBreaks: change.replacement.filter((atom) => atom.kind === 'paragraph-break')
+					.length,
+				hasContent: hasMeaningfulReplacement(change.replacement)
 			}))
 		)
 	]);

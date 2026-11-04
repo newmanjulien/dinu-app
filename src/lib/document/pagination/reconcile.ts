@@ -22,6 +22,19 @@ function sameFragment(a: PageFragment, b: PageFragment): boolean {
 	);
 }
 
+function sameStructuralBoundaries(
+	a: import('./types').LayoutPlacement['structuralBoundaries'],
+	b: import('./types').LayoutPlacement['structuralBoundaries']
+) {
+	return (
+		a === b ||
+		(a !== undefined &&
+			b !== undefined &&
+			a.length === b.length &&
+			a.every((boundary, index) => boundary.afterBlockKey === b[index]?.afterBlockKey))
+	);
+}
+
 /** Reconcile closed paginator pages at their final page positions.
  * Prepared objects and their tokens are immutable across requests. Their identity
  * proves content/provenance equality; geometry fingerprints cannot authorize reuse.
@@ -51,7 +64,11 @@ export function* iterateReconciledPages(
 			if (
 				same &&
 				(placement.prepared !== prior.placements[i].prepared ||
-					!sameFragment(placement.fragment, prior.placements[i].fragment))
+					!sameFragment(placement.fragment, prior.placements[i].fragment) ||
+					!sameStructuralBoundaries(
+						placement.structuralBoundaries,
+						prior.placements[i].structuralBoundaries
+					))
 			)
 				same = false;
 			yield undefined;

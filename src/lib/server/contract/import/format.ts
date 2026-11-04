@@ -1,26 +1,18 @@
 import { child, children, val, on, type XmlNode as Node } from './xml';
 import type { ImportIssue } from '../../../contract/import/limits';
-export type Marks = { bold?: boolean; italic?: boolean };
 export type Location = string | { id: string; label: string };
 export type Issue = (
 	location: Location,
 	message: string,
 	severity?: ImportIssue['severity']
 ) => void;
-type Format = Marks & {
+type Format = {
 	vanish?: boolean;
 	strike?: boolean;
 	dstrike?: boolean;
 	vertAlign?: string;
 	underline?: string;
-	cs?: boolean;
-	rtl?: boolean;
-	bCs?: boolean;
-	iCs?: boolean;
 };
-// Word selects complex-script properties from the text as well as cs/rtl.
-const complexScript =
-	/[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Adlam}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Sinhala}\p{Script=Thai}\p{Script=Lao}\p{Script=Tibetan}\p{Script=Myanmar}\p{Script=Khmer}\p{Script=Mongolian}]/u;
 
 // Compare the whole definition, including properties the importer does not use.
 // XML attribute order does not change a style's meaning.
@@ -77,38 +69,25 @@ export function formatting(root: Node | undefined, issue: Issue) {
 	function apply(base: Format, props: Node | undefined, toggles = false): Format {
 		const result = { ...base };
 		for (const [name, key] of [
-			['b', 'bold'],
-			['i', 'italic'],
 			['vanish', 'vanish'],
 			['strike', 'strike'],
-			['dstrike', 'dstrike'],
-			['bCs', 'bCs'],
-			['iCs', 'iCs']
+			['dstrike', 'dstrike']
 		] as const) {
 			const value = on(child(props, name));
 			if (value !== undefined) result[key] = toggles ? (value ? !result[key] : result[key]) : value;
 		}
 		if (child(props, 'vertAlign')) result.vertAlign = val(child(props, 'vertAlign'));
 		if (child(props, 'u')) result.underline = val(child(props, 'u')) ?? 'single';
-		for (const name of ['cs', 'rtl'] as const)
-			if (child(props, name)) result[name] = on(child(props, name));
 		return result;
 	}
-	function checked(format: Format, location: Location, runText = ''): Marks {
+	function checked(format: Format, location: Location): void {
 		if (format.vanish) issue(location, 'Remove hidden text in Word.');
 		if (format.strike || format.dstrike)
 			issue(location, 'Remove struck-through text or accept its deletion in Word.');
 		if (format.vertAlign && format.vertAlign !== 'baseline')
 			issue(location, 'Replace superscript or subscript with ordinary text in Word.');
-		if (
-			(format.cs || format.rtl || complexScript.test(runText)) &&
-			(Boolean(format.bCs) !== Boolean(format.bold) ||
-				Boolean(format.iCs) !== Boolean(format.italic))
-		)
-			issue(location, 'Convert complex-script run formatting to ordinary bold and italic in Word.');
 		if (format.underline && format.underline !== 'none')
 			issue(location, 'Underlining is standardized to ordinary text.', 'warning');
-		return { bold: format.bold ?? false, italic: format.italic ?? false };
 	}
 	const tableCache = new Map<string, Node[]>();
 	function table(
@@ -148,7 +127,9 @@ export function formatting(root: Node | undefined, issue: Issue) {
 					!['wholeTable', 'firstRow', 'lastRow', 'firstCol', 'lastCol'].includes(
 						override.attrs.type
 					) &&
-					child(override, 'rPr')
+					(child(override, 'rPr')?.children ?? []).some((property) =>
+						['vanish', 'strike', 'dstrike', 'vertAlign', 'u', 'rStyle'].includes(property.name)
+					)
 				)
 					issue(
 						location,
@@ -206,8 +187,8 @@ export function formatting(root: Node | undefined, issue: Issue) {
 			headingStyle: styleChain
 				.map((s) => val(child(s, 'name')) ?? s.attrs.styleId)
 				.findLast((s) => /^heading\s*[1-9]$/i.test(s)),
-			run(rPr: Node | undefined, location: Location, runText = '') {
-				return checked(character(base, rPr), location, runText);
+			run(rPr: Node | undefined, location: Location) {
+				return checked(character(base, rPr), location);
 			},
 			label(rPr: Node | undefined, location: Location) {
 				return checked(character(character(base, child(props, 'rPr')), rPr), location);

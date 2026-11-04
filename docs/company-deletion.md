@@ -1,121 +1,79 @@
 # Account and company deletion
 
-Account deletion keeps Clerk's client `user.delete()` call and reverification.
-Company deletion adds durable consent and reuses the same verified deletion marker,
-bounded cleanup, scheduled job generation, and reconciliation model.
+Current architecture: [backend model](backend-redesign/architecture.md). Target/archive/reset/deploy and remaining native/browser/provider verification: [Phase 18](backend-redesign/phase-18-activation.md). Local implementation evidence does not establish deployment.
+
+
+This runbook describes the current local implementation after [Phases 16A](backend-redesign/phase-16a-deletion-recovery.md) and [16B](backend-redesign/phase-16b-identity-orphan-recovery.md), 2026-10-30. Native/provider/browser acceptance remains Phase 18. Accounts normally leave through the app, and most companies remain active after individual departures.
 
 ## Consent and eligibility
 
-The server determines deletion mode from authenticated identity and current company
-membership. An owner with another live colleague must transfer ownership first.
-Other members delete only their account with `delete my account`. The last live
-member deletes both with `delete my account and company`, regardless of personal
-role. Pending invitations are not members; profiles with verified deletion markers
-are not live colleagues. Eligibility scans stop at the first live colleague and
-reject conservatively after 100 memberships awaiting cleanup.
+Account deletion retains Clerk's client deletion call and reverification. The server determines the existing deletion mode from authenticated identity, current membership and live colleagues:
 
-Company requests have four states:
+- An owner with another live colleague transfers ownership first.
+- Other members delete their account with the existing confirmation phrase, keeping company business data.
+- The last live member confirms both account and company deletion, regardless of personal role.
+- Pending invitations and profiles with verified deletion tombstones are not live colleagues. Eligibility stops at the first live colleague and rejects conservatively after 100 memberships awaiting cleanup.
 
-| State        | Meaning                                                                           | Cancellation and expiry                                               |
-| ------------ | --------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `prepared`   | The authenticated member supplied the current combined phrase.                    | Can be cancelled; expires after 15 minutes.                           |
-| `dispatched` | The server validated the exact request immediately before the client calls Clerk. | Retained until deletion is confirmed; cannot be cancelled or expired. |
-| `cleaning`   | A signed webhook or complete successful Clerk lookup confirmed deletion.          | Company access is blocked and cleanup resumes until complete.         |
-| `complete`   | Company data and avatar have been removed.                                        | Permanent tombstone.                                                  |
+Company consent has four states:
 
-Preparation returns the request ID, attempt ID, timestamp, and state. The same
-attempt is idempotent. A different attempt supersedes only a preparation; retries
-reuse an existing dispatched request. Dispatch checks authenticated identity,
-current eligibility, company ID, phrase, request ID, attempt ID, and preparation
-freshness in one transaction. Concurrent membership changes conflict with its
-indexed reads. Account-only dispatch checks eligibility without creating a hold.
+| State | Meaning | Expiry/cancellation |
+| --- | --- | --- |
+| Prepared | Current authenticated member confirmed combined deletion | Matching preparation can be cancelled; expires after fifteen minutes |
+| Dispatched | Exact request/attempt and current eligibility were revalidated immediately before the client calls Clerk | Retained until account deletion is confirmed; no cancellation/expiry |
+| Cleaning | Signed webhook or a complete provider lookup confirmed account deletion | Company stays unavailable while bounded cleanup progresses |
+| Complete | Company scope and final company/avatar reference were removed | Permanent tombstone |
 
-Automatic cancellation supplies the captured request and attempt IDs, so an old
-callback cannot cancel a newer preparation. Explicit cancellation targets the
-current preparation. Both return their actual outcome; dispatch always prevents
-later cancellation. Client generation and identity checks discard stale callbacks.
-A lost response or Clerk error preserves dispatched consent. Reverification retries
-the same request. The `prepare` protocol argument rejects older clients before
-they can call Clerk without dispatching a durable request.
+The schema pairs prepared/dispatched consent with the initial phase, cleaning with the complete phase list and completion with the final company phase. Job IDs remain optional during allocation/completion; no extra record field is needed.
 
-Preparing or dispatching places the company on hold through the shared company
-authorization check. Preparation expiry or cancellation releases that hold.
-Deleting an account externally while its request is only prepared releases the
-preparation and follows account-only cleanup and ownership recovery. It does not
-authorize company deletion.
+Same-attempt preparation is idempotent; a new attempt supersedes only prepared consent. Dispatch checks identity, membership/eligibility, company, phrase, request ID, attempt and freshness together. Membership changes conflict with its indexed reads. Account-only dispatch creates no company hold.
 
-## Cleanup and recovery
+Automatic cancellation carries its captured request/attempt identity. Explicit cancellation targets the current preparation. A lost response or Clerk error preserves dispatched consent; reverification retries that request. Preparing/dispatched consent holds company activity until cancellation, expiry or completion. External account deletion during preparation removes that preparation and follows account-only cleanup; it cannot authorize deleting the company.
 
-Verified account deletion records an issuer-qualified `deletedUsers` marker and
-confirms any dispatched company request in the same transaction. This also works
-when no profile remains. Repeated webhooks are idempotent. Account cleanup removes
-the membership, profile, and personal avatar. Without company consent it retains
-business data and transfers an externally deleted owner's company to the oldest
-live remaining member, or leaves it ownerless for internal recovery.
+## Retention and ownership
 
-Company cleanup drains invitations, approvals, legacy notifications, shared email
-deliveries and snapshots, current reviewer attribution, decisions, contracts, compact
-contract-directory entries, live blocks,
-live items, immutable snapshot blocks, immutable snapshot items, item receipts,
-contract receipts, versions, the current-template pointer, memberships, and finally
-the company and its avatar. Snapshot children have required indexed `companyId`
-fields; cleanup needs no parent-by-parent traversal. Receipts survive individual
-target deletion but are purged with the company. New scope always comes from
-validated server context.
+Verified deletion records a permanent issuer-qualified account marker and confirms dispatched company consent in the same mutation, including when no profile remains. Repeated webhooks are idempotent.
 
-Each transaction shares one 100-row budget across every phase and also checks
-remaining read/write bytes, document/query limits, and scheduling capacity. It
-reserves room for the next full-size row, approval job cancellation, progress,
-and one continuation. Memberships and the company remain until business cleanup
-finishes. Every continuation uses a generation; superseded jobs do no work.
-Email cleanup cancels tracked dispatch, recovery, and invitation expiry jobs before
-removing delivery records and bounded snapshots. Already dispatched SMTP cannot
-be recalled.
+Account cleanup removes the profile/membership and safely releases the personal avatar. It retains company contracts, source/playbook publications, creation receipts, immutable decisions, email events/captured selections, invitations and delegation submissions/files. Historical actor/uploader/creator IDs remain business history; live access/recipient resolution still checks current membership and deletion markers. The existing directory displays Former colleague for a departed creator.
 
-Every 15 minutes Clerk reconciliation scans profiles and dispatched company
-requests independently, in pages of 25 identities. The company scan recovers
-requests even after profile cleanup. A lookup establishes absence only if all
-returned IDs were requested, are unique, and the returned count equals Clerk's
-total count. API errors and incomplete responses retain consent without starting
-cleanup. Missing identities are recorded in bounded batches with individual
-failure isolation. Recovery also expires abandoned preparations without a Clerk
-lookup and resumes cleaning requests in pages of 10, advancing past failures.
+An externally deleted owner transfers to the oldest live remaining member. A bounded 25-membership successor page persists its cursor before continuing; the profile remains until ownership is resolved. A company with no live successor becomes ownerless for the existing internal recovery path. Dispatched company consent instead authorizes company cleanup.
 
-Inspect the marker state, phase, cleanup generation, job ID, and scheduled-function
-failure. Fix the cause, then run internal `accountDeletion:resume` or
-`companyDeletion:resume` against the explicitly identified deployment. Never
-delete dispatched consent to clear an error. Keep completed account and company
-markers to deny deleted identities and delayed internal work.
+Company cleanup uses the [single ordered phase list](../src/convex/deletionValidators.ts): invitations, approvals, deliveries/snapshots, decision receipts, contracts/directory/cleanup markers, baseline chunks/live items/create receipts/publication history/pointer/baselines/revisions, delegation attachments/requests/cancellations, memberships and finally the company. The [complete matrix](backend-redesign/phase-16a-deletion-recovery.md#complete-current-record-matrix) maps every current table. Profiles, account tombstones, global catalog and global sweep progress have separate owners.
 
-## Schema reset
+Item/contract creation receipts survive individual target deletion to prevent retry resurrection. Shared publications/revisions/source survive individual contract/item deletion. Company deletion purges its receipts and business history but retains its completed tombstone. There are no legacy notification, attribution or copied-snapshot tables to drain.
 
-Company scope is required on snapshot manifests, immutable revisions, and operation
-receipts. Company deletion uses only the canonical storage model. There is no
-backfill helper, migration gate, or conversion phase. Before deploying over
-incompatible records, follow the
-[fresh reset procedure](private-companies-rollout.md#fresh-development-reset).
+File release removes the owner's reference, then reads all baseline/attachment/profile/company ownership indexes before deleting storage in the same mutation. This covers account/company avatars, company baseline originals/attachments and expired unpublished baselines. Another owner preserves the bytes. Interrupted unreferenced uploads/exports are recovered by the all-kind, exact 24-hour grace-protected sweep. It uses bounded 25-row/1 MiB metadata pages, a durable creation frontier/cursor/cutoff and stale-continuation fencing. Each page checks all four ownership indexes before deletion; storage failure rolls back file and progress changes. A normal daily root resumes an interrupted interval.
 
-## Manual verification
+## Bounded cleanup and recovery
 
-Use disposable development accounts and companies. These checks are not covered
-by the existing performance suite:
+Company/contract/retired-delivery/expired-baseline child drains share a 100-primary-row budget, counting nested snapshot rows. Native remaining metrics reserve 4,000,000 read/write bytes, 64 queries/read/write documents, one continuation and 1,024 scheduled argument bytes. They leave room for cancellation, reference release, parent deletion and marker progress. These are reserves, not new customer limits. A delivery remains until its captured chunks drain.
 
-- Prepare, retry the same attempt, supersede it from another tab, and deliver a
-  late automatic cancellation. Only the matching preparation can be cancelled.
-- Race expiry, explicit cancellation, membership changes, and dispatch. An expired
-  or superseded request cannot dispatch; a dispatched request cannot be removed.
-- Trigger reverification, lose a dispatch or Clerk response, replace the modal,
-  and retry. Dispatched consent survives and stale callbacks cannot call Clerk.
-- Delete externally during preparation and after dispatch. Only the latter starts
-  company cleanup; repeated signed webhooks do not create another active chain.
-- Drain more than 100 records spread across phases and large snapshot records.
-  Confirm one bounded continuation, children before versions, and company last.
-- Fail the first recovery request and confirm later pages still progress. Remove
-  a dispatched request's profile before reconciliation and verify fallback recovery.
-- Return partial or failed Clerk lookups. They never establish deletion. Compare
-  scoped counts and receipt retention after account-only and combined deletion.
+Account/company/contract/disposal workers store their current job/generation. Resumption keeps pending/in-progress jobs, rearms missing/failed/cancelled/finished jobs and advances the generation. Stale generations are no-ops. Unexpected mutation failure rolls back the batch and leaves its durable owner discoverable. Company deletion cancels tracked contract/send/recovery/disposal/invitation-expiry work; an already dispatched external email cannot be recalled.
 
-`npm run verify` checks the existing saving, conflict, retry, creation, publication,
-scheduling, and cache guarantees, Svelte types, and the production build. Convex
-backend type checking and strict-schema deployment check backend integration and
-canonical record shape. These do not certify live Clerk or browser races.
+Baseline expiry uses its own ID/state/deadline and remaining indexed chunk prefix. Publication or a missing row makes a delayed callback a no-op. Each yielding invocation schedules one continuation; duplicate expiry callbacks can perform additional bounded work. It does not maintain an exclusive generation/job marker. Thirty-minute discovery independently pages expired prepared/deleting states, reaching later uploads even if earlier workers fail.
+
+Quarter-hour reconciliation invokes one bounded local recovery mutation before provider configuration/lookup. Nine indexed first-record probes schedule only nonempty account/company/contract/disposal/consent/unfinished-email/dispatched-company families; errors are isolated and workers page independently. The exact expired-preparation range excludes fresh consent. Delivery resumption restores the existing recovery rule: missing jobs do not establish non-delivery, claimed attempts become uncertain, uncertain decisions never automatically resend, and uncertain approvals only become eligible for an explicit retry after the existing ten-minute cooldown. Terminal/exhausted/retired attempts remain untouched.
+
+Clerk profile/dispatched-company discovery targets 100 native rows with explicit 100-row/2 MiB caps and preserves native pagination metadata. Filter the configured issuer, deduplicate IDs, then split every provider request at 100 IDs independently of page length; its limit equals its ID count. Only a complete duplicate-free/requested-ID-only response whose returned count equals the filtered provider total proves absence. Errors/malformed/partial/unrelated results prove nothing and do not starve later subsets/pages. Canonical writes remain separate 25-identity batches, preserving per-identity failure isolation and missing-profile company confirmation. The fifteen-minute interval and all owner/consent/retention rules remain.
+
+## Operating a stalled cleanup
+
+First identify the exact deployment and inspect the durable owner, current phase/cursor/generation, job ID and native scheduled-function state. Fix the cause before running the corresponding internal resumer:
+
+- Account deletion: accountDeletion:resume.
+- Cleaning company deletion: companyDeletion:resume.
+- Deleted contract children: contractCleanup:resume.
+- Retired email capture: emailDisposal:resume.
+- Unfinished email recovery: emailDeliveries:resume with the sending, failed or uncertain state.
+- Expired unpublished source: baselineUploads:expirePrepared.
+- All conditional local recovery families: recovery:resume.
+- Interrupted orphan-file interval: storageOwnership:cleanOrphanFiles with no continuation args, which resumes the stored active cursor/cutoff.
+
+These are operational instructions, not authorization to mutate a deployment. Never delete dispatched consent or a completed account/company tombstone to clear an error. Prepared-consent expiry/cancellation is conditional on its current request identity; stale callbacks cannot undo dispatch. Delayed children cannot recreate missing parents.
+
+## Activation and verification
+
+Phase 18 must identify/archive the chosen target before its separately authorized reset/deploy/bootstrap. Inspect actual lifecycle shapes and deploy indexes, native query results, callers and recovery references together, with native code generation. Restart old MIME-filtered sweep progress after complete ownership data is installed: its completed frontier may already exclude skipped images. Inspect/cancel or drain pagination callbacks using the replaced company status index and legacy export-retirement jobs before activation; database reset/deploy does not imply their cancellation. Preserve existing Clerk accounts independently of database reset. Loops setup/live delivery verification remain Phase 18.
+
+Local verification passes all 20 existing lifecycle and 24 performance checks, backend/frontend types and production build. [Phase 16A evidence](backend-redesign/phase-16a-deletion-recovery.md#evidence) records actual-module retention, job-state, rollback, bounded nested cleanup, fair expiry/discovery and work-index diagnostics. The [16B evidence](backend-redesign/phase-16b-identity-orphan-recovery.md#local-evidence) adds all-kind recovery, exact cutoff/cursor rollback, serialized avatar adoption orders, conditional family isolation, safe provider subsets and actual app-to-canonical-writer company confirmation. They use controlled mock timers/state/metrics; they do not certify native storage/scheduler/OCC, external delivery or browser behavior.
+
+Native acceptance still needs disposable, explicitly approved accounts/companies for consent/reverification/lost-response races, failed/cancelled/missing jobs, company/contract/disposal/expiry overlap, actual resource limits, partial provider responses and scoped retention. No new suite or browser automation was added; the user performs browser checks.

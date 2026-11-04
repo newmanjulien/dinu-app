@@ -1,15 +1,16 @@
 import { ConvexError } from 'convex/values';
 import type { QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
-import { assertPermission, type Permission } from './permissions';
+import { assertPermission, type Permission, type Role } from './permissions';
 
 export async function verifiedIdentity(ctx: Pick<QueryCtx, 'auth'>) {
 	const identity = await ctx.auth.getUserIdentity();
 	if (!identity || !identity.email || identity.emailVerified !== true)
 		throw new ConvexError('Sign in with a verified email address.');
-	return identity;
+	return { ...identity, email: identity.email };
 }
-export async function requireProfile(ctx: QueryCtx) {
+/** Viewer/initialization may observe a missing profile; all paths reject deleted accounts. */
+export async function readAccount(ctx: QueryCtx) {
 	const identity = await verifiedIdentity(ctx);
 	const deleted = await ctx.db
 		.query('deletedUsers')
@@ -22,21 +23,42 @@ export async function requireProfile(ctx: QueryCtx) {
 		.query('profiles')
 		.withIndex('by_identity', (q) => q.eq('identity', identity.tokenIdentifier))
 		.unique();
+	return { identity, profile };
+}
+export async function requireAccount(ctx: QueryCtx) {
+	const { identity, profile } = await readAccount(ctx);
 	if (!profile) throw new ConvexError('Your account is still initializing.');
-	return profile;
+	return { identity, profile };
+}
+export async function requireProfile(ctx: QueryCtx) {
+	return (await requireAccount(ctx)).profile;
+}
+export function membershipForProfile(ctx: QueryCtx, profileId: Id<'profiles'>) {
+	// The indexed unique read participates in the transaction: concurrent joins conflict.
+	return ctx.db
+		.query('memberships')
+		.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
+		.unique();
+}
+export function membershipRole(
+	profile: Pick<Doc<'profiles'>, '_id' | 'role'>,
+	membership: Pick<Doc<'memberships'>, 'role'>,
+	_company: Pick<Doc<'company'>, 'ownerProfileId'>
+): Role {
+	// Existing memberships fall back to their former profile role until backfilled.
+	// New memberships always carry their own role, so it cannot follow a person to
+	// another company.
+	return membership.role ?? profile.role;
 }
 export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id<'memberships'>) {
 	const profile = await requireProfile(ctx);
-	// The indexed unique read participates in the transaction: concurrent joins conflict.
-	const membership = await ctx.db
-		.query('memberships')
-		.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
-		.unique();
+	const membership = await membershipForProfile(ctx, profile._id);
 	if (!membership || (expectedMembershipId && membership._id !== expectedMembershipId))
 		throw new ConvexError('Your company access has changed. Reload to continue.');
 	const company = await requireCompany(ctx, membership.companyId);
 	return {
 		...profile,
+		role: membershipRole(profile, membership, company),
 		membership,
 		company,
 		companyId: company._id,
@@ -50,18 +72,19 @@ export function companyDeletion(ctx: QueryCtx, companyId: Id<'company'>) {
 		.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 		.unique();
 }
-export async function availableCompany(ctx: QueryCtx, companyId: Id<'company'>) {
+async function readCompany(ctx: QueryCtx, companyId: Id<'company'>) {
 	const [company, deletion] = await Promise.all([
 		ctx.db.get('company', companyId),
 		companyDeletion(ctx, companyId)
 	]);
+	return { company, deletion };
+}
+export async function availableCompany(ctx: QueryCtx, companyId: Id<'company'>) {
+	const { company, deletion } = await readCompany(ctx, companyId);
 	return deletion ? null : company;
 }
 export async function requireCompany(ctx: QueryCtx, companyId: Id<'company'>) {
-	const [company, deletion] = await Promise.all([
-		ctx.db.get('company', companyId),
-		companyDeletion(ctx, companyId)
-	]);
+	const { company, deletion } = await readCompany(ctx, companyId);
 	if (!company) throw new ConvexError('This company is unavailable.');
 	if (deletion)
 		throw new ConvexError(
@@ -90,8 +113,17 @@ export async function liveProfile(ctx: QueryCtx, profileId?: Id<'profiles'>) {
 	]);
 	return deleted ? null : profile;
 }
-export async function creatorDeleted(ctx: QueryCtx, creatorId?: Id<'profiles'>) {
-	return !(await liveProfile(ctx, creatorId));
+/** Callers deduplicate profile IDs within their transaction; never cache across requests. */
+export async function liveCompanyMember(
+	ctx: QueryCtx,
+	companyId: Id<'company'>,
+	profileId: Id<'profiles'>
+) {
+	const [profile, membership] = await Promise.all([
+		liveProfile(ctx, profileId),
+		membershipForProfile(ctx, profileId)
+	]);
+	return membership?.companyId === companyId ? profile : null;
 }
 export function accessibleContract(contract: Doc<'savedContracts'> | null, access: CompanyAccess) {
 	return contract?.companyId === access.companyId ? contract : null;

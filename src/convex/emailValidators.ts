@@ -1,7 +1,7 @@
 import { ConvexError, v, type Infer } from 'convex/values';
 import { reviewStatus } from './contractValidators';
 
-/** One plain mailbox, with the same identity at storage and SMTP boundaries. */
+/** One plain mailbox, with the same identity at storage and provider boundaries. */
 export function emailAddress(input: string) {
 	const email = input.trim().toLowerCase();
 	const [local, domain, extra] = email.split('@');
@@ -21,21 +21,13 @@ export function emailAddress(input: string) {
 	return email;
 }
 
-export const emailOutcome = v.object({
-	status: v.union(
-		v.literal('sent'),
-		v.literal('partial'),
-		v.literal('failed'),
-		v.literal('uncertain'),
-		v.literal('skipped')
-	),
-	error: v.optional(v.string()),
-	messageId: v.optional(v.string()),
-	recipientAccepted: v.optional(v.boolean()),
-	rejected: v.optional(v.array(v.string())),
-	// Only failures proven safe to retry may set this flag.
-	retryable: v.optional(v.boolean())
-});
+const outcomeDetails = v.object({ error: v.optional(v.string()) });
+export const emailOutcome = v.union(
+	outcomeDetails.extend({
+		status: v.union(v.literal('sent'), v.literal('uncertain'), v.literal('skipped'))
+	}),
+	outcomeDetails.extend({ status: v.literal('failed'), retryable: v.optional(v.boolean()) })
+);
 export type EmailOutcome = Infer<typeof emailOutcome>;
 export const emailAttempt = v.object({ id: v.id('emailDeliveries'), attempt: v.number() });
 export const emailRecipients = v.object({ recipientEmail: v.string(), cc: v.array(v.string()) });
@@ -44,43 +36,82 @@ export const emailSelection = v.object({
 	concessionId: v.string(),
 	concessionPosition: v.optional(v.number()),
 	lifecycle: v.optional(v.string()),
-	reviewStatus: v.optional(reviewStatus),
-	reviewerId: v.optional(v.id('profiles')),
-	reviewerName: v.optional(v.string())
+	reviewStatus: v.optional(reviewStatus)
 });
 export type EmailSelection = Infer<typeof emailSelection>;
-export const emailDelivery = emailOutcome.omit('status', 'retryable').extend({
-	companyId: v.id('company'),
-	event: v.union(
-		v.object({
-			kind: v.literal('approval'),
-			contractId: v.id('savedContracts'),
-			requestId: v.string(),
-			companyName: v.string(),
-			templateVersionId: v.id('templateVersions')
-		}),
-		v.object({
-			kind: v.literal('decision'),
-			contractId: v.id('savedContracts'),
-			reviewGeneration: v.number(),
-			companyName: v.string(),
-			templateVersionId: v.id('templateVersions')
-		}),
-		v.object({
-			kind: v.literal('invitation'),
-			invitationId: v.id('companyInvitations'),
-			generation: v.number()
-		})
-	),
-	contractId: v.optional(v.id('savedContracts')),
-	status: v.union(v.literal('sending'), emailOutcome.fields.status),
-	attempt: v.number(),
-	dispatchStarted: v.boolean(),
-	retryable: v.boolean(),
-	sendJobId: v.optional(v.id('_scheduled_functions')),
-	recoveryJobId: v.optional(v.id('_scheduled_functions')),
-	inlineDeadline: v.optional(v.number()),
-	recipientEmail: v.optional(v.string()),
-	cc: v.optional(v.array(v.string())),
-	completedAt: v.optional(v.number())
+export const emailEvent = v.union(
+	v.object({
+		kind: v.literal('approval'),
+		contractId: v.id('savedContracts'),
+		requestId: v.string(),
+		companyName: v.string(),
+		templateVersionId: v.id('templateVersions'),
+		recipientEmail: v.string()
+	}),
+	v.object({
+		kind: v.literal('decision'),
+		contractId: v.id('savedContracts'),
+		reviewGeneration: v.number(),
+		reviewerId: v.id('profiles'),
+		companyName: v.string(),
+		templateVersionId: v.id('templateVersions')
+	}),
+	v.object({
+		kind: v.literal('invitation'),
+		invitationId: v.id('companyInvitations'),
+		generation: v.number(),
+		recipientEmail: v.string()
+	})
+);
+export type EmailEvent = Infer<typeof emailEvent>;
+
+const claimedDispatch = emailRecipients.extend({ kind: v.literal('claimed') });
+const dispatching = emailRecipients.extend({ kind: v.literal('dispatching') });
+const terminalState = outcomeDetails.extend({
+	completedAt: v.number(),
+	dispatch: v.optional(v.union(claimedDispatch, dispatching))
 });
+export const emailState = v.union(
+	v.object({
+		kind: v.literal('sending'),
+		dispatch: v.union(v.object({ kind: v.literal('pending') }), claimedDispatch, dispatching)
+	}),
+	terminalState.extend({
+		kind: v.union(v.literal('sent'), v.literal('skipped'))
+	}),
+	terminalState.extend({ kind: v.literal('failed'), retryable: v.boolean() }),
+	// Eligibility permits an explicit approval retry after its cooldown. It does
+	// not prove non-delivery and must never authorize automatic replay.
+	terminalState.extend({ kind: v.literal('uncertain'), retryEligible: v.boolean() })
+);
+const scheduledExecution = v.object({
+	kind: v.literal('scheduled'),
+	sendJobId: v.optional(v.id('_scheduled_functions')),
+	recoveryJobId: v.optional(v.id('_scheduled_functions'))
+});
+const deliveryFields = {
+	companyId: v.id('company'),
+	attempt: v.number(),
+	state: emailState,
+	// A retired delivery owns its remaining chunks until bounded disposal finishes.
+	disposal: v.optional(
+		v.object({ generation: v.number(), jobId: v.optional(v.id('_scheduled_functions')) })
+	)
+};
+export const emailDelivery = v.union(
+	v.object({
+		...deliveryFields,
+		event: v.union(emailEvent.members[0], emailEvent.members[1]),
+		contractId: v.id('savedContracts'),
+		execution: scheduledExecution
+	}),
+	v.object({
+		...deliveryFields,
+		event: emailEvent.members[2],
+		execution: v.object({
+			kind: v.literal('inline'),
+			deadline: v.number(),
+			recoveryJobId: v.optional(v.id('_scheduled_functions'))
+		})
+	})
+);

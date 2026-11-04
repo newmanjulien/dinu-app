@@ -1,9 +1,20 @@
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_MAX_COUNT = 3;
+export const ATTACHMENT_FILENAME_MAX_LENGTH = 255;
+export const ATTACHMENT_TTL = 24 * 60 * 60_000;
+export const UPLOAD_REGISTRATION_TIMEOUT = 10 * 60_000;
+export const DELEGATION_MAX_ANSWERS = 20;
+export const DELEGATION_ANSWER_MAX_LENGTH = 10_000;
 export const DELEGATION_TIMEZONE = 'America/Toronto';
 export const DOCX_CONTENT_TYPE =
 	'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 export const PDF_CONTENT_TYPE = 'application/pdf';
+
+export function isAttachmentContentType(
+	value: string | undefined
+): value is typeof DOCX_CONTENT_TYPE | typeof PDF_CONTENT_TYPE {
+	return value === DOCX_CONTENT_TYPE || value === PDF_CONTENT_TYPE;
+}
 
 const dateFormatter = new Intl.DateTimeFormat('en-CA', {
 	timeZone: DELEGATION_TIMEZONE,

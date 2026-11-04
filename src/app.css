@@ -18,6 +18,8 @@
 	--color-line-strong: #9aa0a6;
 
 	--color-control-fill: #e3e6e8;
+	--color-control-hover: #eef0f2;
+	--color-control-border: #d6d8d8;
 	--color-edge: var(--color-control-fill);
 	--color-surface-hover: color-mix(in srgb, var(--color-canvas) 50%, var(--color-surface));
 	--color-field-hover: color-mix(in srgb, var(--color-surface-hover) 65%, var(--color-surface));
@@ -51,6 +53,9 @@
 	--surface-border-width: 0.5px;
 	--app-header-height: 30px;
 	--document-viewport-gap: 16px;
+	--mobile-utility-rail-height: calc(
+		var(--spacing) * 9 + var(--surface-border-width) + var(--surface-border-width)
+	);
 }
 
 /* Shared edge weight; surfaces keep their own shape, layout, and interaction. */
@@ -63,6 +68,27 @@
 @layer utilities {
 	.transition-colors {
 		transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+	}
+}
+
+.clause-panel-content {
+	animation: clause-panel-content-in 140ms ease-out both;
+}
+
+@keyframes clause-panel-content-in {
+	from {
+		opacity: 0;
+		transform: translateY(3px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.clause-panel-content {
+		animation: none;
 	}
 }
 

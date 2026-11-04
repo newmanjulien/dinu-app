@@ -1,7 +1,8 @@
 # DOCX baseline import
 
 Import runs on the backend from the uploaded original DOCX. It uses Word's document
-structure and formatting rules, without an LLM. The result uses the same immutable source model,
+structure and numbering rules, without an LLM. Contract content is plain: the
+approved model strips all bold/italic marks from import, authoring, seed and export. The result uses the same immutable source model,
 composition, reference resolution, and Word export as existing contracts.
 Errors block publication. The upload page gives plain-English corrections and
 short text excerpts to find in Word, without displaying the contract. Routine
@@ -11,8 +12,8 @@ file can be published after confirming that the starting contract is permanent.
 
 ## Supported content
 
-- Paragraphs, Heading 1–3, bold and italic text, explicit formatting overrides,
-  tabs, line breaks, and rectangular tables with multiple paragraphs per cell.
+- Paragraphs, Heading 1–3, tabs, line breaks, and rectangular tables with multiple
+  paragraphs per cell. Bold/italic input does not produce persisted or rendered marks.
 - Document defaults and inherited paragraph, character, and table styles. Table
   text supports whole-table, first/last column, and first/last row conditions.
   Row conditions take precedence over column conditions.
@@ -26,8 +27,8 @@ file can be published after confirming that the starting contract is permanent.
 - Unambiguous typed clause labels under the inference rules below.
 - Typed Article/Part/Clause/Section references, including groups joined by commas,
   conjunctions, and ranges, and supported Word REF fields. Every target in a typed
-  group must resolve uniquely. References retain their spelling, punctuation,
-  bold/italic formatting, and stable numbering item keys as numbering changes.
+  group must resolve uniquely. References retain spelling, punctuation and stable
+  numbering item keys as numbering changes, without bold/italic marks.
 - Declared `customXml` wrappers preserve supported paragraphs and tables.
   Hyperlinks preserve their text with a warning. Leading/trailing omitted table
   columns become empty cells, preserving the position of occupied columns.
@@ -187,8 +188,8 @@ includes identical-style deduplication and comment-only control handling, so
 preparations from older parsers are not reused. New uploads parse in a separate
 internal Node action. Cleanup dispatch is independent of preparation success. Unpublished DOCX
 uploads expire after 24 hours, with bounded scheduled cleanup and a recurring
-recovery sweep. A daily bounded sweep removes unreferenced DOCX files left by an
-interrupted preparation or export. It persists its cursor and fixed cutoff for
+recovery sweep. A daily bounded all-kind sweep removes unreferenced storage files left by an
+interrupted upload or export after a 24-hour grace, consulting all four ownership indexes. It persists its cursor and fixed cutoff for
 resumption, and advances a completed watermark to avoid rescanning retained originals.
 Published originals remain until company deletion.
 
@@ -202,7 +203,7 @@ Historical versions retain deleted rules and their original payloads.
 Storage accepts only required baseline/revision links and canonical manifests.
 Seed imports, audits, reconciliation, and company deletion use that same model.
 See [template storage](template-storage.md) and the
-[fresh reset procedure](private-companies-rollout.md#fresh-development-reset).
+[current activation procedure](backend-redesign/phase-18-activation.md).
 
 ## Bounds
 
@@ -229,7 +230,13 @@ are charged before constructing normalized names, so namespace expansion consume
 the same character budget. Shared source validation enforces
 storage array limits; source and playbook item limits leave room for Convex wrappers.
 
-## Verification evidence
+## Historical verification evidence
+
+The following results describe earlier parser/development revisions, including
+old formatting and 113-block seed representations. They are preserved evidence,
+not current repeatable coverage or deployment certification. Current plain content,
+112-block seed and local checks are recorded in [17D2](backend-redesign/phase-17d2-cross-workflow.md);
+native/browser/provider acceptance remains [18](backend-redesign/phase-18-activation.md).
 
 The original `Oceans PSA Contracting Cheat Sheet 9.21.26 (2) (1).docx` imports
 248 blocks with zero errors and 67 formatting warnings (66 underline warnings

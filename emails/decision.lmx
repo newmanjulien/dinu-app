@@ -1,0 +1,3 @@
+<Paragraph>All concessions requiring approval for {data.companyName}'s contract have been reviewed.</Paragraph>
+<Paragraph>Approved: {data.approvedCount}<Br />Not approved: {data.rejectedCount}</Paragraph>
+<Paragraph>Open the contract: {data.url}</Paragraph>

@@ -1,0 +1,3 @@
+<Paragraph>{data.inviterName} invited you to join {data.companyName} on Dinu.</Paragraph>
+<Paragraph>{data.url}</Paragraph>
+<Paragraph>Open the invitation, verify {data.email} with an email code, then choose Join {data.companyName}. Your Dinu account will be created if needed. This invitation expires in 7 days.</Paragraph>

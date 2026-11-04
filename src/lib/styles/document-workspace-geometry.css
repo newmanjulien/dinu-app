@@ -1,6 +1,19 @@
 /* Resolve container units inside the shared wrapper, including during loading. */
 .document-workspace-geometry {
 	--reserved-width: 30px;
+	--review-gutter: var(--review-gutter-max);
+	--panel-min-width: var(--panel-min-width-floor);
+	--side-panel-reserved-width: calc(
+		var(--rail-safe-gutter) + var(--panel-min-width) + var(--panel-gap) + var(--right-gutter)
+	);
+	--workspace-panel-font-size: 14px;
+	--workspace-panel-small-font-size: 13px;
+	--workspace-panel-icon-size: 14px;
+	--workspace-panel-card-padding: 14px;
+	--review-tab-height: 34px;
+	--review-tab-font-size: 13px;
+	--review-tab-icon-size: 12px;
+	--review-tab-gap: 4px;
 	--paper-width: min(
 		var(--paper-max-width),
 		max(var(--paper-min-width), calc(100cqw - var(--reserved-width) - var(--review-gutter)))
@@ -36,6 +49,17 @@
 @container (min-width: 1150px) {
 	.document-workspace-geometry {
 		--reserved-width: var(--side-panel-reserved-width);
+		/* Keep supporting UI legible as the document scales down. */
+		--review-gutter: min(var(--review-gutter-max), clamp(92px, 7cqw, 100px));
+		--panel-min-width: clamp(var(--panel-min-width-floor), 26cqw, var(--panel-comfortable-width));
+		--workspace-panel-font-size: clamp(13px, 1cqw, 14px);
+		--workspace-panel-small-font-size: clamp(12px, 0.9cqw, 13px);
+		--workspace-panel-icon-size: clamp(13px, 1cqw, 14px);
+		--workspace-panel-card-padding: clamp(12px, 1cqw, 14px);
+		--review-tab-height: clamp(32px, 2.6cqw, 34px);
+		--review-tab-font-size: clamp(12px, 1cqw, 13px);
+		--review-tab-icon-size: clamp(11px, 0.9cqw, 12px);
+		--review-tab-gap: clamp(3px, 0.3cqw, 4px);
 	}
 
 	.document-workspace-geometry.has-panel {

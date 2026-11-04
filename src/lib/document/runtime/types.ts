@@ -1,4 +1,4 @@
-import { sameSourceRange } from '$lib/contract/source-model';
+import { sameSourceTarget } from '$lib/contract/source-model';
 import type { ContractBlock } from '$lib/contract/model';
 import type { DocumentOverlayItem } from '$lib/playbook/document-overlay';
 import type { SourceIndex } from '$lib/contract/source-index';
@@ -51,7 +51,7 @@ export function samePreviewChanges(
 		a.length === b.length &&
 		a.every(
 			(change, i) =>
-				sameSourceRange(change.range, b[i].range) &&
+				sameSourceTarget(change.range, b[i].range) &&
 				JSON.stringify(change.replacement) === JSON.stringify(b[i].replacement)
 		)
 	);
@@ -64,11 +64,18 @@ export function snapshotPreviewChanges(
 	if (!changes.length) return EMPTY_PREVIEW_CHANGES;
 	return Object.freeze(
 		changes.map((change) => {
-			const copy = {
-				range: Object.freeze({
-					start: Object.freeze({ ...change.range.start }),
-					end: Object.freeze({ ...change.range.end })
-				}),
+		const copy = {
+				range: Object.freeze(
+					change.range.kind === 'boundary'
+						? { kind: 'boundary' as const, afterBlockKey: change.range.afterBlockKey }
+						: {
+								kind: 'text' as const,
+								range: {
+									start: Object.freeze({ ...change.range.range.start }),
+									end: Object.freeze({ ...change.range.range.end })
+								}
+							}
+				),
 				replacement: change.replacement.map((atom) => Object.freeze({ ...atom }))
 			};
 			Object.freeze(copy.replacement);

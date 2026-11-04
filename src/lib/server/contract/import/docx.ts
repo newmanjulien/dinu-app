@@ -1,7 +1,11 @@
-import type { BaselineBlock, InlineSource, ReplacementAtom } from '../../../contract/source-model';
-import { canonicalMarks, equalMarks } from '../../../contract/marks';
+import type {
+	BaselineBlock,
+	InlineSource,
+	ReplacementInline
+} from '../../../contract/source-model';
 import { validateBaseline } from '../../../contract/validate-source';
 import { BASELINE_MAX_BYTES, type ImportIssue } from '../../../contract/import/limits';
+import { textPrefix } from '../../../text';
 import { child, type XmlNode } from './xml';
 import type { Issue } from './format';
 import { openPackage } from './package';
@@ -79,13 +83,11 @@ export function importDocx(input: Uint8Array): {
 		}
 	let sourceId = 0;
 	function content(paragraphs: Paragraph[]): InlineSource[] {
-		const normalized: ReplacementAtom[] = [];
-		function append(atom: ReplacementAtom) {
-			const marks = canonicalMarks(atom.marks);
+		const normalized: ReplacementInline[] = [];
+		function append(atom: ReplacementInline) {
 			const last = normalized.at(-1);
-			if (last?.kind === 'text' && atom.kind === 'text' && equalMarks(last.marks, marks))
-				last.text += atom.text;
-			else normalized.push({ ...atom, ...(marks ? { marks } : {}) });
+			if (last?.kind === 'text' && atom.kind === 'text') last.text += atom.text;
+			else normalized.push({ ...atom });
 		}
 		for (const [i, paragraph] of paragraphs.entries()) {
 			if (i) append({ kind: 'text', text: '\n' });
@@ -155,7 +157,7 @@ export function importDocx(input: Uint8Array): {
 	const byId = new Map(parsed.paragraphs.map((p) => [p.id, p]));
 	for (const item of issues) {
 		const p = byId.get(origins.get(item)!);
-		if (p) item.context = p.plain.slice(0, 1200);
+		if (p) item.context = textPrefix(p.plain, 1200);
 	}
 	return { blocks, issues };
 }

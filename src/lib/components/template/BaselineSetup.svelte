@@ -10,6 +10,7 @@
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import InfoBar from '$lib/components/ui/InfoBar.svelte';
 	import FileTextIcon from 'phosphor-svelte/lib/FileTextIcon';
 	import CheckCircleIcon from 'phosphor-svelte/lib/CheckCircleIcon';
@@ -403,20 +404,17 @@
 								</p>
 							</div>
 						</div>
-						<label
+						<div
 							class="mt-5 flex cursor-pointer items-start gap-3 rounded-button-lg border-hairline border-line bg-page p-4 text-[13px] leading-6 text-ink-secondary"
 						>
-							<input
-								class="mt-1 size-4 shrink-0 cursor-pointer accent-ink focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent disabled:cursor-default"
-								type="checkbox"
-								bind:checked={confirmed}
+							<Checkbox
+								label="I understand this will be my team’s permanent starting contract and can’t be replaced."
+								checked={confirmed}
+								onCheckedChange={(checked) => (confirmed = checked)}
 								disabled={publishing}
+								className="w-full gap-3 text-[13px] leading-6 text-ink-secondary"
 							/>
-							<span
-								>I understand this will be my team’s permanent starting contract and can’t be
-								replaced.</span
-							>
-						</label>
+						</div>
 						<Button
 							class="mt-5"
 							disabled={!confirmed || publishing || session.closing}

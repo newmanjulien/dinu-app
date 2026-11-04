@@ -13,13 +13,21 @@ import {
 import type { SnapshotEntry, SnapshotMetadata } from './snapshot-storage';
 import { forgetOpening, CACHE_MEMBERSHIP_ID, setCacheIdentity } from './browser-storage';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
-import type { ContractSnapshotResult, ContractState, ContractSnapshot } from './saved';
+import {
+	normalizeReadyContract,
+	normalizeContractSnapshot,
+	type ContractSnapshotResult,
+	type ContractState,
+	type ContractSnapshot,
+	type ReadyContract,
+	type StoredReadyContract,
+	type StoredContractSnapshot
+} from './saved';
 
 import { queryOnce, type SnapshotClient } from './query-once';
 export type { SnapshotClient } from './query-once';
 type VersionFlight = { result: Promise<ContractSnapshot>; attempt: ReadAttempt; consumers: number };
 
-type ReadyContract = Extract<ContractSnapshotResult, { status: 'ready' }>;
 type Entry = SnapshotEntry & { contractJson: string };
 type Flight = {
 	result: Promise<ContractSnapshotResult>;
@@ -74,25 +82,20 @@ class ContractSnapshotCache {
 	}
 
 	/** Seeds only a server-confirmed contract; snapshot identity survives the route handoff. */
-	seedConfirmed(data: ReadyContract): ReadyContract | undefined {
+	seedConfirmed(data: ReadyContract | StoredReadyContract): ReadyContract | undefined {
 		const id = data.id;
 		if (this.deleted.has(id) || this.lifetime.signal.aborted || !validSnapshot(data, id)) return;
+		const canonical = normalizeReadyContract(data);
 		const existing = this.peek(id);
 		if (existing) {
-			if (existing.contract.templateVersionId !== data.contract.templateVersionId) return;
-			return (
-				this.updateState(id, {
-					...data.contract,
-					revision: data.contract.revision,
-					lastOperationId: data.contract.lastOperationId ?? null
-				}) ?? existing
-			);
+			if (existing.contract.templateVersionId !== canonical.contract.templateVersionId) return;
+			return this.updateState(id, canonical.contract) ?? existing;
 		}
 		this.cancelFlight(id, false);
 		this.queued.delete(id);
-		const entry = this.remember(id, data);
+		const entry = this.remember(id, canonical);
 		if (entry) this.disk.put(entry, () => !this.deleted.has(id) && !this.lifetime.signal.aborted);
-		const confirmed = entry?.data ?? data;
+		const confirmed = entry?.data ?? canonical;
 		for (const listener of this.listeners) listener(confirmed);
 		return confirmed;
 	}
@@ -129,17 +132,6 @@ class ContractSnapshotCache {
 	}
 	isDeleted(id: string) {
 		return this.deleted.has(id);
-	}
-	rename(id: string, companyName: string) {
-		if (this.lifetime.signal.aborted) return;
-		const entry = this.peek(id);
-		if (entry)
-			this.updateState(id, {
-				...entry.contract,
-				companyName,
-				revision: entry.contract.revision,
-				lastOperationId: entry.contract.lastOperationId ?? null
-			});
 	}
 	private forgetEntry(id: string) {
 		const entry = this.entries.get(id);
@@ -206,7 +198,7 @@ class ContractSnapshotCache {
 			const readSignal = attempt.signal;
 			const work = Promise.resolve().then(async () => {
 				const diskAttempt = new ReadAttempt(250, readSignal);
-				let persisted: ContractSnapshot | undefined;
+				let persisted: StoredContractSnapshot | undefined;
 				try {
 					const diskSignal = diskAttempt.signal;
 					persisted = await waitForRead(
@@ -220,7 +212,7 @@ class ContractSnapshotCache {
 				}
 				readSignal.throwIfAborted();
 				if (!this.membershipId || !this.client) throw new Error('Company access is required.');
-				const snapshot =
+				const storedSnapshot =
 					persisted ??
 					(await queryOnce(
 						this.client,
@@ -232,7 +224,9 @@ class ContractSnapshotCache {
 						readSignal
 					));
 				readSignal.throwIfAborted();
-				if (!persisted && !validTemplate(snapshot, companyId)) throw new Error('Invalid template');
+				if (!persisted && !validTemplate(storedSnapshot, companyId))
+					throw new Error('Invalid template');
+				const snapshot = normalizeContractSnapshot(storedSnapshot);
 				if (this.versionFlights.get(versionId) !== created)
 					throw new Error('The request was replaced.');
 				const bytes = JSON.stringify(snapshot).length * 2;
@@ -287,6 +281,20 @@ class ContractSnapshotCache {
 		return entry;
 	}
 
+	/** Refresh confirmed metadata, including existing disk-only entries. */
+	confirmMetadata(contract: ReadyContract['contract']) {
+		const id = contract._id;
+		if (this.deleted.has(id) || this.lifetime.signal.aborted) return;
+		if (this.entries.has(id)) return this.updateState(id, contract);
+		// Refresh an existing disk-only entry without loading or rewriting its content.
+		this.disk.updateContract(
+			id,
+			contract,
+			JSON.stringify(contract).length * 2,
+			() => !this.deleted.has(id) && !this.lifetime.signal.aborted
+		);
+	}
+
 	/** Only confirmed server state belongs here. Never inserts a missing entry. */
 	updateState(id: string, state: ContractState) {
 		const entry = this.entries.get(id);
@@ -294,12 +302,7 @@ class ContractSnapshotCache {
 		const previous = entry.data.contract;
 		const revision = previous.revision;
 		if (state.revision < revision) return entry.data;
-		const { reviews: _reviews, ...contentState } = state;
-		const contract = {
-			...previous,
-			...contentState,
-			lastOperationId: state.lastOperationId ?? undefined
-		};
+		const contract = { ...previous, ...state };
 		const contractJson = JSON.stringify(contract);
 		if (contractJson === entry.contractJson) return entry.data;
 		const contractBytes = contractJson.length * 2;
@@ -376,7 +379,7 @@ class ContractSnapshotCache {
 				? {
 						id,
 						status: 'ready' as const,
-						contract: { ...state, lastOperationId: state.lastOperationId ?? undefined },
+						contract: state,
 						snapshot: await this.loadVersion(state.templateVersionId, state.companyId, signal)
 					}
 				: { id, status: 'missing' as const };

@@ -76,7 +76,8 @@ Ordinary signup preloads and opens onboarding, preserving any requested workspac
 Account admission, workspace admission, and the destination's usable marker are distinct. Workspace chrome appears only after membership admission. Home controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Admin code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its naming dialog and skeleton in a lightweight shell while creation code loads. Optional preview and delegation imports recover through transport replacement and existing creation or navigation triggers, respectively. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
 
 Invitation preview and resolution run in Convex's default runtime using Web Crypto
-for SHA-256; only SMTP delivery uses Node. When the server skips anonymous preview,
+for SHA-256; invitation email uses Node for random-token creation, while contract
+email uses the default runtime and Loops HTTP. When the server skips anonymous preview,
 the route uses the shared account-loading recovery while Clerk initializes, so a
 failed initialization exposes the existing retry control.
 
@@ -90,7 +91,13 @@ dialog completes its opening handoff; background recovery after a failed attempt
 does not bypass the retry dialog. The shell has no route-driven help context or
 modal hold counter.
 
-## Verification
+## Historical implementation verification
+
+The results below refer to their original route/development revisions, including
+temporary SMTP and old invitation initialization. They are retained evidence, not
+verification of the redesigned backend. [Current architecture](backend-redesign/architecture.md),
+[17D2 local checks](backend-redesign/phase-17d2-cross-workflow.md) and
+[Phase 18 activation](backend-redesign/phase-18-activation.md) own current status.
 
 The help-ownership cleanup passed `npm run build` with zero Svelte/type errors or
 warnings, targeted formatting checks, and `git diff --check`. The two existing

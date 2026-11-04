@@ -6,7 +6,7 @@
 	import { useViewer, useViewerSession } from './viewer-session.svelte';
 	import { DocumentResources, setDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { env } from '$env/dynamic/public';
-	import { loadComponent } from './component-loader.svelte';
+	import { loadComponent, loadModule } from './component-loader.svelte';
 	import { afterStartupPaint, recordStartup } from './startup-perf';
 	import { useWorkspaceReadiness } from './workspace-readiness.svelte';
 	import { browser } from '$app/environment';
@@ -47,10 +47,6 @@
 		env.PUBLIC_CONTRACT_ROUTE_PROFILES === '0'
 			? undefined
 			: setContractLayoutProfiles(new ContractLayoutProfiles());
-	const resources =
-		layoutProfiles && env.PUBLIC_CONTRACT_DOCUMENT_PREPARATION !== '0'
-			? setDocumentResources(new DocumentResources(layoutProfiles))
-			: undefined;
 	const templatePending = $derived(
 		!viewer().templateReady && Boolean(describeRoute(page.route.id).baseline)
 	);
@@ -58,22 +54,41 @@
 	const documentRoute = $derived(Boolean(route.document));
 	const deletionPending = $derived(Boolean(viewer().company.deletionPending));
 	const needsDocumentHost = $derived(documentRoute && !templatePending && !deletionPending);
+	let resources = $state.raw<DocumentResources>();
+	const backgroundPreparation = $derived(
+		Boolean(resources?.backgroundEnabled && resources.preparationCandidates.length)
+	);
+	const workspaceModule = loadModule(
+		() => import('$lib/document/runtime/workspace-factory'),
+		() =>
+			Boolean(layoutProfiles) &&
+			!deletionPending &&
+			(needsDocumentHost || backgroundPreparation),
+		() => session.transportGeneration
+	);
+	if (layoutProfiles && env.PUBLIC_CONTRACT_DOCUMENT_PREPARATION !== '0')
+		resources = setDocumentResources(
+			new DocumentResources(layoutProfiles, () => workspaceModule.module?.createContractWorkspace)
+		);
 	const host = loadComponent(
 		() => import('./DocumentHost.svelte'),
 		() =>
 			!deletionPending &&
-			(needsDocumentHost ||
-				Boolean(resources?.backgroundEnabled && resources.preparationCandidates.length)),
-		() => session.transportGeneration,
-		(module) => {
-			if (resources) resources.createWorkspace = module.createContractWorkspace;
-		}
+			(needsDocumentHost || backgroundPreparation),
+		() => session.transportGeneration
 	);
 	const DocumentHost = $derived(host.component);
-	const hostError = $derived(host.failed ? 'Unable to load the document viewer. Try again.' : '');
+	const workspaceReady = $derived(!needsDocumentHost || Boolean(workspaceModule.module));
+	const hostError = $derived(
+		host.failed
+			? 'Unable to load the document viewer. Try again.'
+			: needsDocumentHost && workspaceModule.failed
+				? 'Unable to load the document workspace. Try again.'
+				: ''
+	);
 	const runtime = setWorkspaceRuntime({
 		get ready() {
-			return Boolean(DocumentHost);
+			return Boolean(DocumentHost) && workspaceReady;
 		},
 		get paused() {
 			return deletionPending;
@@ -84,7 +99,10 @@
 		get navigationIntent() {
 			return navigationIntent;
 		},
-		retry: host.retry
+		retry: () => {
+			host.retry();
+			workspaceModule.retry();
+		}
 	});
 	setDocumentNavigation();
 	const admin = loadComponent(

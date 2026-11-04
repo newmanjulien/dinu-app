@@ -10,7 +10,8 @@
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { recordOpening } from '$lib/contract/browser-storage';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
-	import { createContractWorkspace, setContractWorkspace } from '$lib/document/runtime/context';
+	import { createContractWorkspace } from '$lib/document/runtime/workspace-factory';
+	import { setContractWorkspace } from '$lib/document/runtime/workspace-context';
 	import { conflictsForConcession } from '$lib/playbook/selection-conflicts';
 	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
@@ -70,10 +71,7 @@
 					id: initialContract._id,
 					status: 'ready',
 					snapshot,
-					contract: {
-						...initialContract,
-						lastOperationId: initialContract.lastOperationId ?? undefined
-					}
+					contract: initialContract
 				})
 			)
 		: undefined;
@@ -202,9 +200,11 @@
 		if (!(await persistence.loadLatest()) && active)
 			resolutionError = 'We couldn’t load the latest contract state. Your changes are still here.';
 	}
+	let animateInspectorContent = $state(false);
 	let selectedItemId = $state<string | null>(null),
 		selectedAnnotationId = $state<string | null>(null);
 	const item = $derived(source.items?.find((i) => i._id === selectedItemId));
+	const inspectorVisible = $derived(Boolean(item));
 	$effect(() => {
 		if (
 			item &&
@@ -213,6 +213,7 @@
 		)
 			selectedAnnotationId = null;
 		if (selectedItemId && !item) {
+			animateInspectorContent = false;
 			selectedItemId = null;
 			selectedAnnotationId = null;
 		}
@@ -248,8 +249,15 @@
 		if (persistence.choices[item._id] !== id && reasons[id]) return;
 		persistence.select(item._id, id);
 	}
+	function selectClause(itemId: string, annotationId: string) {
+		if (!editable) return false;
+		animateInspectorContent = inspectorVisible && selectedItemId !== itemId;
+		selectedItemId = itemId;
+		selectedAnnotationId = annotationId;
+	}
 	function close(restoreFocus = true) {
 		if (restoreFocus) viewer.restoreAnnotationFocus?.();
+		animateInspectorContent = false;
 		selectedItemId = null;
 		selectedAnnotationId = null;
 	}
@@ -439,15 +447,15 @@
 		if (approvalSending) return null;
 		if (latestApproval?.status === 'uncertain')
 			return latestApproval.retryEligible
-				? 'Gmail delivery could not be confirmed. You can retry now; another request may deliver a duplicate email.'
+				? 'Email delivery could not be confirmed. You can retry now; another request may deliver a duplicate email.'
 				: latestApproval.error;
 		return matchingApproval?.status === 'failed' ? matchingApproval.error : null;
 	});
 	const approvalMessage = $derived(
 		rejectedApprovalCount > 0
 			? rejectedApprovalCount === 1
-				? 'This concession was declined. Remove it or choose another concession before downloading.'
-				: 'These concessions were declined. Remove them or choose other concessions before downloading.'
+				? 'Your concession was declined. Remove it before downloading.'
+				: 'Your concessions were declined. Remove them before downloading.'
 			: !approvalSending && approvalRequested
 				? 'Approval has been requested. Waiting for approval before download.'
 				: approvalNeeded
@@ -574,14 +582,14 @@
 			if (active && wordAttempt === attempt)
 				exportError = saveError(error, 'We couldn’t prepare this download. Try again.');
 		} finally {
-			attempt.complete();
+			attempt.abort();
 			if (wordAttempt === attempt) wordAttempt = null;
 		}
 	}
 	const actionButtonClass = `${accentButtonClass} h-11 px-5 text-sm`;
 </script>
 
-<BoxDismissal owner={interactionOwner} active={Boolean(item)} onDismiss={close} />
+<BoxDismissal owner={interactionOwner} active={inspectorVisible} onDismiss={close} />
 
 {#if admitted && !runtime.paused}
 	<WorkspaceChrome {feedback} helpVariant="rep" helpReady={notifiedVisible} />
@@ -625,6 +633,7 @@
 		<main onclickcapture={recordContractInput} aria-label="Contract document">
 			{#snippet panelContent()}{#if item}<RepPlaybookPanel
 						{item}
+						animateContent={animateInspectorContent}
 						{isAdmin}
 						selected={persistence.choices[item._id]}
 						disabled={!editable}
@@ -729,7 +738,7 @@
 					interactive={admitted &&
 						stateReconciled &&
 						(notifiedVisible || Boolean(workspace.renderer.error))}
-					hasPanel={Boolean(item)}
+					hasPanel={inspectorVisible}
 					{panelContent}
 					{footerContent}
 					{selectedAnnotationId}
@@ -743,12 +752,9 @@
 					onRemoveConcession={(itemId) => {
 						if (editable) persistence.select(itemId as Id<'playbookItems'>, null);
 					}}
-					panelSource={item?.triggers[0]?.range.start}
-					onSelect={(id, trigger) => {
-						if (!editable) return false;
-						selectedItemId = id;
-						selectedAnnotationId = trigger;
-					}}
+					panelTarget={item?.trigger.range}
+					onSelect={selectClause}
+					onDocumentBackground={() => close(false)}
 				/>{/if}
 		</main>
 	</InteractionInputScope>

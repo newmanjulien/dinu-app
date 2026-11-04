@@ -35,19 +35,63 @@
     "replacementReferences": 1
   },
   "newCounts": {
-    "contractBlocks": 113,
+    "contractBlocks": 112,
     "playbookItems": 56,
-    "triggers": 62,
+    "triggers": 56,
     "concessions": 26,
     "preferred": 18,
     "rare": 8,
-    "changes": 66,
-    "afterNotes": 6,
-    "detailEntries": 1,
-    "markedAtoms": 49,
+    "changes": 34,
+    "afterNotes": 0,
+    "detailEntries": 0,
+    "markedAtoms": 0,
     "references": 31,
-    "replacementReferences": 1
+    "replacementReferences": 3
   },
+  "approvedChanges": [
+    {
+      "field": "markedAtoms",
+      "before": 49,
+      "after": 0,
+      "reason": "User approved removing all contract bold/italic formatting on 2026-10-27."
+    },
+    {
+      "field": "contractBlocks",
+      "before": 113,
+      "after": 112,
+      "reason": "Replace the hidden empty paragraph with the approved virtual gap insertion."
+    },
+    {
+      "field": "triggers",
+      "before": 62,
+      "after": 56,
+      "reason": "One primary instruction per rule; coordinated concession effects remain separate annotations."
+    },
+    {
+      "field": "changes",
+      "before": 66,
+      "after": 34,
+      "reason": "Consolidate archived edits into at most two continuous authored locations per concession, preserving all wording."
+    },
+    {
+      "field": "afterNotes",
+      "before": 6,
+      "after": 0,
+      "reason": "Move the same cross-section note once into each affected rule’s How to negotiate field."
+    },
+    {
+      "field": "replacementReferences",
+      "before": 1,
+      "after": 3,
+      "reason": "Continuous selections retain two unchanged baseline references as structured replacement atoms."
+    },
+    {
+      "field": "detailEntries",
+      "before": 1,
+      "after": 0,
+      "reason": "Retain the useful replacement detail in its description and approved How to negotiate wording."
+    }
+  ],
   "records": [
     {
       "entity": "contractBlock",
@@ -635,7 +679,17 @@
       "entity": "contractBlock",
       "key": "paragraph-mutual-indemnification",
       "oldId": "j97a1pw8qq0vxeahxxvyeznn4s8fa50d",
-      "mismatches": 0
+      "mismatches": 0,
+      "virtualInsertion": {
+        "start": {
+          "sourceKey": "gap:paragraph-equitable-relief",
+          "offset": 0
+        },
+        "end": {
+          "sourceKey": "gap:paragraph-equitable-relief",
+          "offset": 0
+        }
+      }
     },
     {
       "entity": "contractBlock",
@@ -731,7 +785,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "access-use",
       "oldId": "j57f61hppjzys835a6mzm28scn8fachz",
-      "triggers": 1,
+      "triggerId": "access-use",
       "concessions": 0,
       "mismatches": 0
     },
@@ -739,7 +793,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "amendment-waiver",
       "oldId": "j5715b6znzsrnkn28q3qpdfn2x8fa9fb",
-      "triggers": 1,
+      "triggerId": "amendment-waiver",
       "concessions": 0,
       "mismatches": 0
     },
@@ -747,7 +801,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "amendments-statement-of-work",
       "oldId": "j57e88kq8vqpzhffntb081vkjn8fam55",
-      "triggers": 1,
+      "triggerId": "amendments-statement-of-work",
       "concessions": 0,
       "mismatches": 0
     },
@@ -755,7 +809,10 @@
       "entity": "clauseBox → playbookItem",
       "key": "annual-fee-increase",
       "oldId": "j572r9x6bmkt8xgdbxxb920as18fbbva",
-      "triggers": 2,
+      "triggerId": "annual-fee-increase-main",
+      "coordinatedTriggerIds": [
+        "annual-fee-increase-exhibit-a"
+      ],
       "concessions": 1,
       "mismatches": 0
     },
@@ -763,7 +820,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "assignment",
       "oldId": "j57e9hze3ngf29qxs2atb6dg4h8fbffh",
-      "triggers": 1,
+      "triggerId": "assignment",
       "concessions": 0,
       "mismatches": 0
     },
@@ -771,7 +828,33 @@
       "entity": "clauseBox → playbookItem",
       "key": "attorneys-fees",
       "oldId": "j575btt7h1hgxcks4tdbeqw8bx8fb30f",
-      "triggers": 1,
+      "triggerId": "attorneys-fees",
+      "authoredLocations": [
+        {
+          "concessionId": "attorneys-fees-mutual",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3
+            ]
+          ]
+        },
+        {
+          "concessionId": "attorneys-fees-mutual-prevailing-party",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          ]
+        }
+      ],
       "concessions": 2,
       "mismatches": 0
     },
@@ -779,7 +862,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "automatic-payment-authorization",
       "oldId": "j578n7mpze6h5tc91103mz8wk18fb88w",
-      "triggers": 1,
+      "triggerId": "automatic-payment-authorization",
       "concessions": 0,
       "mismatches": 0
     },
@@ -787,7 +870,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "buyer-responsibilities",
       "oldId": "j57d3htnthfgnphj78fz58fpah8fb44e",
-      "triggers": 1,
+      "triggerId": "buyer-responsibilities",
       "concessions": 0,
       "mismatches": 0
     },
@@ -795,7 +878,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "certain-definitions",
       "oldId": "j57963nzbfrs6hnk2scapc7g8n8fbpj5",
-      "triggers": 1,
+      "triggerId": "certain-definitions",
       "concessions": 0,
       "mismatches": 0
     },
@@ -803,7 +886,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "confidential-information",
       "oldId": "j575s21wpaqd4qzjpgp8v6t9s58fbr8d",
-      "triggers": 1,
+      "triggerId": "confidential-information",
       "concessions": 0,
       "mismatches": 0
     },
@@ -811,7 +894,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "counterparts",
       "oldId": "j5722bz1t4yj7zp0wr9ca1hrmx8fbsqs",
-      "triggers": 1,
+      "triggerId": "counterparts",
       "concessions": 0,
       "mismatches": 0
     },
@@ -819,7 +902,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "entire-contract",
       "oldId": "j573wfyec7j4zf62gff2v159qx8fbyx3",
-      "triggers": 1,
+      "triggerId": "entire-contract",
       "concessions": 0,
       "mismatches": 0
     },
@@ -827,7 +910,38 @@
       "entity": "clauseBox → playbookItem",
       "key": "equipment-fee",
       "oldId": "j57b8w3j8bb5xc3pmkwktya27x8faaqj",
-      "triggers": 2,
+      "triggerId": "equipment-fee-main",
+      "coordinatedTriggerIds": [
+        "equipment-fee-exhibit-a"
+      ],
+      "authoredLocations": [
+        {
+          "concessionId": "equipment-fee-quarterly-installments",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2
+            ],
+            [
+              3
+            ]
+          ]
+        },
+        {
+          "concessionId": "equipment-fee-refundable-at-end",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2
+            ],
+            [
+              3
+            ]
+          ]
+        }
+      ],
       "concessions": 3,
       "mismatches": 0
     },
@@ -835,7 +949,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "equitable-relief",
       "oldId": "j570s2zehaqp111eg7fp04q27h8fbs7h",
-      "triggers": 1,
+      "triggerId": "equitable-relief",
       "concessions": 0,
       "mismatches": 0
     },
@@ -843,7 +957,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "exhibit-description-of-services",
       "oldId": "j575211c2fbv1mjd1gwp00xrt18fb3nv",
-      "triggers": 1,
+      "triggerId": "exhibit-description-of-services",
       "concessions": 0,
       "mismatches": 0
     },
@@ -851,7 +965,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "exhibit-fees",
       "oldId": "j5720eswh0cyetrb8n8bfgpfhn8fa8wk",
-      "triggers": 1,
+      "triggerId": "exhibit-fees",
       "concessions": 0,
       "mismatches": 0
     },
@@ -859,7 +973,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "fees",
       "oldId": "j57e3gp9vskfspxns2ng21tfnh8fbnm4",
-      "triggers": 1,
+      "triggerId": "fees",
       "concessions": 2,
       "mismatches": 0
     },
@@ -867,7 +981,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "fees-and-payment",
       "oldId": "j572nzhkym2m08b4nzndxb91f98fbzf1",
-      "triggers": 1,
+      "triggerId": "fees-and-payment",
       "concessions": 0,
       "mismatches": 0
     },
@@ -875,7 +989,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "force-majeure",
       "oldId": "j575ynh9ew6fscccy4f5fgn1b58fbr1f",
-      "triggers": 1,
+      "triggerId": "force-majeure",
       "concessions": 0,
       "mismatches": 0
     },
@@ -883,7 +997,21 @@
       "entity": "clauseBox → playbookItem",
       "key": "governing-law-dispute-resolution",
       "oldId": "j575cmk5affmzc2646qvm5qqbn8fb74x",
-      "triggers": 1,
+      "triggerId": "governing-law-dispute-resolution",
+      "authoredLocations": [
+        {
+          "concessionId": "governing-law-delaware",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          ]
+        }
+      ],
       "concessions": 1,
       "mismatches": 0
     },
@@ -891,7 +1019,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "information-security",
       "oldId": "j57b5jd84zmdd04nake2nbrwtd8faeaa",
-      "triggers": 1,
+      "triggerId": "information-security",
       "concessions": 0,
       "mismatches": 0
     },
@@ -899,7 +1027,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "insurance",
       "oldId": "j576r5tnh5w2qemnm6mv06n5zx8fabvx",
-      "triggers": 1,
+      "triggerId": "insurance",
       "concessions": 1,
       "mismatches": 0
     },
@@ -907,7 +1035,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "intellectual-property",
       "oldId": "j57ckpwvjy82nvmyfkwy5ge2qd8fbnf0",
-      "triggers": 1,
+      "triggerId": "intellectual-property",
       "concessions": 0,
       "mismatches": 0
     },
@@ -915,7 +1043,20 @@
       "entity": "clauseBox → playbookItem",
       "key": "limitations-of-liability",
       "oldId": "j57awfngw7mce3da6zqvtb146s8faw1a",
-      "triggers": 1,
+      "triggerId": "limitations-of-liability",
+      "authoredLocations": [
+        {
+          "concessionId": "limitations-of-liability-mutual",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3
+            ]
+          ]
+        }
+      ],
       "concessions": 3,
       "mismatches": 0
     },
@@ -923,7 +1064,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "marketing-rights",
       "oldId": "j5715qexgvrr1k8ym02a5dc93n8fawxm",
-      "triggers": 1,
+      "triggerId": "marketing-rights",
       "concessions": 1,
       "mismatches": 0
     },
@@ -931,7 +1072,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "miscellaneous",
       "oldId": "j57aky3agevzgkg2x6a7ve8p098faz0q",
-      "triggers": 1,
+      "triggerId": "miscellaneous",
       "concessions": 0,
       "mismatches": 0
     },
@@ -939,7 +1080,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "monthly-fee-discount",
       "oldId": "j57d32rdqc0vt2jqcw5dv6yy398faj3p",
-      "triggers": 1,
+      "triggerId": "monthly-fee-discount",
       "concessions": 5,
       "mismatches": 0
     },
@@ -947,7 +1088,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "mutual-indemnification-insertion",
       "oldId": "j574tjkvc87rbe2jad96dksqr58fa25g",
-      "triggers": 1,
+      "triggerId": "mutual-indemnification-insertion",
       "concessions": 1,
       "mismatches": 0
     },
@@ -955,7 +1096,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "non-interference",
       "oldId": "j57fj5b2g3579bwnrfztmdhb398faz9r",
-      "triggers": 1,
+      "triggerId": "non-interference",
       "concessions": 0,
       "mismatches": 0
     },
@@ -963,7 +1104,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "non-solicitation",
       "oldId": "j579k63wz6gkg2nf0csffvtny98fbfke",
-      "triggers": 1,
+      "triggerId": "non-solicitation",
       "concessions": 0,
       "mismatches": 0
     },
@@ -971,7 +1112,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "non-solicitation-definitions",
       "oldId": "j57fcx7f8v7zgy3eejq9nzma758fbvbj",
-      "triggers": 1,
+      "triggerId": "non-solicitation-definitions",
       "concessions": 0,
       "mismatches": 0
     },
@@ -979,7 +1120,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "non-solicitation-non-interference",
       "oldId": "j575jhrgejbrgbkyt9c5wmf64x8fbyb6",
-      "triggers": 1,
+      "triggerId": "non-solicitation-non-interference",
       "concessions": 0,
       "mismatches": 0
     },
@@ -987,7 +1128,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "non-solicitation-poaching-penalty-calculation",
       "oldId": "j5716y1m5pyvkz4rcqe95m5n058fawyc",
-      "triggers": 1,
+      "triggerId": "non-solicitation-poaching-penalty-calculation",
       "concessions": 0,
       "mismatches": 0
     },
@@ -995,7 +1136,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "non-solicitation-remedies",
       "oldId": "j57bv85vy614czsemxmyxp78m58fa0dg",
-      "triggers": 1,
+      "triggerId": "non-solicitation-remedies",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1003,7 +1144,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "notices",
       "oldId": "j577b1dcyw85kcjb47f5ye03rs8fb1qq",
-      "triggers": 1,
+      "triggerId": "notices",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1011,7 +1152,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "professional-terms",
       "oldId": "j57dq3yrw8skc3sqf5fk7mevax8fa1d4",
-      "triggers": 1,
+      "triggerId": "professional-terms",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1019,7 +1160,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "provider-ip-buyer-ip",
       "oldId": "j57amy31pmcda9hkaxkp748hch8fbjea",
-      "triggers": 1,
+      "triggerId": "provider-ip-buyer-ip",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1027,7 +1168,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "provision-professionals",
       "oldId": "j57fbfvm1w81meh13x23wy0dah8fapnc",
-      "triggers": 1,
+      "triggerId": "provision-professionals",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1035,7 +1176,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "relationship-of-parties",
       "oldId": "j578445cj7g5rsxafpp7pgdpk18fawx1",
-      "triggers": 1,
+      "triggerId": "relationship-of-parties",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1043,7 +1184,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "replacement-professional",
       "oldId": "j57d8trs6r48ht29c8fg9bvaes8fb1z5",
-      "triggers": 1,
+      "triggerId": "replacement-professional",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1051,7 +1192,10 @@
       "entity": "clauseBox → playbookItem",
       "key": "replacement-professional-initial-term",
       "oldId": "j5752wsf04t37n8bfvr49x9eds8fb8mt",
-      "triggers": 2,
+      "triggerId": "replacement-professional-initial-term",
+      "coordinatedTriggerIds": [
+        "replacement-professional-renewal-term"
+      ],
       "concessions": 2,
       "mismatches": 0
     },
@@ -1059,7 +1203,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "resale",
       "oldId": "j57f9vt8xmc9nhsyqbkkfzffkd8fampa",
-      "triggers": 1,
+      "triggerId": "resale",
       "concessions": 1,
       "mismatches": 0
     },
@@ -1067,7 +1211,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "reservation-of-rights",
       "oldId": "j575bbkpkfcrtxfm11nxds9edd8fbkpe",
-      "triggers": 1,
+      "triggerId": "reservation-of-rights",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1075,7 +1219,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "return-personal-information",
       "oldId": "j577z8f40p1w112tm54997kd1s8fbs1f",
-      "triggers": 1,
+      "triggerId": "return-personal-information",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1083,7 +1227,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "security-compliance",
       "oldId": "j5799p6c63z07xsnca7kmq4bvx8fbaqb",
-      "triggers": 1,
+      "triggerId": "security-compliance",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1091,7 +1235,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "severability",
       "oldId": "j574wbcfmzn196kw6ye3hsqs698fa19x",
-      "triggers": 1,
+      "triggerId": "severability",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1099,7 +1243,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "sharing-highly-sensitive-personal-information",
       "oldId": "j574jpff2za7xcxtwexn574g518fbky0",
-      "triggers": 1,
+      "triggerId": "sharing-highly-sensitive-personal-information-main",
       "concessions": 1,
       "mismatches": 0
     },
@@ -1107,7 +1251,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "survival",
       "oldId": "j570ftafjdn61jm5s7crzb7zgx8fawqw",
-      "triggers": 1,
+      "triggerId": "survival",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1115,7 +1259,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "taxes",
       "oldId": "j5701japxtd2krppnzspt4kshh8fbmk8",
-      "triggers": 1,
+      "triggerId": "taxes",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1123,7 +1267,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "term-and-termination",
       "oldId": "j57fxaaej50wm8tvfs3e9n6h0s8fb1jm",
-      "triggers": 1,
+      "triggerId": "term-and-termination",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1131,7 +1275,49 @@
       "entity": "clauseBox → playbookItem",
       "key": "term-fee-payment",
       "oldId": "j571n295e67r4dwndd33vamx158fay4x",
-      "triggers": 4,
+      "triggerId": "term-fee-payment-initial-main",
+      "coordinatedTriggerIds": [
+        "term-fee-payment-renewal-main",
+        "term-fee-payment-initial-exhibit-a",
+        "term-fee-payment-renewal-exhibit-a"
+      ],
+      "authoredLocations": [
+        {
+          "concessionId": "term-fee-payment-monthly-autopay-after-initial-term",
+          "archivedEdits": [
+            [
+              0,
+              1
+            ],
+            [
+              2,
+              3,
+              4,
+              5
+            ]
+          ]
+        },
+        {
+          "concessionId": "term-fee-payment-monthly-autopay",
+          "archivedEdits": [
+            [
+              0,
+              1,
+              2,
+              3
+            ],
+            [
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          ]
+        }
+      ],
       "concessions": 2,
       "mismatches": 0
     },
@@ -1139,7 +1325,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "term-of-contract",
       "oldId": "j57asbq1xnc3pfnrr703jdwdz58fak4v",
-      "triggers": 1,
+      "triggerId": "term-of-contract",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1147,7 +1333,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "termination",
       "oldId": "j57fw9y0jjf0sj12ps11xqjsgx8fa1ch",
-      "triggers": 1,
+      "triggerId": "termination",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1155,7 +1341,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "warranty-disclaimer",
       "oldId": "j57byp79jngdkv01vy8q7zr9w98fbb6p",
-      "triggers": 1,
+      "triggerId": "warranty-disclaimer",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1163,7 +1349,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "work-product-deliverables",
       "oldId": "j576fjb00p8zwmykrtnq0mwtys8fackj",
-      "triggers": 1,
+      "triggerId": "work-product-deliverables",
       "concessions": 0,
       "mismatches": 0
     },
@@ -1171,7 +1357,7 @@
       "entity": "clauseBox → playbookItem",
       "key": "work-product-payment-vesting",
       "oldId": "j57384z2jdp66e0n4j0dkzgr9h8fbptk",
-      "triggers": 1,
+      "triggerId": "work-product-payment-vesting",
       "concessions": 0,
       "mismatches": 0
     }
@@ -1219,8 +1405,8 @@
   ],
   "notes": [
     "Convex document IDs and creation times are retained in source evidence but regenerated by seed import.",
-    "No deleted records exist. No source user-facing field is omitted.",
-    "Numbering activation is represented by optional paragraphs and nonempty insertions.",
+    "No deleted records exist. Bold/italic marks are deliberately omitted with user approval; all business wording and structure remain checked.",
+    "Paragraph insertion uses virtual baseline boundaries; no hidden placeholder or optional paragraph remains.",
     "All data/convex files are derived from the cleaned export; existing seed wording is never an input."
   ]
 }

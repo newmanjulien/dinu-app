@@ -50,7 +50,7 @@
 		type="button"
 		aria-expanded={open}
 		aria-controls={id}
-		class="max-w-[45vw] cursor-pointer truncate rounded-button-sm px-2 py-1 text-xs text-ink-muted hover:bg-control-fill focus-visible:outline-2 focus-visible:outline-accent"
+		class="max-w-[45vw] cursor-pointer truncate rounded-button-sm px-2 py-1 text-xs text-ink-muted hover:bg-control-hover focus-visible:outline-2 focus-visible:outline-accent"
 		onclick={() => {
 			open = !open;
 		}}><span role="status">{label ?? 'Contract saves'}</span></button

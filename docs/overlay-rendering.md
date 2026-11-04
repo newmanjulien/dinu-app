@@ -1,5 +1,8 @@
 # Document projection and composition
 
+**Historical implementation/evidence record, superseded for current backend instructions on 2026-10-30.** The [current architecture](backend-redesign/architecture.md), [17D2 local evidence](backend-redesign/phase-17d2-cross-workflow.md) and [Phase 18 activation procedure](backend-redesign/phase-18-activation.md) own present behavior/status. Older counts, formatting, indexes, attribution, probes and deployment results below describe their original revision; they do not certify the changed backend or authorize an old rollout recipe.
+
+
 `PlaybookItem` is persisted business content. `toDocumentOverlay()` projects only
 item identity, Triggers and concession changes. The compositor never receives
 editor state or presentation copy.

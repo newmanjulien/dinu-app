@@ -12,7 +12,7 @@
 	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
 	import { isHelpHidden } from '$lib/components/ui/modal/help-storage';
 	import { onMount, tick } from 'svelte';
-	import { getContractWorkspace } from '$lib/document/runtime/context';
+	import { getContractWorkspace } from '$lib/document/runtime/workspace-context';
 	import { useViewer } from '$lib/auth/viewer-session.svelte';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
 	import {

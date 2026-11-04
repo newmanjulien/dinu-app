@@ -15,7 +15,10 @@ export async function preloadDestination(pathname: string) {
 				? import('./Workspace.svelte')
 				: undefined,
 		pathname === '/' ? loadHome() : undefined,
-		// Workspace waits for a ready baseline before loading its editor and renderer.
-		route.document && !route.baseline ? import('./DocumentHost.svelte') : undefined
+		// Baseline routes wait for baseline admission before loading document construction code.
+		route.document && !route.baseline ? import('./DocumentHost.svelte') : undefined,
+		route.document && !route.baseline
+			? import('$lib/document/runtime/workspace-factory')
+			: undefined
 	]);
 }

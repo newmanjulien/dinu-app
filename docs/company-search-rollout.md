@@ -1,13 +1,15 @@
 # Company search
 
-Saved-contract search uses Convex's `search_companyName` index filtered by
-`companyId`. Blank browsing uses `by_companyId_and_savedAt` in descending order.
+Saved-contract search reads `contractDirectory` using Convex's `search_companyName`
+index filtered by `companyId`. Blank browsing uses
+`by_companyId_and_savedAt_and_createdAt` in descending order.
 Authorization checks the caller's current membership before either query. There
 is no prefix table, prefix writer, cleanup function, or global browsing index.
 
-For a fresh deployment, follow the
-[reset and reseed procedure](private-companies-rollout.md#fresh-development-reset).
-The schema declares the search index directly; there is no staged conversion path.
+The schema declares the directory search index directly; there is no staged
+conversion or source-record fallback. [Phase 10](backend-redesign/phase-10-contracts.md)
+removes the obsolete rollout machinery locally. Deployment/reset remains the
+separately approved Phase 18 operation in the [backend plan](backend-redesign/README.md).
 
 ## Manual verification
 

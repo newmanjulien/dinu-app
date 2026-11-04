@@ -10,7 +10,7 @@ import type { SessionEditor } from '../../src/lib/auth/viewer-session.svelte';
 import { SessionController } from '../../src/lib/auth/session-controller.svelte';
 import { DocumentResources } from '../../src/lib/document/runtime/resources.svelte';
 import type { ContractLayoutProfiles } from '../../src/lib/document/runtime/layout-context.svelte';
-import type { ContractWorkspace } from '../../src/lib/document/runtime/context';
+import type { ContractWorkspace } from '../../src/lib/document/runtime/workspace-context';
 import type { Snippet } from 'svelte';
 import type { ContractSnapshot } from '../../src/lib/contract/saved';
 import Harness from './RouteHarness.svelte';
@@ -66,7 +66,16 @@ const template = (approval = false): ContractSnapshot => ({
 			_creationTime: 1,
 			companyId: 'company' as Id<'company'>,
 			revision: 1,
-			triggers: [],
+			trigger: {
+				id: 'trigger',
+				range: {
+					kind: 'text',
+					range: {
+						start: { sourceKey: 'text', offset: 0 },
+						end: { sourceKey: 'text', offset: 1 }
+					}
+				}
+			},
 			concessions: [{ id: 'preferred', tier: 'preferred', description: 'Choice', changes: [] }],
 			...(approval ? { instructions: { changesNeedApproval: 'Approval required' } } : {})
 		}
@@ -149,7 +158,7 @@ function fixture({
 				return Promise.resolve({
 					status: 'created',
 					id: 'contract-b',
-					contract: { ...contract('contract-b'), lastOperationId: undefined }
+					contract: contract('contract-b')
 				});
 			const result = deferred<any>();
 			writes.push({ request: args, result });
@@ -160,8 +169,8 @@ function fixture({
 		loadVersion: vi.fn(async () => template(approval)),
 		seedConfirmed: vi.fn((data) => data),
 		updateState: vi.fn(),
+		confirmMetadata: vi.fn(),
 		remove: vi.fn(),
-		rename: vi.fn(),
 		isDeleted: () => false
 	};
 	const owner = new ContractSessions({
@@ -681,14 +690,13 @@ it('prevents old attachments from clearing a replacement view', () => {
 		profiler: undefined,
 		scheduler: { wake: vi.fn() }
 	} as unknown as ContractLayoutProfiles;
-	const resources = new DocumentResources(profiles);
 	const workspace = {
 		accept: vi.fn(),
 		source: {},
 		viewer: { ready: false, visible: false },
 		renderer: { retainedPageCount: 0, destroy: vi.fn() }
 	} as unknown as ContractWorkspace;
-	resources.createWorkspace = () => workspace;
+	const resources = new DocumentResources(profiles, () => () => workspace);
 	const entry = resources.acquire('contract-a', { blocks: { data: [] }, items: { data: [] } });
 	const old = resources.activate(entry, { 'item-a': 'old' });
 	const current = resources.activate(entry, { 'item-a': 'new' });

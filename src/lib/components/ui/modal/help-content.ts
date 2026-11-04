@@ -24,34 +24,34 @@ export const helpContent = {
 			{
 				title: 'Understand the clause',
 				description:
-					'Highlighted contract language opens instructions, negotiation alternatives, or both.'
+					'Clauses are explained in plain English and include tips for negotiating with buyers.'
 			},
 			{
-				title: 'Negotiate the clause',
-				description: 'Some clauses include information on how to negotiate the clause with buyers.',
-				adminNote: 'Concessions you apply are automatically approved because you’re an admin.'
+				title: 'Negotiate safely',
+				description: 'Automatically apply concessions to the clauses you can negotiate.',
+				adminNote: 'Concessions are automatically approved because you’re an admin.'
 			}
 		]
 	},
 	admin: {
-		title: 'Add and edit',
+		title: 'Add and edit instructions',
 		intro:
-			'Help your reps understand and negotiate your contract by adding and editing instructions.',
+			'Help your reps understand and negotiate your contract by adding guidance and approved alternatives.',
 		steps: [
 			{
-				title: 'Select text',
-				description: 'Use your cursor to select the clause you want to explain.',
-				highlight: { text: 'select the clause', color: 'blue' }
+				title: 'Select contract wording',
+				highlight: { text: 'Select the text', color: 'blue' },
+				description: 'Select the text your reps need help understanding or negotiating.'
 			},
 			{
-				title: 'Add instructions',
-				description: 'Write your explanation or negotiation advice and save it.'
-			},
-			{
-				title: 'Open or edit instructions',
+				title: 'Explain in plain English',
 				description:
-					'Saved clauses appear green. Reps click them to read instructions. You click them to edit it.',
-				highlight: { text: 'Saved clauses', color: 'green' }
+					'Explain a clause lets you add a plain English description so reps understand what the contract says.'
+			},
+			{
+				title: 'Let reps make concessions',
+				description:
+					'Add concession lets you set up changes reps can make and lets you specify when they need approval.'
 			}
 		]
 	}

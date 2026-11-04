@@ -1,153 +1,286 @@
-export type RedlineDiffPart =
-	| { kind: 'equal'; text: string }
-	| { kind: 'delete'; text: string }
-	| { kind: 'insert'; text: string };
-
+/** References compare by identity, independently of their current displayed number. */
+export interface RedlineToken {
+	key: string;
+	text: string;
+}
+export interface RedlineDiffPart {
+	kind: 'equal' | 'delete' | 'insert';
+	sourceStart: number;
+	sourceEnd: number;
+	replacementStart: number;
+	replacementEnd: number;
+}
 const MAX_LCS_CELLS = 65_536;
 const MAX_DIFF_PARTS = 128;
-
-const MIN_ANCHOR_WORDS = 2;
-const MIN_ANCHOR_CHARACTERS = 8;
-const MIN_LONG_ANCHOR_CHARACTERS = 10;
+const MAX_ANCHOR_DEPTH = 16;
 const MIN_READABLE_RETENTION = 0.4;
-const MAX_NON_SUBSTANTIVE_LENGTH = 128;
 
-function appendPart(parts: RedlineDiffPart[], kind: RedlineDiffPart['kind'], text: string) {
-	if (!text) return;
-	const previous = parts.at(-1);
-	if (previous?.kind === kind) previous.text += text;
-	else parts.push({ kind, text });
-}
-
-function isStrongAnchor(text: string): boolean {
-	const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [];
-	let characters = 0;
-	for (const word of words) {
-		const length = word.match(/[\p{L}\p{N}]/gu)!.length;
-		if (length >= MIN_LONG_ANCHOR_CHARACTERS) return true;
-		characters += length;
-	}
-	return words.length >= MIN_ANCHOR_WORDS && characters >= MIN_ANCHOR_CHARACTERS;
-}
-
-/** Fold every weak internal equality into both sides of the surrounding edit. */
-function collapseWeakEqualities(parts: readonly RedlineDiffPart[]): RedlineDiffPart[] {
-	const result: RedlineDiffPart[] = [];
-	let deleted = '',
-		inserted = '';
-	function flush() {
-		appendPart(result, 'delete', deleted);
-		appendPart(result, 'insert', inserted);
-		deleted = inserted = '';
-	}
-	for (const [i, part] of parts.entries()) {
-		if (part.kind === 'delete') deleted += part.text;
-		else if (part.kind === 'insert') inserted += part.text;
-		else if (i > 0 && i < parts.length - 1 && !isStrongAnchor(part.text)) {
-			deleted += part.text;
-			inserted += part.text;
-		} else {
-			flush();
-			appendPart(result, 'equal', part.text);
-		}
-	}
-	// Buffering across weak islands reaches a stable, coalesced result in one pass.
-	flush();
-	return result;
-}
-
-/** Preserve word boundaries: changing "now here" to "nowhere" is a wording edit. */
-function hasOnlySpacingOrPunctuationChanges(before: string, after: string): boolean {
-	const words = before.match(/[\p{L}\p{N}\p{M}\p{S}]+/gu) ?? [];
-	const replacementWords = after.match(/[\p{L}\p{N}\p{M}\p{S}]+/gu) ?? [];
+export function redlineTextTokens(text: string): RedlineToken[] {
+	// Keep words (including apostrophes/hyphens) atomic; punctuation can change
+	// without marking an unchanged neighboring word as replaced.
 	return (
-		words.length > 0 &&
-		words.length === replacementWords.length &&
-		words.every((word, i) => word === replacementWords[i])
+		text.match(/\s+|[\p{L}\p{N}\p{M}]+(?:['’\-][\p{L}\p{N}\p{M}]+)*|[^\s\p{L}\p{N}\p{M}]/gu) ?? []
+	).map((text) => ({ key: `text:${text}`, text }));
+}
+function characters(text: string): number {
+	return text.match(/[\p{L}\p{N}\p{M}\p{S}]/gu)?.length ?? 0;
+}
+function strongAnchor(tokens: readonly RedlineToken[]): boolean {
+	if (tokens.some((token) => !token.key.startsWith('text:'))) return true;
+	const words =
+		tokens
+			.map((token) => token.text)
+			.join('')
+			.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [];
+	return (
+		words.some((word) => characters(word) >= 10) ||
+		(words.length >= 2 && words.reduce((n, word) => n + characters(word), 0) >= 8)
 	);
 }
-
-function substantiveCharacters(text: string): number {
-	let count = 0;
-	for (const character of text) if (/[\p{L}\p{N}\p{M}\p{S}]/u.test(character)) count++;
-	return count;
-}
-
-function hasReadableRetention(
-	parts: readonly RedlineDiffPart[],
-	before: string,
-	after: string
-): boolean {
-	const weight = substantiveCharacters(before) + substantiveCharacters(after);
-	if (!weight) return before.length + after.length <= MAX_NON_SUBSTANTIVE_LENGTH;
-	let retained = 0;
-	for (const part of parts) if (part.kind === 'equal') retained += substantiveCharacters(part.text);
-	return (2 * retained) / weight >= MIN_READABLE_RETENTION;
-}
-
-/** A bounded presentation diff. null asks the caller to use whole-range redlining. */
-export function diffRedlineText(before: string, after: string): readonly RedlineDiffPart[] | null {
-	if (before === after) return before ? [{ kind: 'equal', text: before }] : [];
-	// Keep visible chunks atomic, but let whitespace change independently of words.
-	const a = before.match(/\s+|[^\s]+/gu) ?? [];
-	const b = after.match(/\s+|[^\s]+/gu) ?? [];
-	let prefix = 0;
-	while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
-	let aEnd = a.length,
-		bEnd = b.length;
-	while (aEnd > prefix && bEnd > prefix && a[aEnd - 1] === b[bEnd - 1]) {
-		aEnd--;
-		bEnd--;
-	}
-	const n = aEnd - prefix,
-		m = bEnd - prefix;
-	if (n && m && (n + 1) * (m + 1) > MAX_LCS_CELLS) return null;
-
-	const candidate: RedlineDiffPart[] = [];
-	appendPart(candidate, 'equal', a.slice(0, prefix).join(''));
-	let sourceGap = prefix,
-		replacementGap = prefix;
-	function gap(sourceEnd: number, replacementEnd: number) {
-		// Emit the whole unmatched gap in conventional deletion-before-insertion order.
-		appendPart(candidate, 'delete', a.slice(sourceGap, sourceEnd).join(''));
-		appendPart(candidate, 'insert', b.slice(replacementGap, replacementEnd).join(''));
-	}
-	if (n && m) {
-		const width = m + 1;
-		const lcs = new Uint16Array((n + 1) * width);
-		for (let i = n - 1; i >= 0; i--)
-			for (let j = m - 1; j >= 0; j--)
-				lcs[i * width + j] =
-					a[prefix + i] === b[prefix + j]
-						? 1 + lcs[(i + 1) * width + j + 1]
-						: Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1]);
-		let i = 0,
-			j = 0;
-		while (i < n && j < m) {
-			if (a[prefix + i] === b[prefix + j]) {
-				gap(prefix + i, prefix + j);
-				appendPart(candidate, 'equal', a[prefix + i]);
-				sourceGap = prefix + ++i;
-				replacementGap = prefix + ++j;
-			} else if (lcs[(i + 1) * width + j] >= lcs[i * width + j + 1]) {
-				// Stable tie-break: skip the source token first.
-				i++;
-			} else j++;
+/** Unique tokens in increasing order anchor long passages without quadratic work. */
+function uniqueAnchors(
+	a: readonly RedlineToken[],
+	b: readonly RedlineToken[],
+	aStart: number,
+	aEnd: number,
+	bStart: number,
+	bEnd: number
+): [number, number][] {
+	function positions(tokens: readonly RedlineToken[], start: number, end: number) {
+		const result = new Map<string, number>();
+		for (let i = start; i < end; i++) {
+			const token = tokens[i];
+			if (token.text.trim()) result.set(token.key, result.has(token.key) ? -1 : i);
 		}
+		return result;
 	}
-	gap(aEnd, bEnd);
-	appendPart(candidate, 'equal', a.slice(aEnd).join(''));
-	// Nonlexical edits already have useful exact anchors, even short words between spaces.
-	const nonlexical = hasOnlySpacingOrPunctuationChanges(before, after);
-	const parts = nonlexical ? candidate : collapseWeakEqualities(candidate);
+	const source = positions(a, aStart, aEnd),
+		replacement = positions(b, bStart, bEnd);
+	const pairs: [number, number][] = [];
+	for (const [key, i] of source) {
+		const j = replacement.get(key);
+		if (i >= 0 && j !== undefined && j >= 0) pairs.push([i, j]);
+	}
+	const tails: number[] = [],
+		parents: number[] = [];
+	for (let i = 0; i < pairs.length; i++) {
+		let low = 0,
+			high = tails.length;
+		while (low < high) {
+			const mid = (low + high) >>> 1;
+			if (pairs[tails[mid]][1] < pairs[i][1]) low = mid + 1;
+			else high = mid;
+		}
+		parents[i] = low ? tails[low - 1] : -1;
+		tails[low] = i;
+	}
+	const result: [number, number][] = [];
+	for (let i = tails.at(-1) ?? -1; i >= 0; i = parents[i]) result.push(pairs[i]);
+	return result.reverse();
+}
+/** Bounded presentation alignment. null retains conventional whole-range redlining. */
+export function diffRedlineTokens(
+	a: readonly RedlineToken[],
+	b: readonly RedlineToken[]
+): readonly RedlineDiffPart[] | null {
+	const candidate: RedlineDiffPart[] = [];
+	let remainingCells = MAX_LCS_CELLS;
+	function append(part: RedlineDiffPart, output = candidate) {
+		if (part.sourceStart === part.sourceEnd && part.replacementStart === part.replacementEnd)
+			return;
+		const last = output.at(-1);
+		if (
+			last?.kind === part.kind &&
+			last.sourceEnd === part.sourceStart &&
+			last.replacementEnd === part.replacementStart
+		) {
+			last.sourceEnd = part.sourceEnd;
+			last.replacementEnd = part.replacementEnd;
+		} else output.push({ ...part });
+	}
+	function gap(aStart: number, aEnd: number, bStart: number, bEnd: number) {
+		append({
+			kind: 'delete',
+			sourceStart: aStart,
+			sourceEnd: aEnd,
+			replacementStart: bStart,
+			replacementEnd: bStart
+		});
+		append({
+			kind: 'insert',
+			sourceStart: aEnd,
+			sourceEnd: aEnd,
+			replacementStart: bStart,
+			replacementEnd: bEnd
+		});
+	}
+	function align(aStart: number, aEnd: number, bStart: number, bEnd: number, depth: number) {
+		const prefixA = aStart,
+			prefixB = bStart;
+		while (aStart < aEnd && bStart < bEnd && a[aStart].key === b[bStart].key) {
+			aStart++;
+			bStart++;
+		}
+		append({
+			kind: 'equal',
+			sourceStart: prefixA,
+			sourceEnd: aStart,
+			replacementStart: prefixB,
+			replacementEnd: bStart
+		});
+		const suffixA = aEnd,
+			suffixB = bEnd;
+		while (aEnd > aStart && bEnd > bStart && a[aEnd - 1].key === b[bEnd - 1].key) {
+			aEnd--;
+			bEnd--;
+		}
+		const n = aEnd - aStart,
+			m = bEnd - bStart,
+			cells = (n + 1) * (m + 1);
+		if (n && m && cells <= remainingCells) {
+			remainingCells -= cells;
+			const width = m + 1,
+				lcs = new Uint32Array(cells);
+			// Prefer substantive text to incidental matches of repeated spaces/articles.
+			for (let i = n - 1; i >= 0; i--) {
+				const weight = Math.max(1, characters(a[aStart + i].text));
+				for (let j = m - 1; j >= 0; j--)
+					lcs[i * width + j] =
+						a[aStart + i].key === b[bStart + j].key
+							? weight + lcs[(i + 1) * width + j + 1]
+							: Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1]);
+			}
+			let i = 0,
+				j = 0,
+				sourceGap = aStart,
+				replacementGap = bStart;
+			while (i < n && j < m) {
+				if (a[aStart + i].key === b[bStart + j].key) {
+					gap(sourceGap, aStart + i, replacementGap, bStart + j);
+					append({
+						kind: 'equal',
+						sourceStart: aStart + i,
+						sourceEnd: aStart + i + 1,
+						replacementStart: bStart + j,
+						replacementEnd: bStart + j + 1
+					});
+					sourceGap = aStart + ++i;
+					replacementGap = bStart + ++j;
+				} else if (lcs[(i + 1) * width + j] >= lcs[i * width + j + 1]) i++;
+				else j++;
+			}
+			gap(sourceGap, aEnd, replacementGap, bEnd);
+		} else {
+			const anchors =
+				n && m && depth < MAX_ANCHOR_DEPTH ? uniqueAnchors(a, b, aStart, aEnd, bStart, bEnd) : [];
+			let sourceGap = aStart,
+				replacementGap = bStart;
+			for (const [i, j] of anchors) {
+				align(sourceGap, i, replacementGap, j, depth + 1);
+				append({
+					kind: 'equal',
+					sourceStart: i,
+					sourceEnd: i + 1,
+					replacementStart: j,
+					replacementEnd: j + 1
+				});
+				sourceGap = i + 1;
+				replacementGap = j + 1;
+			}
+			gap(sourceGap, aEnd, replacementGap, bEnd);
+		}
+		append({
+			kind: 'equal',
+			sourceStart: aEnd,
+			sourceEnd: suffixA,
+			replacementStart: bEnd,
+			replacementEnd: suffixB
+		});
+	}
+	align(0, a.length, 0, b.length, 0);
+	const before = a.map((token) => token.text).join(''),
+		after = b.map((token) => token.text).join('');
+	const words = (text: string) => text.match(/[\p{L}\p{N}\p{M}\p{S}]+/gu) ?? [];
+	const sourceWords = words(before),
+		replacementWords = words(after);
+	const nonlexical =
+		sourceWords.length > 0 &&
+		sourceWords.length === replacementWords.length &&
+		sourceWords.every((word, i) => word === replacementWords[i]);
+	const parts: RedlineDiffPart[] = [];
+	let pending: RedlineDiffPart | undefined;
+	function flush() {
+		if (!pending) return;
+		append({ ...pending, kind: 'delete', replacementEnd: pending.replacementStart }, parts);
+		append({ ...pending, kind: 'insert', sourceStart: pending.sourceEnd }, parts);
+		pending = undefined;
+	}
+	const oneWord = (tokens: readonly RedlineToken[]) =>
+		tokens.filter((token) => !token.key.startsWith('text:') || /[\p{L}\p{N}]/u.test(token.text))
+			.length === 1;
+	function wordSubstitution(removed?: RedlineDiffPart, added?: RedlineDiffPart): boolean {
+		return (
+			removed?.kind === 'delete' &&
+			added?.kind === 'insert' &&
+			oneWord(a.slice(removed.sourceStart, removed.sourceEnd)) &&
+			oneWord(b.slice(added.replacementStart, added.replacementEnd))
+		);
+	}
+	for (const [i, part] of candidate.entries()) {
+		const unchanged = part.kind === 'equal' ? a.slice(part.sourceStart, part.sourceEnd) : [];
+		if (
+			part.kind === 'equal' &&
+			(nonlexical ||
+				i === 0 ||
+				i === candidate.length - 1 ||
+				strongAnchor(unchanged) ||
+				// A genuine word between two word substitutions is useful context,
+				// even when too short to anchor a larger rewrite by itself.
+				(unchanged.some((token) => /[\p{L}\p{N}]/u.test(token.text)) &&
+					wordSubstitution(candidate[i - 2], candidate[i - 1]) &&
+					wordSubstitution(candidate[i + 1], candidate[i + 2])))
+		) {
+			flush();
+			append(part, parts);
+		} else if (pending) {
+			pending.sourceEnd = part.sourceEnd;
+			pending.replacementEnd = part.replacementEnd;
+		} else pending = { ...part };
+	}
+	flush();
 	if (parts.length > MAX_DIFF_PARTS) return null;
-	if (!nonlexical && !hasReadableRetention(parts, before, after)) return null;
-	let reconstructedBefore = '',
-		reconstructedAfter = '';
+	const weight = characters(before) + characters(after);
+	const retained = parts
+		.filter((part) => part.kind === 'equal')
+		.reduce(
+			(n, part) =>
+				n +
+				characters(
+					a
+						.slice(part.sourceStart, part.sourceEnd)
+						.map((t) => t.text)
+						.join('')
+				) +
+				characters(
+					b
+						.slice(part.replacementStart, part.replacementEnd)
+						.map((t) => t.text)
+						.join('')
+				),
+			0
+		);
+	if (
+		!nonlexical &&
+		(weight ? retained / weight < MIN_READABLE_RETENTION : before.length + after.length > 128)
+	)
+		return null;
+	// Check both coordinate streams before exposing any presentation result.
+	let sourceEnd = 0,
+		replacementEnd = 0;
 	for (const part of parts) {
-		if (part.kind !== 'insert') reconstructedBefore += part.text;
-		if (part.kind !== 'delete') reconstructedAfter += part.text;
+		if (part.sourceStart !== sourceEnd || part.replacementStart !== replacementEnd) return null;
+		sourceEnd = part.sourceEnd;
+		replacementEnd = part.replacementEnd;
 	}
-	if (reconstructedBefore !== before || reconstructedAfter !== after) return null;
-	return parts;
+	return sourceEnd === a.length && replacementEnd === b.length ? parts : null;
 }

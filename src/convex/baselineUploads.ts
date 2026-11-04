@@ -12,8 +12,11 @@ import type { Id } from './_generated/dataModel';
 import { requirePermission } from './auth';
 import { currentPointer } from './templates';
 import { baselineBlock } from './sourceValidators';
-import { canonicalBaselineFingerprint } from './baselineStorage';
+import { baselineIntegrity, writeBaselineChunks } from './baselineStorage';
+import { documentBytes, publicationCapacity } from './templateCapacity';
 import { validateBaseline } from '../lib/contract/validate-source';
+import { cleanupBudget, CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
+import { deleteUnownedFile } from './storageOwnership';
 import {
 	BASELINE_MAX_BLOCKS,
 	BASELINE_MAX_BYTES,
@@ -22,32 +25,17 @@ import {
 } from '../lib/contract/import/limits';
 
 import { DOCX_TYPE, issue, preparation } from './baselineUploadValidators';
-import { documentFileOwned } from './storageOwnership';
-import { PDF_CONTENT_TYPE } from '../lib/delegation';
+import {
+	readUploadBody,
+	uploadErrorMessage as message,
+	uploadPreflightResponse,
+	uploadResponse as response
+} from './uploadHttp';
 
 const UPLOAD_TTL = 24 * 60 * 60_000;
-const cors = {
-	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Methods': 'POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-	'Cache-Control': 'no-store'
-};
-function response(body: unknown, status = 200) {
-	return new Response(JSON.stringify(body), {
-		status,
-		headers: { ...cors, 'Content-Type': 'application/json' }
-	});
-}
-function message(error: unknown, fallback: string) {
-	if (error instanceof ConvexError) {
-		if (typeof error.data === 'string') return error.data;
-		if (error.data && typeof error.data === 'object' && 'message' in error.data)
-			return String(error.data.message);
-	}
-	return fallback;
-}
 async function emptyCompany(ctx: QueryCtx, companyId: Id<'company'>) {
-	const [pointer, versions, items, baselines] = await Promise.all([
+	const [company, pointer, versions, items, baselines] = await Promise.all([
+		ctx.db.get('company', companyId),
 		currentPointer(ctx, companyId),
 		ctx.db
 			.query('templateVersions')
@@ -63,6 +51,7 @@ async function emptyCompany(ctx: QueryCtx, companyId: Id<'company'>) {
 			.take(17)
 	]);
 	if (
+		company?.baselineId ||
 		pointer ||
 		versions.length ||
 		items.length ||
@@ -94,7 +83,7 @@ function reusable(
 			b.uploaderId === uploaderId &&
 			b.fileHash === fileHash &&
 			b.parserVersion === DOCX_PARSER_VERSION &&
-			(b.expiresAt ?? 0) > Date.now()
+			b.expiresAt > Date.now()
 	);
 }
 // This authoritative transaction rechecks reuse after the bytes have been hashed.
@@ -128,10 +117,11 @@ export const prepare = internalMutation({
 		const access = await requirePermission(ctx, 'manageTemplate', args.membershipId);
 		const prepared = await emptyCompany(ctx, access.companyId);
 		validateBaseline(args.blocks);
+		if (args.blocks.length > BASELINE_MAX_BLOCKS)
+			throw new ConvexError('The prepared document failed validation. Select the DOCX again.');
+		const integrity = baselineIntegrity(args.blocks);
 		if (
-			!args.blocks.length ||
-			args.blocks.length > BASELINE_MAX_BLOCKS ||
-			new TextEncoder().encode(JSON.stringify(args.blocks)).byteLength > BASELINE_MAX_BYTES ||
+			integrity.blocksJsonBytes > BASELINE_MAX_BYTES ||
 			args.issues.length > 600 ||
 			args.issues.some(
 				(i) =>
@@ -154,34 +144,41 @@ export const prepare = internalMutation({
 			).join('') !== args.fileHash
 		)
 			throw new ConvexError('The uploaded Word file is unavailable. Select it again.');
-		const fingerprint = canonicalBaselineFingerprint(args.blocks);
 		const existing = reusable(prepared, access._id, args.fileHash);
-		if (existing && existing.fingerprint !== fingerprint)
+		if (existing && existing.fingerprint !== integrity.fingerprint)
 			throw new ConvexError('The prepared document is inconsistent.');
 		if (existing) return { preparedBaselineId: existing._id };
 		if (prepared.length >= 16)
 			throw new ConvexError('Too many unfinished uploads. Try again after they expire.');
 		const expiresAt = Date.now() + UPLOAD_TTL;
-		const preparedBaselineId = await ctx.db.insert('baselines', {
+		const preparedBaseline = {
 			companyId: access.companyId,
-			state: 'prepared',
-			source: 'docx',
+			state: 'prepared' as const,
+			source: 'docx' as const,
 			originalFileId: args.originalFileId,
 			filename: args.filename,
 			fileHash: args.fileHash,
-			fingerprint,
+			...integrity,
 			parserVersion: DOCX_PARSER_VERSION,
 			uploaderId: access._id,
 			issues: args.issues,
 			blockCount: args.blocks.length,
+			chunkCount: 0,
+			chunkReadBytes: 0,
 			expiresAt
+		};
+		await publicationCapacity(ctx, { documents: 1, bytes: documentBytes(preparedBaseline) });
+		const preparedBaselineId = await ctx.db.insert('baselines', preparedBaseline);
+		const counters = await writeBaselineChunks(ctx, {
+			companyId: access.companyId,
+			baselineId: preparedBaselineId,
+			blocks: args.blocks
 		});
-		for (const block of args.blocks)
-			await ctx.db.insert('contractBlocks', {
-				...block,
-				companyId: access.companyId,
-				baselineId: preparedBaselineId
-			});
+		await publicationCapacity(ctx, {
+			documents: 1,
+			bytes: documentBytes({ ...preparedBaseline, ...counters })
+		});
+		await ctx.db.patch('baselines', preparedBaselineId, counters);
 		await ctx.scheduler.runAfter(UPLOAD_TTL, internal.baselineUploads.expire, {
 			baselineId: preparedBaselineId
 		});
@@ -214,24 +211,9 @@ export const upload = httpAction(async (ctx, request) => {
 			return response({ error: 'Choose a DOCX no larger than 10 MB.' }, 413);
 		const reader = request.body?.getReader();
 		if (!reader) return response({ error: 'The Word file is empty.' }, 400);
-		const chunks: Uint8Array<ArrayBuffer>[] = [];
 		const hash = sha256.create();
-		let size = 0;
-		try {
-			while (true) {
-				const chunk = await reader.read();
-				if (chunk.done) break;
-				size += chunk.value.byteLength;
-				if (size > DOCX_MAX_BYTES) {
-					await reader.cancel();
-					return response({ error: 'Choose a DOCX no larger than 10 MB.' }, 413);
-				}
-				chunks.push(chunk.value);
-				hash.update(chunk.value);
-			}
-		} finally {
-			reader.releaseLock();
-		}
+		const body = await readUploadBody(reader, DOCX_MAX_BYTES, (chunk) => hash.update(chunk));
+		if (!body) return response({ error: 'Choose a DOCX no larger than 10 MB.' }, 413);
 		const fileHash = Array.from(hash.digest(), (byte) => byte.toString(16).padStart(2, '0')).join(
 			''
 		);
@@ -244,7 +226,7 @@ export const upload = httpAction(async (ctx, request) => {
 		} catch (error) {
 			return response({ error: message(error, 'Unable to prepare this upload. Try again.') }, 409);
 		}
-		const originalFileId = await ctx.storage.store(new Blob(chunks, { type: DOCX_TYPE }));
+		const originalFileId = await ctx.storage.store(new Blob(body.chunks, { type: DOCX_TYPE }));
 		try {
 			const result = await ctx.runAction(internal.baselineParser.prepare, {
 				membershipId,
@@ -266,22 +248,12 @@ export const upload = httpAction(async (ctx, request) => {
 // Reference-safe deletion is independent of response success, including dispatch failure.
 async function discardLater(ctx: ActionCtx, fileId: Id<'_storage'>) {
 	try {
-		await ctx.scheduler.runAfter(0, internal.baselineUploads.discardFile, { fileId });
+		await ctx.scheduler.runAfter(0, internal.storageOwnership.discardFile, { fileId });
 	} catch (error) {
 		console.error('Unable to dispatch unused baseline file cleanup.', error);
 	}
 }
-export const preflight = httpAction(async () => new Response(null, { status: 204, headers: cors }));
-
-// A failed response can follow a committed preparation. Never delete referenced bytes.
-export const discardFile = internalMutation({
-	args: { fileId: v.id('_storage') },
-	returns: v.null(),
-	handler: async (ctx, { fileId }) => {
-		if (!(await documentFileOwned(ctx, fileId))) await ctx.storage.delete(fileId);
-		return null;
-	}
-});
+export const preflight = httpAction(async () => uploadPreflightResponse());
 
 export const expire = internalMutation({
 	args: { baselineId: v.id('baselines') },
@@ -292,93 +264,67 @@ export const expire = internalMutation({
 			!baseline ||
 			baseline.source !== 'docx' ||
 			baseline.state === 'published' ||
-			(baseline.expiresAt ?? Infinity) > Date.now()
+			baseline.expiresAt > Date.now()
 		)
 			return null;
-		const rows = await ctx.db
-			.query('contractBlocks')
-			.withIndex('by_baselineId_and_order', (q) => q.eq('baselineId', baselineId))
-			.take(64);
 		await ctx.db.patch('baselines', baselineId, { state: 'deleting' });
-		for (const row of rows) await ctx.db.delete('contractBlocks', row._id);
-		if (rows.length === 64)
-			await ctx.scheduler.runAfter(0, internal.baselineUploads.expire, { baselineId });
+		const { drain } = cleanupBudget(ctx);
+		const drained = await drain(
+			'baselineChunks',
+			ctx.db
+				.query('baselineChunks')
+				.withIndex('by_companyId_and_baselineId_and_order', (q) =>
+					q.eq('companyId', baseline.companyId).eq('baselineId', baselineId)
+				)
+		);
+		if (!drained) await ctx.scheduler.runAfter(0, internal.baselineUploads.expire, { baselineId });
 		else {
-			if (baseline.originalFileId) await ctx.storage.delete(baseline.originalFileId);
 			await ctx.db.delete('baselines', baselineId);
+			await deleteUnownedFile(ctx, baseline.originalFileId);
 		}
 		return null;
 	}
 });
 export const expirePrepared = internalMutation({
-	args: {},
+	args: {
+		state: v.optional(v.union(v.literal('prepared'), v.literal('deleting'))),
+		cursor: v.optional(v.union(v.string(), v.null()))
+	},
 	returns: v.null(),
-	handler: async (ctx) => {
-		for (const state of ['prepared', 'deleting'] as const) {
-			const baselines = await ctx.db
-				.query('baselines')
-				.withIndex('by_state_and_expiresAt', (q) =>
-					q.eq('state', state).gt('expiresAt', 0).lte('expiresAt', Date.now())
-				)
-				.take(10);
-			for (const baseline of baselines)
-				if (baseline.source === 'docx')
-					await ctx.scheduler.runAfter(0, internal.baselineUploads.expire, {
-						baselineId: baseline._id
-					});
-		}
-		return null;
-	}
-});
-// Recover interrupted uploads/exports once per creation interval. Referenced originals
-// are subsequently deleted by baseline expiry or company deletion, not rescanned here.
-export const cleanOrphanFiles = internalMutation({
-	args: { cursor: v.optional(v.union(v.string(), v.null())), cutoff: v.optional(v.number()) },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const sweep = await ctx.db
-			.query('fileSweeps')
-			.withIndex('by_kind', (q) => q.eq('kind', 'docx-orphans'))
-			.unique();
-		// A duplicate continuation must not advance a newer page or interval.
-		if (
-			args.cutoff !== undefined &&
-			(sweep?.active?.cutoff !== args.cutoff || sweep.active.cursor !== (args.cursor ?? null))
-		)
+	handler: async (ctx, { state, cursor }) => {
+		if (!state) {
+			for (const state of ['prepared', 'deleting'] as const) {
+				const expired = await ctx.db
+					.query('baselines')
+					.withIndex('by_state_and_expiresAt', (q) =>
+						q.eq('state', state).gt('expiresAt', 0).lte('expiresAt', Date.now())
+					)
+					.first();
+				if (expired)
+					await ctx.scheduler.runAfter(0, internal.baselineUploads.expirePrepared, { state });
+			}
 			return null;
-		const cutoff = sweep?.active?.cutoff ?? Date.now() - UPLOAD_TTL;
-		const completedThrough = sweep?.completedThrough ?? null;
-		if (completedThrough !== null && cutoff <= completedThrough) return null;
-		const sweepId =
-			sweep?._id ??
-			(await ctx.db.insert('fileSweeps', {
-				kind: 'docx-orphans',
-				completedThrough: null,
-				active: { cutoff, cursor: null }
-			}));
-		const result = await ctx.db.system
-			.query('_storage')
-			.withIndex('by_creation_time', (q) =>
-				completedThrough === null
-					? q.lte('_creationTime', cutoff)
-					: q.gt('_creationTime', completedThrough).lte('_creationTime', cutoff)
-			)
-			.paginate({ cursor: sweep?.active?.cursor ?? null, numItems: 25 });
-		for (const file of result.page) {
-			if (file.contentType !== DOCX_TYPE && file.contentType !== PDF_CONTENT_TYPE) continue;
-			if (!(await documentFileOwned(ctx, file._id))) await ctx.storage.delete(file._id);
 		}
-		await ctx.db.patch(
-			'fileSweeps',
-			sweepId,
-			result.isDone
-				? { completedThrough: cutoff, active: null }
-				: { active: { cutoff, cursor: result.continueCursor } }
-		);
+		const result = await ctx.db
+			.query('baselines')
+			.withIndex('by_state_and_expiresAt', (q) =>
+				q.eq('state', state).gt('expiresAt', 0).lte('expiresAt', Date.now())
+			)
+			.paginate({
+				cursor: cursor ?? null,
+				numItems: CLEANUP_DISCOVERY_PAGE_SIZE,
+				maximumRowsRead: CLEANUP_DISCOVERY_PAGE_SIZE,
+				maximumBytesRead: 2 * 1024 * 1024
+			});
+		for (const baseline of result.page)
+			if (baseline.source === 'docx')
+				await ctx.scheduler.runAfter(0, internal.baselineUploads.expire, {
+					baselineId: baseline._id
+				});
 		if (!result.isDone)
-			await ctx.scheduler.runAfter(0, internal.baselineUploads.cleanOrphanFiles, {
-				cursor: result.continueCursor,
-				cutoff
+			await ctx.scheduler.runAfter(0, internal.baselineUploads.expirePrepared, {
+				state,
+				cursor: result.continueCursor
 			});
 		return null;
 	}

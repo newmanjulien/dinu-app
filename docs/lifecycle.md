@@ -315,11 +315,13 @@ fresh operation rather than replaying its earlier receipt.
 
 Review generation is separate from selection revision and advances for changed
 saves and explicit changed decisions. Only an explicit decision that completes
-all required reviews queues an immediate summary to the creator, with current
-same-company reviewers CC'd. The final decision writes a small delivery event;
-email preparation and immutable byte-bounded snapshots are separate from it.
-Claiming dispatch checks that generation again. Current reviewer attribution is
-maintained atomically in bounded records, while decision history remains an audit.
+all required reviews queues an immediate summary to the creator, with the
+triggering reviewer's current same-company address in CC. That authenticated
+reviewer ID belongs to the delivery event, including retries. Email preparation
+and immutable byte-bounded status snapshots are separate from it. Claiming dispatch
+checks that generation and current recipient membership again. Current reviews
+contain only concession, lifecycle and status; complete immutable decision receipts
+retain historical admin identity. No separate current-attribution storage remains.
 Delivery attempts, persistence retries, and recovery are shared with approval
 requests and invitations. No batching timer is used.
 

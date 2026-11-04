@@ -8,18 +8,45 @@ interface Gesture {
 	pointerId: number;
 	x: number;
 	y: number;
-	owner: HTMLElement;
+	owner: HTMLElement | null;
 	dragged: boolean;
 }
 
-export class DocumentClauseInteractions {
+type CompletedGesture =
+	| { kind: 'activate-clause'; owner: HTMLElement }
+	| { kind: 'activate-background' }
+	| { kind: 'ignore' };
+
+/** A resolved document gesture. Workspace policy decides what it means for a panel or editor. */
+export type DocumentGestureIntent =
+	| {
+			kind: 'activate-clause';
+			itemId: string;
+			annotationId: string;
+			activation: AnnotationActivation;
+	  }
+	| { kind: 'activate-background' };
+
+export type DocumentGesturePolicy = {
+	clauseActivation: boolean;
+	backgroundActivation: boolean;
+};
+
+function isDocumentControl(target: EventTarget | null) {
+	return (
+		target instanceof Element &&
+		Boolean(target.closest('[data-document-control], button, a, input, textarea, select'))
+	);
+}
+
+export class DocumentGestureInteractions {
 	#stage: HTMLElement;
 	#highlights: DocumentHighlightController;
-	#select: (itemId: string, annotationId: string, activation: AnnotationActivation) => void;
-	#enabled = false;
+	#onIntent: (intent: DocumentGestureIntent) => void;
+	#policy: DocumentGesturePolicy = { clauseActivation: false, backgroundActivation: false };
 	#pointer: { x: number; y: number } | null = null;
 	#gesture: Gesture | null = null;
-	#completedOwner: HTMLElement | null = null;
+	#completed: CompletedGesture | null = null;
 	#events = new AbortController();
 	#unsubscribe: () => void;
 	#hoverFrame: number | undefined;
@@ -27,11 +54,11 @@ export class DocumentClauseInteractions {
 	constructor(
 		stage: HTMLElement,
 		highlights: DocumentHighlightController,
-		select: (itemId: string, annotationId: string, activation: AnnotationActivation) => void
+		onIntent: (intent: DocumentGestureIntent) => void
 	) {
 		this.#stage = stage;
 		this.#highlights = highlights;
-		this.#select = select;
+		this.#onIntent = onIntent;
 		const options = { signal: this.#events.signal };
 		stage.addEventListener('pointerdown', this.#down, options);
 		stage.addEventListener('pointermove', this.#hoverMove, options);
@@ -52,24 +79,42 @@ export class DocumentClauseInteractions {
 		});
 	}
 
-	setEnabled(enabled: boolean) {
-		if (this.#enabled === enabled) return;
-		this.#enabled = enabled;
-		if (!enabled) {
+	setPolicy(policy: DocumentGesturePolicy) {
+		if (
+			this.#policy.clauseActivation === policy.clauseActivation &&
+			this.#policy.backgroundActivation === policy.backgroundActivation
+		)
+			return;
+		this.#policy = policy;
+		if (!policy.clauseActivation) {
 			this.#resetGesture();
 			this.#cancelHover();
 			this.#setHover(null);
 		} else this.#scheduleHover();
 	}
 
+	#stageElementAt(x: number, y: number) {
+		const element = document.elementFromPoint(x, y);
+		return element && this.#stage.contains(element) ? element : null;
+	}
+
+	#clauseOwnerAt(x: number, y: number) {
+		return this.#stageElementAt(x, y)?.closest<HTMLElement>('.playbook-trigger') ?? null;
+	}
+
 	#hit(x: number, y: number) {
-		if (!this.#enabled) return null;
+		if (!this.#policy.clauseActivation) return null;
 		countOverlayWork('hoverChecks');
 		// Ignore document regions obscured by a panel or other UI.
-		const element = document.elementFromPoint(x, y);
-		if (!element || !this.#stage.contains(element)) return null;
+		const element = this.#stageElementAt(x, y);
+		if (!element) return null;
 		const page = element.closest<HTMLElement>('.document-page');
 		return page && this.#stage.contains(page) ? this.#highlights.hitTest(page, x, y) : null;
+	}
+
+	#ownerAt(x: number, y: number) {
+		const owner = this.#clauseOwnerAt(x, y);
+		return this.#policy.clauseActivation ? (this.#hit(x, y) ?? owner) : owner;
 	}
 
 	#setHover(owner: HTMLElement | null) {
@@ -82,7 +127,7 @@ export class DocumentClauseInteractions {
 		this.#setHover(this.#pointer ? this.#hit(this.#pointer.x, this.#pointer.y) : null);
 	};
 	#scheduleHover = () => {
-		if (!this.#enabled || !this.#pointer || this.#hoverFrame !== undefined) return;
+		if (!this.#policy.clauseActivation || !this.#pointer || this.#hoverFrame !== undefined) return;
 		this.#hoverFrame = requestAnimationFrame(() => {
 			this.#hoverFrame = undefined;
 			this.#updateHover();
@@ -95,16 +140,21 @@ export class DocumentClauseInteractions {
 
 	#down = (event: PointerEvent) => {
 		this.#resetGesture();
-		if (!event.isPrimary || event.button !== 0) return;
-		const owner = this.#hit(event.clientX, event.clientY);
-		if (owner)
-			this.#gesture = {
-				pointerId: event.pointerId,
-				x: event.clientX,
-				y: event.clientY,
-				owner,
-				dragged: false
-			};
+		if (
+			event.defaultPrevented ||
+			(!this.#policy.clauseActivation && !this.#policy.backgroundActivation) ||
+			!event.isPrimary ||
+			event.button !== 0
+		)
+			return;
+		const owner = this.#ownerAt(event.clientX, event.clientY);
+		this.#gesture = {
+			pointerId: event.pointerId,
+			x: event.clientX,
+			y: event.clientY,
+			owner,
+			dragged: false
+		};
 		if (event.pointerType !== 'touch') {
 			this.#cancelHover();
 			this.#pointer = { x: event.clientX, y: event.clientY };
@@ -122,7 +172,7 @@ export class DocumentClauseInteractions {
 	};
 
 	#hoverMove = (event: PointerEvent) => {
-		if (!event.isPrimary || event.pointerType === 'touch') return;
+		if (!this.#policy.clauseActivation || !event.isPrimary || event.pointerType === 'touch') return;
 		this.#pointer = { x: event.clientX, y: event.clientY };
 		this.#scheduleHover();
 	};
@@ -132,41 +182,87 @@ export class DocumentClauseInteractions {
 		const gesture = this.#gesture;
 		if (!gesture || gesture.pointerId !== event.pointerId) return;
 		this.#gesture = null;
-		this.#completedOwner =
-			!gesture.dragged &&
-			event.button === 0 &&
-			this.#hit(event.clientX, event.clientY) === gesture.owner
-				? gesture.owner
-				: null;
+		const owner = this.#ownerAt(event.clientX, event.clientY);
+		if (
+			gesture.dragged ||
+			event.button !== 0 ||
+			!this.#stageElementAt(event.clientX, event.clientY)
+		) {
+			this.#completed = { kind: 'ignore' };
+			return;
+		}
+		if (gesture.owner)
+			this.#completed =
+				owner === gesture.owner ? { kind: 'activate-clause', owner } : { kind: 'ignore' };
+		else this.#completed = owner ? { kind: 'ignore' } : { kind: 'activate-background' };
 	};
 
+	#hasStageTextSelection() {
+		const selection = document.getSelection();
+		return Boolean(
+			selection &&
+			!selection.isCollapsed &&
+			selection.anchorNode &&
+			selection.focusNode &&
+			this.#stage.contains(selection.anchorNode) &&
+			this.#stage.contains(selection.focusNode)
+		);
+	}
+
 	#click = (event: MouseEvent) => {
-		const owner =
-			event.detail === 0
-				? event.target instanceof Element
-					? event.target.closest<HTMLElement>('.playbook-trigger')
-					: null
-				: this.#completedOwner;
+		const completed = this.#completed;
 		this.#resetGesture();
+		// A completed native selection inside the document is the same click-away as its background.
+		if (this.#hasStageTextSelection()) {
+			if (
+				completed &&
+				this.#policy.backgroundActivation &&
+				!event.defaultPrevented &&
+				!isDocumentControl(event.target)
+			)
+				this.#onIntent({ kind: 'activate-background' });
+			return;
+		}
 		if (
-			!this.#enabled ||
-			!owner?.isConnected ||
-			!this.#stage.contains(owner) ||
-			event.detail > 1 ||
-			document.getSelection()?.isCollapsed === false
+			(!this.#policy.clauseActivation && !this.#policy.backgroundActivation) ||
+			event.defaultPrevented ||
+			event.detail > 1
 		)
 			return;
+		if (event.detail === 0) {
+			if (!this.#policy.clauseActivation || isDocumentControl(event.target)) return;
+			const owner =
+				event.target instanceof Element
+					? event.target.closest<HTMLElement>('.playbook-trigger')
+					: null;
+			if (owner) this.#activateClause(owner, { owner });
+			return;
+		}
+		if (completed?.kind === 'activate-clause' && this.#policy.clauseActivation) {
+			this.#activateClause(completed.owner, {
+				owner: completed.owner,
+				clientX: event.clientX,
+				clientY: event.clientY
+			});
+		} else if (
+			completed?.kind === 'activate-background' &&
+			this.#policy.backgroundActivation &&
+			!isDocumentControl(event.target)
+		) {
+			this.#onIntent({ kind: 'activate-background' });
+		}
+	};
+
+	#activateClause(owner: HTMLElement, activation: AnnotationActivation) {
+		if (!owner.isConnected || !this.#stage.contains(owner)) return;
 		const { itemId, annotationId } = owner.dataset;
 		if (itemId && annotationId)
-			this.#select(itemId, annotationId, {
-				owner,
-				...(event.detail ? { clientX: event.clientX, clientY: event.clientY } : {})
-			});
-	};
+			this.#onIntent({ kind: 'activate-clause', itemId, annotationId, activation });
+	}
 
 	#resetGesture() {
 		this.#gesture = null;
-		this.#completedOwner = null;
+		this.#completed = null;
 	}
 
 	#leave = () => {

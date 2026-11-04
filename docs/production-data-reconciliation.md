@@ -1,5 +1,8 @@
 # Production data reconciliation
 
+**Historical implementation/evidence record, superseded for current backend instructions on 2026-10-30.** The [current architecture](backend-redesign/architecture.md), [17D2 local evidence](backend-redesign/phase-17d2-cross-workflow.md) and [Phase 18 activation procedure](backend-redesign/phase-18-activation.md) own present behavior/status. Older counts, formatting, indexes, attribution, probes and deployment results below describe their original revision; they do not certify the changed backend or authorize an old rollout recipe.
+
+
 Originally completed 2026-10-04 against the supplied full Convex export. The current seed is reconciled against the cleaned archive with **0 unexplained user-facing data mismatches**. The original restoration checks below describe that offline work; the development baseline reset is recorded separately below. Production was not contacted or modified.
 
 The cleaned archive, not the previous seed, is authoritative for the current baseline. `data/migration/source` derives from the supplied export and has been edited; it is not a byte-for-byte original. All remaining contract text, instructions, concessions, tiers, logical keys, and exported system metadata are preserved. Its document hashes, every record's reconciliation status, and scenario names are in `data/migration/reconciliation.json`. The exact before/after field differences are in `data/migration/corrected-discrepancies.json` (`expected` is the database value; `actual` is the former seed value).
@@ -117,23 +120,9 @@ The new `--seed` audit is read-only and compares exact business records against 
 
 `npm run seed:restore-export` regenerates local seed files and the logical mapping from `data/migration/source`; it never contacts a database. For a later export, replace the source fixture with that full export, regenerate, reconcile, review the diff, and rerun validation. Unexpected tables, fields, deletion history, or unsupported occurrence layouts deliberately fail instead of being silently discarded.
 
-## Reset and reseed
+## Current reset and reseed authority
 
-`npm run convex:seed` remains development/local-only and refuses production targets.
-A frontend deployment does not load seed data. The current backend requires canonical
-structured patterns and revision links; it does not transform older database records.
-Follow the [fresh reset procedure](private-companies-rollout.md#fresh-development-reset),
-then create the company through normal onboarding, seed its actual ID, and run the
-read-only `--seed` audit before editing content.
-
-The generator retains the supplied archive as an offline input and emits only
-business fields. The scoped backend writer creates revision 1 and immutable heads;
-JSONL fingerprints and prefix comparisons exclude this generated metadata. An
-interrupted import resumes using the same content fingerprint and verified prefix.
-The historical output oracle is self-contained offline code, rather than a second
-persisted format supported by application readers.
-
-No live reset, deployment, or seed import was performed during this cleanup.
+The old reset/reseed instructions are superseded by [Phase 18](backend-redesign/phase-18-activation.md). Preserve this historical archive/interpreter evidence, the current approved canonical data and independent reconciliation inputs. The ordinary atomic operator/bootstrap and independent audit replace staged imports. Current normalization has 112 blocks, 56 rules/highlights, 26 concessions and 34 locations, with no runtime seed-only copy or formatting fields; [9B](backend-redesign/phase-09b-canonical-seed.md) records approved differences. No live reset/deploy occurred during the present redesign.
 
 ## Exact-preservation limits and omissions
 

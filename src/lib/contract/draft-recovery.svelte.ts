@@ -2,7 +2,7 @@ import { browser } from '$app/environment';
 import { env } from '$env/dynamic/public';
 import type { ContractState, SavedSelections } from './saved';
 import type { ContractSaveRequest } from './persistence.svelte';
-import { MAX_SELECTED_CONCESSIONS } from './selection-limits';
+import { validContractState, validSelections, validLifecycles } from './persisted-values';
 
 export type ContractDraft = {
 	version: 2;
@@ -19,53 +19,14 @@ const removedMemberships = new Set<string>();
 const prefix = (userId: string) =>
 	`dinu:drafts:v2:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
 
-function selections(value: unknown): value is SavedSelections {
-	return Boolean(
-		value &&
-		typeof value === 'object' &&
-		!Array.isArray(value) &&
-		Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
-		Object.entries(value).every(([id, choice]) => id.length > 0 && typeof choice === 'string')
-	);
-}
-function lifecycle(value: unknown): value is string {
-	return typeof value === 'string' && value.trim().length > 0 && value.length <= 300;
-}
-function lifecycles(value: unknown) {
-	return selections(value) && Object.values(value).every(lifecycle);
-}
-function reviews(value: unknown) {
-	return Boolean(
-		value &&
-		typeof value === 'object' &&
-		!Array.isArray(value) &&
-		Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
-		Object.entries(value).every(
-			([id, review]) =>
-				id.length > 0 &&
-				review &&
-				typeof review === 'object' &&
-				!Array.isArray(review) &&
-				typeof review.concessionId === 'string' &&
-				lifecycle(review.lifecycle) &&
-				['pending', 'approved', 'rejected'].includes(review.status)
-		)
-	);
-}
 function valid(value: unknown, id: string): value is ContractDraft {
 	const draft = value as ContractDraft | null;
 	return Boolean(
 		draft?.version === 2 &&
 		typeof draft.conflict === 'boolean' &&
-		draft.base &&
-		typeof draft.base.companyName === 'string' &&
-		Number.isSafeInteger(draft.base.revision) &&
-		draft.base.revision >= 0 &&
-		(draft.base.lastOperationId === null || typeof draft.base.lastOperationId === 'string') &&
-		selections(draft.base.selectedConcessions) &&
-		reviews(draft.base.reviews) &&
-		selections(draft.choices) &&
-		lifecycles(draft.lifecycles) &&
+		validContractState(draft.base) &&
+		validSelections(draft.choices) &&
+		validLifecycles(draft.lifecycles) &&
 		(draft.request === null ||
 			(draft.request?.id === id &&
 				Number.isSafeInteger(draft.request.expectedRevision) &&
@@ -73,8 +34,8 @@ function valid(value: unknown, id: string): value is ContractDraft {
 				typeof draft.request.operationId === 'string' &&
 				draft.request.operationId.trim().length > 0 &&
 				draft.request.operationId.length <= 200 &&
-				selections(draft.request.selectedConcessions) &&
-				lifecycles(draft.request.selectionLifecycles)))
+				validSelections(draft.request.selectedConcessions) &&
+				validLifecycles(draft.request.selectionLifecycles)))
 	);
 }
 

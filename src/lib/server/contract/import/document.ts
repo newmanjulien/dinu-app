@@ -1,12 +1,11 @@
-import type { ReplacementAtom, BaselineBlock } from '../../../contract/source-model';
+import type { ReplacementInline, BaselineBlock } from '../../../contract/source-model';
 import { child, children, val, on, text, type XmlNode as Node } from './xml';
-import { formatting, type Issue, type Marks, type Location } from './format';
-import { equalMarks } from '../../../contract/marks';
+import { formatting, type Issue, type Location } from './format';
 import { BASELINE_MAX_BLOCKS } from '../../../contract/import/limits';
 
 export type Field = { start: number; end: number; instruction: string };
 export type Paragraph = {
-	content: ReplacementAtom[];
+	content: ReplacementInline[];
 	plain: string;
 	id: string;
 	location: Location;
@@ -16,7 +15,7 @@ export type Paragraph = {
 	number?: {
 		id: string;
 		depth: number;
-		label: (props: Node | undefined) => Marks;
+		label: (props: Node | undefined) => void;
 		displayedLabel?: string;
 	};
 	trim: number;
@@ -170,7 +169,7 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 					state: 'instruction' | 'result';
 			  }
 			| undefined;
-		function append(value: string, marks: Marks) {
+		function append(value: string) {
 			if (active?.state === 'instruction') return;
 			characters += value.length;
 			if (
@@ -180,8 +179,8 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 			)
 				throw new Error('The contract contains too much text or formatting.');
 			const last = result.content.at(-1);
-			if (last?.kind === 'text' && equalMarks(last.marks, marks)) last.text += value;
-			else result.content.push({ kind: 'text', text: value, marks });
+			if (last?.kind === 'text') last.text += value;
+			else result.content.push({ kind: 'text', text: value });
 			result.plain += value;
 		}
 		function field(instruction: string, start: number, end: number) {
@@ -189,7 +188,7 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 				throw new Error('The contract contains too many or oversized Word fields.');
 			result.fields.push({ instruction, start, end });
 		}
-		function walk(n: Node, marks: Marks, context: 'paragraph' | 'run') {
+		function walk(n: Node, context: 'paragraph' | 'run') {
 			if (
 				n.name === 'pPr' ||
 				n.name === 'rPr' ||
@@ -218,14 +217,8 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 				return;
 			}
 			if (n.name === 'r' && context === 'paragraph') {
-				const runMarks = resolved.run(
-					child(n, 'rPr'),
-					where,
-					children(n, 't')
-						.map((c) => c.text)
-						.join('')
-				);
-				for (const c of n.children) walk(c, runMarks, 'run');
+				resolved.run(child(n, 'rPr'), where);
+				for (const c of n.children) walk(c, 'run');
 				return;
 			}
 			if (n.name === 'fldSimple' && context === 'paragraph') {
@@ -236,7 +229,7 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 				const start = result.plain.length;
 				// Simple fields cannot be closed by complex-field delimiters.
 				active = { kind: 'simple', start, instruction: n.attrs.instr ?? '', state: 'result' };
-				for (const c of n.children) walk(c, marks, 'paragraph');
+				for (const c of n.children) walk(c, 'paragraph');
 				field(n.attrs.instr ?? '', start, result.plain.length);
 				active = undefined;
 				return;
@@ -293,23 +286,24 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 								? '‑'
 								: n.name === 'softHyphen'
 									? '\u00ad'
-									: '\n',
-					marks
+									: '\n'
 				);
 				return;
 			}
 			if (transparent.has(n.name)) {
 				if (n.name === 'hyperlink')
 					issue(where, 'Hyperlinks are preserved as ordinary text.', 'warning');
-				for (const c of n.children) walk(c, marks, context);
+				for (const c of n.children) walk(c, context);
 				return;
 			}
 			issue(where, `Unsupported Word content (${n.name}). Convert it to ordinary text in Word.`);
 		}
-		for (const n of p.children) walk(n, {}, 'paragraph');
+		for (const n of p.children) walk(n, 'paragraph');
 		if (active) issue(where, 'Repair the unfinished Word field in this paragraph.');
-		if (!result.content.length)
-			result.content.push({ kind: 'text', text: '', marks: resolved.run(undefined, where) });
+		if (!result.content.length) {
+			resolved.run(undefined, where);
+			result.content.push({ kind: 'text', text: '' });
+		}
 		return result;
 	}
 	const blocks: Block[] = [];

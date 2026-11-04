@@ -40,7 +40,7 @@
 
 <article
 	use:observe={contract}
-	class="relative min-w-0 rounded-xl border-hairline border-edge bg-surface shadow-card transition-colors hover:bg-surface-hover"
+	class="relative min-w-0 rounded-xl border-hairline border-edge bg-surface shadow-card transition-colors hover:bg-field-hover"
 >
 	<a
 		href={`/contracts/${contract._id}`}

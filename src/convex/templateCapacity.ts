@@ -1,5 +1,6 @@
 import { ConvexError, getDocumentSize, type Value } from 'convex/values';
 import type { MutationCtx } from './_generated/server';
+import { MAX_STORAGE_DOCUMENT_BYTES } from '../lib/contract/storage-limits';
 
 export const MAX_SNAPSHOT_BYTES = 8_000_000;
 const RESERVE_BYTES = 65_536;
@@ -12,7 +13,7 @@ export function documentBytes(document: Record<string, Value | undefined>) {
 			Object.entries(document).filter((entry): entry is [string, Value] => entry[1] !== undefined)
 		)
 	);
-	if (bytes > 1024 * 1024)
+	if (bytes > MAX_STORAGE_DOCUMENT_BYTES)
 		throw publicationRejected('A template storage document exceeds supported size.');
 	return bytes;
 }

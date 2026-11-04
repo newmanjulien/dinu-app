@@ -1,41 +1,23 @@
 import { v } from 'convex/values';
+import { paginationResultValidator } from 'convex/server';
 import { internalMutation, internalQuery } from './_generated/server';
 import type { MutationCtx } from './_generated/server';
-import type { Doc, TableNames } from './_generated/dataModel';
+import type { Doc } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { cancelDelivery, cancelJob } from './emailDeliveries';
-import { deleteSelections } from './emailSnapshots';
+import { activeJob, cancelJob, RETIRED_DELIVERY_RECHECK } from './emailDeliveries';
+import { retireDelivery } from './emailDisposal';
+import { cleanupBudget, CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
+import { deleteUnownedFile } from './storageOwnership';
+import {
+	companyCleanupPhases as phases,
+	PREPARATION_TTL,
+	RECONCILIATION_PAGE_SIZE,
+	deletionIdentity
+} from './deletionValidators';
 
-export const PREPARATION_TTL = 15 * 60_000;
-const phases = [
-	'invitations',
-	'approvals',
-	'notifications',
-	'deliveries',
-	'emailSnapshots',
-	'reviewAttributions',
-	'decisions',
-	'contracts',
-	'contractDirectory',
-	'blocks',
-	'items',
-	'snapshotItems',
-	'itemReceipts',
-	'contractReceipts',
-	'versions',
-	'pointer',
-	'baselines',
-	'itemRevisions',
-	'delegationAttachments',
-	'delegationRequests',
-	'delegationCancellations',
-	'memberships',
-	'company'
-] as const satisfies readonly Doc<'companyDeletions'>['phase'][];
-
-async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>) {
-	const generation = (marker.cleanupGeneration ?? 0) + 1;
-	const jobId = await ctx.scheduler.runAfter(0, internal.companyDeletion.clean, {
+async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>, delay = 0) {
+	const generation = marker.cleanupGeneration + 1;
+	const jobId = await ctx.scheduler.runAfter(delay, internal.companyDeletion.clean, {
 		markerId: marker._id,
 		generation
 	});
@@ -46,14 +28,11 @@ async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>
 }
 async function ensureCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>) {
 	if (marker.status !== 'cleaning') return;
-	const job = marker.cleanupJobId
-		? await ctx.db.system.get('_scheduled_functions', marker.cleanupJobId)
-		: null;
-	if (job?.state.kind === 'pending' || job?.state.kind === 'inProgress') return;
-	await scheduleCleanup(ctx, marker);
+	if (!(await activeJob(ctx, marker.cleanupJobId))) await scheduleCleanup(ctx, marker);
 }
-// Only a dispatched request authorizes company cleanup. External account deletion
-// during preparation instead follows normal account cleanup and ownership recovery.
+// Only a dispatched request authorizes company cleanup. An external account deletion
+// during preparation expires the preparation and, if it was the sole owner, stops for
+// an explicit operator handoff instead of silently orphaning company data.
 export async function confirmAccountDeletion(ctx: MutationCtx, issuer: string, clerkId: string) {
 	const marker = await ctx.db
 		.query('companyDeletions')
@@ -83,8 +62,8 @@ export const resume = internalMutation({
 	handler: async (ctx, { cursor }) => {
 		const result = await ctx.db
 			.query('companyDeletions')
-			.withIndex('by_status', (q) => q.eq('status', 'cleaning'))
-			.paginate({ cursor: cursor ?? null, numItems: 10 });
+			.withIndex('by_status_and_requestedAt', (q) => q.eq('status', 'cleaning'))
+			.paginate({ cursor: cursor ?? null, numItems: CLEANUP_DISCOVERY_PAGE_SIZE });
 		for (const marker of result.page) {
 			try {
 				await ctx.runMutation(internal.companyDeletion.resumeOne, { markerId: marker._id });
@@ -101,20 +80,20 @@ export const resume = internalMutation({
 });
 export const pending = internalQuery({
 	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.object({
-		page: v.array(v.object({ issuer: v.string(), clerkId: v.string() })),
-		cursor: v.string(),
-		done: v.boolean()
-	}),
+	returns: paginationResultValidator(deletionIdentity),
 	handler: async (ctx, { cursor }) => {
 		const result = await ctx.db
 			.query('companyDeletions')
-			.withIndex('by_status', (q) => q.eq('status', 'dispatched'))
-			.paginate({ cursor, numItems: 25 });
+			.withIndex('by_status_and_requestedAt', (q) => q.eq('status', 'dispatched'))
+			.paginate({
+				cursor,
+				numItems: RECONCILIATION_PAGE_SIZE,
+				maximumRowsRead: RECONCILIATION_PAGE_SIZE,
+				maximumBytesRead: 2 * 1024 * 1024
+			});
 		return {
-			page: result.page.map(({ issuer, clerkId }) => ({ issuer, clerkId })),
-			cursor: result.continueCursor,
-			done: result.isDone
+			...result,
+			page: result.page.map(({ issuer, clerkId }) => ({ issuer, clerkId }))
 		};
 	}
 });
@@ -143,11 +122,16 @@ export const expirePreparations = internalMutation({
 	handler: async (ctx, { cursor }) => {
 		const result = await ctx.db
 			.query('companyDeletions')
-			.withIndex('by_status', (q) => q.eq('status', 'prepared'))
-			.paginate({ cursor: cursor ?? null, numItems: 25 });
-		for (const marker of result.page)
-			if (marker.requestedAt + PREPARATION_TTL <= Date.now())
-				await ctx.db.delete('companyDeletions', marker._id);
+			.withIndex('by_status_and_requestedAt', (q) =>
+				q.eq('status', 'prepared').lte('requestedAt', Date.now() - PREPARATION_TTL)
+			)
+			.paginate({
+				cursor: cursor ?? null,
+				numItems: 25,
+				maximumRowsRead: 25,
+				maximumBytesRead: 2 * 1024 * 1024
+			});
+		for (const marker of result.page) await ctx.db.delete('companyDeletions', marker._id);
 		if (!result.isDone)
 			await ctx.scheduler.runAfter(0, internal.companyDeletion.expirePreparations, {
 				cursor: result.continueCursor
@@ -163,35 +147,9 @@ export const clean = internalMutation({
 		if (!marker || marker.status !== 'cleaning' || marker.cleanupGeneration !== generation)
 			return null;
 		const companyId = marker.companyId;
-		let count = 0;
-		const exhausted = async () => {
-			const metrics = await ctx.meta.getTransactionMetrics();
-			// One budget across all phases; leave room for a full-size next row,
-			// approval cancellation, progress, and the single continuation.
-			return (
-				count >= 100 ||
-				metrics.bytesRead.remaining < 4_000_000 ||
-				metrics.bytesWritten.remaining < 4_000_000 ||
-				metrics.databaseQueries.remaining < 64 ||
-				metrics.documentsRead.remaining < 64 ||
-				metrics.documentsWritten.remaining < 64 ||
-				metrics.functionsScheduled.remaining < 1
-			);
-		};
-		async function drain<Table extends TableNames>(
-			table: Table,
-			rows: AsyncIterable<Doc<Table>>,
-			beforeDelete?: (row: Doc<Table>) => Promise<void>
-		) {
-			for await (const row of rows) {
-				await beforeDelete?.(row);
-				await ctx.db.delete(table, row._id);
-				count++;
-				if (await exhausted()) return false;
-			}
-			return true;
-		}
+		const { exhausted, drain } = cleanupBudget(ctx);
 		let phase = marker.phase;
+		let retryDelay = 0;
 		while (!(await exhausted())) {
 			let drained: boolean;
 			switch (phase) {
@@ -201,7 +159,7 @@ export const clean = internalMutation({
 						ctx.db
 							.query('companyInvitations')
 							.withIndex('by_companyId_and_status', (q) => q.eq('companyId', companyId)),
-						(row) => cancelJob(ctx, row.expiryJobId)
+						{ beforeDelete: (row) => cancelJob(ctx, row.expiryJobId) }
 					);
 					break;
 				case 'approvals':
@@ -209,22 +167,7 @@ export const clean = internalMutation({
 						'approvalRequests',
 						ctx.db
 							.query('approvalRequests')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						async (row) => {
-							if (!('deliveryId' in row)) await cancelJob(ctx, row.sendJobId);
-						}
-					);
-					break;
-				case 'notifications':
-					drained = await drain(
-						'decisionNotifications',
-						ctx.db
-							.query('decisionNotifications')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						async (row) => {
-							await cancelJob(ctx, row.sendJobId);
-							await cancelJob(ctx, row.recoveryJobId);
-						}
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
 				case 'deliveries':
@@ -233,9 +176,13 @@ export const clean = internalMutation({
 						ctx.db
 							.query('emailDeliveries')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						async (row) => {
-							await cancelDelivery(ctx, row);
-							await deleteSelections(ctx, row._id);
+						{
+							beforeDelete: async (row) => {
+								const retirement = await retireDelivery(ctx, row);
+								if (retirement === 'ready') return true;
+								if (retirement === 'inFlight') retryDelay = RETIRED_DELIVERY_RECHECK;
+								return false;
+							}
 						}
 					);
 					break;
@@ -244,14 +191,6 @@ export const clean = internalMutation({
 						'emailSnapshots',
 						ctx.db
 							.query('emailSnapshots')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'reviewAttributions':
-					drained = await drain(
-						'reviewAttributions',
-						ctx.db
-							.query('reviewAttributions')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
@@ -268,7 +207,7 @@ export const clean = internalMutation({
 						'savedContracts',
 						ctx.db
 							.query('savedContracts')
-							.withIndex('by_companyId_and_savedAt', (q) => q.eq('companyId', companyId))
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
 				case 'contractDirectory':
@@ -281,11 +220,20 @@ export const clean = internalMutation({
 							)
 					);
 					break;
+				case 'contractCleanups':
+					drained = await drain(
+						'contractCleanups',
+						ctx.db
+							.query('contractCleanups')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+					);
+					break;
 				case 'blocks':
 					drained = await drain(
-						'contractBlocks',
+						'baselineChunks',
 						ctx.db
-							.query('contractBlocks')
+							.query('baselineChunks')
 							.withIndex('by_companyId_and_baselineId_and_order', (q) =>
 								q.eq('companyId', companyId)
 							)
@@ -296,14 +244,6 @@ export const clean = internalMutation({
 						'playbookItems',
 						ctx.db
 							.query('playbookItems')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'snapshotItems':
-					drained = await drain(
-						'templateVersionItems',
-						ctx.db
-							.query('templateVersionItems')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
@@ -345,8 +285,10 @@ export const clean = internalMutation({
 						ctx.db
 							.query('baselines')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						async (row) => {
-							if (row.originalFileId) await ctx.storage.delete(row.originalFileId);
+						{
+							afterDelete: async (row) => {
+								if (row.source === 'docx') await deleteUnownedFile(ctx, row.originalFileId);
+							}
 						}
 					);
 					break;
@@ -364,9 +306,7 @@ export const clean = internalMutation({
 						ctx.db
 							.query('delegationAttachments')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						async (row) => {
-							await ctx.storage.delete(row.storageId);
-						}
+						{ afterDelete: (row) => deleteUnownedFile(ctx, row.storageId) }
 					);
 					break;
 				case 'delegationRequests':
@@ -395,8 +335,8 @@ export const clean = internalMutation({
 					break;
 				case 'company': {
 					const company = await ctx.db.get('company', companyId);
-					if (company?.avatarId) await ctx.storage.delete(company.avatarId);
 					if (company) await ctx.db.delete('company', companyId);
+					if (company?.avatarId) await deleteUnownedFile(ctx, company.avatarId);
 					// Membership validation rejects stale creation retries before receipt lookup.
 					// The company tombstone remains permanently to reject delayed internal work.
 					await ctx.db.patch('companyDeletions', markerId, {
@@ -411,7 +351,7 @@ export const clean = internalMutation({
 			phase = phases[phases.indexOf(phase) + 1];
 		}
 		if (phase !== marker.phase) await ctx.db.patch('companyDeletions', markerId, { phase });
-		await scheduleCleanup(ctx, marker);
+		await scheduleCleanup(ctx, marker, retryDelay);
 		return null;
 	}
 });

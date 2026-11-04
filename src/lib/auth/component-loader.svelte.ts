@@ -1,46 +1,64 @@
 import { untrack } from 'svelte';
-import { ReadAttempt, waitForRead } from './attempt';
 
-/** Load code independently of admission; only the caller decides when to mount it. */
-export function loadComponent<T extends { default: unknown }>(
-	load: () => Promise<T>,
+/**
+ * Load code independently of admission. Unlike data reads, module imports cannot be
+ * cancelled, so a stale attempt is simply ignored when it eventually settles.
+ */
+export function loadModule<T>(
+	load: () => Promise<T> | T,
 	enabled: () => boolean,
-	generation: () => unknown = () => undefined,
-	onLoad?: (module: T) => void
+	generation: () => unknown = () => undefined
 ) {
-	let component = $state.raw<T['default']>();
+	let module = $state.raw<T>();
 	let failed = $state(false);
 	let retry = $state(0);
 	$effect(() => {
 		generation();
 		void retry;
-		if (!enabled() || component) return;
-		const read = new ReadAttempt(15_000);
+		if (!enabled() || module) return;
 		let active = true;
-		untrack(() => (failed = false));
-		void waitForRead(load(), read.signal)
+		untrack(() => {
+			failed = false;
+		});
+		void Promise.resolve()
+			.then(load)
 			.then((loaded) => {
-				if (active) {
-					onLoad?.(loaded);
-					component = loaded.default;
-				}
+				if (active) module = loaded;
 			})
-			.catch(() => {
-				if (active) failed = true;
-			})
-			.finally(() => read.complete());
+			.catch((cause: unknown) => {
+				if (!active) return;
+				failed = true;
+				if (import.meta.env.DEV) console.error('Unable to load lazy code.', cause);
+			});
 		return () => {
 			active = false;
-			read.abort();
 		};
 	});
 	return {
-		get component() {
-			return component;
+		get module() {
+			return module;
 		},
 		get failed() {
 			return failed;
 		},
 		retry: () => retry++
+	};
+}
+
+/** Load component code independently of the caller's decision to mount it. */
+export function loadComponent<T>(
+	load: () => Promise<{ default: T }> | { default: T },
+	enabled: () => boolean,
+	generation: () => unknown = () => undefined
+) {
+	const lazy = loadModule<{ default: T }>(load, enabled, generation);
+	return {
+		get component() {
+			return lazy.module?.default;
+		},
+		get failed() {
+			return lazy.failed;
+		},
+		retry: lazy.retry
 	};
 }

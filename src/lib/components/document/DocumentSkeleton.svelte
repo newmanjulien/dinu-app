@@ -23,7 +23,7 @@
 {#if announce}<span role="status" class="sr-only">{label}</span>{/if}
 <div class="document-skeleton" class:embedded class:admin aria-hidden="true">
 	{#if admin && !embedded}
-		<div class="mb-5 px-2 text-center text-[13px] leading-6 text-ink-muted">
+		<div class="admin-heading-row px-2 text-center text-[13px] leading-6 text-ink-muted">
 			Edit the instructions reps will see
 		</div>
 	{/if}
@@ -40,7 +40,14 @@
 		padding-block: 56px 64px;
 	}
 	.document-skeleton.admin {
+		padding-top: 8px;
 		padding-bottom: 48px;
+	}
+	.document-skeleton.admin .admin-heading-row {
+		display: grid;
+		min-height: var(--mobile-utility-rail-height);
+		place-items: center;
+		margin-bottom: 8px;
 	}
 	.document-skeleton.embedded {
 		padding: 0;
@@ -48,6 +55,14 @@
 	@media (min-width: 1000px) {
 		.document-skeleton:not(.embedded) {
 			padding-top: 24px;
+		}
+		.document-skeleton.admin {
+			padding-top: 24px;
+		}
+		.document-skeleton.admin .admin-heading-row {
+			display: block;
+			min-height: 0;
+			margin-bottom: 20px;
 		}
 	}
 </style>

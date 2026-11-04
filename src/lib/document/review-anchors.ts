@@ -1,6 +1,7 @@
 import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
 import type { ReviewTag } from '$lib/contract/approval';
-import type { SourceRange } from '$lib/playbook/model';
+import { isTextTarget, type SourceRange, type SourceTarget } from '$lib/contract/source-model';
+import { targetPosition } from '$lib/contract/ranges';
 import type { PaginatedPage } from './pagination/types';
 import { sourcePointBounds } from './selection/dom-selection';
 
@@ -12,7 +13,23 @@ export type ReviewAnchor = {
 	target: number;
 	top: number;
 };
-type Location = { key: string; itemId: string; range: SourceRange; start: number; end: number };
+type TextLocation = {
+	kind: 'text';
+	key: string;
+	itemId: string;
+	range: SourceRange;
+	start: number;
+	end: number;
+};
+type BoundaryLocation = {
+	kind: 'boundary';
+	key: string;
+	itemId: string;
+	afterBlockKey: string;
+	start: number;
+	end: number;
+};
+type Location = TextLocation | BoundaryLocation;
 type Token = {
 	span: HTMLElement;
 	start: number;
@@ -29,6 +46,7 @@ type CachedPage = {
 	tokens: Token[];
 	maxEnds: number[];
 	containers: Map<string, Token[]>;
+	boundaries: Map<string, HTMLElement>;
 	geometryKey?: string;
 	projections: Projection[];
 	fallbacks: Map<string, Fallback | null>;
@@ -70,15 +88,30 @@ export class ReviewAnchorProjector {
 		}
 		if (this.geometryKey !== geometryKey) {
 			this.geometryKey = geometryKey;
-			this.locations = tags.flatMap((tag) => {
+			this.locations = tags.flatMap<Location>((tag): Location[] => {
 				try {
+					const key = JSON.stringify([tag.itemId, tag.lifecycle]);
+					if (!isTextTarget(tag.range)) {
+						const position = targetPosition(index, tag.range);
+						return [
+							{
+								kind: 'boundary' as const,
+								key,
+								itemId: tag.itemId,
+								afterBlockKey: tag.range.afterBlockKey,
+								start: position,
+								end: position
+							}
+						];
+					}
 					return [
 						{
-							key: JSON.stringify([tag.itemId, tag.lifecycle]),
+							kind: 'text' as const,
+							key,
 							itemId: tag.itemId,
-							range: tag.range,
-							start: pointPosition(index, tag.range.start),
-							end: pointPosition(index, tag.range.end)
+							range: tag.range.range,
+							start: pointPosition(index, tag.range.range.start),
+							end: pointPosition(index, tag.range.range.end)
 						}
 					];
 				} catch {
@@ -113,8 +146,13 @@ export class ReviewAnchorProjector {
 					element.querySelectorAll<HTMLElement>('[data-contract-token]')
 				).flatMap((span) => {
 					try {
-						const range: SourceRange = span.dataset.visualSource
+						const visualSource: SourceTarget | undefined = span.dataset.visualSource
 							? JSON.parse(span.dataset.visualSource)
+							: undefined;
+						const range: SourceRange | undefined = visualSource
+							? isTextTarget(visualSource)
+								? visualSource.range
+								: undefined
 							: {
 									start: {
 										sourceKey: span.dataset.sourceStartKey!,
@@ -125,6 +163,7 @@ export class ReviewAnchorProjector {
 										offset: Number(span.dataset.sourceEndOffset)
 									}
 								};
+						if (!range) return [];
 						return [
 							{
 								span,
@@ -153,6 +192,13 @@ export class ReviewAnchorProjector {
 					tokens,
 					maxEnds,
 					containers,
+					boundaries: new Map(
+						Array.from(
+							element.querySelectorAll<HTMLElement>('[data-structural-boundary]')
+						).flatMap((target) =>
+							target.dataset.structuralBoundary ? [[target.dataset.structuralBoundary, target]] : []
+						)
+					),
 					projections: [],
 					fallbacks: new Map()
 				};
@@ -161,7 +207,16 @@ export class ReviewAnchorProjector {
 			if (cached.geometryKey !== geometryKey) {
 				cached.geometryKey = geometryKey;
 				cached.fallbacks.clear();
-				cached.projections = this.locations.map(({ start, end }) => {
+				cached.projections = this.locations.map((location) => {
+					if (location.kind === 'boundary') {
+						const target = cached.boundaries.get(location.afterBlockKey);
+						const rect = target?.getBoundingClientRect();
+						return {
+							generated: false,
+							...(rect?.height ? { target: (rect.top - bounds.top) / scale } : {})
+						};
+					}
+					const { start, end } = location;
 					const projection: Projection = { generated: false };
 					for (let t = firstCandidate(cached, start); t < cached.tokens.length; t++) {
 						const token = cached.tokens[t];
@@ -218,6 +273,7 @@ export class ReviewAnchorProjector {
 				}
 			}
 			let nearest: { cached: CachedPage; top: number; fallback: Fallback } | undefined;
+			if (location.kind === 'boundary') return;
 			const { range, start } = location;
 			const key = JSON.stringify(range.start);
 			for (const { cached, top } of mounted) {

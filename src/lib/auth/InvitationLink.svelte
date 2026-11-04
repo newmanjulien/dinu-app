@@ -12,6 +12,7 @@
 	import AuthButton from './components/AuthButton.svelte';
 	import AuthStepFrame from './components/AuthStepFrame.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
+	import RouteTitle from './RouteTitle.svelte';
 	const client = useConvexClient();
 	const session = useViewerSession();
 	const account = useAccount();
@@ -28,6 +29,19 @@
 	let joined = $state(false);
 	let error = $state('');
 	let retry = $state(0);
+	const title = $derived(
+		joined || result?.status === 'already-member'
+			? 'Open your workspace'
+			: result?.status === 'available'
+				? `Join ${result.companyName}`
+				: result?.status === 'wrong-email'
+					? 'Use your invited email'
+					: result?.status === 'other-company'
+						? 'Manage your current team'
+						: result
+							? 'Request a new invitation'
+							: 'Join your team'
+	);
 	const teamHref = $derived(
 		`/team?returnTo=${encodeURIComponent(currentDestination(page.url))}` as const
 	);
@@ -106,6 +120,8 @@
 	}
 </script>
 
+<RouteTitle {title} />
+
 {#if joined || result?.status === 'already-member'}
 	<AuthStepFrame
 		title={joined ? 'You’re in' : 'You’re already on this team'}
@@ -119,7 +135,7 @@
 {:else if result?.status === 'available'}
 	<AuthStepFrame
 		title={`Join ${result.companyName}`}
-		description={`You’re invited to join ${result.companyName}.`}
+		description={`You we’re invited to join ${result.companyName} and you’ll be joining their workspace.`}
 	>
 		<div class="grid gap-3.5">
 			<AuthButton disabled={pending || session.blocked} onclick={() => void accept()}

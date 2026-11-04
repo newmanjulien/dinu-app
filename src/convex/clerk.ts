@@ -4,6 +4,7 @@ import { v } from 'convex/values';
 import { env, internalAction } from './_generated/server';
 import type { ActionCtx } from './_generated/server';
 import { internal } from './_generated/api';
+import { ACCOUNT_DELETION_BATCH_SIZE, CLERK_USER_BATCH_SIZE } from './deletionValidators';
 
 async function existingUsers(userIds: string[]) {
 	try {
@@ -12,11 +13,12 @@ async function existingUsers(userIds: string[]) {
 			limit: userIds.length
 		});
 		const existing = new Set(users.data.map((user) => user.id));
+		const requested = new Set(userIds);
 		// Missing IDs are evidence only when the entire requested subset is returned.
 		if (
 			users.data.length === users.totalCount &&
 			existing.size === users.data.length &&
-			users.data.every((user) => userIds.includes(user.id))
+			users.data.every((user) => requested.has(user.id))
 		)
 			return existing;
 	} catch {
@@ -29,30 +31,39 @@ async function reconcilePage(
 	kind: 'accounts' | 'companies',
 	cursor: string | null
 ) {
-	if (!env.CLERK_SECRET_KEY || !env.CLERK_JWT_ISSUER_DOMAIN) return;
+	const issuer = env.CLERK_JWT_ISSUER_DOMAIN;
+	if (!env.CLERK_SECRET_KEY || !issuer) return;
 	const result = await ctx.runQuery(
 		kind === 'accounts' ? internal.accountDeletion.registered : internal.companyDeletion.pending,
 		{ cursor }
 	);
-	const identities = result.page.filter(({ issuer }) => issuer === env.CLERK_JWT_ISSUER_DOMAIN);
+	const identities = result.page.filter((identity) => identity.issuer === issuer);
 	const userIds = [...new Set(identities.map(({ clerkId }) => clerkId))];
-	if (userIds.length) {
-		const existing = await existingUsers(userIds);
-		const missing = existing ? identities.filter(({ clerkId }) => !existing.has(clerkId)) : [];
-		if (missing.length) {
+	// Native pagination targets are not provider limits. Bound every request independently.
+	for (let i = 0; i < userIds.length; i += CLERK_USER_BATCH_SIZE) {
+		const batch = userIds.slice(i, i + CLERK_USER_BATCH_SIZE);
+		const existing = await existingUsers(batch);
+		if (!existing) continue;
+		const missing = batch
+			.filter((clerkId) => !existing.has(clerkId))
+			.map((clerkId) => ({ issuer, clerkId }));
+		// Keep each canonical marker transaction at its existing smaller write bound.
+		for (let j = 0; j < missing.length; j += ACCOUNT_DELETION_BATCH_SIZE) {
 			try {
-				await ctx.runMutation(internal.accountDeletion.markMany, { identities: missing });
+				await ctx.runMutation(internal.accountDeletion.markMany, {
+					identities: missing.slice(j, j + ACCOUNT_DELETION_BATCH_SIZE)
+				});
 			} catch (error) {
 				console.error('Unable to record reconciled account deletions', error);
 			}
 		}
 	}
 	// A failed batch must not starve later pages; the next sweep retries it.
-	if (!result.done)
+	if (!result.isDone)
 		await ctx.scheduler.runAfter(
 			0,
 			kind === 'accounts' ? internal.clerk.reconcile : internal.clerk.reconcileCompanies,
-			{ cursor: result.cursor }
+			{ cursor: result.continueCursor }
 		);
 }
 export const reconcile = internalAction({
@@ -60,10 +71,11 @@ export const reconcile = internalAction({
 	returns: v.null(),
 	handler: async (ctx, { cursor }) => {
 		if (cursor === undefined || cursor === null) {
-			await ctx.scheduler.runAfter(0, internal.accountDeletion.resume, {});
-			await ctx.scheduler.runAfter(0, internal.companyDeletion.resume, {});
-			await ctx.scheduler.runAfter(0, internal.companyDeletion.expirePreparations, {});
-			await ctx.scheduler.runAfter(0, internal.clerk.reconcileCompanies, {});
+			try {
+				await ctx.runMutation(internal.recovery.resume, {});
+			} catch (error) {
+				console.error('Unable to discover local recovery work', error);
+			}
 		}
 		await reconcilePage(ctx, 'accounts', cursor ?? null);
 		return null;

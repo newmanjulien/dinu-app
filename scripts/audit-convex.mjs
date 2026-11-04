@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { readSeed, differences } from './reconcile-production-seed.mjs';
 import { createServer } from 'vite';
-import { companyArguments, companyDeployment, companyRows } from './company-convex.mjs';
+import { companyArguments, companyDeployment } from './company-convex.mjs';
 
 const { companyId, exactSeed } = companyArguments({ audit: true });
-const deployment = await companyDeployment({ readOnly: true });
-const [blocks, items] = await Promise.all([
-	companyRows(deployment, companyId, 'blocks'),
-	companyRows(deployment, companyId, 'items')
-]);
+const deployment = await companyDeployment({ companyId, readOnly: true });
+const { blocks, items, publication } = await deployment.run('operator:readSeed', { companyId });
+assert.deepEqual(publication.blocks, blocks, 'Published blocks differ from the live baseline');
+assert.deepEqual(publication.items, items, 'Published items differ from live authoring');
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 try {
 	const { validatePlaybook } = await server.ssrLoadModule('/src/lib/playbook/audit.ts');
@@ -16,7 +15,7 @@ try {
 	if (exactSeed) {
 		const expectedBlocks = await readSeed('contractBlocks');
 		const expectedItems = await readSeed('playbookItems');
-		const identity = (item) => JSON.stringify(item.triggers.map((trigger) => trigger.id));
+		const identity = (item) => JSON.stringify(item.trigger.id);
 		const actualByIdentity = new Map(items.map((item) => [identity(item), item]));
 		assert.equal(actualByIdentity.size, items.length, 'Duplicate logical item identity');
 		assert.equal(items.length, expectedItems.length, 'Live item count differs from seed');

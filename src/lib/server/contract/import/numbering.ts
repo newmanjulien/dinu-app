@@ -12,7 +12,6 @@ import {
 import { child, children, indexBy, val, on, type XmlNode as Node } from './xml';
 import type { Block } from './document';
 import type { Issue, Location } from './format';
-import { equalMarks } from '../../../contract/marks';
 import { addressKey, labelTokens, labelPattern, typedLabel } from './labels';
 type Numbering = NonNullable<BaselineBlock['numbering']>;
 type Level = {
@@ -136,13 +135,13 @@ export function resolveNumbering(
 			(_, n) => values[Number(n) - 1]
 		);
 		const sequenceKey = `word-${id}-${depth}-${parentItemKey ?? 'root'}`;
+		label(definition.props);
 		block.numbering = {
 			itemKey: block.blockKey,
 			sequenceKey,
 			style: definition.style,
 			...(definition.style.includes('alpha') ? { alphabeticStyle: 'repeated' as const } : {}),
 			...(definition.minimumDigits ? { minimumDigits: definition.minimumDigits } : {}),
-			marks: label(definition.props),
 			labelPattern: definition.pattern,
 			...(!sequences.has(sequenceKey) && position !== 1 ? { start: position } : {}),
 			...(!parentItemKey ||
@@ -448,24 +447,11 @@ function inferHierarchy(blocks: Block[], positions: Map<string, number>, issue: 
 						Boolean(c.prefix && c.parent) ||
 						(Boolean(c.parent) && c.position === 1) ||
 						/^(?:Article|Section|Clause|Part)\s/iu.test(c.label))));
-		let marks = c.word?.marks;
-		if (!c.word) {
-			let remaining = c.trim;
-			for (const atom of c.block.paragraph.content) {
-				if (!remaining || atom.kind !== 'text') break;
-				const length = Math.min(atom.text.length, remaining);
-				if (atom.text.slice(0, length).trim()) {
-					if (marks === undefined) marks = atom.marks ?? {};
-					else if (!equalMarks(atom.marks, marks)) c.valid = false;
-				}
-				remaining -= length;
-			}
-		}
 		if (!c.valid) {
 			delete c.block.numbering;
 			issue(
 				c.block.paragraph.location,
-				`We couldn’t tell which clause “${c.label}” belongs under. In Word, use a full clause number (such as 3(a)(i)) or set the correct level in a multilevel list. Keep bold and italic formatting consistent across the clause number.`
+				`We couldn’t tell which clause “${c.label}” belongs under. In Word, use a full clause number (such as 3(a)(i)) or set the correct level in a multilevel list.`
 			);
 			continue;
 		}
@@ -478,7 +464,6 @@ function inferHierarchy(blocks: Block[], positions: Map<string, number>, issue: 
 			...(c.minimumDigits ? { minimumDigits: c.minimumDigits } : {}),
 			...(c.alphabeticStyle ? { alphabeticStyle: c.alphabeticStyle } : {}),
 			labelPattern: c.pattern,
-			marks: marks ?? {},
 			...(c.parent ? { parentItemKey: c.parent.block.blockKey } : {}),
 			...(!previous || c.position !== previous.position + 1 ? { start: c.position } : {}),
 			...((c.prefix && !c.word) ||

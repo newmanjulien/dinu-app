@@ -1,15 +1,12 @@
 'use node';
 import { randomBytes, createHash } from 'node:crypto';
-import { connect, type TLSSocket } from 'node:tls';
-import nodemailer from 'nodemailer';
-import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { ConvexError, v } from 'convex/values';
 import { action } from './_generated/server';
-import { configuration, transportOptions, deliverEmail } from './smtpEmail';
+import { configuration } from './loopsEmail';
+import { invitationNotification } from './emailNotifications';
+import { deliverEmail } from './emailSender';
 import { internal } from './_generated/api';
 import { emailAddress, invitationDelivery, type InvitationDelivery } from './invitationValidators';
-const deliveryConcurrency = 5;
-const batchTimeoutMs = 4 * 60_000;
 export const invite = action({
 	args: {
 		membershipId: v.id('memberships'),
@@ -23,57 +20,15 @@ export const invite = action({
 		const emails = [...new Set(args.emails.map(emailAddress))];
 		let config: ReturnType<typeof configuration>;
 		try {
-			config = configuration();
+			config = configuration('invitation');
 		} catch {
 			throw new ConvexError('Email is unavailable.');
 		}
 		const baseUrl = new URL('/invitation', config.appUrl);
-		const inlineDeadline = Date.now() + batchTimeoutMs;
-		const sockets = new Set<TLSSocket>();
-		let timedOut = false;
-		const transport = nodemailer.createTransport({
-			pool: true,
-			maxConnections: deliveryConcurrency,
-			maxRequeues: 0,
-			...transportOptions(config),
-			// Own sockets so the batch deadline also cancels active SMTP exchanges.
-			getSocket(
-				_options: SMTPTransport.Options,
-				callback: Parameters<NonNullable<SMTPTransport.Options['getSocket']>>[1]
-			) {
-				if (timedOut) return callback(new Error('Invitation batch timed out.'));
-				const socket = connect({ host: 'smtp.gmail.com', port: 465, servername: 'smtp.gmail.com' });
-				const connectionTimer = setTimeout(
-					() => socket.destroy(new Error('SMTP connection timed out.')),
-					30_000
-				);
-				sockets.add(socket);
-				let handedOff = false;
-				const failed = (error: Error) => {
-					if (handedOff) return;
-					handedOff = true;
-					callback(error);
-				};
-				socket.once('close', () => {
-					clearTimeout(connectionTimer);
-					sockets.delete(socket);
-					failed(new Error('SMTP connection closed.'));
-				});
-				socket.once('error', failed);
-				socket.once('secureConnect', () => {
-					if (handedOff) return;
-					handedOff = true;
-					clearTimeout(connectionTimer);
-					socket.removeListener('error', failed);
-					callback(null, { connection: socket, secured: true });
-				});
-			}
-		});
-		const timer = setTimeout(() => {
-			timedOut = true;
-			transport.close();
-			for (const socket of sockets) socket.destroy(new Error('Invitation batch timed out.'));
-		}, batchTimeoutMs);
+		const deadline = Date.now() + 4 * 60_000;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 4 * 60_000);
+		const expired = () => controller.signal.aborted || Date.now() >= deadline;
 		async function deliver(email: string): Promise<InvitationDelivery> {
 			try {
 				const token = randomBytes(32).toString('base64url');
@@ -81,7 +36,7 @@ export const invite = action({
 					membershipId: args.membershipId,
 					email,
 					resend: args.resend ?? false,
-					inlineDeadline,
+					inlineDeadline: deadline,
 					tokenHash: createHash('sha256').update(token).digest('hex')
 				});
 				if (!invitation) return { email, error: null };
@@ -90,11 +45,8 @@ export const invite = action({
 				const outcome = await deliverEmail(
 					ctx,
 					{ id: invitation.deliveryId, attempt: 1 },
-					async () => ({
-						subject: `Join ${invitation.companyName} on Dinu`,
-						text: `${invitation.inviterName} invited you to join ${invitation.companyName} on Dinu.\n\n${url.href}\n\nOpen the invitation, verify ${invitation.email} with an email code, then choose Join ${invitation.companyName}. Your Dinu account will be created if needed. This invitation expires in 7 days.`
-					}),
-					{ transport, expired: () => timedOut }
+					() => invitationNotification(invitation, url.href),
+					{ signal: controller.signal, deadline }
 				);
 				return {
 					email,
@@ -118,8 +70,8 @@ export const invite = action({
 			let next = 0;
 			// Keep slots busy without preparing recipients before they can start sending.
 			await Promise.all(
-				Array.from({ length: Math.min(deliveryConcurrency, emails.length) }, async () => {
-					while (!timedOut && next < emails.length) {
+				Array.from({ length: Math.min(5, emails.length) }, async () => {
+					while (!expired() && next < emails.length) {
 						const index = next++;
 						results[index] = await deliver(emails[index]);
 					}
@@ -128,8 +80,7 @@ export const invite = action({
 			return results;
 		} finally {
 			clearTimeout(timer);
-			transport.close();
-			for (const socket of sockets) socket.destroy();
+			controller.abort();
 		}
 	}
 });

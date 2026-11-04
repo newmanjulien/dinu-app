@@ -1,13 +1,25 @@
 import { v, ConvexError } from 'convex/values';
+import { paginationResultValidator } from 'convex/server';
 import { internalMutation, internalQuery, query, mutation } from './_generated/server';
 import { internal } from './_generated/api';
-import { requireProfile, creatorDeleted, companyDeletion } from './auth';
-import { confirmAccountDeletion, PREPARATION_TTL } from './companyDeletion';
+import { requireProfile, membershipForProfile, liveProfile, companyDeletion } from './auth';
+import { deleteUnownedFile } from './storageOwnership';
+import { confirmAccountDeletion } from './companyDeletion';
+import {
+	PREPARATION_TTL,
+	DELETION_ATTEMPT_MAX_LENGTH,
+	MEMBERSHIP_ELIGIBILITY_SCAN_LIMIT,
+	RECONCILIATION_PAGE_SIZE,
+	ACCOUNT_DELETION_BATCH_SIZE,
+	deletionIdentity
+} from './deletionValidators';
+import { CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
+import { activeJob } from './emailDeliveries';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
 
 async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'deletedUsers'>) {
-	const generation = (marker.cleanupGeneration ?? 0) + 1;
+	const generation = marker.cleanupGeneration + 1;
 	const jobId = await ctx.scheduler.runAfter(0, internal.accountDeletion.clean, {
 		markerId: marker._id,
 		generation
@@ -19,12 +31,8 @@ async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'deletedUsers'>) {
 }
 
 async function ensureCleanup(ctx: MutationCtx, marker: Doc<'deletedUsers'>) {
-	if (marker.complete) return;
-	const job = marker.cleanupJobId
-		? await ctx.db.system.get('_scheduled_functions', marker.cleanupJobId)
-		: null;
-	if (job?.state.kind === 'pending' || job?.state.kind === 'inProgress') return;
-	await scheduleCleanup(ctx, marker);
+	if (marker.complete || marker.recoveryCompanyId) return;
+	if (!(await activeJob(ctx, marker.cleanupJobId))) await scheduleCleanup(ctx, marker);
 }
 
 const deletionMode = v.union(
@@ -34,10 +42,7 @@ const deletionMode = v.union(
 );
 async function deletionOptions(ctx: QueryCtx) {
 	const profile = await requireProfile(ctx);
-	const membership = await ctx.db
-		.query('memberships')
-		.withIndex('by_profileId', (q) => q.eq('profileId', profile._id))
-		.unique();
+	const membership = await membershipForProfile(ctx, profile._id);
 	const company = membership ? await ctx.db.get('company', membership.companyId) : null;
 	const owned = await ctx.db
 		.query('company')
@@ -53,11 +58,11 @@ async function deletionOptions(ctx: QueryCtx) {
 		let hasColleague = false;
 		let scanned = 0;
 		for await (const member of members) {
-			if (++scanned > 100)
+			if (++scanned > MEMBERSHIP_ELIGIBILITY_SCAN_LIMIT)
 				throw new ConvexError(
 					'Company membership cleanup is still in progress. Try again shortly.'
 				);
-			if (member.profileId !== profile._id && !(await creatorDeleted(ctx, member.profileId))) {
+			if (member.profileId !== profile._id && (await liveProfile(ctx, member.profileId))) {
 				hasColleague = true;
 				break;
 			}
@@ -122,7 +127,7 @@ async function validateDeletion(
 	const phrase =
 		options.mode === 'accountAndCompany' ? 'delete my account and company' : 'delete my account';
 	if (args.confirmation.trim() !== phrase) throw new ConvexError(`Type "${phrase}" to continue.`);
-	if (!args.attemptId || args.attemptId.length > 128)
+	if (!args.attemptId || args.attemptId.length > DELETION_ATTEMPT_MAX_LENGTH)
 		throw new ConvexError('Invalid deletion attempt.');
 	return options;
 }
@@ -155,7 +160,8 @@ export const prepare = mutation({
 					...consent,
 					companyId: options.companyId,
 					status: 'prepared',
-					phase: 'invitations'
+					phase: 'invitations',
+					cleanupGeneration: 0
 				}));
 			if (existing) await ctx.db.patch('companyDeletions', id, consent);
 			await ctx.scheduler.runAfter(PREPARATION_TTL, internal.companyDeletion.expirePreparation, {
@@ -239,9 +245,10 @@ async function markDeleted(ctx: MutationCtx, issuer: string, clerkId: string) {
 		const markerId = await ctx.db.insert('deletedUsers', {
 			issuer,
 			clerkId,
-			profileId: profile?._id,
 			deletedAt: Date.now(),
-			complete: !profile
+			cleanupGeneration: 0,
+			successorCursor: null,
+			...(profile ? { complete: false, profileId: profile._id } : { complete: true })
 		});
 		marker = await ctx.db.get('deletedUsers', markerId);
 	}
@@ -250,15 +257,16 @@ async function markDeleted(ctx: MutationCtx, issuer: string, clerkId: string) {
 	return null;
 }
 export const mark = internalMutation({
-	args: { issuer: v.string(), clerkId: v.string() },
+	args: deletionIdentity.fields,
 	returns: v.null(),
 	handler: (ctx, { issuer, clerkId }) => markDeleted(ctx, issuer, clerkId)
 });
 export const markMany = internalMutation({
-	args: { identities: v.array(v.object({ issuer: v.string(), clerkId: v.string() })) },
+	args: { identities: v.array(deletionIdentity) },
 	returns: v.null(),
 	handler: async (ctx, { identities }) => {
-		if (identities.length > 25) throw new ConvexError('Account reconciliation batch is too large.');
+		if (identities.length > ACCOUNT_DELETION_BATCH_SIZE)
+			throw new ConvexError('Account reconciliation batch is too large.');
 		for (const identity of identities) {
 			try {
 				await ctx.runMutation(internal.accountDeletion.mark, identity);
@@ -276,7 +284,7 @@ export const resume = internalMutation({
 		const result = await ctx.db
 			.query('deletedUsers')
 			.withIndex('by_complete', (q) => q.eq('complete', false))
-			.paginate({ cursor: cursor ?? null, numItems: 10 });
+			.paginate({ cursor: cursor ?? null, numItems: CLEANUP_DISCOVERY_PAGE_SIZE });
 		for (const marker of result.page) {
 			try {
 				await ctx.runMutation(internal.accountDeletion.resumeOne, { markerId: marker._id });
@@ -307,62 +315,66 @@ export const clean = internalMutation({
 		const marker = await ctx.db.get('deletedUsers', markerId);
 		// A retried or superseded cleanup job cannot continue an older chain.
 		if (!marker || marker.complete || generation !== marker.cleanupGeneration) return null;
-		if (marker.profileId) {
-			const profileId = marker.profileId;
-			const membership = await ctx.db
+		const profileId = marker.profileId;
+		const membership = await membershipForProfile(ctx, profileId);
+		const owned = await ctx.db
+			.query('company')
+			.withIndex('by_ownerProfileId', (q) => q.eq('ownerProfileId', profileId))
+			.first();
+		if (owned && !(await companyDeletion(ctx, owned._id))) {
+			const candidates = await ctx.db
 				.query('memberships')
-				.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
-				.unique();
-			const owned = await ctx.db
-				.query('company')
-				.withIndex('by_ownerProfileId', (q) => q.eq('ownerProfileId', profileId))
-				.first();
-			if (owned && !(await companyDeletion(ctx, owned._id))) {
-				const candidates = await ctx.db
-					.query('memberships')
-					.withIndex('by_companyId', (q) => q.eq('companyId', owned._id))
-					.paginate({ cursor: marker.successorCursor ?? null, numItems: 25 });
-				let successor;
-				for (const candidate of candidates.page) {
-					if (
-						candidate.profileId !== profileId &&
-						!(await creatorDeleted(ctx, candidate.profileId))
-					) {
-						successor = candidate;
-						break;
-					}
+				.withIndex('by_companyId', (q) => q.eq('companyId', owned._id))
+				.paginate({ cursor: marker.successorCursor, numItems: 25 });
+			let successor;
+			for (const candidate of candidates.page) {
+				if (candidate.profileId !== profileId && (await liveProfile(ctx, candidate.profileId))) {
+					successor = candidate;
+					break;
 				}
-				if (!successor && !candidates.isDone) {
-					await ctx.db.patch('deletedUsers', marker._id, {
-						successorCursor: candidates.continueCursor
-					});
-					await scheduleCleanup(ctx, marker);
-					return null;
-				}
-				await ctx.db.patch('company', owned._id, { ownerProfileId: successor?.profileId });
 			}
-			if (membership) await ctx.db.delete('memberships', membership._id);
-			const profile = await ctx.db.get('profiles', marker.profileId);
-			if (profile?.avatarId) await ctx.storage.delete(profile.avatarId);
-			if (profile) await ctx.db.delete('profiles', profile._id);
+			if (!successor && !candidates.isDone) {
+				await ctx.db.patch('deletedUsers', marker._id, {
+					successorCursor: candidates.continueCursor
+				});
+				await scheduleCleanup(ctx, marker);
+				return null;
+			}
+			if (!successor) {
+				// Do not convert a company into an inaccessible, ownerless record. The
+				// deleted account is retained only until an operator assigns a live owner.
+				await ctx.db.patch('deletedUsers', marker._id, {
+					recoveryCompanyId: owned._id,
+					cleanupJobId: undefined
+				});
+				return null;
+			}
+			await ctx.db.patch('company', owned._id, { ownerProfileId: successor?.profileId });
 		}
+		if (membership) await ctx.db.delete('memberships', membership._id);
+		const profile = await ctx.db.get('profiles', profileId);
+		if (profile) await ctx.db.delete('profiles', profile._id);
+		if (profile?.avatarId) await deleteUnownedFile(ctx, profile.avatarId);
 		await ctx.db.patch('deletedUsers', markerId, { complete: true, cleanupJobId: undefined });
 		return null;
 	}
 });
 export const registered = internalQuery({
 	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.object({
-		page: v.array(v.object({ issuer: v.string(), clerkId: v.string() })),
-		cursor: v.string(),
-		done: v.boolean()
-	}),
+	returns: paginationResultValidator(deletionIdentity),
 	handler: async (ctx, { cursor }) => {
-		const result = await ctx.db.query('profiles').paginate({ cursor, numItems: 25 });
+		const result = await ctx.db
+			.query('profiles')
+			.withIndex('by_creation_time')
+			.paginate({
+				cursor,
+				numItems: RECONCILIATION_PAGE_SIZE,
+				maximumRowsRead: RECONCILIATION_PAGE_SIZE,
+				maximumBytesRead: 2 * 1024 * 1024
+			});
 		return {
-			page: result.page.map(({ issuer, clerkId }) => ({ issuer, clerkId })),
-			cursor: result.continueCursor,
-			done: result.isDone
+			...result,
+			page: result.page.map(({ issuer, clerkId }) => ({ issuer, clerkId }))
 		};
 	}
 });

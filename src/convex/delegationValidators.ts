@@ -1,4 +1,5 @@
 import { v, type Infer } from 'convex/values';
+import { DOCX_CONTENT_TYPE, PDF_CONTENT_TYPE } from '../lib/delegation';
 
 export const delegate = v.object({
 	name: v.string(),
@@ -51,17 +52,19 @@ const attachmentBase = v.object({
 	uploadId: v.string(),
 	filename: v.string(),
 	size: v.number(),
-	contentType: v.string(),
+	contentType: v.union(v.literal(DOCX_CONTENT_TYPE), v.literal(PDF_CONTENT_TYPE)),
 	sha256: v.string()
 });
+const stagedAttachment = attachmentBase.extend({
+	state: v.literal('staged'),
+	expiresAt: v.number()
+});
 export const attachment = v.union(
-	attachmentBase.extend({ state: v.literal('staged'), expiresAt: v.number() }),
+	stagedAttachment,
 	attachmentBase.extend({ state: v.literal('submitted'), requestId: v.id('delegationRequests') })
 );
-export const draftAttachment = v.object({
-	_id: v.id('delegationAttachments'),
-	uploadId: v.string(),
-	expiresAt: v.number()
+export const draftAttachment = stagedAttachment.pick('uploadId', 'expiresAt').extend({
+	_id: v.id('delegationAttachments')
 });
 export const registeredUpload = v.object({
 	attachmentId: v.id('delegationAttachments'),

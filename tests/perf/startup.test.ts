@@ -7,7 +7,9 @@ import { AccountNavigation } from '../../src/lib/auth/account-navigation';
 import { AccountPreparation } from '../../src/lib/auth/account-preparation';
 import { api } from '../../src/convex/_generated/api';
 import schema from '../../src/convex/schema';
-import { identity, initializeViewer } from './fixtures';
+import { baselineIntegrity, writeBaselineChunks } from '../../src/convex/baselineStorage';
+import { DOCX_PARSER_VERSION } from '../../src/lib/contract/import/limits';
+import { block, identity, initializeViewer } from './fixtures';
 const modules = import.meta.glob('../../src/convex/**/*.*s');
 function liveAccount(client: {
 	query: (
@@ -73,25 +75,39 @@ it('reads returning accounts and provisions missing state once without restartin
 	expect(Boolean(provisioned && !provisioned.needsInitialization)).toBe(true);
 	await prepareNew();
 	expect(newMutation).toHaveBeenCalledExactlyOnceWith(api.profiles.initialize, {});
-	await t.run(async ({ db }) => {
+	await t.run(async (ctx) => {
+		const { db } = ctx;
 		const company = await db.query('company').first();
+		const originalFileId = await ctx.storage.store(
+			new Blob(['fixture'], {
+				type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+			})
+		);
 		const baselineId = await db.insert('baselines', {
 			companyId: company!._id,
-			source: 'seed',
+			source: 'docx',
 			state: 'prepared',
-			fingerprint: 'staging',
+			originalFileId,
+			filename: 'fixture.docx',
+			fileHash: 'a'.repeat(64),
+			parserVersion: DOCX_PARSER_VERSION,
+			uploaderId: company!.ownerProfileId!,
+			expiresAt: Date.now() + 3_600_000,
+			...baselineIntegrity([block]),
 			issues: [],
-			blockCount: 0
+			blockCount: 1,
+			chunkCount: 0,
+			chunkReadBytes: 0
 		});
-		await db.insert('currentTemplate', {
+		await db.patch(
+			'baselines',
 			baselineId,
-			companyId: company!._id,
-			maintenance: true
-		});
+			await writeBaselineChunks(ctx, { companyId: company!._id, baselineId, blocks: [block] })
+		);
 	});
-	const maintained = await prepare();
-	expect(Boolean(maintained && !maintained.needsInitialization)).toBe(true);
-	expect(maintained?.templateReady).toBe(false);
+	const prepared = await prepare();
+	expect(Boolean(prepared && !prepared.needsInitialization)).toBe(true);
+	expect(prepared?.templateReady).toBe(false);
 	expect(mutation).not.toHaveBeenCalled();
 	expect(await t.run(({ db }) => db.system.query('_scheduled_functions').collect())).toHaveLength(
 		0

@@ -228,19 +228,26 @@
 		/* The page covers the rightmost 8px; center the label in the exposed tab. */
 		width: calc(100% + 8px);
 		padding-right: 8px;
-		height: 34px;
+		height: var(--review-tab-height, 34px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		gap: 4px;
+		gap: var(--review-tab-gap, 4px);
 		border: 0;
-		border-radius: 3px 0 0 3px;
+		border-radius: 8px 0 0 8px;
 		background: color-mix(in srgb, var(--color-accent) 90%, white);
 		color: white;
-		font: 400 13px/1.2 var(--font-sans, sans-serif);
+		font-family: var(--font-sans, sans-serif);
+		font-size: var(--review-tab-font-size, 13px);
+		font-weight: 400;
+		line-height: 1.2;
 		cursor: pointer;
 		white-space: nowrap;
 		box-shadow: var(--shadow-control);
+	}
+	.review-tab :global(svg) {
+		width: var(--review-tab-icon-size, 12px);
+		height: var(--review-tab-icon-size, 12px);
 	}
 	.review-tab:focus-visible {
 		outline: 2px solid var(--color-accent);
