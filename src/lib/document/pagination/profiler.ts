@@ -6,7 +6,7 @@ import {
 	type LayoutProfiles
 } from './profile';
 import { LayoutProfileCache } from './profile-cache';
-import { DocumentScheduler, type Priority } from '../runtime/scheduler';
+import { DocumentScheduler } from '../runtime/scheduler';
 
 /** Request-local counters for foreground rendering and background preparation. */
 export interface LayoutProfileMetrics {
@@ -19,30 +19,21 @@ export interface LayoutProfileMetrics {
 	profileTotalMs: number;
 	/** Largest block's geometry-read time, summed across table passes. */
 	maxProfileBlockMs: number;
-}
-
-export interface LayoutProfileBatch {
-	readonly epoch: string;
-	/** One whole-block profile per input, in input order. */
-	readonly profiles: readonly BlockLayoutProfile[];
+	maxProfileTransactionMs: number;
+	profileTransactionOverruns: number;
 }
 
 export interface LayoutProfileSurface {
 	/** Undefined while fonts are loading or the surface is detached. Always read live. */
 	readonly epoch: string | undefined;
 	/** The visitor and any exact upgrade finish before the shared DOM is cleared. */
-	withBlock?<T>(
+	withBlock<T>(
 		block: PreparedBlock,
 		expectedEpoch: string,
 		detail: GeometryDetail,
 		visit: (profile: BlockLayoutProfile, readExact: () => BlockLayoutProfile) => T,
 		metrics?: LayoutProfileMetrics
 	): T;
-	profile(
-		blocks: readonly PreparedBlock[],
-		expectedEpoch: string,
-		metrics?: LayoutProfileMetrics
-	): LayoutProfileBatch | Promise<LayoutProfileBatch>;
 }
 
 export class StaleLayoutProfileError extends Error {
@@ -68,11 +59,20 @@ function validateAssociation(block: PreparedBlock, profile: BlockLayoutProfile):
 		throw new Error('Layout profile does not match its prepared block.');
 }
 
+function strongestGeometry(associations: Iterable<readonly [PreparedBlock, BlockLayoutProfile]>) {
+	const geometry = new Map<string, BlockLayoutProfile>();
+	for (const [block, profile] of associations) {
+		const existing = geometry.get(block.geometryFingerprint);
+		if (!existing || (!hasExactGeometry(existing) && hasExactGeometry(profile)))
+			geometry.set(block.geometryFingerprint, profile);
+	}
+	return geometry;
+}
+
 /** Serializes shared-surface requests; deduplicates geometry before any DOM work.
  * Returned associations always use the current request's prepared objects, never cached content.
  */
 export class LayoutProfiler {
-	#preparationRevision = 0;
 	#alternatives = new Set<AbortController>();
 	#retained?: { owner: symbol; epoch: string };
 
@@ -87,7 +87,6 @@ export class LayoutProfiler {
 	}
 
 	beginPreparation() {
-		++this.#preparationRevision;
 		for (const abort of this.#alternatives) abort.abort();
 		this.#alternatives.clear();
 	}
@@ -98,12 +97,16 @@ export class LayoutProfiler {
 	}
 
 	/** Synchronous single-block transactions; all geometry also stays request-local. */
-	createRequest(epoch: string, metrics?: LayoutProfileMetrics, initial?: LayoutProfiles) {
+	createRequest(
+		epoch: string,
+		metrics?: LayoutProfileMetrics,
+		initial?: LayoutProfiles,
+		checkCurrent: () => void = () => {}
+	) {
 		const profiles = new Map<PreparedBlock, BlockLayoutProfile>(initial);
-		const geometry = new Map(
-			[...profiles].map(([block, profile]) => [block.geometryFingerprint, profile])
-		);
+		const geometry = strongestGeometry(profiles);
 		const store = (block: PreparedBlock, profile: BlockLayoutProfile) => {
+			checkCurrent();
 			if (this.epoch !== epoch) throw new StaleLayoutProfileError();
 			validateAssociation(block, profile);
 			const stored = this.cache
@@ -117,10 +120,13 @@ export class LayoutProfiler {
 			detail: GeometryDetail = 'exact',
 			advance?: (upgrade: () => void) => T
 		): T | undefined => {
+			checkCurrent();
 			if (this.epoch !== epoch) throw new StaleLayoutProfileError();
 			this.cache.useEpoch(epoch);
 			const key = block.geometryFingerprint;
-			const profile = geometry.get(key) ?? this.cache.get(epoch, key);
+			const local = geometry.get(key);
+			const cached = this.cache.get(epoch, key);
+			const profile = cached && hasExactGeometry(cached) ? cached : (local ?? cached);
 			if (profile && (detail === 'bounds' || hasExactGeometry(profile))) {
 				if (metrics) metrics.profileCacheHits++;
 				validateAssociation(block, profile);
@@ -135,167 +141,28 @@ export class LayoutProfiler {
 				metrics.profileUniqueMisses++;
 				metrics.profileBatchCount++;
 			}
-			const started = performance.now();
+			const started = metrics ? performance.now() : 0;
 			try {
-				if (this.surface.withBlock)
-					return this.surface.withBlock(
-						block,
-						epoch,
-						detail,
-						(measured, readExact) => {
-							store(block, measured);
-							return advance?.(() => {
-								store(block, readExact());
-							});
-						},
-						metrics
-					);
-				const batch = this.surface.profile([block], epoch, metrics);
-				if ('then' in batch)
-					throw new Error('Progressive profiling requires a synchronous surface transaction.');
-				if (batch.epoch !== epoch || batch.profiles.length !== 1)
-					throw new Error('Missing or stale single-block geometry.');
-				store(block, batch.profiles[0]);
-				return advance?.(() => {
-					resolve(block, 'exact');
-				});
+				return this.surface.withBlock(
+					block,
+					epoch,
+					detail,
+					(measured, readExact) => {
+						store(block, measured);
+						return advance?.(() => store(block, readExact()));
+					},
+					metrics
+				);
 			} finally {
-				if (metrics) metrics.profileTotalMs += performance.now() - started;
+				if (metrics) {
+					const elapsed = performance.now() - started;
+					metrics.profileTotalMs += elapsed;
+					metrics.maxProfileTransactionMs = Math.max(metrics.maxProfileTransactionMs, elapsed);
+					if (elapsed > 4) metrics.profileTransactionOverruns++;
+				}
 			}
 		};
 		return { profiles, resolve };
-	}
-
-	async resolve(
-		blocks: readonly PreparedBlock[],
-		metrics?: LayoutProfileMetrics,
-		checkCurrent?: () => void,
-		priority: Priority = () => 'foreground',
-		signal?: AbortSignal,
-		detail: GeometryDetail = 'exact'
-	): Promise<LayoutProfiles> {
-		if (priority() !== 'alternative') this.beginPreparation();
-		const revision = this.#preparationRevision;
-		const epoch = this.surface.epoch;
-		if (epoch === undefined) throw new StaleLayoutProfileError();
-		const check = () => {
-			signal?.throwIfAborted();
-			checkCurrent?.();
-			if (this.surface.epoch !== epoch) throw new StaleLayoutProfileError();
-			if (priority() === 'alternative' && revision !== this.#preparationRevision)
-				throw new Error('Alternative preparation cancelled.');
-		};
-		// Request-local geometry survives eviction from the optional cache.
-		const geometry = new Map<string, BlockLayoutProfile>();
-		const misses = new Map<string, PreparedBlock>();
-		const profiles = new Map<PreparedBlock, BlockLayoutProfile>();
-		let cursor = 0;
-		while (cursor < blocks.length) {
-			await this.scheduler.run(
-				priority,
-				() => {
-					check();
-					this.cache.useEpoch(epoch);
-					const started = performance.now();
-					let count = 0;
-					do {
-						const block = blocks[cursor++],
-							key = block.geometryFingerprint;
-						if (!geometry.has(key) && !misses.has(key)) {
-							const cached = this.cache.get(epoch, key);
-							if (cached && (detail === 'bounds' || hasExactGeometry(cached)))
-								geometry.set(key, cached);
-							else misses.set(key, block);
-						}
-						const profile = geometry.get(key);
-						if (profile) {
-							validateAssociation(block, profile);
-							profiles.set(block, profile);
-						}
-						if (metrics) {
-							if (profile) metrics.profileCacheHits++;
-							else metrics.profileCacheMisses++;
-						}
-					} while (cursor < blocks.length && ++count < 128 && performance.now() - started < 4);
-				},
-				signal
-			);
-		}
-		if (metrics) metrics.profileUniqueMisses += misses.size;
-		const missing = misses.values();
-		let next = missing.next();
-		while (!next.done) {
-			await this.scheduler.run(
-				priority,
-				async () => {
-					check();
-					// A foreground promotion is read at dispatch. Background reads one shape.
-					const candidates = [next.value!];
-					next = missing.next();
-					if (priority() === 'foreground') {
-						while (!next.done) {
-							candidates.push(next.value);
-							next = missing.next();
-						}
-					}
-					// Another serialized request may have measured these shapes while we waited.
-					const pending = candidates.filter((block) => {
-						const profile = this.cache.get(epoch, block.geometryFingerprint);
-						if (profile && (detail === 'bounds' || hasExactGeometry(profile)))
-							geometry.set(block.geometryFingerprint, profile);
-						return !profile || (detail === 'exact' && !hasExactGeometry(profile));
-					});
-					if (!pending.length) return;
-					const started = metrics ? performance.now() : 0;
-					if (metrics) metrics.profileBatchCount++;
-					let batch: LayoutProfileBatch;
-					try {
-						// Measurement starts inside this callback, with serialized surface access.
-						check();
-						batch = await this.surface.profile(pending, epoch, metrics);
-					} finally {
-						if (metrics) metrics.profileTotalMs += performance.now() - started;
-					}
-					check();
-					if (batch.epoch !== epoch) throw new StaleLayoutProfileError();
-					if (batch.profiles.length !== pending.length)
-						throw new Error('Layout profile batch has missing or extra blocks.');
-					const measured = new Map(
-						pending.map((block, index) => {
-							const profile = batch.profiles[index];
-							validateAssociation(block, profile);
-							return [block.geometryFingerprint, profile] as const;
-						})
-					);
-					for (const [key, profile] of this.cache.setBatch(epoch, measured))
-						geometry.set(key, profile);
-				},
-				signal
-			);
-		}
-		cursor = 0;
-		// Cache-hit associations were already checked in the first bounded pass.
-		while (profiles.size < blocks.length && cursor < blocks.length) {
-			await this.scheduler.run(
-				priority,
-				() => {
-					check();
-					const started = performance.now();
-					let count = 0;
-					do {
-						const block = blocks[cursor++];
-						if (!profiles.has(block)) {
-							const profile = geometry.get(block.geometryFingerprint)!;
-							validateAssociation(block, profile);
-							profiles.set(block, profile);
-						}
-					} while (cursor < blocks.length && ++count < 128 && performance.now() - started < 4);
-				},
-				signal
-			);
-		}
-		check();
-		return profiles;
 	}
 
 	retain(blocks: readonly PreparedBlock[], profiles: LayoutProfiles, epoch: string, owner: symbol) {
@@ -304,7 +171,7 @@ export class LayoutProfiler {
 		this.cache.useEpoch(epoch);
 		this.cache.retain(
 			epoch,
-			new Map(blocks.map((block) => [block.geometryFingerprint, profiles.get(block)!]))
+			strongestGeometry(blocks.map((block) => [block, profiles.get(block)!] as const))
 		);
 		this.#retained = { owner, epoch };
 	}

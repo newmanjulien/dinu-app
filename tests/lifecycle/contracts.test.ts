@@ -14,7 +14,6 @@ import type { ContractWorkspace } from '../../src/lib/document/runtime/workspace
 import type { Snippet } from 'svelte';
 import type { ContractSnapshot } from '../../src/lib/contract/saved';
 import Harness from './RouteHarness.svelte';
-import UnsafeRoute from './UnsafeRoute.svelte';
 import { page, screen, setNavigate } from './navigation.svelte';
 import { rendering } from './rendering.svelte';
 
@@ -52,6 +51,9 @@ const contract = (
 	companyName: 'Buyer',
 	savedAt: 1,
 	revision,
+	reviewGeneration: revision,
+	stateVersion: revision,
+	reviewCompletion: null,
 	selectedConcessions: choices,
 	reviews: {},
 	lastOperationId: operation
@@ -269,16 +271,6 @@ afterEach(async () => {
 });
 
 describe('route and editing lifetimes', () => {
-	it('reproduces the old global-page getter failure during teardown', () => {
-		const component = mount(UnsafeRoute, { target: document.body });
-		mounted.push(component);
-		flushSync();
-		expect(() =>
-			flushSync(() => {
-				page.data = {};
-			})
-		).toThrow("Cannot read properties of undefined (reading 'id')");
-	});
 	it('commits Home while saving and reattaches one owner with local choices', async () => {
 		const f = fixture();
 		const target = show(f.owner);

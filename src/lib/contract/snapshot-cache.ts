@@ -15,6 +15,7 @@ import { forgetOpening, CACHE_MEMBERSHIP_ID, setCacheIdentity } from './browser-
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import {
 	normalizeReadyContract,
+	olderContractState,
 	normalizeContractSnapshot,
 	type ContractSnapshotResult,
 	type ContractState,
@@ -300,8 +301,7 @@ class ContractSnapshotCache {
 		const entry = this.entries.get(id);
 		if (!entry || this.deleted.has(id) || this.lifetime.signal.aborted) return;
 		const previous = entry.data.contract;
-		const revision = previous.revision;
-		if (state.revision < revision) return entry.data;
+		if (olderContractState(state, previous)) return entry.data;
 		const contract = { ...previous, ...state };
 		const contractJson = JSON.stringify(contract);
 		if (contractJson === entry.contractJson) return entry.data;

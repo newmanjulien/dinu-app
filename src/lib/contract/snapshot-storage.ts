@@ -1,6 +1,10 @@
-import type { ContractSnapshotResult, StoredContractSnapshot } from './saved';
+import {
+	olderContractState,
+	type ContractSnapshotResult,
+	type StoredContractSnapshot
+} from './saved';
 import { CACHE_NAMESPACE } from './browser-storage';
-import { validContractMetadata, validTemplate } from './persisted-values';
+import { readContractMetadata, validTemplate } from './persisted-values';
 export { validSnapshot, validTemplate } from './persisted-values';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 
@@ -19,6 +23,12 @@ type Write = (
 	| { kind: 'delete' }
 	| { kind: 'repair'; target: RepairTarget }
 ) & { valid: () => boolean };
+const writeContract = (write: Write) =>
+	write.kind === 'put'
+		? write.entry.data.contract
+		: write.kind === 'update'
+			? write.contract
+			: undefined;
 const writeBytes = (write: Write) =>
 	write.kind === 'put' ? write.entry.bytes : write.kind === 'update' ? write.bytes : 0;
 /** Disk payload is untrusted and may use the legacy source-target representation. */
@@ -30,21 +40,27 @@ type StoredMetadata = {
 	immutableBytes: number;
 	usedAt: number;
 };
-function validMetadata(value: unknown, id: string): value is StoredMetadata {
+function readMetadata(value: unknown, id: string): StoredMetadata | undefined {
 	const metadata = value as StoredMetadata | undefined;
-	return (
-		!!metadata &&
-		metadata.id === id &&
-		Number.isFinite(metadata.bytes) &&
-		metadata.bytes >= 0 &&
-		metadata.bytes <= SNAPSHOT_BYTES &&
-		Number.isFinite(metadata.immutableBytes) &&
-		metadata.immutableBytes >= 0 &&
-		metadata.immutableBytes <= metadata.bytes &&
-		Number.isFinite(metadata.usedAt) &&
-		validContractMetadata(metadata.contract, id)
-	);
+	if (
+		!metadata ||
+		metadata.id !== id ||
+		!Number.isFinite(metadata.bytes) ||
+		metadata.bytes < 0 ||
+		metadata.bytes > SNAPSHOT_BYTES ||
+		!Number.isFinite(metadata.immutableBytes) ||
+		metadata.immutableBytes < 0 ||
+		metadata.immutableBytes > metadata.bytes ||
+		!Number.isFinite(metadata.usedAt)
+	)
+		return;
+	const contract = readContractMetadata(metadata.contract, id);
+	if (!contract) return;
+	if (contract === metadata.contract) return metadata;
+	const bytes = metadata.immutableBytes + JSON.stringify(contract).length * 2;
+	if (bytes <= SNAPSHOT_BYTES) return { ...metadata, contract, bytes };
 }
+
 function result<T>(request: IDBRequest<T>): Promise<T> {
 	return new Promise((resolve, reject) => {
 		request.onsuccess = () => resolve(request.result);
@@ -64,7 +80,7 @@ export class SnapshotStorage {
 	private database: Promise<IDBDatabase | undefined> | undefined;
 	private lifetime = new AbortController();
 	private pending = new Map<string, Write>();
-	private active: readonly Write[] = [];
+	private active = new Map<string, Write>();
 	private writing = false;
 	private open() {
 		if (this.closed) return Promise.resolve(undefined);
@@ -86,8 +102,10 @@ export class SnapshotStorage {
 			opening.signal.addEventListener('abort', failed, { once: true });
 			this.lifetime.signal.addEventListener('abort', failed, { once: true });
 			try {
-				const request = indexedDB.open(`${this.namespace}:snapshots`, 6);
-				request.onupgradeneeded = () => {
+				const request = indexedDB.open(`${this.namespace}:snapshots`, 7);
+				request.onupgradeneeded = (event) => {
+					// Version seven keeps the v6 layout and excludes writers using old ordering rules.
+					if (event.oldVersion >= 6) return;
 					// Retire obsolete confirmed history/metadata only. The sessionStorage
 					// intent journal has independent ownership and is never migrated here.
 					for (const name of ['snapshots', 'metadata'])
@@ -159,7 +177,8 @@ export class SnapshotStorage {
 				signal
 			);
 			if (signal?.aborted) return;
-			if (validMetadata(metadata, id)) return metadata;
+			const normalized = readMetadata(metadata, id);
+			if (normalized) return normalized;
 			if (metadata) this.repair({ store: 'metadata', id });
 		} catch {
 			// Optional storage never prevents an authenticated network read.
@@ -202,16 +221,38 @@ export class SnapshotStorage {
 	}
 	private enqueue(id: string, write: Write) {
 		if (this.closed || !write.valid()) return;
-		const previous = this.pending.get(id);
+		const queued = this.pending.get(id);
+		const active = this.active.get(id);
+		const previous = queued?.valid() ? queued : active?.valid() ? active : undefined;
 		if (write.kind === 'update' && previous?.kind === 'delete') return;
-		if (write.kind === 'update' && previous?.kind === 'put') {
+		const incoming = writeContract(write);
+		const current = previous && writeContract(previous);
+		if (incoming && current && olderContractState(incoming, current)) {
+			// A full payload can supply missing immutable content for a newer metadata update.
+			if (
+				write.kind !== 'put' ||
+				previous?.kind !== 'update' ||
+				incoming.templateVersionId !== current.templateVersionId
+			)
+				return;
+			write = {
+				...write,
+				entry: {
+					...write.entry,
+					data: { ...write.entry.data, contract: current },
+					bytes: write.entry.immutableBytes + previous.bytes
+				}
+			};
+		}
+		if (write.kind === 'update' && previous === queued && queued?.kind === 'put') {
+			if (write.contract.templateVersionId !== queued.entry.data.contract.templateVersionId) return;
 			write = {
 				kind: 'put',
 				valid: write.valid,
 				entry: {
-					data: { ...previous.entry.data, contract: write.contract },
-					immutableBytes: previous.entry.immutableBytes,
-					bytes: previous.entry.immutableBytes + write.bytes
+					data: { ...queued.entry.data, contract: write.contract },
+					immutableBytes: queued.entry.immutableBytes,
+					bytes: queued.entry.immutableBytes + write.bytes
 				}
 			};
 		}
@@ -220,7 +261,7 @@ export class SnapshotStorage {
 		// Include the active payload: stalled storage must not retain an unbounded write backlog.
 		while (
 			this.pending.size &&
-			(this.pending.size + this.active.length > SNAPSHOT_ENTRIES ||
+			(this.pending.size + this.active.size > SNAPSHOT_ENTRIES ||
 				this.queuedBytes() > SNAPSHOT_BYTES)
 		) {
 			const oldest = this.pending.keys().next().value!;
@@ -240,7 +281,7 @@ export class SnapshotStorage {
 			while (!this.closed && this.pending.size) {
 				const batch = [...this.pending];
 				this.pending.clear();
-				this.active = batch.map(([, write]) => write);
+				this.active = new Map(batch);
 				try {
 					await this.transaction(db, 'readwrite', async (tx) => {
 						for (const [id, write] of batch) if (write.valid()) await this.write(tx, id, write);
@@ -249,7 +290,7 @@ export class SnapshotStorage {
 				} catch {
 					/* Optional cache; failed writes do not affect confirmed server state. */
 				} finally {
-					this.active = [];
+					this.active.clear();
 				}
 			}
 		} finally {
@@ -259,7 +300,7 @@ export class SnapshotStorage {
 	private queuedBytes() {
 		const versions = new Map<string, number>();
 		let bytes = 0;
-		for (const write of [...this.pending.values(), ...this.active]) {
+		for (const write of [...this.pending.values(), ...this.active.values()]) {
 			bytes += writeBytes(write);
 			if (write.kind === 'put') {
 				bytes -= write.entry.immutableBytes;
@@ -279,7 +320,7 @@ export class SnapshotStorage {
 			if (
 				current &&
 				!(repair.store === 'metadata'
-					? validMetadata(current, repair.id)
+					? readMetadata(current, repair.id)
 					: current.id === repair.id && validTemplate(current.snapshot, repair.companyId))
 			)
 				target.delete(repair.id);
@@ -287,16 +328,18 @@ export class SnapshotStorage {
 		else if (write.kind === 'put') {
 			const { data, bytes, immutableBytes } = write.entry;
 			const versionId = data.contract.templateVersionId;
+			const current = readMetadata(await result(store.get(id)), id);
 			const missing = (await result(snapshots.getKey(versionId))) === undefined;
 			if (!write.valid()) return;
 			if (missing) snapshots.put({ id: versionId, snapshot: data.snapshot });
+			if (current && olderContractState(data.contract, current.contract)) return;
 			store.put({ id, contract: data.contract, bytes, immutableBytes, usedAt: Date.now() });
 		} else {
-			const metadata = await result<StoredMetadata | undefined>(store.get(id));
-			if (!validMetadata(metadata, id) || !write.valid()) return;
+			const metadata = readMetadata(await result(store.get(id)), id);
+			if (!metadata || !write.valid()) return;
 			if (
 				write.contract.templateVersionId !== metadata.contract.templateVersionId ||
-				write.contract.revision < metadata.contract.revision
+				olderContractState(write.contract, metadata.contract)
 			)
 				return;
 			store.put({

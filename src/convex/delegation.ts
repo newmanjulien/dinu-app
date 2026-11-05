@@ -89,7 +89,7 @@ const initialCatalog = {
 			key: 'build-playbook',
 			title: 'Build a negotiation playbook',
 			description:
-				'I’ll build a negotiation playbook for your contract with clear clause explanations, approved alternatives, and guidance on when to hold firm or ask for approval. Share your contract and describe the issues your team encounters, including any positions or limits you already have in mind.',
+				'I’ll build a negotiation playbook for your contract with clear clause explanations, approved alternatives, and instructions on when to hold firm or ask for approval. Share your contract and describe the issues your team encounters, including any positions or limits you already have in mind.',
 			businessDays: 2,
 			questions: [
 				{

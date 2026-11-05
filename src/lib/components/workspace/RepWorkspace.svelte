@@ -184,7 +184,7 @@
 			!runtime.paused &&
 			metadata.data &&
 			!metadata.error &&
-			persistence.confirmed.revision >= metadata.data.revision
+			persistence.confirmed.stateVersion >= metadata.data.stateVersion
 		)
 	);
 	const editable = $derived(persistence.editable && stateReconciled && notifiedVisible);
@@ -270,7 +270,44 @@
 		status: ReviewDecision;
 	};
 	let deciding = $state(false);
-	let reviewCompleted = $state(false);
+	let dismissedCompletion = $state<number | null>(null);
+	let completionBusy = $state(false);
+	let completionError = $state<string | null>(null);
+	const awaitingCompletion = $derived(
+		isAdmin && persistence.confirmed.reviewCompletion?.kind === 'awaitingConfirmation'
+			? persistence.confirmed.reviewCompletion
+			: null
+	);
+	const completionGeneration = $derived(
+		awaitingCompletion ? persistence.confirmed.reviewGeneration : null
+	);
+	$effect(() => {
+		completionGeneration;
+		completionError = null;
+	});
+	async function resolveCompletion(reset: boolean) {
+		if (completionBusy || !canReview || deciding || !awaitingCompletion) return;
+		const generation = persistence.confirmed.reviewGeneration;
+		completionBusy = true;
+		completionError = null;
+		try {
+			const result = await client.mutation(
+				reset ? api.approvals.resetCompletion : api.approvals.confirmCompletion,
+				{ membershipId, id: contractId, expectedGeneration: generation }
+			);
+			if (!active) return;
+			if (result.outcome === 'reset') {
+				decisionAttempts.clear();
+				decisionError = null;
+				reviewNavigation = {};
+			}
+		} catch (error) {
+			if (active && completionGeneration === generation)
+				completionError = saveError(error, 'We couldn’t save your choice. Try again.');
+		} finally {
+			if (active) completionBusy = false;
+		}
+	}
 	let decisionError = $state.raw<{
 		itemId: string;
 		attempt: DecisionAttempt;
@@ -311,7 +348,7 @@
 				description: concession.description,
 				range,
 				admin: isAdmin,
-				disabled: !canReview || deciding
+				disabled: !canReview || deciding || completionBusy
 			};
 		})
 	);
@@ -393,7 +430,7 @@
 		deciding = true;
 		decisionError = null;
 		try {
-			const result = await client.mutation(api.approvals.decide, {
+			await client.mutation(api.approvals.decide, {
 				membershipId,
 				id: contractId,
 				itemId: tag.itemId as Id<'playbookItems'>,
@@ -404,9 +441,8 @@
 			});
 			if (!active) return;
 			decisionAttempts.delete(tag.itemId);
-			if (result.reviewCompleted && !runtime.paused && !session.blocked && !navigating.to)
-				reviewCompleted = true;
-			else reviewNavigation = { afterItemId: tag.itemId };
+			if (persistence.confirmed.reviewCompletion?.kind !== 'awaitingConfirmation')
+				reviewNavigation = { afterItemId: tag.itemId };
 		} catch (error) {
 			if (active && !decisionSettled(tag.itemId, attempt, changesStatus))
 				decisionError = {
@@ -624,6 +660,13 @@
 	>
 		{reviewLinkMessage}
 	</p>{/if}
+{#if awaitingCompletion && !persistence.deleted}
+	<p class="mx-auto mt-4 max-w-3xl text-center text-sm text-ink-muted" role="status">
+		<button class="underline" onclick={() => (dismissedCompletion = null)}>
+			Review results awaiting confirmation
+		</button>
+	</p>
+{/if}
 {#if !persistence.deleted}
 	<InteractionInputScope
 		capture={(event) => {
@@ -760,8 +803,17 @@
 	</InteractionInputScope>
 {/if}
 
-{#if reviewCompleted && !runtime.paused && !session.blocked && !navigating.to && !persistence.deleted}
-	<ReviewCompletedModal onClose={() => (reviewCompleted = false)} />
+{#if awaitingCompletion && completionGeneration !== dismissedCompletion && !runtime.paused && !session.blocked && !navigating.to && !persistence.deleted}
+	{#key completionGeneration}
+		<ReviewCompletedModal
+			busy={completionBusy}
+			disabled={!canReview || deciding}
+			error={completionError}
+			onSend={() => void resolveCompletion(false)}
+			onReset={() => void resolveCompletion(true)}
+			onClose={() => (dismissedCompletion = completionGeneration)}
+		/>
+	{/key}
 {/if}
 
 <style>

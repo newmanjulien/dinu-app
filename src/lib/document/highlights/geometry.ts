@@ -167,6 +167,7 @@ export function buildLineMaps(
 		.filter((element) => !pageNumbers || pageNumbers.has(Number(element.dataset.pageNumber)))
 		.map((element) => {
 			const { bounds, scale } = pageSpace(element);
+			const content = element.querySelector('.document-page__content');
 			const containers: TextContainer[] = [];
 			for (const container of element.querySelectorAll<HTMLElement>(TEXT_CONTAINER_SELECTOR)) {
 				const style = getComputedStyle(container);
@@ -181,8 +182,11 @@ export function buildLineMaps(
 				const texts: (Omit<TextEntry, 'rects'> & { rects: Omit<TextRect, 'band'>[] })[] = [];
 				const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
 				for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+					// Page-local geometry depends on document content and layout.
+					// Outer wrappers govern accessibility and interaction, not text measurements.
+					const hidden = node.parentElement?.closest('[aria-hidden="true"]');
 					if (
-						node.parentElement?.closest('[aria-hidden="true"]') ||
+						(hidden && content?.contains(hidden)) ||
 						node.parentElement?.closest(TEXT_CONTAINER_SELECTOR) !== container
 					)
 						continue;

@@ -6,14 +6,14 @@ import type {
 	contractMetadata,
 	saveResult
 } from '../../convex/savedContractValidators';
-import {
-	normalizePlaybookItem,
-	type PlaybookItem
-} from '../playbook/model';
+import { normalizePlaybookItem, type PlaybookItem } from '../playbook/model';
 
 /** Raw snapshots exist only at network/disk ingress so legacy ranges cannot spread through the app. */
 export type StoredContractSnapshot = Infer<typeof snapshot>;
-export type ContractSnapshotItem = Omit<StoredContractSnapshot['items'][number], 'trigger' | 'concessions'> &
+export type ContractSnapshotItem = Omit<
+	StoredContractSnapshot['items'][number],
+	'trigger' | 'concessions'
+> &
 	PlaybookItem;
 export type ContractSnapshot = Omit<StoredContractSnapshot, 'items'> & {
 	items: ContractSnapshotItem[];
@@ -32,8 +32,7 @@ export type ContractState = Infer<typeof contractState>;
 export type ContractSaveResult = Infer<typeof saveResult>;
 export type ContractDestination = { kind: 'new' } | { kind: 'saved'; id: string };
 export type ContractSnapshotResult =
-	| ReadyContract
-	| { id: string; status: 'loading' | 'missing' | 'error' };
+	ReadyContract | { id: string; status: 'loading' | 'missing' | 'error' };
 
 export function normalizeContractSnapshot(
 	snapshot: StoredContractSnapshot | ContractSnapshot
@@ -55,4 +54,9 @@ export function normalizeReadyContract(
 }
 export function saveError(error: unknown, fallback: string) {
 	return error instanceof ConvexError && typeof error.data === 'string' ? error.data : fallback;
+}
+
+/** Canonical metadata has one freshness version, independent of business revisions. */
+export function olderContractState(next: ContractState, current: ContractState) {
+	return next.stateVersion < current.stateVersion;
 }

@@ -5,11 +5,12 @@ import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import type { StartupData } from '$lib/auth/startup-data';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = ({ locals, isDataRequest, fetch }) => {
+export const load: PageServerLoad = ({ locals, isDataRequest }) => {
 	const auth = locals.auth?.();
+	const convexUrl = env.PUBLIC_CONVEX_URL;
 	if (
 		isDataRequest ||
-		!env.PUBLIC_CONVEX_URL ||
+		!convexUrl ||
 		!auth ||
 		!('userId' in auth) ||
 		!auth.userId ||
@@ -24,9 +25,11 @@ export const load: PageServerLoad = ({ locals, isDataRequest, fetch }) => {
 		(async (): Promise<StartupData | null> => {
 			const token = await auth.getToken({ template: 'convex' });
 			if (!token || read.signal.aborted) return null;
-			const client = new ConvexHttpClient(env.PUBLIC_CONVEX_URL!, {
+			const client = new ConvexHttpClient(convexUrl, {
 				logger: false,
-				fetch: (input, init) => fetch(input, { ...init, signal: read.signal, cache: 'no-store' })
+				// Native fetch lets this streamed external request finish after SvelteKit renders.
+				fetch: (input, init) =>
+					globalThis.fetch(input, { ...init, signal: read.signal, cache: 'no-store' })
 			});
 			client.setAuth(token);
 			return { ...(await client.query(api.profiles.startup, {})), userId, sessionId };

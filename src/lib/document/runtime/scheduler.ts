@@ -2,12 +2,18 @@ import { recordSchedulerWindow, type SchedulerWindowSample } from './render-perf
 
 export type RenderPriority = 'foreground' | 'background' | 'alternative';
 export type Priority = () => RenderPriority;
-const rank = { foreground: 0, background: 1, alternative: 2 };
+const rank = { foreground: 0, alternative: 1, background: 2 };
 const WINDOW_MS = 8;
+export interface SchedulerMetrics {
+	schedulerWaitMs: number;
+	maxSchedulerWaitMs: number;
+}
 type Kind = 'preparation' | 'append';
 type DispatchMode = 'immediate' | 'paced' | 'idle';
 interface Slice {
 	order: number;
+	queuedAt: number;
+	metrics?: SchedulerMetrics;
 	priority: Priority;
 	paced?: () => boolean;
 	kind: Kind;
@@ -37,7 +43,8 @@ export class DocumentScheduler {
 		work: (deadline?: number) => T,
 		signal?: AbortSignal,
 		paced?: () => boolean,
-		kind: Kind = 'preparation'
+		kind: Kind = 'preparation',
+		metrics?: SchedulerMetrics
 	): Promise<Awaited<T>> {
 		if (signal?.aborted) return Promise.reject(signal.reason);
 		if (this.#destroyed) return Promise.reject(new Error('Document scheduler released.'));
@@ -48,6 +55,8 @@ export class DocumentScheduler {
 		return new Promise<Awaited<T>>((resolve, reject) => {
 			const slice: Slice = {
 				order: this.#nextOrder++,
+				queuedAt: metrics ? performance.now() : 0,
+				metrics,
 				priority,
 				paced,
 				kind,
@@ -172,6 +181,11 @@ export class DocumentScheduler {
 		}
 		const windowSample = this.#window;
 		this.#queue.shift();
+		if (slice.metrics) {
+			const waited = started - slice.queuedAt;
+			slice.metrics.schedulerWaitMs += waited;
+			slice.metrics.maxSchedulerWaitMs = Math.max(slice.metrics.maxSchedulerWaitMs, waited);
+		}
 		slice.release?.();
 		this.#busy = true;
 		const finish = () => {

@@ -2,7 +2,7 @@ import { browser } from '$app/environment';
 import { env } from '$env/dynamic/public';
 import type { ContractState, SavedSelections } from './saved';
 import type { ContractSaveRequest } from './persistence.svelte';
-import { validContractState, validSelections, validLifecycles } from './persisted-values';
+import { readContractState, validSelections, validLifecycles } from './persisted-values';
 
 export type ContractDraft = {
 	version: 2;
@@ -19,12 +19,13 @@ const removedMemberships = new Set<string>();
 const prefix = (userId: string) =>
 	`dinu:drafts:v2:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
 
-function valid(value: unknown, id: string): value is ContractDraft {
+function readDraft(value: unknown, id: string): ContractDraft | undefined {
 	const draft = value as ContractDraft | null;
-	return Boolean(
+	const base = readContractState(draft?.base);
+	if (
+		base &&
 		draft?.version === 2 &&
 		typeof draft.conflict === 'boolean' &&
-		validContractState(draft.base) &&
 		validSelections(draft.choices) &&
 		validLifecycles(draft.lifecycles) &&
 		(draft.request === null ||
@@ -36,7 +37,8 @@ function valid(value: unknown, id: string): value is ContractDraft {
 				draft.request.operationId.length <= 200 &&
 				validSelections(draft.request.selectedConcessions) &&
 				validLifecycles(draft.request.selectionLifecycles)))
-	);
+	)
+		return { ...draft, base };
 }
 
 /** Recovery is separate from the optional, server-confirmed snapshot cache. */
@@ -58,8 +60,11 @@ export class DraftJournal {
 		this.memoryOnly = volatileKeys.has(this.key);
 		if (memory.has(this.key)) return structuredClone(memory.get(this.key)!);
 		try {
-			const value: unknown = JSON.parse(sessionStorage.getItem(this.key) ?? 'null');
-			if (valid(value, this.contractId)) {
+			const value = readDraft(
+				JSON.parse(sessionStorage.getItem(this.key) ?? 'null'),
+				this.contractId
+			);
+			if (value) {
 				memory.set(this.key, value);
 				return structuredClone(value);
 			}

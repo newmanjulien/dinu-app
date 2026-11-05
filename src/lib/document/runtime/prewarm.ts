@@ -1,24 +1,36 @@
-import { ContractCompositionEngine } from '$lib/contract/compose';
 import { conflictsForConcession } from '$lib/playbook/selection-conflicts';
-import { LayoutPreparationEngine, type PreparedBlock } from '../pagination/prepare';
+import type { PreparedBlock } from '../pagination/prepare';
+import { iterateIncrementalDocument, type PaginationHistory } from '../pagination/incremental';
+import { hasExactGeometry, type GeometryDetail } from '../pagination/profile';
+import type { DocumentArtifacts } from './artifacts';
 import type { LayoutProfiler } from '../pagination/profiler';
 import type { RenderSnapshot } from './types';
 
-/** Enumerate single saved Apply/remove choices using the normal composition rules.
- * These engines are private to idle work: warming cannot disturb visible content identity.
+interface GeometryWork {
+	focused: boolean;
+	block: PreparedBlock;
+	detail: GeometryDetail;
+	request: ReturnType<LayoutProfiler['createRequest']>;
+}
+
+/** Private cursors share completed immutable content and tokens with foreground work.
+ * Pagination also discovers newly split unchanged paragraphs after an insertion/removal.
  */
-function* alternatives(snapshot: RenderSnapshot): Generator<PreparedBlock | undefined, void> {
+function* alternatives(
+	snapshot: RenderSnapshot,
+	artifacts: DocumentArtifacts,
+	profiler: LayoutProfiler,
+	checkCurrent: () => void,
+	focusedItemId?: string,
+	history?: PaginationHistory
+): Generator<GeometryWork | undefined, void> {
 	const { source, concessions } = snapshot;
-	const composer = new ContractCompositionEngine(source.blocks, source.sourceIndex);
-	const preparation = new LayoutPreparationEngine();
-	// Establish current versions once, yielding between blocks without preparing them.
-	for (const _ of composer.iterate({
-		items: source.items,
-		activeConcessions: concessions,
-		view: 'redline'
-	}))
-		yield undefined;
-	for (const item of source.items) {
+	const composer = artifacts.createComposer();
+	const preparation = artifacts.createPreparation();
+	const items = [...source.items].sort(
+		(a, b) => Number(b.itemId === focusedItemId) - Number(a.itemId === focusedItemId)
+	);
+	for (const item of items) {
 		const choices: (string | undefined)[] = item.concessions.map((choice) => choice.id);
 		if (concessions[item.itemId] !== undefined) choices.unshift(undefined);
 		for (const choice of choices) {
@@ -33,90 +45,110 @@ function* alternatives(snapshot: RenderSnapshot): Generator<PreparedBlock | unde
 				const selection = { ...concessions };
 				if (choice === undefined) delete selection[item.itemId];
 				else selection[item.itemId] = choice;
-				for (const block of composer.iterate(
-					{ items: source.items, activeConcessions: selection, view: 'redline' },
-					{ changedOnly: true }
-				))
-					yield block ? preparation.prepare(block) : undefined;
+				const prepared: PreparedBlock[] = [];
+				for (const block of composer.iterate({
+					items: source.items,
+					activeConcessions: selection,
+					view: 'redline'
+				})) {
+					if (block) prepared.push(yield* preparation.iterate(block));
+					yield undefined;
+				}
+				const request = profiler.createRequest(
+					snapshot.layoutEpoch,
+					undefined,
+					undefined,
+					checkCurrent
+				);
+				for (const step of iterateIncrementalDocument(prepared, request.profiles, history)) {
+					if (step?.type === 'geometry')
+						yield {
+							block: step.block,
+							detail: step.detail,
+							request,
+							focused: item.itemId === focusedItemId
+						};
+					else yield undefined;
+				}
 			} catch {
-				// An invalid saved alternative is optional work; foreground validation owns errors.
+				// Saved alternatives and missing optional geometry never affect foreground validation.
 			}
 			yield undefined;
 		}
 	}
 }
 
-/** Only fills the ordinary geometry cache. No pagination, publication or authoring prediction. */
+/** Warm content, tokens and demand-driven geometry. Never publish pages or snapshots. */
 export function prewarmSavedConcessions(
 	snapshot: RenderSnapshot,
-	profiler: LayoutProfiler
+	profiler: LayoutProfiler,
+	artifacts: DocumentArtifacts,
+	focusedItemId?: string,
+	history?: PaginationHistory
 ): () => void {
 	const abort = new AbortController();
 	const release = profiler.trackAlternative(abort);
-	const blocks = alternatives(snapshot);
-	const seen = new Set<string>();
-	function* visibleGeometry() {
-		for (const page of snapshot.pages)
-			for (const { prepared } of page.placements) {
-				seen.add(prepared.geometryFingerprint);
-				yield undefined;
-			}
-	}
-	const initial = visibleGeometry();
-	let initialized = false;
-	const current = () =>
-		!abort.signal.aborted &&
-		profiler.epoch === snapshot.layoutEpoch &&
-		profiler.cache.availableWarmSlots > 0;
+	const cancel = () => abort.abort(artifacts.signal.reason);
+	if (artifacts.signal.aborted) cancel();
+	else artifacts.signal.addEventListener('abort', cancel, { once: true });
+	const current = () => !abort.signal.aborted && profiler.epoch === snapshot.layoutEpoch;
+	const checkCurrent = () => {
+		if (!current()) throw new Error('Alternative preparation cancelled.');
+	};
+	const blocks = alternatives(snapshot, artifacts, profiler, checkCurrent, focusedItemId, history);
 	async function run() {
 		try {
-			while (current()) {
-				const block = await profiler.scheduler.run(
+			let done = false;
+			let queued: ReturnType<typeof blocks.next> | undefined;
+			while (!done && current()) {
+				await profiler.scheduler.run(
 					() => 'alternative',
 					() => {
-						if (!current()) return;
+						checkCurrent();
 						const started = performance.now();
 						do {
-							if (!initialized) {
-								initialized = Boolean(initial.next().done);
-								continue;
+							const next = queued ?? blocks.next();
+							queued = undefined;
+							if (next.done) {
+								done = true;
+								return;
 							}
-							const next = blocks.next();
-							if (next.done) return null;
-							if (!next.value || seen.has(next.value.geometryFingerprint)) continue;
-							seen.add(next.value.geometryFingerprint);
-							return next.value;
+							if (!next.value) continue;
+							const { block, detail, request, focused } = next.value;
+							const cached = profiler.cache.get(snapshot.layoutEpoch, block.geometryFingerprint);
+							// Focused choices may replace ordinary optional shapes; current geometry stays protected.
+							if (!focused && !cached && profiler.cache.availableWarmSlots <= 0) continue;
+							request.resolve(block, detail, (upgrade) => {
+								queued = blocks.next();
+								if (
+									queued.value?.block === block &&
+									queued.value.request === request &&
+									queued.value.detail === 'exact'
+								) {
+									upgrade();
+									queued = blocks.next();
+								}
+							});
+							if (cached && (detail === 'bounds' || hasExactGeometry(cached))) continue;
+							// Release the shared surface between geometry requests, even when a read overruns.
+							return;
 						} while (performance.now() - started < 4);
 					},
 					abort.signal
 				);
-				if (block === null) return;
-				if (block && current()) {
-					try {
-						await profiler.resolve(
-							[block],
-							undefined,
-							() => {
-								if (!current()) throw new Error('Alternative preparation cancelled.');
-							},
-							() => 'alternative',
-							abort.signal
-						);
-					} catch {
-						/* Optional geometry. */
-					}
-				}
 			}
 		} catch {
-			/* Layout teardown cancels optional work. */
+			/* Layout teardown and foreground work cancel optional preparation. */
 		} finally {
 			release();
+			artifacts.signal.removeEventListener('abort', cancel);
 			blocks.return(undefined);
 		}
 	}
 	void run();
 	return () => {
 		abort.abort();
+		artifacts.signal.removeEventListener('abort', cancel);
 		release();
 		blocks.return(undefined);
 	};

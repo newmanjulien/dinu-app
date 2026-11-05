@@ -1,3 +1,4 @@
+import { complete } from '$lib/contract/iteration';
 import type { ResolvedRun } from '$lib/contract/model';
 import type { InlineToken } from './types';
 
@@ -6,15 +7,26 @@ import type { InlineToken } from './types';
 const TEXT_CHUNK = /[^\s-]+-?\s*|-\s*|\s+/gu;
 
 export function tokenizeInline(runs: readonly ResolvedRun[]): InlineToken[] {
-	return runs.flatMap(({ text, ...metadata }) => {
+	return complete(iterateInlineTokens(runs));
+}
+
+export function* iterateInlineTokens(
+	runs: readonly ResolvedRun[]
+): Generator<undefined, InlineToken[]> {
+	const tokens: InlineToken[] = [];
+	let count = 0;
+	for (const { text, ...metadata } of runs) {
 		// Generated labels/references are atomic even if their displayed text changes length.
-		if (metadata.sourceKind === 'number' || metadata.sourceKind === 'reference')
-			return text ? [{ ...metadata, value: text }] : [];
-		return Array.from(text.matchAll(TEXT_CHUNK), (match) => {
+		if (metadata.sourceKind === 'number' || metadata.sourceKind === 'reference') {
+			if (text) tokens.push({ ...metadata, value: text });
+			yield undefined;
+			continue;
+		}
+		for (const match of text.matchAll(TEXT_CHUNK)) {
 			const value = match[0],
 				offset = match.index;
 			const source = metadata.source;
-			return {
+			tokens.push({
 				...metadata,
 				value,
 				...(metadata.generatedOffset !== undefined
@@ -28,7 +40,10 @@ export function tokenizeInline(runs: readonly ResolvedRun[]): InlineToken[] {
 							}
 						}
 					: {})
-			};
-		});
-	});
+			});
+			if (++count % 128 === 0) yield undefined;
+		}
+		yield undefined;
+	}
+	return tokens;
 }

@@ -127,6 +127,13 @@ function consolidateLocations(blocks, triggers, changes, groups) {
 function normalizeAuthoring(blocks, items, manifest) {
 	for (const [i, item] of items.entries()) {
 		const clauseKey = manifest.items[i].clauseKey;
+		if (clauseKey === 'fees') {
+			// Leave the annual-increase lead-in plain to separate the adjacent highlights.
+			item.triggers[0].range.end = {
+				sourceKey: 'source:paragraph-fees/segment/3/atom/1',
+				offset: 0
+			};
+		}
 		for (const concession of item.concessions) {
 			const groups = authoredLocations[concession.id];
 			if (groups) {

@@ -246,6 +246,15 @@ export function recordDomainWork(domain: DocumentDomain) {
 }
 
 export interface RenderPerfSample extends LayoutProfileMetrics {
+	schedulerWaitMs: number;
+	maxSchedulerWaitMs: number;
+	maxCompositionSliceMs: number;
+	maxTokenPreparationSliceMs: number;
+	preparedArtifactsReused: number;
+	containerArtifactsReused: number;
+	resolvedArtifactsReused: number;
+	paginationRestartPage: number;
+	paginationStopPage: number;
 	generation: number;
 	priority?: import('./scheduler').RenderPriority;
 	sourceRevision: number;
@@ -261,6 +270,7 @@ export interface RenderPerfSample extends LayoutProfileMetrics {
 	maxPreparationSliceMs: number;
 	paintOpportunityAt?: number;
 	inputToPaintOpportunityMs?: number;
+	visibleUpdateMs?: number;
 	affectedContainers: number;
 	blocksRecomposed: number;
 	pagesReused: number;
@@ -294,6 +304,17 @@ export function createPerfSample(
 	lastInputAt = 0;
 	return {
 		generation,
+		schedulerWaitMs: 0,
+		maxSchedulerWaitMs: 0,
+		maxCompositionSliceMs: 0,
+		maxTokenPreparationSliceMs: 0,
+		preparedArtifactsReused: 0,
+		containerArtifactsReused: 0,
+		resolvedArtifactsReused: 0,
+		paginationRestartPage: 1,
+		paginationStopPage: 0,
+		maxProfileTransactionMs: 0,
+		profileTransactionOverruns: 0,
 		sourceRevision,
 		requestedAt,
 		inputAt,

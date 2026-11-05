@@ -45,7 +45,6 @@
 				get epoch() {
 					return mounted && document.fonts.status === 'loaded' ? epoch : undefined;
 				},
-				profile,
 				withBlock<T>(
 					block: PreparedBlock,
 					expected: string,

@@ -36,7 +36,7 @@ export const helpContent = {
 	admin: {
 		title: 'Add and edit instructions',
 		intro:
-			'Help your reps understand and negotiate your contract by adding guidance and approved alternatives.',
+			'Help your reps understand and negotiate your contract by adding instructions and approved alternatives.',
 		steps: [
 			{
 				title: 'Select contract wording',

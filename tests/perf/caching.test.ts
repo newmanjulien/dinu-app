@@ -31,6 +31,9 @@ function fixture(): ReadyContract {
 			reviews: {},
 			selectedConcessions: {},
 			revision: 0,
+			reviewGeneration: 0,
+			stateVersion: 1,
+			reviewCompletion: null,
 			lastOperationId: null
 		},
 		snapshot: {
@@ -116,27 +119,21 @@ describe('snapshot caching work', () => {
 		expect(storage.immutableWrites).toBe(1);
 	});
 
-	it('reopens from IndexedDB after releasing memory without another download', async () => {
+	it('reopens initial and confirmed state from IndexedDB without another download or immutable write', async () => {
 		const { client, state, version } = networkFixture();
-		const committed = storage.committedRevision(0);
+		const initialCommit = storage.committedRevision(0);
 		const first = await getContractSnapshotCache().load(id, client);
 		expect(first.status).toBe('ready');
-		await committed;
+		await initialCommit;
 		releaseContractSnapshotCache();
-		expect(await getContractSnapshotCache().load(id, client)).toEqual(first);
+
+		const cache = getContractSnapshotCache();
+		const reopened = await cache.load(id, client);
+		expect(reopened).toEqual(first);
 		expect(state).toHaveBeenCalledTimes(1);
 		expect(version).toHaveBeenCalledTimes(1);
 		expect(storage.immutableWrites).toBe(1);
-	});
-
-	it('persists confirmed state without rewriting the immutable snapshot', async () => {
-		const { client, state, version } = networkFixture();
-		const cache = getContractSnapshotCache();
-		const initialCommit = storage.committedRevision(0);
-		const first = await cache.load(id, client);
-		expect(first.status).toBe('ready');
-		await initialCommit;
-		if (first.status !== 'ready') throw new Error('Expected a ready fixture.');
+		if (reopened.status !== 'ready') throw new Error('Expected a ready fixture.');
 		const confirmedState = {
 			companyName: 'Confirmed Buyer',
 			reviews: {
@@ -148,11 +145,14 @@ describe('snapshot caching work', () => {
 			},
 			selectedConcessions: { [itemId]: 'preferred' },
 			revision: 1,
+			reviewGeneration: 1,
+			stateVersion: 2,
+			reviewCompletion: null,
 			lastOperationId: 'confirmed-operation'
 		};
 		const updatedCommit = storage.committedRevision(1);
 		const updated = cache.updateState(id, confirmedState);
-		expect(updated?.snapshot).toBe(first.snapshot);
+		expect(updated?.snapshot).toBe(reopened.snapshot);
 		expect(updated?.contract).toMatchObject(confirmedState);
 		await updatedCommit;
 		expect(await cache.load(id, client)).toEqual(updated);
@@ -162,6 +162,7 @@ describe('snapshot caching work', () => {
 		expect(version).toHaveBeenCalledTimes(1);
 		expect(storage.immutableWrites).toBe(1);
 	});
+
 	it('seeds confirmed content without a download, keeps newer revisions and rejects deleted seeds', async () => {
 		const cache = getContractSnapshotCache();
 		const data = fixture();
@@ -177,6 +178,9 @@ describe('snapshot caching work', () => {
 			reviews: {},
 			selectedConcessions: {},
 			revision: 2,
+			reviewGeneration: 2,
+			stateVersion: 3,
+			reviewCompletion: null,
 			lastOperationId: 'latest'
 		});
 		expect(cache.seedConfirmed(data)?.contract.revision).toBe(2);

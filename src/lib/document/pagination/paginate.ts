@@ -12,20 +12,29 @@ import {
 } from './profile';
 import type { LayoutPlacement, PageFragment, PaginatedPage } from './types';
 
+export interface PaginationCheckpoint {
+	readonly pageNumber: number;
+	readonly blockIndex: number;
+	readonly block: PreparedBlock | undefined;
+	/** Paragraph token or table body-row offset at this page boundary. */
+	readonly offset: number;
+}
+
 export interface PaginationOptions {
 	capacity?: (pageIndex: number) => number;
+	start?: PaginationCheckpoint;
 }
 
 export type PaginationStep =
 	| { type: 'geometry'; block: PreparedBlock; detail: GeometryDetail }
-	| { type: 'page'; page: PaginatedPage }
+	| { type: 'page'; page: PaginatedPage; next: PaginationCheckpoint }
 	| undefined;
 
 /** A yielded page is closed: subsequent geometry cannot change its placements. */
 export function* iteratePreparedDocument(
 	blocks: readonly PreparedBlock[],
 	profiles: LayoutProfiles,
-	{ capacity = pageCapacity }: PaginationOptions = {}
+	{ capacity = pageCapacity, start }: PaginationOptions = {}
 ): Generator<PaginationStep, void> {
 	if (!blocks.length) return;
 	const capacityAt = (pageIndex: number) => {
@@ -46,19 +55,28 @@ export function* iteratePreparedDocument(
 			throw new Error(`Missing or mismatched layout profile for "${block.fragment.blockKey}".`);
 		return profile;
 	}
-	let page: { number: number; placements: LayoutPlacement[] } = { number: 1, placements: [] };
-	let remaining = capacityAt(0);
+	const checkpoint = (blockIndex: number, offset = 0): PaginationCheckpoint => ({
+		pageNumber: page.number + 1,
+		blockIndex,
+		block: blocks[blockIndex],
+		offset
+	});
+	let page: { number: number; placements: LayoutPlacement[] } = {
+		number: start?.pageNumber ?? 1,
+		placements: []
+	};
+	let remaining = capacityAt(page.number - 1);
 	const fits = (height: number) => fitsPage(height, remaining);
-	function* newPage(): Generator<PaginationStep, void> {
+	function* newPage(blockIndex: number, offset = 0): Generator<PaginationStep, void> {
 		if (!page.placements.length) throw new Error('Pagination cannot emit an empty page.');
-		yield { type: 'page', page };
+		yield { type: 'page', page, next: checkpoint(blockIndex, offset) };
 		page = { number: page.number + 1, placements: [] };
 		remaining = capacityAt(page.number - 1);
 	}
 	function accept(prepared: PreparedBlock, fragment: PageFragment, height: number) {
 		const carriesBoundaries =
 			fragment.type === 'heading' || (fragment.type === 'paragraph' && fragment.isFinal);
-		const boundaries = carriesBoundaries ? prepared.boundariesAfter ?? [] : [];
+		const boundaries = carriesBoundaries ? (prepared.boundariesAfter ?? []) : [];
 		page.placements.push({
 			prepared,
 			fragment,
@@ -66,7 +84,8 @@ export function* iteratePreparedDocument(
 		});
 		remaining -= height;
 	}
-	for (let index = 0; index < blocks.length; index++) {
+	for (let index = start?.blockIndex ?? 0; index < blocks.length; index++) {
+		const offset = index === start?.blockIndex ? start.offset : 0;
 		const block = blocks[index];
 		const whole = block.fragment;
 		yield undefined;
@@ -82,7 +101,7 @@ export function* iteratePreparedDocument(
 				(following?.kind === 'paragraph' && following.lines
 					? paragraphFirstLineHeight({ ...following, lines: following.lines })
 					: 0);
-			if (!fits(required) && page.placements.length) yield* newPage();
+			if (!fits(required) && page.placements.length) yield* newPage(index);
 			if (!fits(required))
 				throw new Error(
 					`Heading "${whole.anchor}" cannot fit with its required spacing and following line on an empty page.`
@@ -102,23 +121,28 @@ export function* iteratePreparedDocument(
 				columnWidths: profile.columnWidths
 			};
 			// Preserve the move-whole-table rule before considering body-row splits.
-			if (!fits(height) && page.placements.length && fitsPage(height, capacityAt(page.number)))
-				yield* newPage();
-			if (!rowCount && !fits(height) && page.placements.length) yield* newPage();
-			if (fits(height)) {
+			if (
+				!offset &&
+				!fits(height) &&
+				page.placements.length &&
+				fitsPage(height, capacityAt(page.number))
+			)
+				yield* newPage(index);
+			if (!rowCount && !fits(height) && page.placements.length) yield* newPage(index);
+			if (!offset && fits(height)) {
 				accept(block, table, height);
 				continue;
 			}
 			if (!rowCount) throw new Error(`Table header in "${whole.blockKey}" exceeds an empty page.`);
 			const headers = whole.rows.slice(0, whole.headerRowCount);
-			for (let start = 0; start < rowCount;) {
+			for (let start = offset; start < rowCount;) {
 				const end = maximumTableRowEnd(profile, start, remaining);
 				if (end === start) {
 					if (!page.placements.length)
 						throw new Error(
 							`Table headers and body row ${start} in "${whole.blockKey}" exceed an empty page.`
 						);
-					yield* newPage();
+					yield* newPage(index, start);
 					continue;
 				}
 				accept(
@@ -134,11 +158,11 @@ export function* iteratePreparedDocument(
 					tableFragmentHeight(profile, start, end)
 				);
 				start = end;
-				if (start < rowCount) yield* newPage();
+				if (start < rowCount) yield* newPage(index, start);
 			}
 		} else if (whole.type === 'paragraph' && profile.kind === 'paragraph') {
 			const outerHeight = profile.marginBlockStart + profile.contentHeight + profile.marginBlockEnd;
-			if (fits(outerHeight)) {
+			if (!offset && fits(outerHeight)) {
 				if (profile.tokenCount !== whole.tokens.length)
 					throw new Error(`Paragraph layout profile does not match "${whole.blockKey}".`);
 				accept(block, paragraphSlice(whole, 0, whole.tokens.length), outerHeight);
@@ -152,20 +176,22 @@ export function* iteratePreparedDocument(
 				throw new Error(`Paragraph layout profile does not match "${whole.blockKey}".`);
 			if (!exact.lines.length) {
 				const height = paragraphFragmentHeight(exact, 0, 0);
-				if (!fits(height) && page.placements.length) yield* newPage();
+				if (!fits(height) && page.placements.length) yield* newPage(index);
 				if (!fits(height))
 					throw new Error(`Paragraph spacing in "${whole.blockKey}" exceeds an empty page.`);
 				accept(block, paragraphSlice(whole, 0, whole.tokens.length), height);
 				continue;
 			}
-			for (let start = 0; start < exact.lines.length;) {
+			const firstLine = offset ? exact.lines.findIndex((line) => line.startToken === offset) : 0;
+			if (firstLine < 0) throw new Error('Invalid paragraph continuation checkpoint.');
+			for (let start = firstLine; start < exact.lines.length;) {
 				const end = maximumParagraphLineEnd(exact, start, remaining);
 				if (end === start) {
 					if (!page.placements.length)
 						throw new Error(
 							`Visual line ${start} and its spacing in "${whole.blockKey}" exceed an empty page.`
 						);
-					yield* newPage();
+					yield* newPage(index, exact.lines[start].startToken);
 					continue;
 				}
 				accept(
@@ -174,11 +200,11 @@ export function* iteratePreparedDocument(
 					paragraphFragmentHeight(exact, start, end)
 				);
 				start = end;
-				if (start < exact.lines.length) yield* newPage();
+				if (start < exact.lines.length) yield* newPage(index, exact.lines[start].startToken);
 			}
 		}
 	}
-	if (page.placements.length) yield { type: 'page', page };
+	if (page.placements.length) yield { type: 'page', page, next: checkpoint(blocks.length) };
 }
 
 /** Synchronous compatibility entry point for callers with complete geometry. */

@@ -49,6 +49,58 @@ async function fixture() {
 	);
 	return { ...state, itemId };
 }
+
+async function prepareApproval(
+	{
+		t,
+		membershipId,
+		itemId
+	}: Pick<Awaited<ReturnType<typeof fixture>>, 't' | 'membershipId' | 'itemId'>,
+	id: Id<'savedContracts'>
+) {
+	await t.mutation(api.savedContracts.saveChoices, {
+		membershipId,
+		id,
+		selectedConcessions: { [itemId]: 'preferred' },
+		selectionLifecycles: { [itemId]: `save:${itemId}` },
+		expectedRevision: 0,
+		operationId: 'save'
+	});
+	const request = await t.mutation(api.approvals.request, {
+		membershipId,
+		id,
+		expectedRevision: 1
+	});
+	const stored = await t.run(({ db }) =>
+		db
+			.query('approvalRequests')
+			.withIndex('by_contractId', (q) => q.eq('contractId', id))
+			.unique()
+	);
+	if (!stored || stored.id !== request.id || !('deliveryId' in stored))
+		throw new Error('approval delivery missing');
+	const delivery = await t.mutation(internal.emailDeliveries.prepare, {
+		id: stored.deliveryId,
+		attempt: 1
+	});
+	if (!delivery) throw new Error('approval delivery unavailable');
+	const event = delivery.delivery.event;
+	if (event.kind !== 'approval') throw new Error('wrong delivery kind');
+	const snapshot = await t.query(api.templates.version, {
+		membershipId,
+		versionId: event.templateVersionId
+	});
+	const selectionDetails = delivery.selections.map((selection) => {
+		const item = snapshot.items.find((item) => item._id === selection.itemId)!;
+		return {
+			description: item.concessions.find((c) => c.id === selection.concessionId)!.description,
+			requiresApproval: Boolean(item.instructions?.changesNeedApproval?.trim()),
+			reviewStatus: selection.reviewStatus
+		};
+	});
+	return { event, selections: delivery.selections, selectionDetails };
+}
+
 const operationId = '11111111-1111-1111-1111-111111111111';
 describe('immutable template creation', () => {
 	it('bootstraps atomically and concurrently without replacing the pointer', async () => {
@@ -106,7 +158,9 @@ describe('immutable template creation', () => {
 			companyName: 'Next',
 			operationId: 'next'
 		});
-		expect(next.status === 'created' && next.contract.templateVersionId).not.toBe(first);
+		expect(next.status).toBe('created');
+		if (next.status !== 'created') throw new Error('creation failed');
+		expect(next.contract.templateVersionId).not.toBe(first);
 		await t.mutation(api.savedContracts.remove, { membershipId, id: created.id });
 		expect(
 			await t.mutation(api.savedContracts.create, {
@@ -223,51 +277,14 @@ describe('immutable template creation', () => {
 		if (created.status !== 'created') throw new Error('creation failed');
 		// Rep selections enter review; admin selections are automatically approved.
 		await t.run(({ db }) => db.patch('profiles', profileId, { role: 'rep' }));
-		await t.mutation(api.savedContracts.saveChoices, {
-			membershipId,
-			id: created.id,
-			selectedConcessions: { [itemId]: 'preferred' },
-			selectionLifecycles: { [itemId]: `save:${itemId}` },
-			expectedRevision: 0,
-			operationId: 'save'
-		});
-		const request = await t.mutation(api.approvals.request, {
-			membershipId,
-			id: created.id,
-			expectedRevision: 1
-		});
-		const stored = await t.run(({ db }) =>
-			db
-				.query('approvalRequests')
-				.withIndex('by_contractId', (q) => q.eq('contractId', created.id))
-				.unique()
+		const { event, selections, selectionDetails } = await prepareApproval(
+			{ t, membershipId, itemId },
+			created.id
 		);
-		if (!stored || stored.id !== request.id || !('deliveryId' in stored))
-			throw new Error('approval delivery missing');
-		const delivery = await t.mutation(internal.emailDeliveries.prepare, {
-			id: stored.deliveryId,
-			attempt: 1
-		});
-		if (!delivery) throw new Error('approval delivery unavailable');
-		const event = delivery.delivery.event;
-		if (event.kind !== 'approval') throw new Error('wrong delivery kind');
-		const snapshot = await t.query(api.templates.version, {
-			membershipId,
-			versionId: event.templateVersionId
-		});
-		expect(
-			delivery.selections.map((selection) => {
-				const item = snapshot.items.find((item) => item._id === selection.itemId)!;
-				return {
-					description: item.concessions.find((c) => c.id === selection.concessionId)!.description,
-					requiresApproval: Boolean(item.instructions?.changesNeedApproval?.trim()),
-					reviewStatus: selection.reviewStatus
-				};
-			})
-		).toEqual([
+		expect(selectionDetails).toEqual([
 			{ description: 'Synthetic choice.', requiresApproval: true, reviewStatus: 'pending' }
 		]);
-		expect(contractNotification('https://app.example.com', event, delivery.selections)).toEqual({
+		expect(contractNotification('https://app.example.com', event, selections)).toEqual({
 			kind: 'approval',
 			data: {
 				companyName: 'Buyer',
@@ -334,51 +351,14 @@ describe('immutable template creation', () => {
 		).toBe(itemId);
 		// Rep selections enter review; admin selections are automatically approved.
 		await t.run(({ db }) => db.patch('profiles', profileId, { role: 'rep' }));
-		await t.mutation(api.savedContracts.saveChoices, {
-			membershipId,
-			id,
-			selectedConcessions: { [itemId]: 'preferred' },
-			selectionLifecycles: { [itemId]: `save:${itemId}` },
-			expectedRevision: 0,
-			operationId: 'save'
-		});
-		const request = await t.mutation(api.approvals.request, {
-			membershipId,
-			id,
-			expectedRevision: 1
-		});
-		const stored = await t.run(({ db }) =>
-			db
-				.query('approvalRequests')
-				.withIndex('by_contractId', (q) => q.eq('contractId', id))
-				.unique()
+		const { event, selections, selectionDetails } = await prepareApproval(
+			{ t, membershipId, itemId },
+			id
 		);
-		if (!stored || stored.id !== request.id || !('deliveryId' in stored))
-			throw new Error('approval delivery missing');
-		const delivery = await t.mutation(internal.emailDeliveries.prepare, {
-			id: stored.deliveryId,
-			attempt: 1
-		});
-		if (!delivery) throw new Error('approval delivery unavailable');
-		const event = delivery.delivery.event;
-		if (event.kind !== 'approval') throw new Error('wrong delivery kind');
-		const snapshot = await t.query(api.templates.version, {
-			membershipId,
-			versionId: event.templateVersionId
-		});
-		expect(
-			delivery.selections.map((selection) => {
-				const item = snapshot.items.find((item) => item._id === selection.itemId)!;
-				return {
-					description: item.concessions.find((c) => c.id === selection.concessionId)!.description,
-					requiresApproval: Boolean(item.instructions?.changesNeedApproval?.trim()),
-					reviewStatus: selection.reviewStatus
-				};
-			})
-		).toEqual([
+		expect(selectionDetails).toEqual([
 			{ description: 'Synthetic choice.', requiresApproval: true, reviewStatus: 'pending' }
 		]);
-		expect(contractNotification('https://app.example.com', event, delivery.selections)).toEqual({
+		expect(contractNotification('https://app.example.com', event, selections)).toEqual({
 			kind: 'approval',
 			data: {
 				companyName: 'Buyer',

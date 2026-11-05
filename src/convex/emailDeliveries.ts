@@ -152,10 +152,14 @@ async function eligibleContract(ctx: MutationCtx, delivery: Delivery) {
 		contract.templateVersionId !== event.templateVersionId
 	)
 		return null;
-	if (event.kind === 'decision')
+	if (event.kind === 'decision') {
+		const completion = contract.reviewCompletion;
+		if (completion && (completion.kind !== 'queued' || completion.deliveryId !== delivery._id))
+			return null;
 		return contract.reviewGeneration === event.reviewGeneration && completedReview(contract)
 			? contract
 			: null;
+	}
 	const request = await ctx.db
 		.query('approvalRequests')
 		.withIndex('by_contractId', (q) => q.eq('contractId', event.contractId))

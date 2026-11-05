@@ -5,3 +5,6 @@ build
 .env.local
 .convex
 .DS_Store
+
+# HubSpot config file
+hubspot.config.yml

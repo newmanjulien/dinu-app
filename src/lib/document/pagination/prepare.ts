@@ -1,7 +1,8 @@
 import { annotationSegment } from '$lib/playbook/document-overlay';
 import type { ResolvedBlock } from '$lib/contract/model';
 import type { StructuralBoundary } from '$lib/contract/source-index';
-import { tokenizeInline } from './tokenize';
+import { complete } from '$lib/contract/iteration';
+import { iterateInlineTokens } from './tokenize';
 import type { InlineToken, PageFragment, ParagraphFragment } from './types';
 
 // Geometry authorizes height reuse only. Fragments always carry current provenance.
@@ -15,56 +16,75 @@ export interface PreparedBlock {
 
 // Preserve token/span and revision boundaries. Occurrence names and source coordinates
 // are provenance only, but Annotation segmentation is layout (especially in tables).
-function geometryTokens(tokens: readonly InlineToken[]) {
+function* geometryTokens(tokens: readonly InlineToken[]): Generator<undefined, unknown[]> {
+	const result: unknown[] = [];
 	let segment = -1;
 	let previous: string | undefined;
-	return tokens.map((token, index) => {
+	for (const [index, token] of tokens.entries()) {
 		const descriptor = annotationSegment(token.annotations);
 		if (!index || previous !== descriptor.membershipKey) segment++;
 		previous = descriptor.membershipKey;
-		return [token.value, token.revision ?? null, segment, Boolean(descriptor.target)];
-	});
+		result.push([token.value, token.revision ?? null, segment, Boolean(descriptor.target)]);
+		if (index % 128 === 0) yield undefined;
+	}
+	return result;
 }
 
 export class LayoutPreparationEngine {
-	#blocks = new WeakMap<ResolvedBlock, PreparedBlock>();
-	#cells = new WeakMap<object, { readonly tokens: readonly InlineToken[] }>();
+	constructor(
+		private readonly blocks = new WeakMap<ResolvedBlock, PreparedBlock>(),
+		private readonly cells = new WeakMap<object, { readonly tokens: readonly InlineToken[] }>()
+	) {}
+	fork() {
+		return new LayoutPreparationEngine(this.blocks, this.cells);
+	}
 	preparedCount = 0;
 	tokenCount = 0;
-	begin() {
-		this.preparedCount = 0;
-		this.tokenCount = 0;
-	}
+	reusedCount = 0;
 	prepare(block: ResolvedBlock): PreparedBlock {
-		const cached = this.#blocks.get(block);
-		if (cached) return cached;
+		return complete(this.iterate(block));
+	}
+	*iterate(block: ResolvedBlock): Generator<undefined, PreparedBlock> {
+		const cached = this.blocks.get(block);
+		if (cached) {
+			this.reusedCount++;
+			return cached;
+		}
 		this.preparedCount++;
-		const tokens = (runs: Parameters<typeof tokenizeInline>[0]) => {
-			const value = tokenizeInline(runs);
-			this.tokenCount += value.length;
+		const engine = this;
+		function* tokens(
+			runs: Parameters<typeof iterateInlineTokens>[0]
+		): Generator<undefined, readonly InlineToken[]> {
+			const value = yield* iterateInlineTokens(runs);
+			engine.tokenCount += value.length;
 			return value;
-		};
+		}
 		let fragment: PageFragment;
 		if (block.kind === 'table') {
+			const rows: Extract<PageFragment, { type: 'table' }>['rows'][number][] = [];
+			for (const row of block.rows) {
+				const cells: { readonly tokens: readonly InlineToken[] }[] = [];
+				for (const cell of row) {
+					let value = this.cells.get(cell.content);
+					if (!value) {
+						value = { tokens: yield* tokens(cell.content) };
+						this.cells.set(cell.content, value);
+					}
+					cells.push(value);
+					yield undefined;
+				}
+				rows.push(cells);
+			}
 			fragment = {
 				type: 'table',
 				interval: { start: 0, end: block.rows.length - block.headerRowCount },
 				blockKey: block.blockKey,
 				variant: block.variant,
 				headerRowCount: block.headerRowCount,
-				rows: block.rows.map((row) =>
-					row.map((cell) => {
-						let value = this.#cells.get(cell.content);
-						if (!value) {
-							value = { tokens: tokens(cell.content) };
-							this.#cells.set(cell.content, value);
-						}
-						return value;
-					})
-				)
+				rows
 			};
 		} else {
-			const inline = tokens(block.content);
+			const inline = yield* tokens(block.content);
 			fragment =
 				block.kind === 'heading'
 					? {
@@ -84,20 +104,22 @@ export class LayoutPreparationEngine {
 							isFinal: true
 						};
 		}
-		const geometryFingerprint = JSON.stringify(
-			fragment.type === 'table'
-				? [
-						'table',
-						fragment.variant,
-						fragment.headerRowCount,
-						fragment.rows.map((row) => row.map((cell) => geometryTokens(cell.tokens)))
-					]
-				: [
-						fragment.type,
-						fragment.type === 'heading' ? fragment.level : null,
-						geometryTokens(fragment.tokens)
-					]
-		);
+		let geometry: unknown;
+		if (fragment.type === 'table') {
+			const rows: unknown[][] = [];
+			for (const row of fragment.rows) {
+				const cells: unknown[] = [];
+				for (const cell of row) cells.push(yield* geometryTokens(cell.tokens));
+				rows.push(cells);
+			}
+			geometry = ['table', fragment.variant, fragment.headerRowCount, rows];
+		} else
+			geometry = [
+				fragment.type,
+				fragment.type === 'heading' ? fragment.level : null,
+				yield* geometryTokens(fragment.tokens)
+			];
+		const geometryFingerprint = JSON.stringify(geometry);
 		const prepared = {
 			fragment,
 			geometryFingerprint,
@@ -105,7 +127,7 @@ export class LayoutPreparationEngine {
 				? { boundariesAfter: block.boundariesAfter }
 				: {})
 		};
-		this.#blocks.set(block, prepared);
+		this.blocks.set(block, prepared);
 		return prepared;
 	}
 }

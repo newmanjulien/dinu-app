@@ -1,12 +1,19 @@
 import { tick } from 'svelte';
+import type { CompositionRequest } from '$lib/contract/composition-artifacts';
 import type { Priority } from './scheduler';
 import type { LayoutProfiles } from '../pagination/profile';
-import { ContractCompositionEngine } from '$lib/contract/compose';
+import type { ContractCompositionEngine } from '$lib/contract/compose';
+import type { ResolvedBlock } from '$lib/contract/model';
+import { DocumentArtifacts } from './artifacts';
 import { sameSelection, type ContractChange } from '$lib/playbook/model';
-import { iteratePreparedDocument } from '../pagination/paginate';
+import {
+	firstCheckpoint,
+	iterateIncrementalDocument,
+	type PaginationHistory
+} from '../pagination/incremental';
 import { iterateReconciledPages } from '../pagination/reconcile';
 import { type LayoutProfiler, StaleLayoutProfileError } from '../pagination/profiler';
-import { LayoutPreparationEngine, type PreparedBlock } from '../pagination/prepare';
+import { type PreparedBlock } from '../pagination/prepare';
 import {
 	countStartupWork,
 	createPerfSample,
@@ -41,6 +48,7 @@ interface RenderRequest extends RenderCurrentInput {
 	generation: number;
 	perf?: RenderPerfSample;
 	abort: AbortController;
+	composition?: CompositionRequest;
 	firstPagePaint?: { epoch: string; promise: Promise<void>; acknowledge: () => void };
 }
 
@@ -62,10 +70,17 @@ export class ContractRenderController {
 		profiles: LayoutProfiles;
 		epoch: string;
 		owner: symbol;
+		history: PaginationHistory;
 	};
 	#protectedGeometry?: { profiler: LayoutProfiler; owner: symbol };
 	#composition?: ContractCompositionEngine;
-	#preparation = new LayoutPreparationEngine();
+	#artifacts?: DocumentArtifacts;
+	get artifacts() {
+		return this.#artifacts;
+	}
+	get paginationHistory() {
+		return this.#geometry?.history;
+	}
 	#commitListeners = new Set<() => void>();
 	#cancelPaintObservation?: () => void;
 	#destroyed = false;
@@ -75,7 +90,8 @@ export class ContractRenderController {
 		this.#cancelPaintObservation?.();
 		this.#commitListeners.clear();
 		this.#composition = undefined;
-		this.#preparation = new LayoutPreparationEngine();
+		this.#artifacts?.destroy();
+		this.#artifacts = undefined;
 		this.#protectedGeometry?.profiler.release(this.#protectedGeometry.owner);
 		this.#protectedGeometry = undefined;
 		this.snapshot = null;
@@ -162,7 +178,7 @@ export class ContractRenderController {
 			samePreviewChanges(queued.previewChanges, input.previewChanges ?? EMPTY_PREVIEW_CHANGES)
 		)
 			return;
-		input.profiler.beginPreparation();
+		if ((input.priority?.() ?? 'foreground') === 'foreground') input.profiler.beginPreparation();
 		this.#abort?.abort(OBSOLETE);
 		const abort = (this.#abort = new AbortController());
 		const generation = ++this.#generation;
@@ -226,8 +242,9 @@ export class ContractRenderController {
 					for (const listener of this.#commitListeners) listener();
 					if (!this.#isCurrent(request, result.snapshot.layoutEpoch)) throw OBSOLETE;
 					this.#cancelPaintObservation?.();
-					const assignedAt = request.perf ? performance.now() : 0;
 					this.#geometry = result.geometry;
+					this.#artifacts?.composition.retain(result.resolvedBlocks);
+					const assignedAt = request.perf ? performance.now() : 0;
 					this.snapshot = result.snapshot;
 					this.pending = null;
 					if (request.perf?.priority === 'background')
@@ -262,6 +279,9 @@ export class ContractRenderController {
 					this.pending = this.pending?.pages.length ? { ...this.pending, status: 'failed' } : null;
 					this.error = { message: 'We couldn’t update the contract.', cause };
 					console.error('Contract rendering failed.', cause);
+				} finally {
+					request.composition?.release();
+					request.composition = undefined;
 				}
 			}
 		} finally {
@@ -288,6 +308,7 @@ export class ContractRenderController {
 					return;
 				sample.paintOpportunityAt = performance.now();
 				sample.inputToPaintOpportunityMs = sample.paintOpportunityAt - sample.inputAt;
+				sample.visibleUpdateMs = sample.paintOpportunityAt - sample.requestedAt;
 				recordPerfSample(sample);
 			}, 0);
 		});
@@ -306,11 +327,13 @@ export class ContractRenderController {
 	}
 	async #render(request: RenderRequest): Promise<{
 		snapshot: RenderSnapshot;
+		resolvedBlocks: readonly ResolvedBlock[];
 		geometry: {
 			blocks: readonly PreparedBlock[];
 			profiles: LayoutProfiles;
 			epoch: string;
 			owner: symbol;
+			history: PaginationHistory;
 		};
 	}> {
 		// Leave the effect flush before the profile surface uses flushSync.
@@ -326,23 +349,28 @@ export class ContractRenderController {
 			perf.layoutEpoch = epoch;
 			perf.renderStartedAt = performance.now();
 		}
-		if (this.#composition?.index !== request.source.sourceIndex) {
-			this.#composition = new ContractCompositionEngine(
-				request.source.blocks,
-				request.source.sourceIndex
-			);
-			this.#preparation = new LayoutPreparationEngine();
+		if (this.#artifacts?.source !== request.source) {
+			this.#artifacts?.destroy();
+			this.#artifacts = new DocumentArtifacts(request.source);
+			this.#composition = this.#artifacts.createComposer();
 		}
-		const composer = this.#composition;
+		const artifacts = this.#artifacts;
+		const composer = this.#composition!;
+		const preparation = artifacts.createPreparation();
+		const resolvedBlocks: ResolvedBlock[] = [];
 		const prepared: PreparedBlock[] = [];
-		this.#preparation.begin();
 		const priority = request.priority ?? (() => 'foreground');
-		const iterator = composer.iterate({
-			items: request.source.items,
-			activeConcessions: request.concessions,
-			previewChanges: request.previewChanges,
-			view: 'redline'
-		});
+		const working = (request.composition = artifacts.composition.createRequest());
+		const iterator = composer.iterate(
+			{
+				items: request.source.items,
+				activeConcessions: request.concessions,
+				previewChanges: request.previewChanges,
+				view: 'redline'
+			},
+			working
+		);
+		let preparing: ReturnType<typeof preparation.iterate> | undefined;
 		let done = false;
 		try {
 			while (!done)
@@ -351,29 +379,68 @@ export class ContractRenderController {
 					() => {
 						checkCurrent();
 						const started = performance.now();
-						do {
-							const composeStart = performance.now();
-							const next = iterator.next();
-							if (perf) perf.composeMs += performance.now() - composeStart;
-							if (next.done) {
-								done = true;
-								break;
+						let composeMs = 0,
+							prepareMs = 0;
+						try {
+							do {
+								if (preparing) {
+									const phaseStart = perf ? performance.now() : 0;
+									let next;
+									try {
+										next = preparing.next();
+									} finally {
+										if (perf) prepareMs += performance.now() - phaseStart;
+									}
+									if (next.done) {
+										prepared.push(next.value);
+										preparing = undefined;
+									}
+								} else {
+									const phaseStart = perf ? performance.now() : 0;
+									let next;
+									try {
+										next = iterator.next();
+									} finally {
+										if (perf) composeMs += performance.now() - phaseStart;
+									}
+									if (next.done) {
+										done = true;
+										break;
+									}
+									if (next.value) {
+										resolvedBlocks.push(next.value);
+										preparing = preparation.iterate(next.value);
+									}
+								}
+							} while (performance.now() - started < 4);
+						} finally {
+							if (perf) {
+								perf.composeMs += composeMs;
+								perf.prepareMs += prepareMs;
+								perf.maxCompositionSliceMs = Math.max(perf.maxCompositionSliceMs, composeMs);
+								perf.maxTokenPreparationSliceMs = Math.max(
+									perf.maxTokenPreparationSliceMs,
+									prepareMs
+								);
 							}
-							if (!next.value) continue;
-							const prepareStart = performance.now();
-							prepared.push(this.#preparation.prepare(next.value));
-							if (perf) perf.prepareMs += performance.now() - prepareStart;
-						} while (performance.now() - started < 4);
+						}
 					},
-					request.abort.signal
+					request.abort.signal,
+					undefined,
+					'preparation',
+					perf
 				);
 		} finally {
 			iterator.return(undefined);
+			preparing?.return(undefined as never);
 			if (perf) {
 				perf.blocksRecomposed = composer.recomposedBlocks;
 				perf.affectedContainers = composer.affectedContainers;
-				perf.blocksProcessed = this.#preparation.preparedCount;
-				perf.tokensProcessed = this.#preparation.tokenCount;
+				perf.blocksProcessed = preparation.preparedCount;
+				perf.preparedArtifactsReused = preparation.reusedCount;
+				perf.containerArtifactsReused = composer.reusedContainers;
+				perf.resolvedArtifactsReused = composer.reusedResolvedBlocks;
+				perf.tokensProcessed = preparation.tokenCount;
 			}
 		}
 		const addresses = composer.addresses;
@@ -382,30 +449,31 @@ export class ContractRenderController {
 			perf.preparationCompleteAt = performance.now();
 		}
 		checkCurrent();
-		// Warm requests reuse cached geometry and retain immediate dispatch.
-		// Initial requests measure only the paginator's next missing shape.
-		const resolveStarted = performance.now();
-		const resolved = request.progressive
-			? undefined
-			: await request.profiler.resolve(
-					prepared,
-					perf,
-					checkCurrent,
-					priority,
-					request.abort.signal,
-					'bounds'
-				);
-		if (perf && !request.progressive) perf.profileResolveMs += performance.now() - resolveStarted;
-		const local = request.profiler.createRequest(epoch, perf, resolved);
+		const previousGeometry =
+			this.snapshot?.source === request.source && this.#geometry?.epoch === epoch
+				? this.#geometry
+				: undefined;
+		const local = request.profiler.createRequest(
+			epoch,
+			perf,
+			previousGeometry?.profiles,
+			checkCurrent
+		);
 		const profiles = local.profiles;
-		const pagination = iteratePreparedDocument(prepared, profiles);
+		const checkpoints = [firstCheckpoint(prepared)];
+		const pagination = iterateIncrementalDocument(
+			prepared,
+			profiles,
+			previousGeometry?.history,
+			perf
+		);
 		const pages: import('../pagination/types').PaginatedPage[] = [];
 		const changedPages: number[] = [];
 		let pagesReused = 0;
 		let paginationDone = false;
 		let queued: ReturnType<typeof pagination.next> | undefined;
 		const advance = () => {
-			const started = performance.now();
+			const started = perf ? performance.now() : 0;
 			try {
 				return pagination.next();
 			} finally {
@@ -421,11 +489,11 @@ export class ContractRenderController {
 					(deadline) => {
 						checkCurrent();
 						const started = performance.now();
-						const stopAt = deadline ?? started + 4;
+						const stopAt = Math.min(deadline ?? Infinity, started + 4);
 						try {
 							do {
 								if (reconciliation) {
-									const reconcileStart = performance.now();
+									const reconcileStart = perf ? performance.now() : 0;
 									const next = reconciliation.next();
 									if (perf) perf.reconcileMs += performance.now() - reconcileStart;
 									if (next.done) {
@@ -433,6 +501,7 @@ export class ContractRenderController {
 										changedPages.push(...next.value.changedPages);
 										pagesReused += next.value.pagesReused;
 										reconciliation = undefined;
+										checkCurrent();
 										if (request.progressive && this.pending) {
 											if (pages.length === 1) this.#waitForFirstPagePaint(request, epoch);
 											this.pending = { ...this.pending, pages: Object.freeze([...pages]) };
@@ -453,7 +522,7 @@ export class ContractRenderController {
 									if (next.value?.type === 'geometry') {
 										// One missing block plus its heading's required next-line lookahead.
 										const missing = next.value;
-										const resolveStarted = performance.now();
+										const resolveStarted = perf ? performance.now() : 0;
 										queued = local.resolve(missing.block, missing.detail, (upgrade) => {
 											let following = advance();
 											if (
@@ -466,15 +535,10 @@ export class ContractRenderController {
 											}
 											return following;
 										});
-										const index = prepared.indexOf(next.value.block);
-										const following = prepared[index + 1];
-										if (
-											next.value.block.fragment.type === 'heading' &&
-											following?.fragment.type === 'paragraph'
-										)
-											local.resolve(following, 'exact');
+
 										if (perf) perf.profileResolveMs += performance.now() - resolveStarted;
 									} else if (next.value?.type === 'page') {
+										checkpoints.push(next.value.next);
 										reconciliation = iterateReconciledPages(
 											[next.value.page],
 											epoch,
@@ -495,7 +559,9 @@ export class ContractRenderController {
 						}
 					},
 					request.abort.signal,
-					paced
+					paced,
+					'preparation',
+					perf
 				);
 				const firstPagePaint = request.firstPagePaint;
 				if (firstPagePaint) {
@@ -518,7 +584,14 @@ export class ContractRenderController {
 			perf.pagesReused = pagesReused;
 		}
 		checkCurrent();
-		const geometry = { blocks: prepared, profiles, epoch, owner: Symbol('render-geometry') };
+		const history = { blocks: prepared, pages, checkpoints };
+		const geometry = {
+			blocks: prepared,
+			profiles: new Map(prepared.map((block) => [block, profiles.get(block)!])),
+			epoch,
+			owner: Symbol('render-geometry'),
+			history
+		};
 		const snapshot = Object.freeze({
 			id: request.generation,
 			source: request.source,
@@ -529,6 +602,6 @@ export class ContractRenderController {
 			changedPages: Object.freeze(changedPages),
 			pages: Object.freeze(pages)
 		});
-		return { snapshot, geometry };
+		return { snapshot, geometry, resolvedBlocks };
 	}
 }

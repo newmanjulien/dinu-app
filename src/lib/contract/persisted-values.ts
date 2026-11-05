@@ -44,11 +44,23 @@ export function validLifecycle(value: unknown): value is string {
 export function validLifecycles(value: unknown): value is Record<string, string> {
 	return validSelections(value) && Object.values(value).every(validLifecycle);
 }
+function validCompletion(value: unknown) {
+	return (
+		value === null ||
+		(object(value) &&
+			!('generation' in value) &&
+			((value.kind === 'awaitingConfirmation' && text(value.reviewerId)) ||
+				(value.kind === 'queued' && text(value.deliveryId))))
+	);
+}
 export function validContractState(value: unknown): value is ContractState {
 	return (
 		object(value) &&
 		text(value.companyName) &&
 		natural(value.revision) &&
+		natural(value.stateVersion) &&
+		natural(value.reviewGeneration) &&
+		validCompletion(value.reviewCompletion) &&
 		(value.lastOperationId === null || text(value.lastOperationId)) &&
 		validSelections(value.selectedConcessions) &&
 		object(value.reviews) &&
@@ -77,6 +89,32 @@ export function validContractMetadata(value: unknown, id: string): value is Meta
 		finite(value.savedAt) &&
 		validContractState(value)
 	);
+}
+
+/** Legacy browser versions start below the server's baseline version of one. */
+export function readContractState(value: unknown): ContractState | undefined {
+	if (validContractState(value)) return value;
+	if (!object(value)) return;
+	const reviewGeneration = value.reviewGeneration === undefined ? 0 : value.reviewGeneration;
+	let reviewCompletion = value.reviewCompletion === undefined ? null : value.reviewCompletion;
+	if (object(reviewCompletion)) {
+		const { generation, ...completion } = reviewCompletion;
+		if (generation !== undefined && (!natural(generation) || generation !== reviewGeneration))
+			return;
+		reviewCompletion = completion;
+	}
+	const state = {
+		...value,
+		stateVersion: value.stateVersion === undefined ? 0 : value.stateVersion,
+		reviewGeneration,
+		reviewCompletion
+	};
+	return validContractState(state) ? state : undefined;
+}
+
+export function readContractMetadata(value: unknown, id: string): Metadata | undefined {
+	const metadata = readContractState(value);
+	return validContractMetadata(metadata, id) ? metadata : undefined;
 }
 
 function point(value: unknown) {
@@ -212,7 +250,7 @@ function item(value: unknown, companyId: string) {
 				array(
 					concession.changes,
 					(change) =>
-					object(change) && sourceTarget(change.range) && array(change.replacement, replacement),
+						object(change) && sourceTarget(change.range) && array(change.replacement, replacement),
 					2
 				)
 		)
@@ -244,10 +282,7 @@ export function validTemplate(value: unknown, companyId: string): value is Store
 	validatedTemplates.set(value, companyId);
 	return true;
 }
-export function validSnapshot(
-	value: unknown,
-	id: string
-): value is StoredReadyContract {
+export function validSnapshot(value: unknown, id: string): value is StoredReadyContract {
 	return (
 		object(value) &&
 		value.status === 'ready' &&

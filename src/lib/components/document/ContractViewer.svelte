@@ -711,7 +711,6 @@
 			commit = snapshot;
 		if (
 			!interacting ||
-			resources?.warming ||
 			!viewer.prepared ||
 			!current ||
 			previewChanges.length ||
@@ -719,7 +718,22 @@
 			!layoutProfiler
 		)
 			return;
-		return untrack(() => prewarmSavedConcessions(commit, layoutProfiler));
+		const artifacts = renderer.artifacts;
+		if (!artifacts || artifacts.source !== commit.source) return;
+		const focusedItemId = hasPanel
+			? commit.source.items.find((item) =>
+					item.annotations.some((annotation) => annotation.id === selectedAnnotationId)
+				)?.itemId
+			: undefined;
+		return untrack(() =>
+			prewarmSavedConcessions(
+				commit,
+				layoutProfiler,
+				artifacts,
+				focusedItemId,
+				renderer.paginationHistory
+			)
+		);
 	});
 	$effect(() => {
 		const available = pages,

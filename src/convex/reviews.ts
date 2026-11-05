@@ -38,7 +38,7 @@ export function recordDecision(
 	reviewer: Pick<Doc<'profiles'>, '_id' | 'name' | 'email'>,
 	decision: Omit<
 		Infer<typeof storedDecision>,
-		'companyId' | 'contractId' | 'adminId' | 'adminName' | 'adminEmail'
+		'companyId' | 'contractId' | 'adminId' | 'adminName' | 'adminEmail' | 'reviewCompleted'
 	>
 ) {
 	return ctx.db.insert('concessionDecisions', {

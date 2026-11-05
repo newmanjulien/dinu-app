@@ -3,6 +3,28 @@ import { buildSourceIndex } from '../../src/lib/contract/source-index';
 import { mapDomRange } from '../../src/lib/document/selection/dom-selection';
 import { createSelectionInteraction } from '../../src/lib/document/selection/selection-gesture';
 
+function setupInteraction(root: HTMLElement, onNativeComplete: (range: Range | null) => void) {
+	const interaction = createSelectionInteraction({
+		onNativeStart: () => {},
+		onNativeComplete,
+		onCancel: () => {},
+		onBoundaryStart: () => null
+	});
+	interaction.setContainer(root);
+	return interaction;
+}
+
+function paragraphSourceIndex(text: string) {
+	return buildSourceIndex([
+		{
+			kind: 'paragraph',
+			blockKey: 'paragraph-1',
+			order: 0,
+			content: [{ kind: 'text', sourceKey: 'text-1', text }]
+		}
+	]);
+}
+
 function setSelection(node: Text, start = 0, end = node.length) {
 	const range = document.createRange();
 	range.setStart(node, start);
@@ -16,11 +38,7 @@ function clearSelection() {
 	window.getSelection()!.removeAllRanges();
 }
 
-function pointer(
-	target: EventTarget,
-	type: 'pointerdown' | 'pointerup',
-	pointerId = 1
-) {
+function pointer(target: EventTarget, type: 'pointerdown' | 'pointerup', pointerId = 1) {
 	const event = new Event(type, { bubbles: true, cancelable: true }) as PointerEvent;
 	Object.defineProperties(event, {
 		button: { value: 0 },
@@ -52,13 +70,9 @@ describe('native selection interaction', () => {
 		root.append(text);
 		document.body.append(root);
 		const completed: (string | null)[] = [];
-		const interaction = createSelectionInteraction({
-			onNativeStart: () => {},
-			onNativeComplete: (range) => completed.push(range?.toString() ?? null),
-			onCancel: () => {},
-			onBoundaryStart: () => null
-		});
-		interaction.setContainer(root);
+		const interaction = setupInteraction(root, (range) =>
+			completed.push(range?.toString() ?? null)
+		);
 
 		pointer(root, 'pointerdown');
 		setSelection(text);
@@ -77,13 +91,7 @@ describe('native selection interaction', () => {
 		root.append(first, second);
 		document.body.append(root);
 		const completed: string[] = [];
-		const interaction = createSelectionInteraction({
-			onNativeStart: () => {},
-			onNativeComplete: (range) => completed.push(range?.toString() ?? ''),
-			onCancel: () => {},
-			onBoundaryStart: () => null
-		});
-		interaction.setContainer(root);
+		const interaction = setupInteraction(root, (range) => completed.push(range?.toString() ?? ''));
 
 		pointer(root, 'pointerdown');
 		setSelection(first);
@@ -106,13 +114,9 @@ describe('native selection interaction', () => {
 		root.append(text);
 		document.body.append(root);
 		const completed: string[] = [];
-		const interaction = createSelectionInteraction({
-			onNativeStart: () => {},
-			onNativeComplete: (range) => completed.push(range ? 'complete' : 'empty'),
-			onCancel: () => {},
-			onBoundaryStart: () => null
-		});
-		interaction.setContainer(root);
+		const interaction = setupInteraction(root, (range) =>
+			completed.push(range ? 'complete' : 'empty')
+		);
 
 		root.dispatchEvent(
 			new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight', shiftKey: true })
@@ -140,18 +144,7 @@ describe('native selection interaction', () => {
 		range.setEnd(text, text.length);
 		clearSelection();
 
-		const mapped = mapDomRange(
-			range,
-			root,
-			buildSourceIndex([
-				{
-					kind: 'paragraph',
-					blockKey: 'paragraph-1',
-					order: 0,
-					content: [{ kind: 'text', sourceKey: 'text-1', text: 'A visible contract clause.' }]
-				}
-			])
-		);
+		const mapped = mapDomRange(range, root, paragraphSourceIndex('A visible contract clause.'));
 
 		expect(mapped?.range).toEqual({
 			start: { sourceKey: 'text-1', offset: 0 },
@@ -170,20 +163,7 @@ describe('native selection interaction', () => {
 		range.setEnd(boundary, 0);
 
 		expect(range.toString()).toBe('A visible contract clause. ');
-		expect(
-			mapDomRange(
-				range,
-				root,
-				buildSourceIndex([
-					{
-						kind: 'paragraph',
-						blockKey: 'paragraph-1',
-						order: 0,
-						content: [{ kind: 'text', sourceKey: 'text-1', text: 'A visible contract clause.' }]
-					}
-				])
-			)
-		).toBeNull();
+		expect(mapDomRange(range, root, paragraphSourceIndex('A visible contract clause.'))).toBeNull();
 	});
 
 	it('maps source-backed whitespace with its source offsets', () => {
@@ -197,20 +177,7 @@ describe('native selection interaction', () => {
 		range.setStart(first, 0);
 		range.setEnd(last, last.length);
 
-		expect(
-			mapDomRange(
-				range,
-				root,
-				buildSourceIndex([
-					{
-						kind: 'paragraph',
-						blockKey: 'paragraph-1',
-						order: 0,
-						content: [{ kind: 'text', sourceKey: 'text-1', text: 'A B' }]
-					}
-				])
-			)?.range
-		).toEqual({
+		expect(mapDomRange(range, root, paragraphSourceIndex('A B'))?.range).toEqual({
 			start: { sourceKey: 'text-1', offset: 0 },
 			end: { sourceKey: 'text-1', offset: 3 }
 		});
@@ -227,19 +194,6 @@ describe('native selection interaction', () => {
 		range.setStart(first, 0);
 		range.setEnd(last, last.length);
 
-		expect(
-			mapDomRange(
-				range,
-				root,
-				buildSourceIndex([
-					{
-						kind: 'paragraph',
-						blockKey: 'paragraph-1',
-						order: 0,
-						content: [{ kind: 'text', sourceKey: 'text-1', text: 'AB' }]
-					}
-				])
-			)
-		).toBeNull();
+		expect(mapDomRange(range, root, paragraphSourceIndex('AB'))).toBeNull();
 	});
 });

@@ -31,7 +31,6 @@ import type * as contractEmail from "../contractEmail.js";
 import type * as contractExports from "../contractExports.js";
 import type * as contractValidators from "../contractValidators.js";
 import type * as crons from "../crons.js";
-import type * as decisionNotifications from "../decisionNotifications.js";
 import type * as delegation from "../delegation.js";
 import type * as delegationUploads from "../delegationUploads.js";
 import type * as delegationValidators from "../delegationValidators.js";
@@ -95,7 +94,6 @@ declare const fullApi: ApiFromModules<{
   contractExports: typeof contractExports;
   contractValidators: typeof contractValidators;
   crons: typeof crons;
-  decisionNotifications: typeof decisionNotifications;
   delegation: typeof delegation;
   delegationUploads: typeof delegationUploads;
   delegationValidators: typeof delegationValidators;

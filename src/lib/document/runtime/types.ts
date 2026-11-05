@@ -56,30 +56,3 @@ export function samePreviewChanges(
 		)
 	);
 }
-
-/** Detach draft proxies and freeze everything read by an asynchronous render. */
-export function snapshotPreviewChanges(
-	changes: readonly ContractChange[]
-): readonly ContractChange[] {
-	if (!changes.length) return EMPTY_PREVIEW_CHANGES;
-	return Object.freeze(
-		changes.map((change) => {
-		const copy = {
-				range: Object.freeze(
-					change.range.kind === 'boundary'
-						? { kind: 'boundary' as const, afterBlockKey: change.range.afterBlockKey }
-						: {
-								kind: 'text' as const,
-								range: {
-									start: Object.freeze({ ...change.range.range.start }),
-									end: Object.freeze({ ...change.range.range.end })
-								}
-							}
-				),
-				replacement: change.replacement.map((atom) => Object.freeze({ ...atom }))
-			};
-			Object.freeze(copy.replacement);
-			return Object.freeze(copy);
-		})
-	);
-}

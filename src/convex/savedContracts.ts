@@ -28,6 +28,17 @@ function stateOf(contract: Doc<'savedContracts'>) {
 		selectedConcessions: contract.selectedConcessions,
 		reviews: contract.reviews,
 		revision: contract.revision,
+		reviewGeneration: contract.reviewGeneration,
+		reviewCompletion:
+			contract.reviewCompletion?.kind === 'awaitingConfirmation'
+				? {
+						kind: 'awaitingConfirmation' as const,
+						reviewerId: contract.reviewCompletion.reviewerId
+					}
+				: contract.reviewCompletion?.kind === 'queued'
+					? { kind: 'queued' as const, deliveryId: contract.reviewCompletion.deliveryId }
+					: null,
+		stateVersion: contract.stateVersion ?? 1,
 		lastOperationId: contract.lastOperation?.id ?? null
 	};
 }
@@ -119,6 +130,7 @@ export const create = mutation({
 			reviews: {},
 			revision: 0,
 			reviewGeneration: 0,
+			stateVersion: 1,
 			templateVersionId: version._id
 		});
 		await ctx.db.insert('contractCreationReceipts', {
@@ -214,6 +226,8 @@ export const saveChoices = mutation({
 			reviews,
 			revision: contract.revision + 1,
 			reviewGeneration: contract.reviewGeneration + 1,
+			stateVersion: (contract.stateVersion ?? 1) + 1,
+			reviewCompletion: undefined,
 			lastOperation: { id: operationId, callerId: profile._id },
 			savedAt: Date.now()
 		};
@@ -227,8 +241,7 @@ export const saveChoices = mutation({
 				previousStatus: 'pending',
 				status: 'approved',
 				decidedAt: changes.savedAt,
-				changed: true,
-				reviewCompleted: false
+				changed: true
 			});
 		}
 		await ctx.db.patch('savedContracts', id, changes);
@@ -248,7 +261,11 @@ export const rename = mutation({
 		const name = companyName(value);
 		if (name === contract.companyName) return null;
 		const savedAt = Date.now();
-		await ctx.db.patch('savedContracts', id, { companyName: name, savedAt });
+		await ctx.db.patch('savedContracts', id, {
+			companyName: name,
+			savedAt,
+			stateVersion: (contract.stateVersion ?? 1) + 1
+		});
 		await writeDirectory(ctx, { ...contract, companyName: name, savedAt });
 		return null;
 	}

@@ -140,6 +140,9 @@ describe('saving work', () => {
 				selectedConcessions: choices,
 				reviews: {},
 				revision: 7,
+				reviewGeneration: 0,
+				reviewCompletion: null,
+				stateVersion: 1,
 				lastOperationId: 'previous-operation'
 			}
 		});

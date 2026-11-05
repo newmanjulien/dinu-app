@@ -1,6 +1,12 @@
+import {
+	createCompositionRequest,
+	type CompositionArtifactStore,
+	type CompositionRequest,
+	type CompositionArtifact
+} from './composition-artifacts';
 import type { ConcessionSelection } from '../playbook/model';
 import type { ContractBlock, ContractView, ResolvedBlock, ResolvedRun } from './model';
-import type { Trigger, ContractChange, SourceRange, SourceTarget } from '../playbook/model';
+import type { Trigger, ContractChange, SourceRange } from '../playbook/model';
 import { isTextTarget, type InlineSource, type ReplacementAtom } from './source-model';
 import {
 	triggerAnnotationId,
@@ -15,8 +21,8 @@ import {
 	pointPosition,
 	type SourceContainer
 } from './source-index';
-import { localContainer, targetContainers, targetPosition, unitsInRange } from './ranges';
-import { diffRedlineTokens, redlineTextTokens, type RedlineToken } from './redline-diff';
+import { localContainer, targetContainers, unitsInRange } from './ranges';
+import { iterateRedlineDiff, iterateRedlineTextTokens, type RedlineToken } from './redline-diff';
 import { canonicalNumberPattern } from './number-pattern';
 import { referenceText, iterateNumberAddresses, type Address } from './numbering';
 import { createChangeConflictChecker } from '../playbook/conflicts';
@@ -72,7 +78,6 @@ export function composeContract(
 export class ContractCompositionEngine {
 	#index?: SourceIndex;
 	#initialized = false;
-	#unfinishedBlocks = new Set<string>();
 	#blocks: readonly ContractBlock[];
 	#atomsByKey = new Map<string, InlineSource>();
 	#items?: readonly DocumentOverlayItem[];
@@ -85,20 +90,19 @@ export class ContractCompositionEngine {
 			boundaries: Map<string, AnnotationMembership[]>;
 		}
 	>();
-	#annotationVersions = new Map<string, string>();
 	#dependencies = new Map<string, Set<string>>();
-	#containers = new Map<string, { version: string; content: ResolvedRun[] }>();
-	#trimmed = new WeakMap<ResolvedRun[], ResolvedRun[]>();
-	#resolved = new Map<string, ResolvedBlock>();
-	#generated = new Map<string, { version: string; content: ResolvedRun[] }>();
 	#activeKey = '';
-	#view?: ContractView;
-	#patchVersions = new Map<string, string>();
-	#dirtyContainers = new Set<string>();
 	#current: ReadonlyMap<string, Address> = new Map();
 	recomposedBlocks = 0;
 	affectedContainers = 0;
-	constructor(blocks: readonly ContractBlock[], index?: SourceIndex) {
+	reusedContainers = 0;
+	reusedResolvedBlocks = 0;
+	constructor(
+		blocks: readonly ContractBlock[],
+		index?: SourceIndex,
+		readonly artifacts?: CompositionArtifactStore
+	) {
+		this.artifacts?.useSource(blocks);
 		this.#blocks = blocks;
 		this.#index = index;
 	}
@@ -119,8 +123,7 @@ export class ContractCompositionEngine {
 			} else for (const atom of block.content) atoms.set(atom.sourceKey, atom);
 			yield undefined;
 		}
-		const dependencies = new Map<string, Set<string>>(),
-			dirty = new Set<string>();
+		const dependencies = new Map<string, Set<string>>();
 		for (const container of index.containers.values()) {
 			const targets = new Set<string>();
 			for (const unit of container.units) {
@@ -132,36 +135,46 @@ export class ContractCompositionEngine {
 				}
 			}
 			dependencies.set(container.containerKey, targets);
-			dirty.add(container.containerKey);
 			yield undefined;
 		}
 		this.#index = index;
 		this.#current = index.addresses;
 		this.#atomsByKey = atoms;
 		this.#dependencies = dependencies;
-		this.#dirtyContainers = dirty;
 		this.#initialized = true;
 	}
 	/** Numbering accepted by the most recent composition, including inserted paragraphs. */
 	get addresses(): ReadonlyMap<string, Address> {
 		return this.#current;
 	}
-	*compose(
-		input: CompositionInput,
-		options: { changedOnly?: boolean } = {}
-	): Generator<ResolvedBlock> {
-		for (const block of this.iterate(input, options)) if (block) yield block;
+	*compose(input: CompositionInput): Generator<ResolvedBlock> {
+		for (const block of this.iterate(input)) if (block) yield block;
 	}
 	*iterate(
+		input: CompositionInput,
+		working?: CompositionRequest
+	): Generator<ResolvedBlock | undefined, void> {
+		const request = working ?? createCompositionRequest(this.artifacts);
+		if (request.owner !== this.artifacts)
+			throw new Error('Composition request belongs to a different source.');
+		try {
+			yield* this.#iterate(input, request);
+		} finally {
+			if (!working) request.release();
+		}
+	}
+	*#iterate(
 		{ items, activeConcessions, previewChanges = [], view }: CompositionInput,
-		{ changedOnly = false }: { changedOnly?: boolean } = {}
-	): Generator<ResolvedBlock | undefined> {
+		request: CompositionRequest
+	): Generator<ResolvedBlock | undefined, void> {
 		yield* this.#initialize();
 		const blocks = this.#blocks,
 			index = this.index,
 			atomsByKey = this.#atomsByKey;
 		this.recomposedBlocks = 0;
 		this.affectedContainers = 0;
+		this.reusedContainers = 0;
+		this.reusedResolvedBlocks = 0;
 		const authoredChanges: ChangeOrigin[] = [];
 		for (const item of items) {
 			const concession = item.concessions.find((c) => c.id === activeConcessions[item.itemId]);
@@ -272,9 +285,12 @@ export class ContractCompositionEngine {
 			overlays.push(cached);
 			yield undefined;
 		}
-		const prioritized = new Map<string, PositionedAnnotation>();
+		const prioritized = new Map<string, AnnotationMembership>();
 		for (const overlay of overlays)
-			for (const annotation of overlay.annotations) {
+			for (const annotation of [
+				...overlay.annotations,
+				...[...overlay.boundaries.values()].flat()
+			]) {
 				prioritized.set(annotation.id, {
 					...annotation,
 					applied:
@@ -293,13 +309,17 @@ export class ContractCompositionEngine {
 			for (const [key, annotations] of overlay.containers) {
 				annotationsByContainer
 					.get(key)!
-					.push(...annotations.map((annotation) => prioritized.get(annotation.id)!));
+					.push(
+						...annotations.map(
+							(annotation) => prioritized.get(annotation.id)! as PositionedAnnotation
+						)
+					);
 				yield undefined;
 			}
 		for (const overlay of overlays)
 			for (const [key, annotations] of overlay.boundaries) {
 				const local = annotationsByBoundary.get(key) ?? [];
-				local.push(...annotations);
+				local.push(...annotations.map((annotation) => prioritized.get(annotation.id)!));
 				annotationsByBoundary.set(key, local);
 				yield undefined;
 			}
@@ -326,87 +346,16 @@ export class ContractCompositionEngine {
 			patches.set(key, items);
 			yield undefined;
 		}
-		const patchVersions = new Map<string, string>();
-		for (const [key, value] of patches) {
-			patchVersions.set(key, JSON.stringify(value));
-			yield undefined;
-		}
-		const replacementDependencies = new Map<string, Set<string>>();
-		for (const [key, override] of structural.numberingOverrides)
-			replacementDependencies.set(key, new Set([override.numbering.itemKey]));
-		for (const [key, localPatches] of patches) {
-			const targets = replacementDependencies.get(key) ?? new Set<string>();
-			for (const patch of localPatches)
-				for (const atom of patch.change.replacement) {
-					if (atom.kind !== 'reference') continue;
-					targets.add(atom.targetItemKey);
-					if (atom.endTargetItemKey) targets.add(atom.endTargetItemKey);
-				}
-			replacementDependencies.set(key, targets);
-			yield undefined;
-		}
-		const dirty = new Set<string>();
-		if (this.#view !== view)
-			for (const key of index.containers.keys()) {
-				dirty.add(key);
-				yield undefined;
-			}
-		for (const [next, previous] of [
-			[annotationVersions, this.#annotationVersions],
-			[patchVersions, this.#patchVersions]
-		]) {
-			for (const key of next.keys()) {
-				if (next.get(key) !== previous.get(key)) dirty.add(key);
-				yield undefined;
-			}
-			for (const key of previous.keys()) {
-				if (!next.has(key)) dirty.add(key);
-				yield undefined;
-			}
-		}
-		if (previousAddresses !== current) {
-			const changedTargets = new Set<string>();
-			for (const key of current.keys()) {
-				if (JSON.stringify(current.get(key)) !== JSON.stringify(previousAddresses.get(key)))
-					changedTargets.add(key);
-				yield undefined;
-			}
-			for (const key of previousAddresses.keys()) {
-				if (!current.has(key)) changedTargets.add(key);
-				yield undefined;
-			}
-			for (const [key, targets] of this.#dependencies) {
-				if (
-					[...targets, ...(replacementDependencies.get(key) ?? [])].some((target) =>
-						changedTargets.has(target)
-					)
-				)
-					dirty.add(key);
-				yield undefined;
-			}
-		}
-		// Install a complete candidate; unfinished blocks survive cancellation.
-		for (const key of this.#dirtyContainers) {
-			dirty.add(key);
-			yield undefined;
-		}
-		for (const transfer of structural.transfers)
-			if (dirty.has(transfer.from)) dirty.add(transfer.to);
-		const dirtyBlocks = new Set(this.#unfinishedBlocks);
-		for (const key of dirty) {
-			dirtyBlocks.add(index.containers.get(key)?.blockKey ?? key);
-			yield undefined;
-		}
-		this.#dirtyContainers = dirty;
+		// Accepted cursor metadata contains no completed content or alternative token arrays.
 		this.#current = current;
 		this.#activeKey = activeKey;
-		this.#view = view;
 		this.#items = items;
 		this.#triggers = triggers;
-		this.#annotationVersions = annotationVersions;
-		this.#patchVersions = patchVersions;
+		const patchOwners = new WeakMap<ReplacementAnnotation, Annotation>();
 
 		function patchAnnotation(annotation: ReplacementAnnotation): Annotation {
+			const cached = patchOwners.get(annotation);
+			if (cached) return cached;
 			const selection = annotation.range;
 			// Real trigger validation stays independent of visual effect coverage.
 			const trigger = changeTriggerOwner(index, triggers, { range: selection, replacement: [] }) as
@@ -423,14 +372,12 @@ export class ContractCompositionEngine {
 									: o.start <= start && o.end >= end
 							);
 					})()
-				: (annotationsByBoundary.get(selection.afterBlockKey) ?? []).map(
-					(annotation) => prioritized.get(annotation.id)!
-				);
+				: (annotationsByBoundary.get(selection.afterBlockKey) ?? []);
 			const actualTrigger = trigger
 				? prioritized.get(triggerAnnotationId(trigger.itemId, trigger.id))
 				: undefined;
 			const explicitEffect = annotation.effect ? prioritized.get(annotation.effect.id) : undefined;
-			return {
+			const owner: Annotation = {
 				annotations: [
 					...new Map(
 						[
@@ -443,6 +390,8 @@ export class ContractCompositionEngine {
 				visualSource: selection,
 				generatedOffset: annotation.replacementOffset ?? 0
 			};
+			patchOwners.set(annotation, owner);
+			return owner;
 		}
 		const separator = (owner: Annotation): ResolvedRun => ({
 			text: ' ',
@@ -469,15 +418,16 @@ export class ContractCompositionEngine {
 				return run;
 			});
 		}
-		function sourceSlice(
+		function* sourceSlice(
 			container: SourceContainer,
 			start: number,
 			end: number,
 			removed = false
-		): ResolvedRun[] {
+		): Generator<undefined, ResolvedRun[]> {
 			const localAnnotations = annotationsByContainer.get(container.containerKey)!;
 			const result: ResolvedRun[] = [];
 			for (const unit of container.units) {
+				yield undefined;
 				const from = Math.max(start, unit.position),
 					to = Math.min(end, unit.position + unit.length);
 				if (from >= to) continue;
@@ -489,6 +439,7 @@ export class ContractCompositionEngine {
 					])
 				].sort((a, b) => a - b);
 				for (let i = 0; i < cuts.length - 1; i++) {
+					if (i % 128 === 0) yield undefined;
 					const a = cuts[i],
 						b = cuts[i + 1];
 					const source: SourceRange = {
@@ -551,11 +502,11 @@ export class ContractCompositionEngine {
 			}
 			return result;
 		}
-		function renderReadableRedline(
+		function* renderReadableRedline(
 			container: SourceContainer,
 			patch: Patch,
 			owner: Annotation
-		): ResolvedRun[] | null {
+		): Generator<undefined, ResolvedRun[] | null> {
 			const { change, start, end } = patch;
 			if (!isTextTarget(change.range)) return null;
 			const units = unitsInRange(index, change.range.range);
@@ -567,11 +518,14 @@ export class ContractCompositionEngine {
 					.map((unit) => [atomsByKey.get(unit.sourceKey)!, unit.displayText])
 			);
 			type Token = RedlineToken & { length: number; atom: ReplacementAtom };
-			function tokenize(atoms: readonly ReplacementAtom[], original = false): Token[] {
+			function* tokenize(
+				atoms: readonly ReplacementAtom[],
+				original = false
+			): Generator<undefined, Token[]> {
 				const result: Token[] = [];
 				let text = '';
-				function flush() {
-					for (const token of redlineTextTokens(text))
+				function* flush(): Generator<undefined> {
+					for (const token of yield* iterateRedlineTextTokens(text))
 						result.push({
 							...token,
 							length: token.text.length,
@@ -585,7 +539,7 @@ export class ContractCompositionEngine {
 						text += atom.text;
 						continue;
 					}
-					flush();
+					yield* flush();
 					const display = original ? originalReferences.get(atom)! : referenceText(atom, current);
 					result.push({
 						key: JSON.stringify([
@@ -601,7 +555,7 @@ export class ContractCompositionEngine {
 						atom
 					});
 				}
-				flush();
+				yield* flush();
 				return result;
 			}
 			const sourceAtoms: ReplacementAtom[] = units.map((unit) =>
@@ -615,8 +569,8 @@ export class ContractCompositionEngine {
 						}
 					: atomsByKey.get(unit.sourceKey)!
 			);
-			const source = tokenize(sourceAtoms, true),
-				inserted = tokenize(change.replacement);
+			const source = yield* tokenize(sourceAtoms, true);
+			const inserted = yield* tokenize(change.replacement);
 			function offsets(tokens: readonly Token[]) {
 				const result = [0];
 				for (const token of tokens) result.push(result.at(-1)! + token.length);
@@ -625,18 +579,18 @@ export class ContractCompositionEngine {
 			const sourceOffsets = offsets(source),
 				replacementOffsets = offsets(inserted);
 			if (sourceOffsets.at(-1) !== end - start) return null;
-			const parts = diffRedlineTokens(source, inserted);
+			const parts = yield* iterateRedlineDiff(source, inserted);
 			if (!parts) return null;
 			const runs: ResolvedRun[] = [];
 			for (const [i, part] of parts.entries()) {
 				if (part.kind !== 'insert') {
 					runs.push(
-						...sourceSlice(
+						...(yield* sourceSlice(
 							container,
 							start + sourceOffsets[part.sourceStart],
 							start + sourceOffsets[part.sourceEnd],
 							part.kind === 'delete'
-						)
+						))
 					);
 					continue;
 				}
@@ -671,14 +625,16 @@ export class ContractCompositionEngine {
 			}
 			return runs;
 		}
-		const cache = this.#containers;
 		const engine = this;
-		function composeContainer(container: SourceContainer): ResolvedRun[] {
+		const containers = new Map<string, CompositionArtifact<ResolvedRun[]>>();
+		function* composeContainer(
+			container: SourceContainer
+		): Generator<undefined, CompositionArtifact<ResolvedRun[]>> {
 			const key = container.containerKey;
-			const cached = cache.get(key);
-			if (!engine.#dirtyContainers.has(key) && cached) return cached.content;
+			const existing = containers.get(key);
+			if (existing) return existing;
 			const localChanges = patches.get(key) ?? [];
-			// Replacement dependencies are refreshed with the immutable input, including range references.
+			localChanges.sort((a, b) => a.start - b.start || a.end - b.end);
 			const targets = new Set(engine.#dependencies.get(key));
 			for (const patch of localChanges)
 				for (const atom of patch.change.replacement) {
@@ -687,24 +643,25 @@ export class ContractCompositionEngine {
 					if (atom.endTargetItemKey) targets.add(atom.endTargetItemKey);
 				}
 			const version = JSON.stringify([
+				'container',
+				key,
 				view,
-				engine.#annotationVersions.get(key),
+				annotationVersions.get(key),
 				localChanges,
+				localChanges.map((patch) => patchAnnotation(patch.annotation)),
+				structural.removed.has(container.blockKey),
 				[...targets].map((target) => [target, current.get(target)])
 			]);
-			if (cached?.version === version) {
-				engine.#dirtyContainers.delete(key);
-				return cached.content;
+			let artifact = request.get<ResolvedRun[]>(version);
+			if (artifact) engine.reusedContainers++;
+			else {
+				engine.affectedContainers++;
+				artifact = request.put(version, yield* resolveContainer(container));
 			}
-			engine.affectedContainers++;
-			const content = resolveContainer(container);
-			cache.set(key, { version, content });
-			// Transfers can prepare this container before its block reaches rendering.
-			engine.#unfinishedBlocks.add(container.blockKey);
-			engine.#dirtyContainers.delete(key);
-			return content;
+			containers.set(key, artifact);
+			return artifact;
 		}
-		function resolveContainer(container: SourceContainer): ResolvedRun[] {
+		function* resolveContainer(container: SourceContainer): Generator<undefined, ResolvedRun[]> {
 			const first = container.units[0],
 				last = container.units.at(-1)!;
 			const localPatches = (patches.get(container.containerKey) ?? []).sort(
@@ -716,17 +673,17 @@ export class ContractCompositionEngine {
 				const { change, start, end } = patch;
 				if (start < cursor)
 					throw new Error(`Overlapping active changes in ${container.containerKey}`);
-				result.push(...sourceSlice(container, cursor, start));
+				result.push(...(yield* sourceSlice(container, cursor, start)));
 				const owner = patchAnnotation(patch.annotation);
 				// Live previews stay whole-range; only saved concessions attempt readable redlines.
 				const readable =
 					view === 'redline' && end > start && patch.origin
-						? renderReadableRedline(container, patch, owner)
+						? yield* renderReadableRedline(container, patch, owner)
 						: null;
 				if (readable) result.push(...readable);
 				else {
 					if (view === 'redline' && end > start) {
-						result.push(...sourceSlice(container, start, end, true));
+						result.push(...(yield* sourceSlice(container, start, end, true)));
 						if (
 							change.replacement.some(
 								(atom) =>
@@ -751,7 +708,7 @@ export class ContractCompositionEngine {
 					result.push(separator(owner));
 				cursor = end;
 			}
-			result.push(...sourceSlice(container, cursor, last.position + last.length));
+			result.push(...(yield* sourceSlice(container, cursor, last.position + last.length)));
 			if (!result.some((run) => run.text)) {
 				const memberships = annotationsByContainer
 					.get(container.containerKey)!
@@ -795,39 +752,90 @@ export class ContractCompositionEngine {
 			return [...prefix, ...content];
 		}
 		function belongsAfter(run: ResolvedRun, position: number): boolean {
-			const source = run.source ?? (run.visualSource?.kind === 'text' ? run.visualSource.range : undefined);
+			const source =
+				run.source ?? (run.visualSource?.kind === 'text' ? run.visualSource.range : undefined);
 			return Boolean(source && pointPosition(index, source.start) >= position);
 		}
-		const incoming = new Map<string, ResolvedRun[]>();
-		const sourceContents = new Map<string, ResolvedRun[]>();
+		const incoming = new Map<string, CompositionArtifact<ResolvedRun[]>[]>();
+		const sourceContents = new Map<string, CompositionArtifact<ResolvedRun[]>>();
 		const cutoffs = new Map<string, number>();
-		function withIncoming(key: string, content: ResolvedRun[]): ResolvedRun[] {
-			const suffix = incoming.get(key);
-			return suffix?.length ? [...content, ...suffix] : content;
+		const outgoing = new Map<string, typeof structural.transfers>();
+		function withIncoming(
+			key: string,
+			content: CompositionArtifact<ResolvedRun[]>
+		): CompositionArtifact<ResolvedRun[]> {
+			const suffixes = incoming.get(key);
+			if (!suffixes?.length) return content;
+			const version = JSON.stringify([
+				'incoming',
+				key,
+				content.id,
+				suffixes.map((suffix) => suffix.id)
+			]);
+			return (
+				request.get<ResolvedRun[]>(version) ??
+				request.put(
+					version,
+					[...content.value, ...suffixes.flatMap((suffix) => suffix.value)],
+					[content, ...suffixes]
+				)
+			);
 		}
-		// Later source paragraphs are prepared first, so a merged suffix keeps text
-		// received from another merge. Each split takes a bounded, disjoint slice.
+		// Preserve structural planning's ordered, disjoint suffix transfers. Their versions
+		// reference immutable input versions instead of serializing expanded provenance.
 		for (const transfer of structural.transfers) {
 			let content = sourceContents.get(transfer.from);
 			if (!content) {
 				content = withIncoming(
 					transfer.from,
-					composeContainer(index.containers.get(transfer.from)!)
+					yield* composeContainer(index.containers.get(transfer.from)!)
 				);
 				sourceContents.set(transfer.from, content);
 			}
-			const suffix = content.filter(
-				(run) =>
-					belongsAfter(run, transfer.after) &&
-					(transfer.before === undefined || !belongsAfter(run, transfer.before))
-			);
-			incoming.set(transfer.to, [...(incoming.get(transfer.to) ?? []), ...suffix]);
+			const version = JSON.stringify([
+				'transfer',
+				transfer.from,
+				transfer.to,
+				transfer.after,
+				transfer.before,
+				content.id
+			]);
+			const suffix =
+				request.get<ResolvedRun[]>(version) ??
+				request.put(
+					version,
+					content.value.filter(
+						(run) =>
+							belongsAfter(run, transfer.after) &&
+							(transfer.before === undefined || !belongsAfter(run, transfer.before))
+					),
+					[content]
+				);
+			const destination = incoming.get(transfer.to) ?? [];
+			destination.push(suffix);
+			incoming.set(transfer.to, destination);
+			const sources = outgoing.get(transfer.from) ?? [];
+			sources.push(transfer);
+			outgoing.set(transfer.from, sources);
 			if (!cutoffs.has(transfer.from)) cutoffs.set(transfer.from, transfer.after);
+			yield undefined;
 		}
-		function transferContent(key: string, content: ResolvedRun[]): ResolvedRun[] {
-			const result = sourceContents.get(key) ?? withIncoming(key, content);
+		function transferContent(
+			key: string,
+			content: CompositionArtifact<ResolvedRun[]>
+		): CompositionArtifact<ResolvedRun[]> {
+			const input = sourceContents.get(key) ?? withIncoming(key, content);
 			const cutoff = cutoffs.get(key);
-			return cutoff === undefined ? result : result.filter((run) => !belongsAfter(run, cutoff));
+			if (cutoff === undefined) return input;
+			const version = JSON.stringify(['cutoff', key, input.id, cutoff]);
+			return (
+				request.get<ResolvedRun[]>(version) ??
+				request.put(
+					version,
+					input.value.filter((run) => !belongsAfter(run, cutoff)),
+					[input]
+				)
+			);
 		}
 		function numberPrefix(numbering: ContractBlock['numbering'], owner: Annotation): ResolvedRun[] {
 			if (!numbering) return [];
@@ -844,11 +852,9 @@ export class ContractCompositionEngine {
 				separator(owner)
 			];
 		}
-		function resolveGenerated(
-			paragraph: GeneratedParagraph
-		): Extract<ResolvedBlock, { kind: 'paragraph' }> {
+		function generatedContent(paragraph: GeneratedParagraph): CompositionArtifact<ResolvedRun[]> {
 			const { block, atoms } = paragraph;
-			const key = block.blockKey;
+			const owner = patchAnnotation(paragraph.annotation);
 			const targets = new Set(block.numbering ? [block.numbering.itemKey] : []);
 			for (const atom of atoms)
 				if (atom.kind === 'reference') {
@@ -856,147 +862,123 @@ export class ContractCompositionEngine {
 					if (atom.endTargetItemKey) targets.add(atom.endTargetItemKey);
 				}
 			const version = JSON.stringify([
+				'generated',
 				view,
-				paragraph,
-				[...targets].map((target) => [target, current.get(target)]),
-				incoming.get(key),
-				isTextTarget(paragraph.annotation.range)
-					? annotationsByContainer.get(
-							index.byKey.get(paragraph.annotation.range.range.start.sourceKey)!.containerKey
-						)
-					: annotationsByBoundary.get(paragraph.annotation.range.afterBlockKey)
+				block,
+				atoms,
+				owner,
+				[...targets].map((target) => [target, current.get(target)])
 			]);
-			let cached = engine.#generated.get(key);
-			if (cached?.version !== version) {
-				const owner = patchAnnotation(paragraph.annotation);
-				const prefix = numberPrefix(block.numbering, owner);
-				cached = {
-					version,
-					content: trimAfterNumber(transferContent(key, [...prefix, ...replacement(atoms, owner)]))
-				};
-				engine.#generated.set(key, cached);
+			const cached = request.get<ResolvedRun[]>(version);
+			if (cached) {
+				engine.reusedContainers++;
+				return cached;
 			}
-			return { kind: 'paragraph', blockKey: key, content: cached.content };
+			return request.put(version, [
+				...numberPrefix(block.numbering, owner),
+				...replacement(atoms, owner)
+			]);
+		}
+		function resolved(
+			version: unknown[],
+			dependencies: readonly CompositionArtifact<object>[],
+			create: () => ResolvedBlock
+		): ResolvedBlock {
+			// One-shot consumers have no cross-request block interning. Workspace requests
+			// look up the complete semantic version before constructing resolved output.
+			const key = request.owner ? JSON.stringify(['block', view, ...version]) : undefined;
+			const cached = key ? request.get<ResolvedBlock>(key) : undefined;
+			if (cached) {
+				engine.reusedResolvedBlocks++;
+				return cached.value;
+			}
+			engine.recomposedBlocks++;
+			const block = create();
+			return key ? request.put(key, block, dependencies).value : block;
+		}
+		function nonTable(
+			block: Exclude<ContractBlock, { kind: 'table' }>,
+			raw: CompositionArtifact<ResolvedRun[]>
+		): ResolvedBlock {
+			const input = transferContent(block.blockKey, raw);
+			const promoted = structural.numberingOverrides.get(block.blockKey);
+			const owner = promoted ? patchAnnotation(promoted.annotation) : undefined;
+			const promotion = promoted
+				? [promoted.numbering, owner, current.get(promoted.numbering.itemKey)]
+				: undefined;
+			const removed = structural.removed.has(block.blockKey);
+			return resolved(
+				[
+					block.blockKey,
+					block.kind,
+					block.kind === 'heading' ? [block.anchor, block.level] : null,
+					input.id,
+					promotion,
+					removed,
+					outgoing.get(block.blockKey) ?? []
+				],
+				[input],
+				() => {
+					let content = input.value;
+					if (promoted && !block.numbering)
+						content = [...numberPrefix(promoted.numbering, owner!), ...content];
+					if (removed) content = content.map((run) => ({ ...run, revision: 'removed' as const }));
+					content = trimAfterNumber(content);
+					const boundary = index.structuralBoundaries.get(block.blockKey);
+					return {
+						...(block.kind === 'heading'
+							? { kind: 'heading' as const, anchor: block.anchor, level: block.level }
+							: { kind: 'paragraph' as const }),
+						blockKey: block.blockKey,
+						content,
+						...(boundary ? { boundariesAfter: [boundary] } : {})
+					};
+				}
+			);
 		}
 		function* resolveBlock(block: ContractBlock): Generator<undefined, ResolvedBlock> {
-			if (block.kind === 'table') {
-				const rows: { content: ResolvedRun[] }[][] = [];
-				for (const [r, row] of block.rows.entries()) {
-					const cells: { content: ResolvedRun[] }[] = [];
-					for (const [c] of row.entries()) {
-						cells.push({
-							content: composeContainer(index.containers.get(`${block.blockKey}/cell/${r}/${c}`)!)
-						});
-						yield undefined;
-					}
-					rows.push(cells);
+			if (block.kind !== 'table')
+				return nonTable(block, yield* composeContainer(index.containers.get(block.blockKey)!));
+			const rows: CompositionArtifact<ResolvedRun[]>[][] = [];
+			for (const [r, row] of block.rows.entries()) {
+				const cells: CompositionArtifact<ResolvedRun[]>[] = [];
+				for (const [c] of row.entries()) {
+					cells.push(
+						yield* composeContainer(index.containers.get(`${block.blockKey}/cell/${r}/${c}`)!)
+					);
+					yield undefined;
 				}
-				return {
+				rows.push(cells);
+			}
+			return resolved(
+				[
+					block.blockKey,
+					'table',
+					block.variant,
+					block.headerRowCount,
+					rows.map((row) => row.map((cell) => cell.id))
+				],
+				rows.flat(),
+				() => ({
 					kind: 'table',
 					blockKey: block.blockKey,
 					...(block.variant ? { variant: block.variant } : {}),
 					headerRowCount: block.headerRowCount,
-					rows
-				};
-			}
-			let raw = composeContainer(index.containers.get(block.blockKey)!);
-			raw = transferContent(block.blockKey, raw);
-			const promoted = structural.numberingOverrides.get(block.blockKey);
-			if (promoted && !block.numbering) {
-				raw = [...numberPrefix(promoted.numbering, patchAnnotation(promoted.annotation)), ...raw];
-			}
-			if (structural.removed.has(block.blockKey))
-				raw = raw.map((run) => ({ ...run, revision: 'removed' as const }));
-			let content = engine.#trimmed.get(raw);
-			if (!content) {
-				content = trimAfterNumber(raw);
-				engine.#trimmed.set(raw, content);
-			}
-			const boundariesAfter = index.structuralBoundaries.get(block.blockKey);
-			return block.kind === 'heading'
-				? {
-						kind: 'heading',
-						blockKey: block.blockKey,
-						anchor: block.anchor,
-						level: block.level,
-						content,
-						...(boundariesAfter ? { boundariesAfter: [boundariesAfter] } : {})
-					}
-				: {
-						kind: 'paragraph',
-						blockKey: block.blockKey,
-						content,
-						...(boundariesAfter ? { boundariesAfter: [boundariesAfter] } : {})
-					};
+					rows: rows.map((row) => row.map((cell) => ({ content: cell.value })))
+				})
+			);
 		}
-		// Idle alternatives only need changed blocks and their numbering/reference dependencies.
-		function* candidates() {
-			if (changedOnly) {
-				for (const key of dirtyBlocks) {
-					const block = index.blocks.get(key);
-					if (block) yield block;
-				}
-			} else yield* blocks;
-		}
-		function* generatedAt(anchor: string) {
+		function* generatedAt(anchor: string): Generator<ResolvedBlock | undefined, void> {
 			for (const paragraph of structural.generated.get(anchor) ?? []) {
-				const next = resolveGenerated(paragraph);
-				const previous = engine.#resolved.get(next.blockKey);
-				if (previous?.kind === 'paragraph' && previous.content === next.content) {
-					if (!changedOnly) yield previous;
-				} else {
-					engine.#resolved.set(next.blockKey, next);
-					engine.recomposedBlocks++;
-					yield next;
-				}
+				yield nonTable(paragraph.block, generatedContent(paragraph));
+				yield undefined;
 			}
 		}
 		yield* generatedAt('');
-		for (const block of candidates()) {
-			const previous = this.#resolved.get(block.blockKey);
-			if (previous && !dirtyBlocks.has(block.blockKey)) {
-				if (view !== 'effective' || !structural.removed.has(block.blockKey)) yield previous;
-				yield* generatedAt(block.blockKey);
-				continue;
-			}
-			this.#unfinishedBlocks.add(block.blockKey);
+		for (const block of blocks) {
 			const next = yield* resolveBlock(block);
-			let unchanged = Boolean(previous && previous.kind === next.kind);
-			if (unchanged && previous?.kind === 'table' && next.kind === 'table') {
-				for (const [r, row] of previous.rows.entries())
-					for (const [c, cell] of row.entries()) {
-						if (cell.content !== next.rows[r][c].content) unchanged = false;
-						yield undefined;
-					}
-			} else
-				unchanged = Boolean(
-					previous &&
-					previous.kind !== 'table' &&
-					next.kind !== 'table' &&
-					previous.content === next.content
-				);
-			this.#unfinishedBlocks.delete(block.blockKey);
-			if (unchanged) {
-				if (!changedOnly && (view !== 'effective' || !structural.removed.has(block.blockKey)))
-					yield previous!;
-			} else {
-				this.recomposedBlocks++;
-				this.#resolved.set(block.blockKey, next);
-				if (view !== 'effective' || !structural.removed.has(block.blockKey)) yield next;
-			}
+			if (view !== 'effective' || !structural.removed.has(block.blockKey)) yield next;
 			yield* generatedAt(block.blockKey);
 		}
-		// Alternative warming may have no dirty baseline block at a pure insertion boundary.
-		if (changedOnly)
-			for (const anchor of structural.generated.keys())
-				if (anchor && !dirtyBlocks.has(anchor)) yield* generatedAt(anchor);
-		const generatedKeys = new Set(
-			[...structural.generated.values()].flat().map((paragraph) => paragraph.block.blockKey)
-		);
-		for (const key of engine.#generated.keys())
-			if (!generatedKeys.has(key)) {
-				engine.#generated.delete(key);
-				engine.#resolved.delete(key);
-			}
 	}
 }

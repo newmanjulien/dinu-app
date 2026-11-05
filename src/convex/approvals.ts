@@ -5,8 +5,8 @@ import { mutation, query, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { approvalRequest, reviewDecision } from './contractValidators';
 import { snapshotReader } from './templates';
-import { queueCompletedReview } from './decisionNotifications';
-import { recordDecision } from './reviews';
+import { recordDecision, completedReview } from './reviews';
+import { writeDirectory } from './contractDirectory';
 import { emailAddress, type EmailSelection } from './emailValidators';
 import { activeJob, createDelivery, restartDelivery, UNCERTAIN_COOLDOWN } from './emailDeliveries';
 import { removeDelivery } from './emailDisposal';
@@ -201,7 +201,7 @@ export const decide = mutation({
 		status: reviewDecision,
 		operationId: v.string()
 	},
-	returns: v.object({ reviewCompleted: v.boolean() }),
+	returns: v.null(),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		if (access.role !== 'admin')
@@ -225,7 +225,7 @@ export const decide = mutation({
 				receipt.status !== args.status
 			)
 				throw new ConvexError('This review operation was already used.');
-			return { reviewCompleted: receipt.reviewCompleted };
+			return null;
 		}
 		if (contract.selectedConcessions[args.itemId] !== args.concessionId)
 			throw new ConvexError('This concession changed. Review its current version.');
@@ -241,20 +241,25 @@ export const decide = mutation({
 			throw new ConvexError('This concession was replaced. Review its current version.');
 		const previousStatus = review.status;
 		const changed = previousStatus !== args.status;
-		let reviewCompleted = false;
 		if (changed) {
 			const reviews = {
 				...contract.reviews,
 				[args.itemId]: { concessionId: args.concessionId, lifecycle, status: args.status }
 			};
 			const reviewGeneration = contract.reviewGeneration + 1;
-			await ctx.db.patch('savedContracts', args.id, { reviews, reviewGeneration });
-			const notificationQueued = await queueCompletedReview(
-				ctx,
-				{ ...contract, reviews, reviewGeneration },
-				access._id
-			);
-			reviewCompleted = previousStatus === 'pending' && notificationQueued;
+			const reviewCompletion = completedReview({ ...contract, reviews })
+				? {
+						kind: 'awaitingConfirmation' as const,
+						reviewerId: access._id
+					}
+				: undefined;
+			const changes = {
+				reviews,
+				reviewGeneration,
+				reviewCompletion,
+				stateVersion: (contract.stateVersion ?? 1) + 1
+			};
+			await ctx.db.patch('savedContracts', args.id, changes);
 		}
 		await recordDecision(ctx, contract, access, {
 			itemId: args.itemId,
@@ -264,9 +269,104 @@ export const decide = mutation({
 			previousStatus,
 			status: args.status,
 			decidedAt: Date.now(),
-			changed,
-			reviewCompleted
+			changed
 		});
-		return { reviewCompleted };
+		return null;
+	}
+});
+
+const completionArgs = v.object({
+	membershipId: v.id('memberships'),
+	id: v.id('savedContracts'),
+	expectedGeneration: v.number()
+});
+async function completionContract(ctx: QueryCtx, args: Infer<typeof completionArgs>) {
+	const access = await requireMembership(ctx, args.membershipId);
+	if (access.role !== 'admin') throw new ConvexError('Only company admins can manage reviews.');
+	if (!Number.isSafeInteger(args.expectedGeneration) || args.expectedGeneration < 0)
+		throw new ConvexError('Invalid review generation.');
+	const contract = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
+	if (!contract) throw new ConvexError('This contract was deleted.');
+	return contract;
+}
+
+export const confirmCompletion = mutation({
+	args: completionArgs.fields,
+	returns: v.object({ outcome: v.union(v.literal('queued'), v.literal('stale')) }),
+	handler: async (ctx, args) => {
+		const contract = await completionContract(ctx, args);
+		const completion = contract.reviewCompletion;
+		if (
+			!completion ||
+			contract.reviewGeneration !== args.expectedGeneration ||
+			!completedReview(contract)
+		)
+			return { outcome: 'stale' as const };
+		if (completion.kind === 'queued') return { outcome: 'queued' as const };
+		const deliveryId = await createDelivery(ctx, {
+			companyId: contract.companyId,
+			event: {
+				kind: 'decision',
+				contractId: contract._id,
+				reviewGeneration: contract.reviewGeneration,
+				reviewerId: completion.reviewerId,
+				companyName: contract.companyName,
+				templateVersionId: contract.templateVersionId
+			}
+		});
+		const reviewCompletion = {
+			kind: 'queued' as const,
+			deliveryId
+		};
+		await ctx.db.patch('savedContracts', contract._id, {
+			reviewCompletion,
+			stateVersion: (contract.stateVersion ?? 1) + 1
+		});
+		return { outcome: 'queued' as const };
+	}
+});
+
+export const resetCompletion = mutation({
+	args: completionArgs.fields,
+	returns: v.object({ outcome: v.union(v.literal('reset'), v.literal('stale')) }),
+	handler: async (ctx, args) => {
+		const contract = await completionContract(ctx, args);
+		const completion = contract.reviewCompletion;
+		if (
+			completion?.kind !== 'awaitingConfirmation' ||
+			contract.reviewGeneration !== args.expectedGeneration ||
+			!completedReview(contract)
+		)
+			return { outcome: 'stale' as const };
+		const reviewGeneration = contract.reviewGeneration + 1;
+		const reviews = Object.fromEntries(
+			Object.entries(contract.reviews).map(([id, review]) => [
+				id,
+				{
+					...review,
+					status: 'pending' as const,
+					lifecycle: `reset:${reviewGeneration}:${id}`
+				}
+			])
+		);
+		const changes = {
+			reviews,
+			reviewGeneration,
+			stateVersion: (contract.stateVersion ?? 1) + 1,
+			reviewCompletion: undefined,
+			// A pre-reset save acknowledgement must not identify the reset as its own write.
+			lastOperation: undefined,
+			revision: contract.revision + 1,
+			savedAt: Date.now()
+		};
+		const request = await latestFor(ctx, contract._id);
+		if (request) {
+			const delivery = await ctx.db.get('emailDeliveries', request.deliveryId);
+			if (delivery) await removeDelivery(ctx, delivery);
+			await ctx.db.delete('approvalRequests', request._id);
+		}
+		await ctx.db.patch('savedContracts', contract._id, changes);
+		await writeDirectory(ctx, { ...contract, ...changes });
+		return { outcome: 'reset' as const };
 	}
 });

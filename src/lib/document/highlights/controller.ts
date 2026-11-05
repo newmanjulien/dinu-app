@@ -751,6 +751,7 @@ export class DocumentHighlightController {
 					attributeOldValue: true,
 					attributeFilter: [
 						'data-annotation-selected',
+						'aria-hidden',
 						'class',
 						'data-revision',
 						'data-annotation-id',

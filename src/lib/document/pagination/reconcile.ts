@@ -60,7 +60,10 @@ export function* iterateReconciledPages(
 			candidate.number === prior.number &&
 			candidate.placements.length === prior.placements.length
 		);
-		for (const [i, placement] of candidate.placements.entries()) {
+		for (const [i, placement] of (candidate === prior && same
+			? []
+			: candidate.placements
+		).entries()) {
 			if (
 				same &&
 				(placement.prepared !== prior.placements[i].prepared ||

@@ -139,7 +139,7 @@ them restores normal download eligibility. “Ask for approval” is available o
 saved, connected, and free of errors or conflicts.
 
 Requests capture the saved company name and every applied concession's description,
-mark the concessions requiring approval, and omit approval-guidance text. The email
+mark the concessions requiring approval, and omit approval instructions. The email
 subject is `Approval requested — <company name>'s contract` and its single workspace link is
 `APP_URL/contracts/<contract ID>?review=1`. One latest request per contract lives in the
 `approvalRequests` table, separate from saving state and revisions. Requests capture

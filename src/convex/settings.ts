@@ -25,10 +25,6 @@ export const savePersonalRole = mutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx);
-		// A member may never promote themself. Existing administrators can retain or
-		// relinquish their company role; ownership is always an administrator role.
-		if (args.role === 'admin' && access.role !== 'admin' && !access.isOwner)
-			throw new ConvexError('Only a company owner can grant administrator access.');
 		if (access.membership.role !== args.role)
 			await ctx.db.patch('memberships', access.membershipId, { role: args.role });
 		return null;

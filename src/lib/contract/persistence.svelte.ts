@@ -3,6 +3,7 @@ import { selectionLifecycles } from './approval';
 import { MAX_SELECTED_CONCESSIONS } from './selection-limits';
 import {
 	saveError,
+	olderContractState,
 	type ContractSaveResult,
 	type ContractState,
 	type SavedSelections
@@ -142,11 +143,11 @@ export class ContractPersistence {
 			this.restore(next);
 			return;
 		}
-		if (next.revision < this.confirmed.revision) return;
+		if (olderContractState(next, this.confirmed)) return;
 		const pending = this.pending;
 		const own = Boolean(this.request && next.lastOperationId === this.request.operationId);
 		if (next.revision > this.confirmed.revision && pending && !own) this.conflict = true;
-		this.confirmed = next;
+		if (next.stateVersion !== this.confirmed.stateVersion) this.confirmed = next;
 		if (!pending && !this.conflict) this.useConfirmedChoices();
 		// A subscription can confirm an ambiguous failed response. Do not send a duplicate.
 		if (own && !this.running && !this.conflict) {
@@ -191,6 +192,17 @@ export class ContractPersistence {
 			this.loadingLatest
 		)
 			return;
+		// Reapplying an old draft must not replace reset review identities for
+		// choices already present on the server. Different choices keep their identity.
+		const lifecycles = { ...this.lifecycles };
+		for (const [id, lifecycle] of Object.entries(this.confirmedLifecycles)) {
+			if (
+				this.choices[id as Id<'playbookItems'>] ===
+				this.confirmed.selectedConcessions[id as Id<'playbookItems'>]
+			)
+				lifecycles[id] = lifecycle;
+		}
+		this.lifecycles = lifecycles;
 		this.request = null;
 		this.conflict = false;
 		this.error = null;
@@ -239,8 +251,8 @@ export class ContractPersistence {
 			if (!this.active || generation !== this.transportGeneration) return;
 			if (result.status === 'deleted') this.accept(null);
 			else {
-				// A subscription may already include a later rename at the same revision.
-				if (result.state.revision > this.confirmed.revision) this.accept(result.state);
+				// Accept newer metadata without replacing a later subscription result.
+				this.accept(result.state);
 				if (result.status === 'conflict') this.conflict = true;
 			}
 			this.request = null;
