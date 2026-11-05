@@ -8,8 +8,6 @@ export type TextSourceTarget = { readonly kind: 'text'; readonly range: SourceRa
 /** A boundary target owns the structural edge immediately after one source block. */
 export type BoundarySourceTarget = { readonly kind: 'boundary'; readonly afterBlockKey: string };
 export type SourceTarget = TextSourceTarget | BoundarySourceTarget;
-/** Values written before structural boundaries were explicit can still be read safely. */
-export type StoredSourceTarget = Infer<typeof validators.sourceTarget>;
 export type InlineSource = Infer<typeof validators.inlineSource>;
 export type BaselineBlock = Infer<typeof validators.baselineBlock>;
 export type ReplacementAtom = Infer<typeof validators.replacementAtom>;
@@ -24,32 +22,6 @@ export function isTextTarget(target: SourceTarget): target is TextSourceTarget {
 	return target.kind === 'text';
 }
 
-export function isCanonicalSourceTarget(
-	target: StoredSourceTarget | SourceTarget
-): target is SourceTarget {
-	return (
-		typeof target === 'object' &&
-		target !== null &&
-		'kind' in target &&
-		(target.kind === 'text' || target.kind === 'boundary')
-	);
-}
-
-/**
- * Converts the former serialized empty `gap:<block>` range at the persistence boundary only.
- * No caller receives a synthetic source point after this conversion.
- */
-export function normalizeSourceTarget(target: StoredSourceTarget | SourceTarget): SourceTarget {
-	if (isCanonicalSourceTarget(target)) return target;
-	const samePoint =
-		target.start.sourceKey === target.end.sourceKey &&
-		target.start.offset === 0 &&
-		target.end.offset === 0;
-	if (samePoint && target.start.sourceKey.startsWith('gap:'))
-		return { kind: 'boundary', afterBlockKey: target.start.sourceKey.slice('gap:'.length) };
-	return textTarget(target);
-}
-
 export function sameSourceRange(a: SourceRange, b: SourceRange): boolean {
 	return (
 		a.start.sourceKey === b.start.sourceKey &&
@@ -60,8 +32,10 @@ export function sameSourceRange(a: SourceRange, b: SourceRange): boolean {
 }
 
 export function sameSourceTarget(a: SourceTarget, b: SourceTarget): boolean {
-	return a.kind === b.kind &&
+	return (
+		a.kind === b.kind &&
 		(a.kind === 'boundary'
 			? a.afterBlockKey === (b as BoundarySourceTarget).afterBlockKey
-			: sameSourceRange(a.range, (b as TextSourceTarget).range));
+			: sameSourceRange(a.range, (b as TextSourceTarget).range))
+	);
 }

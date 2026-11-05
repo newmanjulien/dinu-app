@@ -15,7 +15,10 @@ export const item: Omit<
 > = {
 	trigger: {
 		id: 'trigger',
-		range: { start: { sourceKey: 'text-1', offset: 0 }, end: { sourceKey: 'text-1', offset: 9 } }
+		range: {
+			kind: 'text',
+			range: { start: { sourceKey: 'text-1', offset: 0 }, end: { sourceKey: 'text-1', offset: 9 } }
+		}
 	},
 	concessions: [
 		{ id: 'preferred', tier: 'preferred', description: 'Synthetic choice.', changes: [] }
@@ -35,8 +38,7 @@ export async function initializeViewer(ctx: MutationCtx) {
 		issuer: identity.issuer,
 		clerkId: identity.subject,
 		email: identity.email,
-		name: 'Rep',
-		role: 'admin'
+		name: 'Rep'
 	});
 	const companyId = await ctx.db.insert('company', {
 		name: 'Synthetic company',
@@ -45,7 +47,8 @@ export async function initializeViewer(ctx: MutationCtx) {
 	});
 	const membershipId = await ctx.db.insert('memberships', {
 		companyId,
-		profileId: id
+		profileId: id,
+		role: 'admin'
 	});
 	return { profileId: id, companyId, membershipId };
 }

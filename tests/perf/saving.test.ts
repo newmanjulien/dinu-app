@@ -49,6 +49,7 @@ async function fixture(selected = false) {
 			references.push({ itemId, revisionId: await storeItemRevision(ctx, document) });
 		}
 		const versionId = await db.insert('templateVersions', {
+			draft: false,
 			companyId,
 			publishedAt: 123,
 			blockCount: 1,
@@ -59,6 +60,7 @@ async function fixture(selected = false) {
 			baselineId
 		});
 		const id = await db.insert('savedContracts', {
+			stateVersion: 1,
 			companyName: 'Synthetic Buyer',
 			companyId,
 			creatorId: profileId,

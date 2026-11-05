@@ -14,15 +14,11 @@ import type { SnapshotEntry, SnapshotMetadata } from './snapshot-storage';
 import { forgetOpening, CACHE_MEMBERSHIP_ID, setCacheIdentity } from './browser-storage';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import {
-	normalizeReadyContract,
 	olderContractState,
-	normalizeContractSnapshot,
 	type ContractSnapshotResult,
 	type ContractState,
 	type ContractSnapshot,
-	type ReadyContract,
-	type StoredReadyContract,
-	type StoredContractSnapshot
+	type ReadyContract
 } from './saved';
 
 import { queryOnce, type SnapshotClient } from './query-once';
@@ -83,20 +79,19 @@ class ContractSnapshotCache {
 	}
 
 	/** Seeds only a server-confirmed contract; snapshot identity survives the route handoff. */
-	seedConfirmed(data: ReadyContract | StoredReadyContract): ReadyContract | undefined {
+	seedConfirmed(data: ReadyContract): ReadyContract | undefined {
 		const id = data.id;
 		if (this.deleted.has(id) || this.lifetime.signal.aborted || !validSnapshot(data, id)) return;
-		const canonical = normalizeReadyContract(data);
 		const existing = this.peek(id);
 		if (existing) {
-			if (existing.contract.templateVersionId !== canonical.contract.templateVersionId) return;
-			return this.updateState(id, canonical.contract) ?? existing;
+			if (existing.contract.templateVersionId !== data.contract.templateVersionId) return;
+			return this.updateState(id, data.contract) ?? existing;
 		}
 		this.cancelFlight(id, false);
 		this.queued.delete(id);
-		const entry = this.remember(id, canonical);
+		const entry = this.remember(id, data);
 		if (entry) this.disk.put(entry, () => !this.deleted.has(id) && !this.lifetime.signal.aborted);
-		const confirmed = entry?.data ?? canonical;
+		const confirmed = entry?.data ?? data;
 		for (const listener of this.listeners) listener(confirmed);
 		return confirmed;
 	}
@@ -199,7 +194,7 @@ class ContractSnapshotCache {
 			const readSignal = attempt.signal;
 			const work = Promise.resolve().then(async () => {
 				const diskAttempt = new ReadAttempt(250, readSignal);
-				let persisted: StoredContractSnapshot | undefined;
+				let persisted: ContractSnapshot | undefined;
 				try {
 					const diskSignal = diskAttempt.signal;
 					persisted = await waitForRead(
@@ -227,7 +222,7 @@ class ContractSnapshotCache {
 				readSignal.throwIfAborted();
 				if (!persisted && !validTemplate(storedSnapshot, companyId))
 					throw new Error('Invalid template');
-				const snapshot = normalizeContractSnapshot(storedSnapshot);
+				const snapshot = storedSnapshot;
 				if (this.versionFlights.get(versionId) !== created)
 					throw new Error('The request was replaced.');
 				const bytes = JSON.stringify(snapshot).length * 2;

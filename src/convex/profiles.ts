@@ -6,7 +6,6 @@ import {
 	requireMembership,
 	readAccount,
 	membershipForProfile,
-	membershipRole,
 	liveProfile,
 	companyDeletion
 } from './auth';
@@ -59,7 +58,7 @@ export async function readViewer(ctx: QueryCtx) {
 		company ? companyDeletion(ctx, company._id) : null
 	]);
 	const isOwner = company?.ownerProfileId === profile._id;
-	const role = membership && company ? membershipRole(profile, membership, company) : profile.role;
+	const role = membership && company ? membership.role : 'rep';
 	return {
 		profile: {
 			id: profile._id,
@@ -125,8 +124,7 @@ export const initialize = mutation({
 				issuer: identity.issuer,
 				clerkId: identity.subject,
 				email,
-				name: textPrefix((identity.name ?? '').trim(), 32),
-				role: 'rep'
+				name: textPrefix((identity.name ?? '').trim(), 32)
 			});
 		return null;
 	}
@@ -150,7 +148,7 @@ export const colleagues = query({
 							id: profile._id,
 							name: profile.name,
 							email: profile.email,
-							role: membershipRole(profile, member, access.company),
+							role: member.role,
 							avatarUrl: profile.avatarId ? await ctx.storage.getUrl(profile.avatarId) : null,
 							membershipId: member._id,
 							isOwner: access.company.ownerProfileId === profile._id

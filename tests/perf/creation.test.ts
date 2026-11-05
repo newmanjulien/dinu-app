@@ -7,15 +7,17 @@ import { publishTemplate, readLiveSnapshot } from '../../src/convex/templates';
 import { storeItemRevision } from '../../src/convex/playbookItemRevisions';
 import { create } from '../../src/convex/savedContracts';
 import { contractNotification } from '../../src/convex/emailNotifications';
-import { normalizePlaybookItem } from '../../src/lib/playbook/model';
 import type { MutationCtx } from '../../src/convex/_generated/server';
 import type { Id } from '../../src/convex/_generated/dataModel';
 import { block, item as baseItem, identity, initializeViewer } from './fixtures';
-const item = {
+const item: typeof baseItem = {
 	...baseItem,
 	trigger: {
 		id: 'trigger',
-		range: { start: { sourceKey: 'text-1', offset: 0 }, end: { sourceKey: 'text-1', offset: 9 } }
+		range: {
+			kind: 'text',
+			range: { start: { sourceKey: 'text-1', offset: 0 }, end: { sourceKey: 'text-1', offset: 9 } }
+		}
 	}
 };
 
@@ -276,7 +278,7 @@ describe('immutable template creation', () => {
 		});
 		if (created.status !== 'created') throw new Error('creation failed');
 		// Rep selections enter review; admin selections are automatically approved.
-		await t.run(({ db }) => db.patch('profiles', profileId, { role: 'rep' }));
+		await t.run(({ db }) => db.patch('memberships', membershipId, { role: 'rep' }));
 		const { event, selections, selectionDetails } = await prepareApproval(
 			{ t, membershipId, itemId },
 			created.id
@@ -294,7 +296,7 @@ describe('immutable template creation', () => {
 				notRequiredCount: 0
 			}
 		});
-		await t.run(({ db }) => db.patch('profiles', profileId, { role: 'admin' }));
+		await t.run(({ db }) => db.patch('memberships', membershipId, { role: 'admin' }));
 		const holdId = await t.run(({ db }) =>
 			db.insert('companyDeletions', {
 				companyId,
@@ -350,7 +352,7 @@ describe('immutable template creation', () => {
 			).items[0]._id
 		).toBe(itemId);
 		// Rep selections enter review; admin selections are automatically approved.
-		await t.run(({ db }) => db.patch('profiles', profileId, { role: 'rep' }));
+		await t.run(({ db }) => db.patch('memberships', membershipId, { role: 'rep' }));
 		const { event, selections, selectionDetails } = await prepareApproval(
 			{ t, membershipId, itemId },
 			id
@@ -381,8 +383,11 @@ describe('immutable template creation', () => {
 					trigger: {
 						id: 'invalid',
 						range: {
-							start: { sourceKey: 'missing', offset: 0 },
-							end: { sourceKey: 'missing', offset: 1 }
+							kind: 'text',
+							range: {
+								start: { sourceKey: 'missing', offset: 0 },
+								end: { sourceKey: 'missing', offset: 1 }
+							}
 						}
 					}
 				},
@@ -392,7 +397,7 @@ describe('immutable template creation', () => {
 		).rejects.toThrow();
 		expect((await t.query(api.templates.current, { membershipId }))?.versionId).toBe(first);
 		expect((await t.run(({ db }) => db.get('playbookItems', itemId)))?.trigger).toEqual(
-			normalizePlaybookItem(item).trigger
+			item.trigger
 		);
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(1);
 	});

@@ -1,7 +1,7 @@
 import { ConvexError } from 'convex/values';
 import type { QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
-import { assertPermission, type Permission, type Role } from './permissions';
+import { assertPermission, type Permission } from './permissions';
 
 export async function verifiedIdentity(ctx: Pick<QueryCtx, 'auth'>) {
 	const identity = await ctx.auth.getUserIdentity();
@@ -40,16 +40,6 @@ export function membershipForProfile(ctx: QueryCtx, profileId: Id<'profiles'>) {
 		.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
 		.unique();
 }
-export function membershipRole(
-	profile: Pick<Doc<'profiles'>, '_id' | 'role'>,
-	membership: Pick<Doc<'memberships'>, 'role'>,
-	_company: Pick<Doc<'company'>, 'ownerProfileId'>
-): Role {
-	// Existing memberships fall back to their former profile role until backfilled.
-	// New memberships always carry their own role, so it cannot follow a person to
-	// another company.
-	return membership.role ?? profile.role;
-}
 export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id<'memberships'>) {
 	const profile = await requireProfile(ctx);
 	const membership = await membershipForProfile(ctx, profile._id);
@@ -58,7 +48,7 @@ export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id
 	const company = await requireCompany(ctx, membership.companyId);
 	return {
 		...profile,
-		role: membershipRole(profile, membership, company),
+		role: membership.role,
 		membership,
 		company,
 		companyId: company._id,

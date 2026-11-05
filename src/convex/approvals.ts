@@ -257,7 +257,7 @@ export const decide = mutation({
 				reviews,
 				reviewGeneration,
 				reviewCompletion,
-				stateVersion: (contract.stateVersion ?? 1) + 1
+				stateVersion: contract.stateVersion + 1
 			};
 			await ctx.db.patch('savedContracts', args.id, changes);
 		}
@@ -320,7 +320,7 @@ export const confirmCompletion = mutation({
 		};
 		await ctx.db.patch('savedContracts', contract._id, {
 			reviewCompletion,
-			stateVersion: (contract.stateVersion ?? 1) + 1
+			stateVersion: contract.stateVersion + 1
 		});
 		return { outcome: 'queued' as const };
 	}
@@ -352,7 +352,7 @@ export const resetCompletion = mutation({
 		const changes = {
 			reviews,
 			reviewGeneration,
-			stateVersion: (contract.stateVersion ?? 1) + 1,
+			stateVersion: contract.stateVersion + 1,
 			reviewCompletion: undefined,
 			// A pre-reset save acknowledgement must not identify the reset as its own write.
 			lastOperation: undefined,

@@ -39,15 +39,22 @@ try {
 	assert.equal(items.filter((i) => i.concessions.length > 1).length, 7);
 	assert.equal(Math.max(...concessions.map((c) => c.changes.length)), 2);
 	const { buildSourceIndex } = await server.ssrLoadModule('/src/lib/contract/source-index.ts');
-	const { isEmptyRange, rangeTouchesTable } = await server.ssrLoadModule(
+	const { targetIsEmpty, rangeTouchesTable, structuralBoundary } = await server.ssrLoadModule(
 		'/src/lib/contract/ranges.ts'
 	);
-	const { paragraphGap } = await server.ssrLoadModule('/src/lib/contract/ranges.ts');
 	const index = buildSourceIndex(blocks);
-	assert.equal(triggers.filter((t) => isEmptyRange(index, t.range)).length, 2);
-	assert.equal(triggers.filter((t) => rangeTouchesTable(index, t.range)).length, 1);
-	assert.equal(changes.filter((c) => rangeTouchesTable(index, c.range)).length, 5);
-	assert.equal(changes.filter((c) => paragraphGap(index, c.range)).length, 1);
+	assert.equal(triggers.filter((t) => targetIsEmpty(index, t.range)).length, 2);
+	assert.equal(
+		triggers.filter((t) => t.range.kind === 'text' && rangeTouchesTable(index, t.range.range))
+			.length,
+		1
+	);
+	assert.equal(
+		changes.filter((c) => c.range.kind === 'text' && rangeTouchesTable(index, c.range.range))
+			.length,
+		5
+	);
+	assert.equal(changes.filter((c) => structuralBoundary(index, c.range)).length, 1);
 	assert.equal(changes.filter((c) => c.replacement.some((a) => a.kind === 'reference')).length, 3);
 	console.log(
 		'Playbook seed verified: 112 blocks, 56 items, 56 Triggers, 26 concessions, 34 locations; 0 production reconciliation mismatches.'

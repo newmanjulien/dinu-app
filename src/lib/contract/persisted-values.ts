@@ -2,8 +2,8 @@ import type {
 	ContractSnapshotResult,
 	ContractState,
 	SavedSelections,
-	StoredReadyContract,
-	StoredContractSnapshot
+	ReadyContract,
+	ContractSnapshot
 } from './saved';
 import { MAX_CONTRACT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
 import { MAX_STORAGE_ARRAY_ENTRIES } from './storage-limits';
@@ -91,30 +91,11 @@ export function validContractMetadata(value: unknown, id: string): value is Meta
 	);
 }
 
-/** Legacy browser versions start below the server's baseline version of one. */
 export function readContractState(value: unknown): ContractState | undefined {
-	if (validContractState(value)) return value;
-	if (!object(value)) return;
-	const reviewGeneration = value.reviewGeneration === undefined ? 0 : value.reviewGeneration;
-	let reviewCompletion = value.reviewCompletion === undefined ? null : value.reviewCompletion;
-	if (object(reviewCompletion)) {
-		const { generation, ...completion } = reviewCompletion;
-		if (generation !== undefined && (!natural(generation) || generation !== reviewGeneration))
-			return;
-		reviewCompletion = completion;
-	}
-	const state = {
-		...value,
-		stateVersion: value.stateVersion === undefined ? 0 : value.stateVersion,
-		reviewGeneration,
-		reviewCompletion
-	};
-	return validContractState(state) ? state : undefined;
+	return validContractState(value) ? value : undefined;
 }
-
 export function readContractMetadata(value: unknown, id: string): Metadata | undefined {
-	const metadata = readContractState(value);
-	return validContractMetadata(metadata, id) ? metadata : undefined;
+	return validContractMetadata(value, id) ? value : undefined;
 }
 
 function point(value: unknown) {
@@ -125,10 +106,9 @@ function range(value: unknown) {
 }
 function sourceTarget(value: unknown) {
 	return (
-		range(value) ||
-		(object(value) &&
-			((value.kind === 'text' && range(value.range)) ||
-				(value.kind === 'boundary' && text(value.afterBlockKey))))
+		object(value) &&
+		((value.kind === 'text' && range(value.range)) ||
+			(value.kind === 'boundary' && text(value.afterBlockKey)))
 	);
 }
 function pattern(value: unknown) {
@@ -260,7 +240,7 @@ function item(value: unknown, companyId: string) {
 // Immutable content is checked once for an exact object/company pair. A disk
 // read creates a new object and must pass all checks before joining shared memory.
 const validatedTemplates = new WeakMap<object, string>();
-export function validTemplate(value: unknown, companyId: string): value is StoredContractSnapshot {
+export function validTemplate(value: unknown, companyId: string): value is ContractSnapshot {
 	if (!object(value)) return false;
 	if (validatedTemplates.get(value) === companyId) return true;
 	if (
@@ -282,7 +262,7 @@ export function validTemplate(value: unknown, companyId: string): value is Store
 	validatedTemplates.set(value, companyId);
 	return true;
 }
-export function validSnapshot(value: unknown, id: string): value is StoredReadyContract {
+export function validSnapshot(value: unknown, id: string): value is ReadyContract {
 	return (
 		object(value) &&
 		value.status === 'ready' &&

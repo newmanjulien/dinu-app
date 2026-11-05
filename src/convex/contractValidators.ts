@@ -24,11 +24,6 @@ export const reviewCompletion = v.union(
 		deliveryId: v.id('emailDeliveries')
 	})
 );
-// Historical rows may retain the former duplicated completion generation.
-const storedReviewCompletion = v.union(
-	reviewCompletion.members[0].extend({ generation: v.optional(v.number()) }),
-	reviewCompletion.members[1].extend({ generation: v.optional(v.number()) })
-);
 export const storedContract = v.object({
 	companyId: v.id('company'),
 	creatorId: v.id('profiles'),
@@ -39,8 +34,8 @@ export const storedContract = v.object({
 	reviews: concessionReviews,
 	revision: v.number(),
 	reviewGeneration: v.number(),
-	reviewCompletion: v.optional(storedReviewCompletion),
-	stateVersion: v.optional(v.number()),
+	reviewCompletion: v.optional(reviewCompletion),
+	stateVersion: v.number(),
 	// A replay identity is absent or complete; its caller is always server-derived.
 	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') }))
 });
@@ -57,9 +52,7 @@ export const storedDecision = v.object({
 	previousStatus: reviewStatus,
 	status: reviewDecision,
 	decidedAt: v.number(),
-	changed: v.boolean(),
-	// Retained only for historical receipts; new decisions no longer write this.
-	reviewCompleted: v.optional(v.boolean())
+	changed: v.boolean()
 });
 // The item identity is resolved within this contract's immutable snapshot, even
 // when the corresponding live playbook item has been deleted.

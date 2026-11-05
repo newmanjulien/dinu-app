@@ -1,8 +1,4 @@
-import {
-	olderContractState,
-	type ContractSnapshotResult,
-	type StoredContractSnapshot
-} from './saved';
+import { olderContractState, type ContractSnapshotResult, type ContractSnapshot } from './saved';
 import { CACHE_NAMESPACE } from './browser-storage';
 import { readContractMetadata, validTemplate } from './persisted-values';
 export { validSnapshot, validTemplate } from './persisted-values';
@@ -31,8 +27,8 @@ const writeContract = (write: Write) =>
 			: undefined;
 const writeBytes = (write: Write) =>
 	write.kind === 'put' ? write.entry.bytes : write.kind === 'update' ? write.bytes : 0;
-/** Disk payload is untrusted and may use the legacy source-target representation. */
-type StoredSnapshot = { id: string; snapshot: StoredContractSnapshot };
+/** Disk payload must pass validation before entering shared memory. */
+type StoredSnapshot = { id: string; snapshot: ContractSnapshot };
 type StoredMetadata = {
 	id: string;
 	contract: ReadyContract['contract'];
@@ -54,11 +50,7 @@ function readMetadata(value: unknown, id: string): StoredMetadata | undefined {
 		!Number.isFinite(metadata.usedAt)
 	)
 		return;
-	const contract = readContractMetadata(metadata.contract, id);
-	if (!contract) return;
-	if (contract === metadata.contract) return metadata;
-	const bytes = metadata.immutableBytes + JSON.stringify(contract).length * 2;
-	if (bytes <= SNAPSHOT_BYTES) return { ...metadata, contract, bytes };
+	return readContractMetadata(metadata.contract, id) ? metadata : undefined;
 }
 
 function result<T>(request: IDBRequest<T>): Promise<T> {
@@ -102,10 +94,8 @@ export class SnapshotStorage {
 			opening.signal.addEventListener('abort', failed, { once: true });
 			this.lifetime.signal.addEventListener('abort', failed, { once: true });
 			try {
-				const request = indexedDB.open(`${this.namespace}:snapshots`, 7);
-				request.onupgradeneeded = (event) => {
-					// Version seven keeps the v6 layout and excludes writers using old ordering rules.
-					if (event.oldVersion >= 6) return;
+				const request = indexedDB.open(`${this.namespace}:snapshots`, 8);
+				request.onupgradeneeded = () => {
 					// Retire obsolete confirmed history/metadata only. The sessionStorage
 					// intent journal has independent ownership and is never migrated here.
 					for (const name of ['snapshots', 'metadata'])
@@ -188,7 +178,7 @@ export class SnapshotStorage {
 		id: string,
 		companyId: string,
 		signal?: AbortSignal
-	): Promise<StoredContractSnapshot | undefined> {
+	): Promise<ContractSnapshot | undefined> {
 		try {
 			const db = await this.open();
 			if (!db || signal?.aborted) return;

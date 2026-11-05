@@ -15,17 +15,10 @@ const numberPattern = v.array(
 // Immutable source coordinates, inline atoms, and baseline blocks.
 export const sourcePoint = v.object({ sourceKey: v.string(), offset: v.number() });
 export const sourceRange = v.object({ start: sourcePoint, end: sourcePoint });
-/**
- * Source text and document boundaries are different domains. `sourceRange` remains the
- * immutable coordinate for text; a boundary identifies the physical edge after a block.
- *
- * The final union member is read compatibility for records written before boundaries were
- * explicit. New writes always use one of the discriminated forms above it.
- */
+// Source text and the structural edge after a block have distinct targets.
 export const sourceTarget = v.union(
 	v.object({ kind: v.literal('text'), range: sourceRange }),
-	v.object({ kind: v.literal('boundary'), afterBlockKey: v.string() }),
-	sourceRange
+	v.object({ kind: v.literal('boundary'), afterBlockKey: v.string() })
 );
 const referenceFields = {
 	kind: v.literal('reference'),

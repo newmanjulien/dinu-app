@@ -17,11 +17,7 @@ import { mutation } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
 import schema from './schema';
 import { playbookItem } from './playbookValidators';
-import {
-	normalizePlaybookItem,
-	type PlaybookItem,
-	type StoredPlaybookItem
-} from '../lib/playbook/model';
+import type { PlaybookItem } from '../lib/playbook/model';
 import type { BaselineBlock } from '../lib/contract/source-model';
 import { buildSourceIndex } from '../lib/contract/source-index';
 import {
@@ -40,7 +36,7 @@ function validate(
 ) {
 	try {
 		validatePlaybookItemContent(item);
-		if (saved) validateConcessionUpdate(normalizePlaybookItem(saved), item);
+		if (saved) validateConcessionUpdate(saved, item);
 		if (blocks) validateStructuralReplacementContent(buildSourceIndex(blocks), item);
 		return null;
 	} catch (error) {
@@ -71,7 +67,6 @@ export const savePlaybookItem = mutation({
 		missing
 	),
 	handler: async (ctx, { membershipId, id, item, expectedRevision, operationId }) => {
-		const canonicalItem = normalizePlaybookItem(item as StoredPlaybookItem);
 		const profile = await requirePermission(ctx, 'manageTemplate', membershipId);
 		if (
 			!Number.isSafeInteger(expectedRevision) ||
@@ -98,13 +93,13 @@ export const savePlaybookItem = mutation({
 					item: current
 				};
 			}
-			const rejection = validate(canonicalItem);
+			const rejection = validate(item);
 			if (rejection) return rejection;
 			const captured = await assertAuthoringAvailable(ctx, profile.company);
-			const structuralRejection = validate(canonicalItem, undefined, captured.blocks);
+			const structuralRejection = validate(item, undefined, captured.blocks);
 			if (structuralRejection) return structuralRejection;
 			const created = {
-				...canonicalItem,
+				...item,
 				companyId: profile.companyId,
 				lastOperationCaller: profile._id,
 				lastOperationId: operationId
@@ -129,21 +124,21 @@ export const savePlaybookItem = mutation({
 			return { status: 'saved' as const, item: current };
 		if (current.revision !== expectedRevision)
 			return { status: 'conflict' as const, item: current };
-		const rejection = validate(canonicalItem, current);
+		const rejection = validate(item, current);
 		if (rejection) return rejection;
 		// This comparison covers every stored trigger/concession field and array order,
 		// including replacement reference targets. A geometry memo would be insufficient.
-		const captured = equalPlaybookStructure(normalizePlaybookItem(current), canonicalItem)
+		const captured = equalPlaybookStructure(current, item)
 			? await instructionPublication(ctx, profile.company, current)
 			: await assertAuthoringAvailable(ctx, profile.company);
 		if ('blocks' in captured) {
-			const structuralRejection = validate(canonicalItem, current, captured.blocks);
+			const structuralRejection = validate(item, current, captured.blocks);
 			if (structuralRejection) return structuralRejection;
 		}
 		const proposed = {
 			_id: current._id,
 			_creationTime: current._creationTime,
-			...canonicalItem,
+			...item,
 			companyId: profile.companyId,
 			revision: expectedRevision + 1,
 			lastOperationCaller: profile._id,

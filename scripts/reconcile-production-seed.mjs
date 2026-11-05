@@ -278,6 +278,7 @@ export async function reconcile(server, blocks, items) {
 	}));
 	const seededVersion = {
 		_id: 'seed-version',
+		draft: true,
 		_creationTime: 0,
 		companyId,
 		baselineId: 'seed-baseline',
@@ -311,8 +312,8 @@ export async function reconcile(server, blocks, items) {
 		// verified separately; this adapter checks preserved business payloads.
 		let persisted = structuredClone(saved);
 		const tables = new Map([
-			['profiles', [{ _id: profileId, identity: identity.tokenIdentifier, role: 'admin' }]],
-			['memberships', [{ _id: membershipId, companyId, profileId }]],
+			['profiles', [{ _id: profileId, identity: identity.tokenIdentifier }]],
+			['memberships', [{ _id: membershipId, companyId, profileId, role: 'admin' }]],
 			['company', [{ _id: companyId, ownerProfileId: profileId, baselineId: 'seed-baseline' }]],
 			[
 				'currentTemplate',

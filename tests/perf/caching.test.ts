@@ -11,7 +11,6 @@ import type { Id } from '../../src/convex/_generated/dataModel';
 import { block, item } from './fixtures';
 import { observeSnapshotStorage } from './snapshot-storage-observer';
 import { setCacheIdentity } from '../../src/lib/contract/browser-storage';
-import { normalizePlaybookItem } from '../../src/lib/playbook/model';
 
 const id = 'synthetic-contract' as Id<'savedContracts'>;
 const itemId = 'synthetic-item' as Id<'playbookItems'>;
@@ -42,7 +41,7 @@ function fixture(): ReadyContract {
 			blocks: [block],
 			items: [
 				{
-					...normalizePlaybookItem(item),
+					...item,
 					revision: 1,
 					companyId,
 					_id: itemId,

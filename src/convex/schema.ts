@@ -52,7 +52,6 @@ export default defineSchema({
 		clerkId: v.string(),
 		email: v.string(),
 		name: v.string(),
-		role,
 		avatarId: v.optional(v.id('_storage'))
 	})
 		.index('by_identity', ['identity'])
@@ -68,12 +67,11 @@ export default defineSchema({
 	})
 		.index('by_ownerProfileId', ['ownerProfileId'])
 		.index('by_avatarId', ['avatarId']),
-	// Role is scoped to a company membership. It remains optional while deployments
-	// with the former profile-level role shape are upgraded.
+	// A role belongs to the company membership.
 	memberships: defineTable({
 		profileId: v.id('profiles'),
 		companyId: v.id('company'),
-		role: v.optional(role)
+		role
 	})
 		.index('by_profileId', ['profileId'])
 		.index('by_companyId', ['companyId']),
@@ -136,9 +134,8 @@ export default defineSchema({
 		snapshotBytes: v.number(),
 		contentReadBytes: v.number(),
 		baselineId: v.id('baselines'),
-		// Legacy versions are frozen. New versions stay mutable until a contract
-		// creation receipt references them.
-		draft: v.optional(v.boolean()),
+		// Versions stay mutable until a contract creation receipt references them.
+		draft: v.boolean(),
 		items: v.array(
 			v.object({ itemId: v.id('playbookItems'), revisionId: v.id('playbookItemRevisions') })
 		)

@@ -1,3 +1,4 @@
+import type { Role } from './permissions';
 import { ConvexError, type Infer } from 'convex/values';
 import type { Doc, Id } from './_generated/dataModel';
 import type { MutationCtx } from './_generated/server';
@@ -11,7 +12,7 @@ export function reviewsForSelections(
 	selected: Infer<typeof selections>,
 	lifecycles: Record<Id<'playbookItems'>, string>,
 	previousReviews: Infer<typeof concessionReviews>,
-	reviewerRole: Doc<'profiles'>['role']
+	reviewerRole: Role
 ) {
 	const reviews: Infer<typeof concessionReviews> = {};
 	const autoApprovedItemIds: Id<'playbookItems'>[] = [];
@@ -38,7 +39,7 @@ export function recordDecision(
 	reviewer: Pick<Doc<'profiles'>, '_id' | 'name' | 'email'>,
 	decision: Omit<
 		Infer<typeof storedDecision>,
-		'companyId' | 'contractId' | 'adminId' | 'adminName' | 'adminEmail' | 'reviewCompleted'
+		'companyId' | 'contractId' | 'adminId' | 'adminName' | 'adminEmail'
 	>
 ) {
 	return ctx.db.insert('concessionDecisions', {

@@ -1,24 +1,18 @@
 import type { MutationCtx } from './_generated/server';
 import type { Infer } from 'convex/values';
 import type { historicalItem } from './playbookValidators';
-import {
-	normalizePlaybookItem,
-	type PlaybookItem,
-	type StoredPlaybookItem
-} from '../lib/playbook/model';
+import type { PlaybookItem } from '../lib/playbook/model';
 import type { Doc, Id } from './_generated/dataModel';
 import { documentBytes, publicationCapacity } from './templateCapacity';
 
-export type StoredHistoricalItem = Infer<typeof historicalItem>;
-export type HistoricalItem = Omit<StoredHistoricalItem, 'trigger' | 'concessions'> & PlaybookItem;
-type BusinessItem = Pick<StoredPlaybookItem, 'trigger' | 'instructions' | 'concessions'>;
+export type HistoricalItem = Infer<typeof historicalItem>;
 
-/** Normalize legacy source targets as content crosses database/API boundaries. */
-export function businessItem(item: BusinessItem | PlaybookItem): PlaybookItem {
-	const { trigger, instructions, concessions } = normalizePlaybookItem(item);
+/** Project the business fields without persistence metadata. */
+export function businessItem(item: PlaybookItem): PlaybookItem {
+	const { trigger, instructions, concessions } = item;
 	return { trigger, ...(instructions === undefined ? {} : { instructions }), concessions };
 }
-export function snapshotItem(item: StoredHistoricalItem | HistoricalItem): HistoricalItem {
+export function snapshotItem(item: HistoricalItem): HistoricalItem {
 	return {
 		...businessItem(item),
 		_id: item._id,
@@ -27,7 +21,7 @@ export function snapshotItem(item: StoredHistoricalItem | HistoricalItem): Histo
 		revision: item.revision
 	};
 }
-export function itemRevision(saved: StoredHistoricalItem | HistoricalItem) {
+export function itemRevision(saved: HistoricalItem) {
 	return {
 		companyId: saved.companyId,
 		itemId: saved._id,
@@ -47,7 +41,7 @@ export function historicalRevision(saved: Doc<'playbookItemRevisions'>): Histori
 }
 export async function storeItemRevision(
 	ctx: MutationCtx,
-	saved: StoredHistoricalItem | HistoricalItem,
+	saved: HistoricalItem,
 	draftVersionId?: Id<'templateVersions'>
 ) {
 	const revision = { ...itemRevision(saved), draftVersionId };
@@ -59,7 +53,7 @@ export async function storeItemRevision(
 export async function replaceDraftItemRevision(
 	ctx: MutationCtx,
 	revisionId: Id<'playbookItemRevisions'>,
-	saved: StoredHistoricalItem | HistoricalItem,
+	saved: HistoricalItem,
 	draftVersionId: Id<'templateVersions'>
 ) {
 	const revision = { ...itemRevision(saved), draftVersionId };

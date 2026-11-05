@@ -26,7 +26,7 @@ import {
 import { validatePlaybook } from '../lib/playbook/audit';
 import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/validation';
 import type { BaselineBlock } from '../lib/contract/source-model';
-import { normalizePlaybookItem, type PlaybookItem } from '../lib/playbook/model';
+import type { PlaybookItem } from '../lib/playbook/model';
 
 const seedProjection = v.object({ blocks: v.array(baselineBlock), items: v.array(playbookItem) });
 const refuseOverwrite = () =>
@@ -142,11 +142,10 @@ export const bootstrap = internalMutation({
 	args: { companyId: v.id('company'), ...seedProjection.fields },
 	returns: v.object({ baselineId: v.id('baselines'), versionId: v.id('templateVersions') }),
 	handler: async (ctx, { companyId, blocks, items }) => {
-		const canonicalItems = items.map(normalizePlaybookItem);
 		const company = await requireCompany(ctx, companyId);
 		// Bootstrap uses the same canonical content and geometry invariants as app publication.
-		validatePlaybook(blocks, canonicalItems);
-		const bootstrapKey = digest(blocks, canonicalItems);
+		validatePlaybook(blocks, items);
+		const bootstrapKey = digest(blocks, items);
 		const [pointer, baselines, heads, versions, revisions, chunks, receipts] = await Promise.all([
 			currentPointer(ctx, companyId),
 			ctx.db
@@ -207,7 +206,7 @@ export const bootstrap = internalMutation({
 		}
 
 		// Reject a native read-back limit before creating a seed that cannot be verified.
-		assertSeedResultCapacity(blocks, canonicalItems);
+		assertSeedResultCapacity(blocks, items);
 		const baseline = {
 			companyId,
 			source: 'seed' as const,
@@ -227,7 +226,7 @@ export const bootstrap = internalMutation({
 			baselineId: measurementId as Id<'baselines'>,
 			blocks
 		});
-		const historical = canonicalItems.map((item) => ({
+		const historical = items.map((item) => ({
 			...item,
 			companyId,
 			_id: measurementId,
@@ -259,18 +258,18 @@ export const bootstrap = internalMutation({
 			baselineId: measurementId,
 			publishedAt: baseline.publishedAt,
 			blockCount: blocks.length,
-			itemCount: canonicalItems.length,
+			itemCount: items.length,
 			snapshotBytes,
 			contentReadBytes,
-			items: canonicalItems.map(() => ({ itemId: measurementId, revisionId: measurementId }))
+			items: items.map(() => ({ itemId: measurementId, revisionId: measurementId }))
 		});
 		if (contentReadBytes + versionBytes + documentBytes(baseline) + 65_536 > 16 * 1024 * 1024)
 			throw publicationRejected('Contract snapshot exceeds supported read capacity.');
 		await publicationCapacity(ctx, {
-			documents: plannedChunks.length + canonicalItems.length * 3 + 5,
+			documents: plannedChunks.length + items.length * 3 + 5,
 			bytes: chunkBytes + itemBytes + documentBytes(baseline) * 2 + versionBytes + 4096,
-			queries: plannedChunks.length + canonicalItems.length + 8,
-			readDocuments: plannedChunks.length + canonicalItems.length + 8,
+			queries: plannedChunks.length + items.length + 8,
+			readDocuments: plannedChunks.length + items.length + 8,
 			readBytes: chunkBytes + historical.reduce((sum, item) => sum + documentBytes(item), 0)
 		});
 		const baselineId = await ctx.db.insert('baselines', baseline);
@@ -282,7 +281,7 @@ export const bootstrap = internalMutation({
 		await ctx.db.patch('baselines', baselineId, counters);
 		const savedBaseline = (await ctx.db.get('baselines', baselineId))!;
 		const liveItems: Doc<'playbookItems'>[] = [];
-		for (const item of canonicalItems)
+		for (const item of items)
 			liveItems.push(await createAuthoringItem(ctx, { ...item, companyId }));
 		const versionId = await publishTemplate(
 			ctx,

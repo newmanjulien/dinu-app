@@ -392,14 +392,8 @@
       "oldId": "j97a1pw8qq0vxeahxxvyeznn4s8fa50d",
       "blockKey": "paragraph-mutual-indemnification",
       "virtualInsertion": {
-        "start": {
-          "sourceKey": "gap:paragraph-equitable-relief",
-          "offset": 0
-        },
-        "end": {
-          "sourceKey": "gap:paragraph-equitable-relief",
-          "offset": 0
-        }
+        "kind": "boundary",
+        "afterBlockKey": "paragraph-equitable-relief"
       }
     },
     {

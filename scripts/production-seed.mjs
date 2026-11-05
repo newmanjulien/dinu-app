@@ -182,8 +182,7 @@ function normalizeAuthoring(blocks, items, manifest) {
 	const placeholder = blocks[hidden];
 	assert.equal(placeholder.blockKey, 'paragraph-mutual-indemnification');
 	assert.equal(blocks.filter((b) => b.optional).length, 1);
-	const point = { sourceKey: `gap:${blocks[hidden - 1].blockKey}`, offset: 0 };
-	const range = { start: point, end: point };
+	const range = { kind: 'boundary', afterBlockKey: blocks[hidden - 1].blockKey };
 	const insertion =
 		items[manifest.items.findIndex((m) => m.clauseKey === 'mutual-indemnification-insertion')];
 	insertion.triggers[0].range = range;
@@ -194,6 +193,11 @@ function normalizeAuthoring(blocks, items, manifest) {
 		assert.equal(item.triggers.length, 1);
 		item.trigger = item.triggers[0];
 		delete item.triggers;
+		if (item.trigger.range !== range)
+			item.trigger.range = { kind: 'text', range: item.trigger.range };
+		for (const concession of item.concessions)
+			for (const change of concession.changes)
+				if (change.range !== range) change.range = { kind: 'text', range: change.range };
 	}
 }
 // Canonical metadata for this exported source. Counters remain dynamic after concessions.

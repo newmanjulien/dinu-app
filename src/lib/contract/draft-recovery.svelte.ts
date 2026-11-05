@@ -5,7 +5,7 @@ import type { ContractSaveRequest } from './persistence.svelte';
 import { readContractState, validSelections, validLifecycles } from './persisted-values';
 
 export type ContractDraft = {
-	version: 2;
+	version: 3;
 	base: ContractState;
 	choices: SavedSelections;
 	lifecycles: Record<string, string>;
@@ -17,14 +17,14 @@ const volatileKeys = new Set<string>();
 const deletedUsers = new Set<string>();
 const removedMemberships = new Set<string>();
 const prefix = (userId: string) =>
-	`dinu:drafts:v2:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
+	`dinu:drafts:v3:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
 
 function readDraft(value: unknown, id: string): ContractDraft | undefined {
 	const draft = value as ContractDraft | null;
 	const base = readContractState(draft?.base);
 	if (
 		base &&
-		draft?.version === 2 &&
+		draft?.version === 3 &&
 		typeof draft.conflict === 'boolean' &&
 		validSelections(draft.choices) &&
 		validLifecycles(draft.lifecycles) &&

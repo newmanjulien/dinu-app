@@ -96,7 +96,7 @@ export class ContractPersistence {
 			this.deleted || !this.pending
 				? null
 				: {
-						version: 2,
+						version: 3,
 						base: this.confirmed,
 						choices: this.choices,
 						lifecycles: this.lifecycles,
@@ -319,7 +319,7 @@ export class ContractPersistence {
 		this.error = null;
 		if (this.pending && !this.recoveryPending) {
 			this.recovery = {
-				version: 2,
+				version: 3,
 				base: this.confirmed,
 				choices: this.choices,
 				lifecycles: this.lifecycles,

@@ -159,7 +159,7 @@ export async function publishTemplate(
 	return versionId;
 }
 
-type Publication = Omit<Doc<'templateVersions'>, '_id' | '_creationTime'>;
+type Publication = Omit<Doc<'templateVersions'>, '_id' | '_creationTime' | 'draft'>;
 
 /** Complete native read/result envelope, independent of the mutation's remaining write budget. */
 function publicationReadCapacity(version: Publication, baseline: Doc<'baselines'>) {

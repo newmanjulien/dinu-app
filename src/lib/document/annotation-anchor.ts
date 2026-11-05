@@ -1,12 +1,10 @@
 import type { AnnotationRegistry } from './annotation-registry';
 import {
 	isTextTarget,
-	normalizeSourceTarget,
 	sameSourceTarget,
 	type SourcePoint,
 	type SourceRange,
-	type SourceTarget,
-	type StoredSourceTarget
+	type SourceTarget
 } from '$lib/contract/source-model';
 import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
 import type { ResolvedRun } from '$lib/contract/model';
@@ -37,9 +35,7 @@ function tokenCoordinates(token: HTMLElement): TokenCoordinates | undefined {
 	let visualSource: SourceTarget | undefined;
 	try {
 		if (token.dataset.visualSource)
-			visualSource = normalizeSourceTarget(
-				JSON.parse(token.dataset.visualSource) as StoredSourceTarget
-			);
+			visualSource = JSON.parse(token.dataset.visualSource) as SourceTarget;
 	} catch {
 		return;
 	}

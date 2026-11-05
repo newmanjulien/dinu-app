@@ -85,7 +85,7 @@ const template = (approval = false): ContractSnapshot => ({
 });
 function draft(id = 'contract-a'): ContractDraft {
 	return {
-		version: 2,
+		version: 3,
 		base: contract(id),
 		choices: { ['item-a' as Id<'playbookItems'>]: 'preferred' },
 		lifecycles: {},

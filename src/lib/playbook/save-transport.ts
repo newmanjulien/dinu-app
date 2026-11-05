@@ -2,11 +2,7 @@ import type { Id } from '../../convex/_generated/dataModel';
 import type { ConvexClient } from 'convex/browser';
 import { ConvexError } from 'convex/values';
 import { api } from '../../convex/_generated/api';
-import {
-	normalizePlaybookItemRecord,
-	type PlaybookItem,
-	type PlaybookItemRecord
-} from './model';
+import { type PlaybookItem, type PlaybookItemRecord } from './model';
 
 export type SaveRequest = {
 	id?: PlaybookItemRecord['_id'];
@@ -36,7 +32,7 @@ export const convexSaveTransport =
 			if ('item' in result && result.item !== undefined)
 				return {
 					status: result.status as 'saved' | 'conflict',
-					item: normalizePlaybookItemRecord(result.item)
+					item: result.item
 				};
 			if (result.status === 'rejected') return { status: 'rejected', message: result.message };
 			return { status: result.status as 'deleted' | 'missing' };
