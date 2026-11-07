@@ -1,15 +1,26 @@
 <script lang="ts">
-	import '$lib/styles/contract-card-grid.css';
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
-	let { cardsOnly = false, announce = true }: { cardsOnly?: boolean; announce?: boolean } =
-		$props();
+	import HomeSections from './HomeSections.svelte';
+	import IntegrationCatalogSkeleton from './IntegrationCatalogSkeleton.svelte';
+	let {
+		cardsOnly = false,
+		announce = true,
+		admin = false
+	}: { cardsOnly?: boolean; announce?: boolean; admin?: boolean } = $props();
 </script>
 
 {#if announce}<span role="status" class="sr-only">Loading contracts</span>{/if}
 {#snippet cards()}
-	<div class="contract-card-grid" aria-hidden="true">
+	<div
+		class={admin
+			? 'grid grid-cols-1 gap-3 @[600px]:grid-cols-2 @[1000px]:grid-cols-4'
+			: 'grid grid-cols-1 gap-3 min-[600px]:grid-cols-2 min-[1000px]:grid-cols-4'}
+		aria-hidden="true"
+	>
 		{#each Array.from({ length: 12 }) as _, index (index)}
-			<div class="min-h-24 rounded-xl border-hairline border-edge bg-surface px-3.5 py-3 pr-10.5 shadow-card">
+			<div
+				class="min-h-24 rounded-xl border-hairline border-edge bg-surface px-3.5 py-3 pr-10.5 shadow-card"
+			>
 				<SkeletonBlock class="mb-2 h-[19px] w-3/4" />
 				<div class="mb-2 flex items-center gap-1.5">
 					<SkeletonBlock class="size-5 rounded-full" />
@@ -38,8 +49,11 @@
 				</div>
 				<SkeletonBlock class="h-[38px] w-[99px] shrink-0 rounded-button-lg" />
 			</div>
-			<div class="mb-3 text-sm font-medium">Contracts</div>
-			{@render cards()}
+			{#snippet integrationSidebar()}<IntegrationCatalogSkeleton />{/snippet}
+			<HomeSections sidebar={admin ? integrationSidebar : undefined}>
+				<div class="mb-3 text-[13.5px] font-medium">Contracts</div>
+				{@render cards()}
+			</HomeSections>
 		</div>
 	</div>
 {/if}

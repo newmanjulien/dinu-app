@@ -1,7 +1,8 @@
 import type { ReplacementInline, BaselineBlock } from '../../../contract/source-model';
 import { child, children, val, on, text, type XmlNode as Node } from './xml';
-import { formatting, type Issue, type Location } from './format';
+import { formatting, type Issue, type Location, type RunFormat } from './format';
 import { BASELINE_MAX_BLOCKS } from '../../../contract/import/limits';
+import { CONTRACT_WORD_STYLES } from '../../../contract/format';
 
 export type Field = { start: number; end: number; instruction: string };
 export type Paragraph = {
@@ -10,7 +11,13 @@ export type Paragraph = {
 	id: string;
 	location: Location;
 	fields: Field[];
-	heading?: 1 | 2 | 3;
+	heading?: number;
+	numberingDepth?: number;
+	continueNumbering?: boolean;
+	canonicalRole?: import('../../../contract/source-model').ParagraphRole;
+	formatting: { start: number; end: number; format: RunFormat }[];
+	titleStyle: boolean;
+	centered: boolean;
 	indent?: number;
 	number?: {
 		id: string;
@@ -27,7 +34,7 @@ export type Block = {
 	order: number;
 	numbering?: BaselineBlock['numbering'];
 } & (
-	| { kind: 'paragraph' | 'heading'; paragraph: Paragraph }
+	| { kind: 'paragraph'; paragraph: Paragraph }
 	| {
 			kind: 'table';
 			rows: Paragraph[][][];
@@ -145,16 +152,23 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 			outline !== undefined
 				? Number(outline) + 1
 				: Number(resolved.headingStyle?.match(/[1-9]$/)?.[0]);
-		if (heading > 3 && heading < 10) issue(where, 'Use Heading 1, 2, or 3 in Word.');
 		const result: Paragraph = {
 			indent: resolved.indent,
 			content: [],
+			formatting: [],
 			plain: '',
 			fields: [],
 			id,
 			location: where,
 			trim: 0,
-			...(heading >= 1 && heading <= 3 ? { heading: heading as 1 | 2 | 3 } : {}),
+			titleStyle: resolved.titleStyle,
+			...(resolved.canonicalRole ? { canonicalRole: resolved.canonicalRole } : {}),
+			centered: val(resolved.property('jc')) === 'center',
+			...(heading >= 1 && heading <= 9 ? { heading } : {}),
+			...(resolved.numberingDepth ? { numberingDepth: Number(resolved.numberingDepth) } : {}),
+			...(resolved.continueNumbering !== undefined
+				? { continueNumbering: resolved.continueNumbering }
+				: {}),
 			...(numId && numId !== '0'
 				? { number: { id: numId, depth, label: (props) => resolved.label(props, where) } }
 				: {})
@@ -169,6 +183,7 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 					state: 'instruction' | 'result';
 			  }
 			| undefined;
+		let runFormat: RunFormat = {};
 		function append(value: string) {
 			if (active?.state === 'instruction') return;
 			characters += value.length;
@@ -179,6 +194,12 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 			)
 				throw new Error('The contract contains too much text or formatting.');
 			const last = result.content.at(-1);
+			if (value && !inCell)
+				result.formatting.push({
+					start: result.plain.length,
+					end: result.plain.length + value.length,
+					format: runFormat
+				});
 			if (last?.kind === 'text') last.text += value;
 			else result.content.push({ kind: 'text', text: value });
 			result.plain += value;
@@ -186,6 +207,20 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 		function field(instruction: string, start: number, end: number) {
 			if (++fieldCount > 10_000 || instruction.length > 4096)
 				throw new Error('The contract contains too many or oversized Word fields.');
+			if (inCell) {
+				if (/^\s*HYPERLINK\b/i.test(instruction))
+					issue(where, 'Hyperlinks are preserved as ordinary text.', 'warning');
+				else if (
+					!/^\s*REF\s+(?:"([^"]+)"|([^\s\\]+))\s*((?:\\(?:w|n|h)\s*|\\\*\s+MERGEFORMAT\s*)*)$/i.test(
+						instruction
+					) ||
+					start === end
+				)
+					issue(
+						where,
+						'Use a supported clause-number REF field with displayed text, or replace this Word field with ordinary text.'
+					);
+			}
 			result.fields.push({ instruction, start, end });
 		}
 		function walk(n: Node, context: 'paragraph' | 'run') {
@@ -217,8 +252,10 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 				return;
 			}
 			if (n.name === 'r' && context === 'paragraph') {
-				resolved.run(child(n, 'rPr'), where);
+				const previous = runFormat;
+				runFormat = resolved.run(child(n, 'rPr'), where);
 				for (const c of n.children) walk(c, 'run');
+				runFormat = previous;
 				return;
 			}
 			if (n.name === 'fldSimple' && context === 'paragraph') {
@@ -309,6 +346,15 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 	const blocks: Block[] = [];
 	for (const node of structural(body, new Set(['p', 'tbl', 'sectPr']), issue, 'Document')) {
 		if (node.name === 'sectPr') continue;
+		// Only our empty layout artifact is discarded, before publishing source identities.
+		if (
+			node.name === 'p' &&
+			!node.text.trim() &&
+			node.children.every((n) => n.name === 'pPr') &&
+			val(child(child(node, 'pPr'), 'pStyle')) === CONTRACT_WORD_STYLES.tableGap &&
+			!child(child(node, 'pPr'), 'numPr')
+		)
+			continue;
 		if (blocks.length >= BASELINE_MAX_BLOCKS) throw new Error('The contract exceeds 400 blocks.');
 		const order = blocks.length,
 			blockKey = `docx-block-${order + 1}`;
@@ -316,7 +362,7 @@ export function parseDocument(body: Node, stylesRoot: Node | undefined, issue: I
 		if (node.name === 'p') {
 			const parsed = paragraph(node, location);
 			blocks.push({
-				kind: parsed.heading ? 'heading' : 'paragraph',
+				kind: 'paragraph',
 				paragraph: parsed,
 				order,
 				blockKey

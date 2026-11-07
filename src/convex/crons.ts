@@ -2,15 +2,9 @@ import { cronJobs } from 'convex/server';
 import { internal } from './_generated/api';
 const crons = cronJobs();
 crons.interval(
-	'expire staged delegation attachments',
-	{ minutes: 30 },
-	internal.delegation.expireAttachments,
-	{}
-);
-crons.interval(
-	'expire delegation cancellations',
-	{ minutes: 30 },
-	internal.delegation.expireCancellations,
+	'repair setup appointment status',
+	{ minutes: 1 },
+	internal.csmSetupAppointments.repairDue,
 	{}
 );
 crons.interval(
@@ -29,6 +23,14 @@ crons.interval(
 	'reconcile Clerk accounts and resume cleanup',
 	{ minutes: 15 },
 	internal.clerk.reconcile,
+	{}
+);
+crons.interval('deliver HubSpot activity', { minutes: 1 }, internal.hubspotDelivery.pump, {});
+crons.interval('expire HubSpot export bytes', { minutes: 5 }, internal.hubspotExports.expire, {});
+crons.interval(
+	'expire HubSpot install states',
+	{ minutes: 15 },
+	internal.hubspotCleanup.expireStates,
 	{}
 );
 export default crons;

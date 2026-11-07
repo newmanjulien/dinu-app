@@ -2,8 +2,51 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { normalizeParagraphBlocks } from '../src/lib/contract/paragraph-migration.ts';
+import { identifyTitle } from '../src/lib/contract/title.ts';
 
 export const sourceDirectory = 'data/migration/source';
+export const retiredTableRule = 'monthly-fee-discount';
+export const retiredTableConcessions = new Set([
+	'monthly-fee-first-month-discount-1000',
+	'monthly-fee-first-month-discount-1750',
+	'monthly-fee-first-month-discount-100-percent',
+	'monthly-fee-initial-term-monthly-discount-500',
+	'monthly-fee-initial-term-monthly-discount-1000'
+]);
+
+const reviewedHeadings = new Set([
+	'paragraph-term-of-contract',
+	'paragraph-professional-terms',
+	'paragraph-non-solicitation-definitions',
+	'paragraph-non-solicitation-remedies',
+	'paragraph-security-definitions',
+	'paragraph-exhibit-services-heading'
+]);
+export function seedParagraphRole(block) {
+	if (block.role) return block.role;
+	if (['heading-oceans-xyz-llc', 'heading-contract-section-1'].includes(block.blockKey))
+		return 'title';
+	return block.kind === 'heading' || reviewedHeadings.has(block.blockKey) ? 'heading' : 'body';
+}
+
+/** Fixture item IDs follow seed order; preserve scenarios by concession identity. */
+export function remapSeedSelections(items, selected) {
+	const owners = new Map(
+		items.flatMap((item, i) =>
+			item.concessions.map((concession) => [concession.id, `seed-item-${i}`])
+		)
+	);
+	const result = {};
+	for (const concessionId of Object.values(selected)) {
+		if (retiredTableConcessions.has(concessionId)) continue;
+		const owner = owners.get(concessionId);
+		assert.ok(owner, `Unknown reference concession ${concessionId}`);
+		assert.equal(result[owner], undefined, `Conflicting reference choices for ${owner}`);
+		result[owner] = concessionId;
+	}
+	return result;
+}
 export async function readExport(directory = sourceDirectory) {
 	const rows = async (table) =>
 		(await readFile(`${directory}/${table}/documents.jsonl`, 'utf8'))
@@ -53,9 +96,9 @@ function consolidateLocations(blocks, triggers, changes, groups) {
 		containers = new Map();
 	let position = 0;
 	for (const block of blocks) {
+		if (block.kind === 'table') continue;
 		if (block.numbering) positions.set(`number:${block.numbering.itemKey}`, position++);
-		const contents =
-			block.kind === 'table' ? block.rows.flat().map((c) => c.content) : [block.content];
+		const contents = [block.content];
 		for (const content of contents) {
 			const range = {
 				start: { sourceKey: content[0].sourceKey, offset: 0 },
@@ -235,18 +278,24 @@ function canonicalMetadata(blocks, items) {
 				: last?.pattern;
 		return { ...atom, display: { start: first.pattern, ...(end ? { end, separator: '-' } : {}) } };
 	}
-	for (const block of blocks) {
-		if (block.kind === 'table')
-			for (const row of block.rows)
-				for (const cell of row) cell.content = cell.content.map(canonicalAtom);
-		else block.content = block.content.map(canonicalAtom);
-	}
+	for (const block of blocks)
+		if (block.kind !== 'table') block.content = block.content.map(canonicalAtom);
 	for (const item of items)
 		for (const concession of item.concessions)
 			for (const change of concession.changes)
 				change.replacement = change.replacement.map(canonicalAtom);
 }
 export function transformExport(source) {
+	const retired = source.boxes.filter((box) => box.clauseKey === retiredTableRule);
+	assert.equal(retired.length, 1, 'The table-based discount rule must be explicitly retired');
+	assert.deepEqual(
+		new Set(
+			[...retired[0].preferredConcessions, ...retired[0].rareConcessions].map(
+				(concession) => concession.concessionKey
+			)
+		),
+		retiredTableConcessions
+	);
 	const occurrences = new Map(),
 		provisions = new Map(),
 		manifest = { blocks: [], items: [], provisions: [] };
@@ -323,7 +372,7 @@ export function transformExport(source) {
 							previous.lastSegment = si;
 						} else {
 							const start =
-								si === 0 && numbering && !block.optional && old.kind !== 'table'
+								si === 0 && numbering && !block.optional
 									? { sourceKey: `number:${numbering.itemKey}`, offset: 0 }
 									: range.start;
 							occurrences.set(segment.occurrenceKey, {
@@ -338,10 +387,31 @@ export function transformExport(source) {
 				});
 			}
 			if (old.kind === 'table')
-				block.rows = rows.map((row, ri) =>
-					row.map((cell, ci) => {
+				block.rows = rows.map((row) =>
+					row.map((cell) => {
 						fields(cell, ['content'], 'cell');
-						return { content: flatten(cell.content, `${old.blockKey}/cell/${ri}/${ci}`) };
+						return cell.content
+							.map((segment) => {
+								fields(
+									segment,
+									['content', 'clauseKey', 'occurrenceKey', 'provisionKey'],
+									'segment'
+								);
+								if (segment.clauseKey || segment.occurrenceKey || segment.provisionKey) {
+									assert.equal(segment.clauseKey, retiredTableRule);
+									assert.equal(segment.occurrenceKey, retiredTableRule);
+									assert.equal(segment.provisionKey, 'monthly-fee-discount-text');
+								}
+								return segment.content
+									.map((atom) => {
+										fields(atom, ['kind', 'text', 'marks'], 'static table atom');
+										assert.equal(atom.kind, 'text');
+										if (atom.marks) fields(atom.marks, ['bold', 'italic'], 'marks');
+										return atom.text;
+									})
+									.join('');
+							})
+							.join('');
 					})
 				);
 			else block.content = flatten(content, old.blockKey);
@@ -349,6 +419,7 @@ export function transformExport(source) {
 			return block;
 		});
 	const items = [...source.boxes]
+		.filter((box) => box.clauseKey !== retiredTableRule)
 		.sort((a, b) => a.clauseKey.localeCompare(b.clauseKey, 'en'))
 		.map((old) => {
 			fields(
@@ -426,7 +497,27 @@ export function transformExport(source) {
 		);
 	canonicalMetadata(blocks, items);
 	normalizeAuthoring(blocks, items, manifest);
-	return { blocks, items, manifest };
+	for (const item of items) {
+		const guidance = item.instructions.changesNeedApproval;
+		item.approvalPolicy = guidance?.trim()
+			? { kind: 'required', instructions: guidance }
+			: { kind: 'none' };
+		delete item.instructions.changesNeedApproval;
+		item.trigger.target = item.trigger.range;
+		delete item.trigger.range;
+		for (const concession of item.concessions)
+			for (const change of concession.changes) {
+				change.target = change.range;
+				delete change.range;
+			}
+	}
+	// Reviewed standalone labels in the retained production source. Keep its source IDs.
+	const paragraphs = normalizeParagraphBlocks(
+		blocks.map((block) =>
+			block.kind === 'table' ? block : { ...block, role: seedParagraphRole(block) }
+		)
+	);
+	return { blocks: identifyTitle(paragraphs), items, manifest };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const { blocks, items, manifest } = transformExport(await readExport(process.argv[2]));

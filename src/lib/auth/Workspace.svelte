@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { flushDownloadAcks } from '$lib/contract/download-journal';
 	import { useConvexClient } from 'convex-svelte';
 	import { page } from '$app/state';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
@@ -7,8 +8,9 @@
 	import { DocumentResources, setDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { env } from '$env/dynamic/public';
 	import { loadComponent, loadModule } from './component-loader.svelte';
-	import { afterStartupPaint, recordStartup } from './startup-perf';
-	import { useWorkspaceReadiness } from './workspace-readiness.svelte';
+	import { recordStartup } from './startup-perf';
+	import WorkspacePresentationReporter from './WorkspacePresentationReporter.svelte';
+	import { useWorkspacePresentation } from './workspace-presentation.svelte';
 	import { browser } from '$app/environment';
 	import { beforeNavigate, afterNavigate, onNavigate } from '$app/navigation';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
@@ -26,9 +28,17 @@
 	import { setDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	let { children }: { children: Snippet } = $props();
 	const session = useViewerSession();
-	const readiness = useWorkspaceReadiness();
+	const presentation = useWorkspacePresentation();
 	const viewer = useViewer();
-	const cache = getContractSnapshotCache(useConvexClient());
+	const client = useConvexClient();
+	const cache = getContractSnapshotCache(client);
+	$effect(() => {
+		const membershipId = viewer().membership.id;
+		if (session.blocked) return;
+		void flushDownloadAcks(client, membershipId);
+		const timer = setInterval(() => void flushDownloadAcks(client, membershipId), 30_000);
+		return () => clearInterval(timer);
+	});
 	let navigationIntent = 0;
 
 	beforeNavigate((navigation) => {
@@ -61,9 +71,7 @@
 	const workspaceModule = loadModule(
 		() => import('$lib/document/runtime/workspace-factory'),
 		() =>
-			Boolean(layoutProfiles) &&
-			!deletionPending &&
-			(needsDocumentHost || backgroundPreparation),
+			Boolean(layoutProfiles) && !deletionPending && (needsDocumentHost || backgroundPreparation),
 		() => session.transportGeneration
 	);
 	if (layoutProfiles && env.PUBLIC_CONTRACT_DOCUMENT_PREPARATION !== '0')
@@ -72,9 +80,7 @@
 		);
 	const host = loadComponent(
 		() => import('./DocumentHost.svelte'),
-		() =>
-			!deletionPending &&
-			(needsDocumentHost || backgroundPreparation),
+		() => !deletionPending && (needsDocumentHost || backgroundPreparation),
 		() => session.transportGeneration
 	);
 	const DocumentHost = $derived(host.component);
@@ -87,7 +93,7 @@
 				: ''
 	);
 	const runtime = setWorkspaceRuntime({
-		get ready() {
+		get hostReady() {
 			return Boolean(DocumentHost) && workspaceReady;
 		},
 		get paused() {
@@ -100,6 +106,7 @@
 			return navigationIntent;
 		},
 		retry: () => {
+			presentation?.restart();
 			host.retry();
 			workspaceModule.retry();
 		}
@@ -121,7 +128,7 @@
 		if (
 			route.document === 'admin' &&
 			AdminWorkspace &&
-			runtime.ready &&
+			runtime.hostReady &&
 			!templatePending &&
 			!deletionPending
 		)
@@ -135,7 +142,6 @@
 	$effect(() => {
 		if (page.url.pathname !== '/' && (!needsDocumentHost || DocumentHost)) {
 			untrack(() => recordStartup('usable'));
-			return afterStartupPaint(() => (readiness.painted = true));
 		}
 	});
 	onNavigate(({ to }) => {
@@ -197,13 +203,20 @@
 </div>
 {#if adminMounted && AdminWorkspace}
 	<AdminWorkspace active={route.document === 'admin'} />
-{:else if route.document === 'admin' && !templatePending && !deletionPending && runtime.ready}
+{:else if route.document === 'admin' && !templatePending && !deletionPending && runtime.hostReady}
+	<WorkspacePresentationReporter outcome={admin.failed ? 'error' : 'pending'} />
 	{#if !admin.failed}
 		<WorkspaceSkeleton label="Loading contract authoring" />
 	{:else}
 		<LoadingState layout="workspace">
 			<p role="alert" class="text-sm">Unable to load contract authoring.</p>
-			<button class="text-sm underline" onclick={admin.retry}>Try again</button>
+			<button
+				class="text-sm underline"
+				onclick={() => {
+					presentation?.restart();
+					admin.retry();
+				}}>Try again</button
+			>
 		</LoadingState>
 	{/if}
 {/if}

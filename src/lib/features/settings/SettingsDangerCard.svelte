@@ -1,6 +1,6 @@
 <script lang="ts">
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
-	import { Button, destructiveButtonClass } from '$lib/ui';
+	import { Button } from '$lib/ui';
 	import DeleteAccountModal from './DeleteAccountModal.svelte';
 	import SettingsCard from './SettingsCard.svelte';
 
@@ -19,7 +19,7 @@
 	<div
 		class="mt-4 flex min-h-9 items-center gap-2 rounded-button-lg bg-canvas px-3 text-[0.74rem] leading-5 text-ink-muted"
 	>
-		<InfoIcon size={15} weight="regular" class="shrink-0 text-ink-muted" />
+		<InfoIcon weight="regular" class="size-[15px] shrink-0 text-ink-muted" />
 		<p>
 			If you are the last member, deleting your account also deletes your company and all its data.
 		</p>
@@ -30,7 +30,10 @@
 	{/snippet}
 
 	{#snippet action()}
-		<Button class={destructiveButtonClass} onclick={openDeleteModal}>Delete account</Button>
+		<Button
+			class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
+			onclick={openDeleteModal}>Delete account</Button
+		>
 	{/snippet}
 </SettingsCard>
 

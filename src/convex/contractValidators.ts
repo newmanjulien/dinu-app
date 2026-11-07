@@ -1,19 +1,15 @@
 import { v } from 'convex/values';
+import {
+	appliedConcessions,
+	approvalState,
+	reviewDecision,
+	reviewStatus
+} from '../lib/contract/applications';
+
+import { hubspotLink } from './hubspotValidators';
 
 export const selections = v.record(v.id('playbookItems'), v.string());
-export const reviewStatus = v.union(
-	v.literal('pending'),
-	v.literal('approved'),
-	v.literal('rejected')
-);
-export const reviewDecision = v.union(v.literal('approved'), v.literal('rejected'));
-export const concessionReview = v.object({
-	concessionId: v.string(),
-	lifecycle: v.string(),
-	status: reviewStatus
-});
-export const concessionReviews = v.record(v.id('playbookItems'), concessionReview);
-export const selectionLifecycles = v.record(v.id('playbookItems'), v.string());
+export { reviewDecision, reviewStatus } from '../lib/contract/applications';
 export const reviewCompletion = v.union(
 	v.object({
 		kind: v.literal('awaitingConfirmation'),
@@ -25,14 +21,14 @@ export const reviewCompletion = v.union(
 	})
 );
 export const storedContract = v.object({
+	hubspot: v.optional(hubspotLink),
 	companyId: v.id('company'),
 	creatorId: v.id('profiles'),
 	templateVersionId: v.id('templateVersions'),
-	companyName: v.string(),
+	buyerCompanyName: v.string(),
 	savedAt: v.number(),
-	selectedConcessions: selections,
-	reviews: concessionReviews,
-	revision: v.number(),
+	applications: appliedConcessions,
+	editRevision: v.number(),
 	reviewGeneration: v.number(),
 	reviewCompletion: v.optional(reviewCompletion),
 	stateVersion: v.number(),
@@ -44,7 +40,7 @@ export const storedDecision = v.object({
 	contractId: v.id('savedContracts'),
 	itemId: v.id('playbookItems'),
 	concessionId: v.string(),
-	lifecycle: v.string(),
+	applicationId: v.string(),
 	adminId: v.id('profiles'),
 	adminName: v.string(),
 	adminEmail: v.string(),
@@ -59,12 +55,11 @@ export const storedDecision = v.object({
 export const approvalSelection = v.object({
 	itemId: v.id('playbookItems'),
 	concessionPosition: v.number(),
-	lifecycle: v.optional(v.string()),
-	reviewStatus: v.optional(reviewStatus)
+	approval: v.optional(approvalState)
 });
 export const approvalRequest = v.object({
 	id: v.string(),
-	companyName: v.string(),
+	buyerCompanyName: v.string(),
 	selectedConcessions: v.array(approvalSelection),
 	status: v.union(
 		v.literal('sending'),
@@ -80,7 +75,7 @@ export const approvalRequest = v.object({
 });
 export const storedApprovalRequest = v.object({
 	id: v.string(),
-	companyName: v.string(),
+	buyerCompanyName: v.string(),
 	recipientEmail: v.string(),
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),

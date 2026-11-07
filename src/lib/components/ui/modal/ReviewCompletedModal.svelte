@@ -23,7 +23,7 @@
 <ModalShell
 	title="Review complete"
 	{onClose}
-	maxWidth={420}
+	class="max-w-[420px]"
 	showCloseButton={false}
 	closeOnBackdrop={false}
 	dismissible={!busy}

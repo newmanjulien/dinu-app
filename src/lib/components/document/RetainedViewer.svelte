@@ -24,11 +24,18 @@
 	);
 </script>
 
-<div bind:this={parking} class="document-parking" inert aria-hidden="true">
+<div
+	bind:this={parking}
+	class="pointer-events-none invisible fixed top-0 left-[-100000px] w-full [contain:layout_paint]"
+	inert
+	aria-hidden="true"
+>
 	<div
 		bind:this={element}
 		data-document-resource={entry.id}
-		class:dormant={!readyToShow}
+		class={!readyToShow
+			? 'pointer-events-none invisible fixed top-0 left-[-100000px] w-full [contain:layout_paint]'
+			: ''}
 		inert={!entry.active}
 		aria-hidden={!readyToShow}
 	>
@@ -37,6 +44,7 @@
 			interactive={!paused && entry.active && (bindings?.interactive ?? true)}
 			retained
 			prepare={!paused && entry.allowed && (bindings?.prepare ?? true)}
+			instructionPreload={entry.active ? bindings?.instructionPreload : undefined}
 			priority={entry.priority}
 			selectedConcessions={bindings?.selectedConcessions ?? entry.choices}
 			previewChanges={bindings?.previewChanges}
@@ -47,30 +55,20 @@
 			hasPanel={bindings?.hasPanel}
 			followScroll={bindings?.followScroll}
 			selectedAnnotationId={bindings?.selectedAnnotationId}
+			selectionRequest={bindings?.selectionRequest}
 			selectedRanges={bindings?.selectedRanges}
 			panelTarget={bindings?.panelTarget}
 			picking={bindings?.picking}
+			sourceSelectionEnabled={bindings?.sourceSelectionEnabled}
 			allowPlaybookNavigation={bindings?.allowPlaybookNavigation ?? false}
 			playbookNavigationReady={bindings?.playbookNavigationReady}
 			onRemoveConcession={bindings?.onRemoveConcession ?? (() => {})}
 			onSelect={bindings?.onSelect ?? (() => false)}
 			onDocumentBackground={bindings?.onDocumentBackground}
+			onPresentation={entry.active && readyToShow ? bindings?.onPresentation : undefined}
 		>
 			{#snippet panelContent()}{#if entry.active && bindings}{@render bindings.panelContent()}{/if}{/snippet}
 			{#snippet footerContent()}{#if entry.active && bindings?.footerContent}{@render bindings.footerContent()}{/if}{/snippet}
 		</ContractViewer>
 	</div>
 </div>
-
-<style>
-	.document-parking,
-	.dormant {
-		position: fixed;
-		left: -100000px;
-		top: 0;
-		width: 100%;
-		visibility: hidden;
-		pointer-events: none;
-		contain: layout paint;
-	}
-</style>

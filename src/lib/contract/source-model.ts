@@ -1,5 +1,5 @@
 import type { Infer } from 'convex/values';
-import type * as validators from '../../convex/sourceValidators';
+import type * as validators from './source-validators';
 
 export type SourcePoint = Infer<typeof validators.sourcePoint>;
 export type SourceRange = Infer<typeof validators.sourceRange>;
@@ -9,7 +9,11 @@ export type TextSourceTarget = { readonly kind: 'text'; readonly range: SourceRa
 export type BoundarySourceTarget = { readonly kind: 'boundary'; readonly afterBlockKey: string };
 export type SourceTarget = TextSourceTarget | BoundarySourceTarget;
 export type InlineSource = Infer<typeof validators.inlineSource>;
-export type BaselineBlock = Infer<typeof validators.baselineBlock>;
+export type SourceTable = Infer<typeof validators.sourceTable> & { numbering?: never };
+export type ParagraphRole = Infer<typeof validators.paragraphRole>;
+export type RoleAssignment = Infer<typeof validators.roleAssignment>;
+export type BaselineBlock =
+	Exclude<Infer<typeof validators.baselineBlock>, { kind: 'table' }> | SourceTable;
 export type ReplacementAtom = Infer<typeof validators.replacementAtom>;
 export type ReplacementInline = Exclude<ReplacementAtom, { kind: 'paragraph-break' }>;
 

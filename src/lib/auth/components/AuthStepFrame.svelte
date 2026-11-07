@@ -1,16 +1,13 @@
 <script lang="ts">
-	import type { ClassValue } from 'clsx';
 	import type { Snippet } from 'svelte';
-	import { cn } from '$lib/ui/cn';
 
 	type Props = {
 		title: string;
 		description?: string;
-		descriptionClass?: ClassValue;
 		children: Snippet;
 	};
 
-	let { title, description, descriptionClass = '', children }: Props = $props();
+	let { title, description, children }: Props = $props();
 </script>
 
 <div class="w-full">
@@ -20,12 +17,7 @@
 		{title}
 	</h1>
 	{#if description}
-		<p
-			class={cn(
-				'mx-auto mt-3.5 max-w-100 text-center text-sm leading-[1.45] text-ink-muted',
-				descriptionClass
-			)}
-		>
+		<p class="mx-auto mt-3.5 max-w-100 text-center text-sm leading-[1.45] text-ink-muted">
 			{description}
 		</p>
 	{/if}

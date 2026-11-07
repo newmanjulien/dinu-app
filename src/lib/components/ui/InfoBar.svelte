@@ -17,7 +17,7 @@
 		className
 	)}
 >
-	<InfoIcon size={16} weight="regular" class="mt-0.5 shrink-0 text-accent" aria-hidden="true" />
+	<InfoIcon weight="regular" class="size-4 mt-0.5 shrink-0 text-accent" aria-hidden="true" />
 	<div class="min-w-0">
 		{#if label}
 			<span class="font-semibold text-ink">{label}</span>

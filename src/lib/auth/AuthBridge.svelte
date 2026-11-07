@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { useClerkContext } from 'svelte-clerk';
 	import SessionStatus from './SessionStatus.svelte';
-	import { SessionController } from './session-controller.svelte';
+	import { AccountLifecycle } from './account-lifecycle.svelte';
 	import { setViewerSession, type SessionResources } from './viewer-session.svelte';
 	import { loginDestination } from './navigation';
 	import { goto } from '$app/navigation';
@@ -11,7 +11,7 @@
 	const clerk = useClerkContext();
 	let alive = true;
 	const resources = new Set<SessionResources>();
-	const controller = new SessionController({
+	const controller = new AccountLifecycle({
 		signOut: async () => {
 			if (!clerk.clerk) throw new Error('Authentication is unavailable.');
 			await clerk.clerk.signOut(() => {});
@@ -26,8 +26,8 @@
 		get closing() {
 			return controller.closing;
 		},
-		get prepared() {
-			return controller.prepared;
+		get preparedSessionId() {
+			return controller.preparedSessionId;
 		},
 		get userId() {
 			return controller.userId;
@@ -47,8 +47,8 @@
 		get blocked() {
 			return controller.blocked;
 		},
-		get admitted() {
-			return controller.admitted;
+		get workspaceAdmitted() {
+			return controller.workspaceAdmitted;
 		},
 		get transportGeneration() {
 			return controller.transportGeneration;

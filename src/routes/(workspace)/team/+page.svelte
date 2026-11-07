@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { page } from '$app/state';
 	import { localReturn } from '$lib/auth/navigation';
 	import { onMount, onDestroy } from 'svelte';
@@ -127,6 +128,14 @@
 	}
 </script>
 
+<WorkspacePresentationReporter
+	outcome={colleaguesLoading || invitationsLoading
+		? 'pending'
+		: colleagues.error || (canManage && invitations.error)
+			? 'error'
+			: 'success'}
+/>
+
 <main class="min-h-[calc(100dvh-var(--app-header-height))] bg-surface px-6 py-8">
 	{#if colleaguesLoading || invitationsLoading}
 		<span role="status" class="sr-only"
@@ -153,7 +162,7 @@
 					onclick={() => {
 						modalError = null;
 						modalOpen = true;
-					}}><PlusIcon size={15} aria-hidden="true" />Invite</Button
+					}}><PlusIcon class="size-[15px]" aria-hidden="true" />Invite</Button
 				>{/if}
 		</div>
 		<section aria-labelledby="colleagues-heading">
@@ -169,7 +178,7 @@
 							<Avatar
 								name={person.name || person.email}
 								avatarUrl={person.avatarUrl}
-								size={28}
+								class="size-7"
 								decorative
 							/>
 							<div class="min-w-0 flex-1">

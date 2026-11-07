@@ -730,13 +730,6 @@
       ]
     },
     {
-      "oldId": "j57d32rdqc0vt2jqcw5dv6yy398faj3p",
-      "clauseKey": "monthly-fee-discount",
-      "triggerIds": [
-        "monthly-fee-discount"
-      ]
-    },
-    {
       "oldId": "j574tjkvc87rbe2jad96dksqr58fa25g",
       "clauseKey": "mutual-indemnification-insertion",
       "triggerIds": [
@@ -1702,19 +1695,6 @@
         "end": {
           "sourceKey": "source:paragraph-exhibit-annual-adjustment/segment/1/atom/0",
           "offset": 18
-        }
-      }
-    },
-    {
-      "key": "monthly-fee-discount-text",
-      "range": {
-        "start": {
-          "sourceKey": "source:table-exhibit-fees/cell/1/3/segment/0/atom/0",
-          "offset": 0
-        },
-        "end": {
-          "sourceKey": "source:table-exhibit-fees/cell/1/3/segment/0/atom/0",
-          "offset": 0
         }
       }
     }

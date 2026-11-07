@@ -4,13 +4,13 @@
 		checked,
 		onCheckedChange,
 		disabled = false,
-		className = ''
+		class: className = ''
 	}: {
 		label: string;
 		checked: boolean;
 		onCheckedChange: (checked: boolean) => void;
 		disabled?: boolean;
-		className?: string;
+		class?: string;
 	} = $props();
 </script>
 

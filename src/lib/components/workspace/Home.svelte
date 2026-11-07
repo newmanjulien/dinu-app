@@ -1,11 +1,11 @@
 <script lang="ts">
-	import '$lib/styles/contract-card-grid.css';
+	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
 	import { navigating } from '$app/state';
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import type { SavedContractCard } from '$lib/contract/card';
 	import { afterStartupPaint, recordStartup } from '$lib/auth/startup-perf';
 	import { useStartupData } from '$lib/auth/startup-data';
-	import { useWorkspaceReadiness } from '$lib/auth/workspace-readiness.svelte';
+	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { createVisibleContractWarming } from '$lib/contract/visible-contracts.svelte';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
 	import { useConvexClient, usePaginatedQuery } from 'convex-svelte';
@@ -15,25 +15,43 @@
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { saveError } from '$lib/contract/saved';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import { getContractSessions } from '$lib/contract/sessions.svelte';
+	import { getContractEditors } from '$lib/contract/editors.svelte';
+	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
-	import { fieldShellClass, fieldInputClass } from '$lib/ui/field-styles';
 	import Button from '$lib/ui/Button.svelte';
+	import HelpHint from '$lib/ui/HelpHint.svelte';
+	import CompanySetupPrompt from '$lib/features/company-setup/CompanySetupPrompt.svelte';
 	import HomeSkeleton from './HomeSkeleton.svelte';
+	import HomeSections from './HomeSections.svelte';
+	import IntegrationCatalog from './IntegrationCatalog.svelte';
 	import { getInteractionController, setInteractionOwner } from '$lib/components/ui/interactions';
 	setInteractionOwner(Symbol('home'));
 	const interactions = getInteractionController();
 	const client = useConvexClient();
 	const cache = getContractSnapshotCache(client);
-	const saves = getContractSessions();
+	const saves = getContractEditors();
+	const feedback = getWorkspaceFeedback();
 	const session = useViewerSession();
 	const viewer = useViewer();
+	const hubspot = useHubSpotDeals();
+	const admin = $derived(viewer().membership.role === 'admin');
+	const canCreateContract = $derived(viewer().templateReady && viewer().instructionsReady);
+	let visible = $state(false);
+	let warmedOwner: string | null = null;
+	onMount(() => {
+		const visibility = () => (visible = document.visibilityState !== 'hidden');
+		visibility();
+		document.addEventListener('visibilitychange', visibility);
+		return () => document.removeEventListener('visibilitychange', visibility);
+	});
+	function warmDeals() {
+		if (canCreateContract && visible && !session.blocked && !navigating.to) hubspot.prefetch();
+	}
 	const membershipId = viewer().membership.id;
 	const startup = useStartupData();
-	const readiness = useWorkspaceReadiness();
 	let alive = true;
 	onDestroy(() => {
 		alive = false;
@@ -43,13 +61,13 @@
 	let search = $state('');
 	let searchInput = $state<HTMLInputElement>();
 	let query = $state('');
-	let renaming = $state<{ id: Id<'savedContracts'>; companyName: string } | null>(null);
+	let renaming = $state<{ id: Id<'savedContracts'>; buyerCompanyName: string } | null>(null);
 	let renameError = $state<string | null>(null);
 	let actionError = $state<string | null>(null);
 	let busy = $state(false);
 	let deleting = $state<Id<'savedContracts'> | null>(null);
 	const contracts = usePaginatedQuery(
-		api.savedContracts.browse,
+		api.contracts.browse,
 		() => ({
 			membershipId,
 			search: query
@@ -187,9 +205,25 @@
 	});
 	const hasPage = $derived(page !== null);
 	$effect(() => {
-		if (!session.admitted || !hasPage) return;
+		const owner = hubspot.identity;
+		if (
+			!owner ||
+			!session.workspaceAdmitted ||
+			!hasPage ||
+			!canCreateContract ||
+			!visible ||
+			navigating.to
+		)
+			return;
 		return afterStartupPaint(() => {
-			readiness.painted = true;
+			if (warmedOwner === owner || hubspot.identity !== owner) return;
+			warmedOwner = owner;
+			warmDeals();
+		});
+	});
+	$effect(() => {
+		if (!session.workspaceAdmitted || !hasPage) return;
+		return afterStartupPaint(() => {
 			recordStartup('dashboard-painted');
 		});
 	});
@@ -230,13 +264,17 @@
 	}
 </script>
 
+<WorkspacePresentationReporter outcome={hasPage ? 'success' : list.error ? 'error' : 'pending'} />
+
 <main
 	class="home min-h-[calc(100dvh-var(--app-header-height))] bg-page px-3 py-4 sm:px-4 md:px-5 md:py-5"
 >
 	<div class="mx-auto max-w-[1800px]">
 		<div class="mb-6 flex items-center gap-2">
-			<div class={`${fieldShellClass} flex h-9 flex-1 items-center gap-2`}>
-				<MagnifyingGlassIcon size={17} aria-hidden="true" class="shrink-0 text-ink-muted" />
+			<div
+				class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-ink aria-disabled:bg-canvas aria-disabled:text-ink-muted flex h-9 flex-1 items-center gap-2"
+			>
+				<MagnifyingGlassIcon aria-hidden="true" class="size-[17px] shrink-0 text-ink-muted" />
 				<input
 					bind:this={searchInput}
 					type="search"
@@ -244,7 +282,7 @@
 					placeholder="Search by name of company"
 					maxlength="200"
 					bind:value={search}
-					class={fieldInputClass}
+					class="min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted w-full flex-1 border-0 bg-transparent p-0 text-inherit outline-none [&::-webkit-search-cancel-button]:hidden"
 				/>
 				{#if search}
 					<button
@@ -256,114 +294,119 @@
 							searchInput?.focus();
 						}}
 					>
-						<XIcon size={15} weight="regular" aria-hidden="true" />
+						<XIcon class="size-[15px]" weight="regular" aria-hidden="true" />
 					</button>
 				{/if}
 			</div>
 			<Button
-				href={viewer().templateReady ? '/contracts/new' : undefined}
-				disabled={!viewer().templateReady}
-				title={viewer().templateReady
+				href={canCreateContract ? '/contracts/new' : undefined}
+				disabled={!canCreateContract}
+				onpointerenter={warmDeals}
+				onpointerdown={warmDeals}
+				onfocus={warmDeals}
+				title={canCreateContract
 					? undefined
-					: 'An admin must upload your company’s baseline contract.'}
-				><PlusIcon size={15} aria-hidden="true" />New contract</Button
+					: viewer().templateReady
+						? 'An admin must add instructions to your contract.'
+						: 'An admin must upload your company’s baseline contract.'}
+				><PlusIcon class="size-[15px]" aria-hidden="true" />New contract</Button
 			>
 		</div>
-		{#if !viewer().templateReady}<p class="mb-5 text-[13px] text-ink-muted">
-				Your company needs a baseline contract. <a class="underline text-accent" href="/admin"
-					>Set up contract</a
-				>
-			</p>{/if}
-		<div class="mb-3 flex items-center gap-3">
-			<h1 class="text-sm font-medium">Contracts</h1>
-			{#if list.waiting && list.cards.length}<LoadingWheel
-					label="Refreshing contracts"
-					size="size-5"
-				/>{/if}
-		</div>
-		{#if list.error && list.cards.length}<p class="mb-3 text-xs text-ink-muted" role="status">
-				We couldn’t refresh your contracts. Showing previous results.
-			</p>{/if}
-		{#if actionError}<p
-				class="mb-5 rounded-xl border-hairline border-danger/20 bg-danger-surface shadow-card p-4 text-sm text-danger"
-				role="alert"
-			>
-				{actionError}
-			</p>{/if}
-		{#if list.error && list.cards.length === 0}
-			<div class="state" role="alert">
-				<p>We couldn’t load your contracts.</p>
-				<Button variant="secondary" onclick={() => window.location.reload()} class="mt-4"
-					>Try again</Button
-				>
+		<CompanySetupPrompt />
+		{#snippet integrationSidebar()}<IntegrationCatalog />{/snippet}
+		<HomeSections sidebar={admin ? integrationSidebar : undefined}>
+			<div class="mb-3 flex items-center gap-3">
+				<div class="flex items-center gap-1.5">
+					<h1 class="text-[13.5px] font-medium">Contracts</h1>
+					<HelpHint id="contractsIntro" label="About contracts" />
+				</div>
+				{#if list.waiting && list.cards.length}<LoadingWheel
+						label="Refreshing contracts"
+						class="size-5"
+					/>{/if}
 			</div>
-		{:else if list.waiting && list.cards.length === 0}
-			<HomeSkeleton cardsOnly />
-		{:else if list.empty}
-			<div class="state" role="status">
-				{#if list.query}<h2 class="text-[13px] font-medium">No contracts found</h2>
-					<p class="mt-2 text-[13px] text-ink-muted">No company names match “{list.query}”.</p>
-					<button onclick={() => (search = '')} class="mt-4 text-[13px] underline"
-						>Clear search</button
+			{#if list.error && list.cards.length}<p class="mb-3 text-xs text-ink-muted" role="status">
+					We couldn’t refresh your contracts. Showing previous results.
+				</p>{/if}
+			{#if actionError}<p
+					class="mb-5 rounded-xl border-hairline border-danger/20 bg-danger-surface shadow-card p-4 text-sm text-danger"
+					role="alert"
+				>
+					{actionError}
+				</p>{/if}
+			{#if list.error && list.cards.length === 0}
+				<div
+					class="rounded-base border-hairline border-edge bg-surface px-5 py-9 text-center text-[14px] shadow-card"
+					role="alert"
+				>
+					<p>We couldn’t load your contracts.</p>
+					<Button variant="secondary" onclick={() => window.location.reload()} class="mt-4"
+						>Try again</Button
 					>
-				{:else}<h2 class="text-[13.5px] font-medium">
-						{viewer().templateReady ? 'No contracts yet' : 'No baseline contract'}
-					</h2>
-					<p class="mt-2 text-[13px] text-ink-muted">
-						{viewer().templateReady
-							? 'Click New contract to start your first contract.'
-							: viewer().profile.role === 'admin'
-								? 'This is where reps create contracts for customers. But first, you need to set up your company’s baseline contract.'
-								: 'This is where reps create contracts for customers. But first, an admin needs to set up your company’s baseline contract.'}
-					</p>{/if}
-			</div>
-		{:else if list.cards.length}
-			<div class="contract-card-grid">
-				{#each list.cards as contract (contract._id)}
-					<ContractCard
-						status={saves.statusFor(contract._id)}
-						{contract}
-						observe={warming.observe}
-						onWarm={() => warming.warm(contract._id)}
-						onCool={() => warming.cool(contract._id)}
-						deleting={deleting === contract._id}
-						onRename={() => {
-							renaming = { id: contract._id, companyName: contract.companyName };
-							renameError = null;
-						}}
-						onDelete={() => void remove(contract._id, contract.companyName)}
-					/>
-				{/each}
-			</div>
-		{/if}
-		{#if list.hasMore}<div class="mt-6 flex justify-center">
-				<Button
-					variant="secondary"
-					disabled={!list.canLoadMore}
-					onclick={() => contracts.loadMore(24)}
-					>{list.loadingMore ? 'Loading…' : 'Load more'}</Button
+				</div>
+			{:else if list.waiting && list.cards.length === 0}
+				<HomeSkeleton cardsOnly {admin} />
+			{:else if list.empty}
+				<div
+					class="rounded-base border-hairline border-edge bg-surface px-5 py-9 text-center text-[14px] shadow-card"
+					role="status"
 				>
-			</div>{/if}
+					{#if list.query}<h2 class="text-[13px] font-medium">No contracts found</h2>
+						<p class="mt-2 text-[13px] text-ink-muted">No company names match “{list.query}”.</p>
+						<button onclick={() => (search = '')} class="mt-4 text-[13px] underline"
+							>Clear search</button
+						>
+					{:else}<h2 class="text-[13.5px] font-medium">No contracts yet</h2>
+						<p class="mt-2 text-[13px] text-ink-muted">
+							{#if canCreateContract}
+								Click New contract to start your first contract.
+							{:else}
+								{admin
+									? 'Finish company setup to create your first contract.'
+									: 'An admin needs to finish company setup before you can create your first contract.'}
+							{/if}
+						</p>{/if}
+				</div>
+			{:else if list.cards.length}
+				<div
+					class={admin
+						? 'grid grid-cols-1 gap-3 @[600px]:grid-cols-2 @[1000px]:grid-cols-4'
+						: 'grid grid-cols-1 gap-3 min-[600px]:grid-cols-2 min-[1000px]:grid-cols-4'}
+				>
+					{#each list.cards as contract (contract._id)}
+						<ContractCard
+							status={feedback.statusFor(contract._id)}
+							{contract}
+							observe={warming.observe}
+							onWarm={() => warming.warm(contract._id)}
+							onCool={() => warming.cool(contract._id)}
+							deleting={deleting === contract._id}
+							onRename={() => {
+								renaming = { id: contract._id, buyerCompanyName: contract.buyerCompanyName };
+								renameError = null;
+							}}
+							onDelete={() => void remove(contract._id, contract.buyerCompanyName)}
+						/>
+					{/each}
+				</div>
+			{/if}
+			{#if list.hasMore}<div class="mt-6 flex justify-center">
+					<Button
+						variant="secondary"
+						disabled={!list.canLoadMore}
+						onclick={() => contracts.loadMore(24)}
+						>{list.loadingMore ? 'Loading…' : 'Load more'}</Button
+					>
+				</div>{/if}
+		</HomeSections>
 	</div>
 </main>
 {#if renaming}<CompanyNameDialog
 		title="Rename contract"
-		initialName={renaming.companyName}
+		initialName={renaming.buyerCompanyName}
 		submitLabel="Rename"
 		{busy}
 		error={renameError}
 		onSubmit={(name) => void rename(name)}
 		onClose={() => (renaming = null)}
 	/>{/if}
-
-<style>
-	.state {
-		border: var(--surface-border-width) solid var(--color-edge);
-		border-radius: var(--radius-base);
-		background: var(--color-surface);
-		box-shadow: var(--shadow-card);
-		padding: 36px 20px;
-		font-size: 14px;
-		text-align: center;
-	}
-</style>

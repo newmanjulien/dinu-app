@@ -1,19 +1,18 @@
-import { PlaybookValidationError } from './validation-error';
 import { validateStorageArrays } from '../contract/storage-limits';
+import { PlaybookValidationError } from './validation-error';
+export { MAX_CONTRACT_BLOCKS, MAX_PLAYBOOK_ITEM_BYTES, MAX_PLAYBOOK_ITEMS } from './limits';
 export { PlaybookValidationError } from './validation-error';
 
-import type { SourceIndex } from '../contract/source-index';
 import type { CompiledContract } from '../contract/compiled-contract';
-import type { Concession, ContractChange, PlaybookItem, Trigger } from './model';
-import { changeTriggerOwner, triggersIntersect, validateTriggerRange } from './geometry';
-import { createChangeConflictChecker } from './conflicts';
-import { equalConcession } from './draft';
-import { isTextTarget } from '../contract/source-model';
 import { targetContainers } from '../contract/ranges';
 import { hasMeaningfulReplacement } from '../contract/replacement-content';
+import type { ValidationSourceFacts } from '../contract/validation-source';
+import { createChangeConflictChecker } from './conflicts';
+import { equalConcession } from './content';
+import { changeTriggerOwner, triggersIntersect, validateTriggerRange } from './geometry';
+import type { Concession, ContractChange, PlaybookItem, Trigger } from './model';
 
 import { MAX_PLAYBOOK_ITEM_BYTES } from './limits';
-export { MAX_PLAYBOOK_ITEM_BYTES, MAX_PLAYBOOK_ITEMS, MAX_CONTRACT_BLOCKS } from './limits';
 
 export function validateConcessions(concessions: readonly Concession[]): void {
 	for (const concession of concessions)
@@ -40,20 +39,20 @@ function unique(seen: Set<string>, id: string, label: string): void {
 }
 
 /** Also used by source picking, while an item can still be incomplete. */
-export function validateTriggers(index: SourceIndex, triggers: readonly Trigger[]): void {
+export function validateTriggers(index: ValidationSourceFacts, triggers: readonly Trigger[]): void {
 	const ids = new Set<string>();
 	for (const [i, trigger] of triggers.entries()) {
 		unique(ids, trigger.id, 'Trigger ID');
-		validateTriggerRange(index, trigger.range);
+		validateTriggerRange(index, trigger.target);
 		for (const other of triggers.slice(0, i))
-			if (triggersIntersect(index, other.range, trigger.range))
+			if (triggersIntersect(index, other.target, trigger.target))
 				throw new PlaybookValidationError(`Overlapping Triggers: ${other.id}, ${trigger.id}`);
 	}
 }
 
 /** Validate change ownership and conflicts independently of replacement wording. */
 export function validateChangeGeometry(
-	index: SourceIndex,
+	index: ValidationSourceFacts,
 	triggers: readonly Trigger[],
 	changes: readonly ContractChange[]
 ): void {
@@ -61,9 +60,9 @@ export function validateChangeGeometry(
 	for (const [i, change] of changes.entries()) {
 		if (
 			change.replacement.some((atom) => atom.kind === 'paragraph-break') &&
-			targetContainers(index, change.range).some(
+			targetContainers(index, change.target).some(
 				(container) =>
-					change.range.kind !== 'boundary' &&
+					change.target.kind !== 'boundary' &&
 					index.blocks.get(container.blockKey)?.kind !== 'paragraph'
 			)
 		)
@@ -77,12 +76,11 @@ export function validateChangeGeometry(
 
 /** Final items cannot reserve a structural location without changing the contract. */
 export function validateStructuralReplacementContent(
-	index: SourceIndex,
 	item: Pick<PlaybookItem, 'concessions'>
 ): void {
 	for (const concession of item.concessions)
 		for (const change of concession.changes)
-			if (change.range.kind === 'boundary' && !hasMeaningfulReplacement(change.replacement))
+			if (change.target.kind === 'boundary' && !hasMeaningfulReplacement(change.replacement))
 				throw new PlaybookValidationError(
 					'A structural concession needs text or a reference before it can be saved.'
 				);
@@ -91,8 +89,21 @@ export function validateStructuralReplacementContent(
 /** Source-independent checks shared by structural validation and instructions-only saves. */
 export function validatePlaybookItemContent(item: PlaybookItem): void {
 	validateStorageArrays(item);
+	if (item.approvalPolicy.kind === 'required' && !item.approvalPolicy.instructions.trim())
+		throw new PlaybookValidationError('Approval instructions cannot be blank');
 	if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_PLAYBOOK_ITEM_BYTES)
 		throw new PlaybookValidationError('Playbook Item exceeds 500 KB');
+	for (const target of [
+		item.trigger.target,
+		...item.concessions.flatMap((concession) => concession.changes.map((change) => change.target))
+	]) {
+		if (target.kind !== 'text') continue;
+		for (const point of [target.range.start, target.range.end])
+			if (!Number.isSafeInteger(point.offset) || point.offset < 0)
+				throw new PlaybookValidationError(
+					`Invalid source point: ${point.sourceKey}@${point.offset}`
+				);
+	}
 	unique(new Set(), item.trigger.id, 'Trigger ID');
 	validateConcessions(item.concessions);
 	const concessionIds = new Set<string>();

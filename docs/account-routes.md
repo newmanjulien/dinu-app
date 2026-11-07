@@ -73,7 +73,7 @@ Initial login HTML contains the email form; active invitation HTML contains comp
 
 Ordinary signup preloads and opens onboarding, preserving any requested workspace destination for joining an existing company. After onboarding paints, it preloads the admin setup route without speculatively loading Home. Creating a company opens `/admin`; its completion destination survives temporary blocking of the same session, while navigation waits for readiness. Joining keeps the requested workspace destination. The admin editor and renderer load only after the company's baseline is ready.
 
-Account admission, workspace admission, and the destination's usable marker are distinct. Workspace chrome appears only after membership admission. Home controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Admin code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its naming dialog and skeleton in a lightweight shell while creation code loads. Optional preview and delegation imports recover through transport replacement and existing creation or navigation triggers, respectively. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
+Account admission, workspace admission, and the destination's usable marker are distinct. Workspace chrome appears only after membership admission. Home controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Admin code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its naming dialog and skeleton in a lightweight shell while creation code loads. Optional preview imports recover through transport replacement and existing creation controls. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
 
 Invitation preview and resolution run in Convex's default runtime using Web Crypto
 for SHA-256; invitation email uses Node for random-token creation, while contract
@@ -83,50 +83,48 @@ failed initialization exposes the existing retry control.
 
 Document help belongs to `WorkspaceChrome`, alongside its Help buttons. Admin waits
 for prepared, visible document content; saved contracts wait for their existing
-visible-state reconciliation. Each workspace opening checks the per-variant
-“Don't show this again” preference once, and its Help button can reopen the guide.
+visible-state reconciliation. Admin Help opens only from its button. Each rep
+workspace opening checks the “Don't show this again” preference once, and its Help
+button can reopen the guide.
 Loading, missing-contract, and failed-opening views cannot mount the guide. During
 creation, `ContractRoute` admits the prepared saved workspace only after the naming
 dialog completes its opening handoff; background recovery after a failed attempt
 does not bypass the retry dialog. The shell has no route-driven help context or
 modal hold counter.
 
-## Historical implementation verification
-
-The results below refer to their original route/development revisions, including
-temporary SMTP and old invitation initialization. They are retained evidence, not
-verification of the redesigned backend. [Current architecture](backend-redesign/architecture.md),
-[17D2 local checks](backend-redesign/phase-17d2-cross-workflow.md) and
-[Phase 18 activation](backend-redesign/phase-18-activation.md) own current status.
-
-The help-ownership cleanup passed `npm run build` with zero Svelte/type errors or
-warnings, targeted formatting checks, and `git diff --check`. The two existing
-creation-retry lifecycle tests passed, preserving the created ID and retry after
-stalled rendering. No tests were added or expanded. The suite uses a viewer fixture,
-so help timing, preference behavior, missing-link presentation, and browser modal
-layering remain unverified. Saving, scheduling, and caching were not changed; their
-performance suite was not rerun.
-
-The skeleton cleanup passed `npm run verify`: all 20 existing lifecycle tests and 24 performance tests, zero Svelte/type errors or warnings, and the production build. The existing assertions continue to cover creation handoff and retry without duplicate creation, detached saving, transport recovery, company holds, cache reuse, and preparation scheduling. No tests were added or expanded. The production import graph confirms that creation logic, the saved viewer, and the fallback preview are deferred from the contract layout; the naming dialog and skeleton remain in its initial graph. Browser modal layering, early display timing, help transitions, and actual failed-chunk recovery remain unverified for this cleanup.
-
-The route-boundary refactor passed `npm run verify`: all 24 existing performance checks, zero Svelte/type errors or warnings, and the production build. No tests were added or expanded. These checks cover the existing saving, scheduling, and cache guarantees; they do not exercise the new browser lifecycle paths. Authenticated Home/Settings-to-Admin navigation under baseline, chunk-failure, and company-hold conditions; screen-reader announcements; dirty and unresolved Admin work through hold/Settings/cancellation; deferred fragment and back/forward restoration; and creation/review focus behavior remain unverified in a browser for this refactor.
-
-The restored onboarding presentation passed `npm run build` with zero type errors or warnings, targeted formatting checks, and `git diff --check`. A local browser preview of the actual onboarding layout and components checked the illustrated choice cards, create and join steps at 1440px, 640px, 390px, and 320px without horizontal overflow. It confirmed retained company-name input across Back, the white empty-inbox box and invitation cards, Create a company instead, retry callbacks, and no inbox subscription before opening join. The browser reported no errors. Account, queries, mutations, and navigation used temporary fixtures; live authentication, company creation, and invitation acceptance remain unverified for this presentation restoration. No tests were added or expanded, and the performance suite was not rerun because saving, scheduling, and caching behavior did not change.
-
-The onboarding review fixes passed `npm run build` with zero type errors or warnings and targeted formatting checks. Isolated browser probes of the actual flow confirmed that pending writes defer membership navigation, cancelled navigation does not restart, blocked sessions prevent completion and stale errors, transport replacement ignores old mutation errors, active write failures clear pending state, and teardown ignores late completion. The probes used reactive account/session fixtures and controlled mutation/navigation promises; live authentication and server writes remain unverified. No tests were added or expanded, and the performance suite was not rerun for these navigation-only fixes.
-
-The onboarding presentation and component split passed `npm run build`, including type checking with zero errors or warnings, and all 24 existing performance tests via `npm run test:perf`. An isolated browser preview of the actual entry layout and flow checked the screenshot's desktop composition, 390px and 320px mobile layouts without horizontal overflow, retained company-name input across Back, inbox and error presentation, retry callbacks, and workspace return destinations. Its account, queries, mutations, and navigation were fixtures; live authentication, company creation, and invitation acceptance were not exercised for this change. No tests were added or expanded.
-
-`npm run verify` passed all 24 existing performance tests for saving, scheduling, caching, creation, and account preparation, followed by type checking with zero errors or warnings and the production build. The final dedicated invitation implementation also passed type checking and the production build. No tests were added or expanded for this flow. Earlier route-refactor runtime probes checked component retry, stale import results, loaded-module reuse, session timeout recovery, and resource clearing on account switching/logout.
-
-The invitation backend was pushed to the development deployment `scrupulous-squirrel-986` with type checking enabled. Read-only live calls confirmed that malformed and unknown tokens return only unavailable status and that anonymous authenticated-resolution calls are rejected. Local HTTP checks confirmed missing, malformed, and unknown invitation pages render unavailable states, invitation responses include a no-referrer policy, and invitation/login responses remain private and uncached. The final production manifest confirms that both static anonymous graphs exclude the Convex transport, snapshot cache, and authenticated workspace components. Clerk's API types and implementation were reviewed for verified sign-in-to-signup transfer and CAPTCHA handling; actual email verification was not exercised.
-
-The follow-up fixes passed `npm run verify` again: all 24 performance tests, zero type errors or warnings, and the production build. The backend push passed Convex type checking. Development expiration initialization completed; read-only inspection confirmed that every pending record was initialized and the active invitation had a matching pending expiry job. Live malformed-token, unknown-token, and anonymous-resolution checks passed in the default runtime. SMTP delivery, deadline cancellation under a live stalled connection, and scheduled expiry at the actual deadline have not been exercised.
-
-Before the dedicated acceptance flow, the emitted production manifest confirmed that the static login and anonymous invitation graphs excluded Convex and the snapshot cache. Lazy invitation resolution removed 20,768 gzip bytes from the invitation's unique static JavaScript dependencies compared with the preceding review build. This historical dependency-graph comparison does not measure the current invitation flow's browser transfer or latency; CSS, dynamic imports, the entry runtime, and hosted Clerk assets were excluded.
-
-Before the dedicated acceptance flow, direct development-browser checks covered anonymous invitation presentation on desktop and mobile, incomplete and unavailable invitations, account switching with an invitation return destination, companyless onboarding and its empty inbox, member workspace access, and member onboarding redirects. Review found and fixed server fragment access and duplicate login response headers.
-
-The dedicated flow still needs live email-code verification for both existing and new accounts, explicit acceptance, wrong-email account switching, and expired/revoked links in the browser. Company creation, network-stall recovery, failed chunk recovery, and session expiry or logout with pending edits have not been rehearsed in the browser for this refactor. The suite does not directly cover every new component transition. Production has not been deployed or measured.
-
-Earlier latency and bundle measurements are retained in [Sign-in performance](sign-in-performance.md) and [Account startup cleanup](account-startup-performance.md). They describe their dated implementations, not a measured latency improvement from this route split.
+Successful contract upload and activation open the delegation modal through a
+one-time `/admin` history-state handoff. `WorkspaceShell` owns one bottom-right
+lazy `CsmWidget`; the widget owns one captured request and native modal frame.
+The profile/calendar body is a separate request-only import. Before the
+setup call is booked, only admins on `/admin` see the delegate widget, after the
+current primary content's success/error paint and with an active baseline. Closing
+leaves the
+desktop card or compact mobile launcher; ordinary visits do not open the modal.
+After booking, that same widget becomes support on every workspace route for admins
+and reps, using an animated filled lifebuoy. There is no header support button.
+The modal uses setup or support copy with the same Customer Success
+profile and inline Cal.com calendar. A second request cannot replace an open modal;
+later uploads consume their handoff without auto-opening support. New optional work
+waits for current route/query, local phase/retry and connection identity to settle
+and paint; initialized support remains visible during later loading/errors. A
+cached module cannot bypass admission, including a never-mounted booking body.
+Attribution uses a bounded, cancellable first-result subscription. The official
+calendar SDK runs in a disposable same-origin frame, removed on booking completion, close or failure
+with all its runtime resources. Only script bytes may be reused via HTTP cache.
+Booking uses
+Cal.com directly, with a signed company-and-purpose reference in the embed and fallback
+link. Only a verified setup webhook sets the company's optional booking timestamp; the
+existing live account subscription switches the widget to support across the company.
+The embed event also switches it immediately in the booking workspace, without
+writing persistence. Support bookings leave setup state unchanged, and support remains
+available for repeat calls. A successful embedded booking replaces the calendar with
+a focused success message and **Close** button; the user dismisses the modal themselves.
+It also collapses the widget to its icon, persisting the collapsed preference and
+restoring focus to the icon after dismissal. Booked companies do not reopen setup
+after another upload.
+See [CSM booking](delegation.md) for activation.
+Before booking, leaving `/admin` unmounts delegation and closes setup, including when
+the authoring owner remains mounted for Settings recovery. Support remains mounted
+across workspace routes. Committed pathname changes and replaced connections close
+the shared modal; deletion holds and blocked/closing sessions unmount the widget in
+either mode. The former post-upload instructions guide has been removed.

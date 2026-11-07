@@ -1,4 +1,9 @@
 import { v } from 'convex/values';
+export const paragraphDecision = v.object({
+	blockKey: v.string(),
+	reason: v.string(),
+	needsReview: v.boolean()
+});
 export const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 export const issue = v.object({
 	severity: v.union(v.literal('warning'), v.literal('error')),

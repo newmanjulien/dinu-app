@@ -31,9 +31,17 @@ type Env = {
   readonly CONVEX_CLOUD_URL: string;
   readonly CONVEX_SITE_URL: string;
   readonly APP_URL: string | undefined;
+  readonly CAL_API_KEY: string | undefined;
+  readonly CAL_WEBHOOK_SECRET: string | undefined;
   readonly CLERK_JWT_ISSUER_DOMAIN: string | undefined;
   readonly CLERK_SECRET_KEY: string | undefined;
   readonly CLERK_WEBHOOK_SIGNING_SECRET: string | undefined;
+  readonly HUBSPOT_CLIENT_ID: string | undefined;
+  readonly HUBSPOT_CLIENT_SECRET: string | undefined;
+  readonly HUBSPOT_DELIVERY_ENABLED: string | undefined;
+  readonly HUBSPOT_ENABLED: string | undefined;
+  readonly HUBSPOT_REDIRECT_URI: string | undefined;
+  readonly HUBSPOT_SCOPES: string | undefined;
   readonly LOOPS_API_KEY: string | undefined;
   readonly LOOPS_APPROVAL_ID: string | undefined;
   readonly LOOPS_DECISION_ID: string | undefined;

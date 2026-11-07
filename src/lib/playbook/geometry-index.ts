@@ -1,22 +1,24 @@
-import { PlaybookValidationError } from './validation-error';
-import type { CompiledContract } from '../contract/compiled-contract';
+import type { ValidationSourceFacts } from '../contract/validation-source';
+import type { ReplacementAtom } from '../contract/source-model';
+import { targetContainers } from '../contract/ranges';
 import { pointPosition } from '../contract/source-index';
-import { containsPoint, targetContainers } from '../contract/ranges';
-import { isTextTarget, textTarget } from '../contract/source-model';
-import type { ContractChange, PlaybookItem, SourcePoint, SourceTarget, Trigger } from './model';
+import { isTextTarget } from '../contract/source-model';
 import {
+	changeCrossesBoundaryTrigger,
 	changeTriggerOwner,
 	playbookGeometryKey,
 	triggersIntersect,
 	validateTriggerRange
 } from './geometry';
+import type { ContractChange, PlaybookItem, SourceTarget, Trigger } from './model';
 import {
 	validateChangeGeometry,
-	validateTriggers,
-	validatePlaybookItemContent,
 	validateChangeReferences,
-	validateStructuralReplacementContent
+	validatePlaybookItemContent,
+	validateStructuralReplacementContent,
+	validateTriggers
 } from './validation';
+import { PlaybookValidationError } from './validation-error';
 
 interface TriggerEntry {
 	itemId: string;
@@ -25,8 +27,6 @@ interface TriggerEntry {
 }
 interface ChangeEntry {
 	itemId: string;
-	concessionIndex: number;
-	changeIndex: number;
 	change: ContractChange;
 	containers: readonly string[];
 }
@@ -47,8 +47,14 @@ export class PlaybookGeometryIndex {
 	private changes = new Map<string, Set<ChangeEntry>>();
 	private failures = new Map<string, unknown>();
 	private dirty = new Set<string>();
+	private loadingCertified = false;
 	private containers: { key: string; start: number; end: number }[];
-	constructor(readonly contract: CompiledContract) {
+	constructor(
+		readonly contract: {
+			index: ValidationSourceFacts;
+			validateReference(ref: Extract<ReplacementAtom, { kind: 'reference' }>): void;
+		}
+	) {
 		this.containers = [...contract.index.containers.values()]
 			.map((container) => ({
 				key: container.containerKey,
@@ -58,10 +64,26 @@ export class PlaybookGeometryIndex {
 			.sort((a, b) => a.start - b.start);
 	}
 
+	/** A certified unchanged snapshot needs buckets, not another audit of every relation. */
+	loadCertified(items: Iterable<readonly [string, PlaybookItem]>) {
+		if (this.items.size) throw new Error('Certified geometry requires an empty index');
+		this.loadingCertified = true;
+		try {
+			for (const [id, item] of items) this.set(id, item);
+		} finally {
+			this.loadingCertified = false;
+		}
+		for (const { failures } of this.items.values()) if (failures.length) throw failures[0];
+		this.dirty.clear();
+		this.failures.clear();
+	}
+
 	/** Binary-search the first possible container; include both endpoints for point ownership. */
 	private containersFor(target: SourceTarget): string[] {
 		if (!isTextTarget(target))
-			return targetContainers(this.contract.index, target).map((container) => container.containerKey);
+			return targetContainers(this.contract.index, target).map(
+				(container) => container.containerKey
+			);
 		const start = pointPosition(this.contract.index, target.range.start);
 		const end = pointPosition(this.contract.index, target.range.end);
 		if (start > end) throw new PlaybookValidationError('Source range is reversed');
@@ -95,21 +117,19 @@ export class PlaybookGeometryIndex {
 		const compiled: ItemGeometry = { item, triggers: [], changes: [], failures: [] };
 		const trigger = item.trigger;
 		try {
-			validateTriggerRange(this.contract.index, trigger.range);
-			compiled.triggers.push({ itemId, trigger, containers: this.containersFor(trigger.range) });
+			validateTriggerRange(this.contract.index, trigger.target);
+			compiled.triggers.push({ itemId, trigger, containers: this.containersFor(trigger.target) });
 		} catch (error) {
 			compiled.failures.push(error);
 		}
-		for (const [concessionIndex, concession] of item.concessions.entries())
-			for (const [changeIndex, change] of concession.changes.entries()) {
+		for (const concession of item.concessions)
+			for (const change of concession.changes) {
 				try {
-					targetContainers(this.contract.index, change.range);
+					targetContainers(this.contract.index, change.target);
 					compiled.changes.push({
 						itemId,
-						concessionIndex,
-						changeIndex,
 						change,
-						containers: this.containersFor(change.range)
+						containers: this.containersFor(change.target)
 					});
 				} catch (error) {
 					compiled.failures.push(error);
@@ -123,25 +143,18 @@ export class PlaybookGeometryIndex {
 		}
 		for (const entry of compiled.changes)
 			for (const key of entry.containers) this.add(this.changes, key, entry);
-		this.markAffected(compiled);
-		this.dirty.add(itemId);
+		if (!this.loadingCertified) {
+			this.markAffected(compiled);
+			this.dirty.add(itemId);
+		}
 		this.metrics.entriesInserted += compiled.triggers.length + compiled.changes.length;
 		this.version++;
-	}
-
-	/** Refresh business/source objects without touching interval buckets or geometry version. */
-	updateContent(itemId: string, item: PlaybookItem) {
-		const existing = this.items.get(itemId);
-		if (!existing) return;
-		existing.item = item;
-		for (const entry of existing.changes)
-			entry.change = item.concessions[entry.concessionIndex].changes[entry.changeIndex];
 	}
 
 	remove(itemId: string) {
 		const previous = this.items.get(itemId);
 		if (!previous) return;
-		this.markAffected(previous);
+		if (!this.loadingCertified) this.markAffected(previous);
 		for (const entry of previous.triggers) {
 			this.removeEntry(this.triggerIds, entry.trigger.id, entry);
 			for (const key of entry.containers) this.removeEntry(this.triggers, key, entry);
@@ -175,22 +188,14 @@ export class PlaybookGeometryIndex {
 
 	triggersIntersecting(range: SourceTarget, exclude?: string): Trigger[] {
 		return this.triggerCandidates(range, exclude).filter((trigger) =>
-			triggersIntersect(this.contract.index, trigger.range, range)
-		);
-	}
-
-	triggersContainingPoint(point: SourcePoint, exclude?: string): Trigger[] {
-		return this.triggerCandidates(textTarget({ start: point, end: point }), exclude).filter(
-			(trigger) =>
-				isTextTarget(trigger.range) &&
-				containsPoint(this.contract.index, trigger.range.range, point, true)
+			triggersIntersect(this.contract.index, trigger.target, range)
 		);
 	}
 
 	private ownerForChange(change: ContractChange, exclude?: string, draft: readonly Trigger[] = []) {
 		return changeTriggerOwner(
 			this.contract.index,
-			[...this.triggerCandidates(change.range, exclude), ...draft],
+			[...this.triggerCandidates(change.target, exclude), ...draft],
 			change
 		);
 	}
@@ -208,7 +213,7 @@ export class PlaybookGeometryIndex {
 		for (const trigger of triggers) {
 			if ([...(this.triggerIds.get(trigger.id) ?? [])].some((entry) => entry.itemId !== exclude))
 				throw new PlaybookValidationError(`Duplicate Trigger ID: ${trigger.id}`);
-			const other = this.triggersIntersecting(trigger.range, exclude)[0];
+			const other = this.triggersIntersecting(trigger.target, exclude)[0];
 			if (other)
 				throw new PlaybookValidationError(`Overlapping Triggers: ${other.id}, ${trigger.id}`);
 		}
@@ -218,15 +223,18 @@ export class PlaybookGeometryIndex {
 	/** Throws the original boundary/ambiguous-owner diagnostic for affected persisted changes. */
 	private validateOwnershipAfterTriggers(triggers: readonly Trigger[], exclude?: string) {
 		const affected = new Set(
-			triggers.flatMap((trigger) => this.candidates(this.changes, trigger.range, exclude))
+			triggers.flatMap((trigger) => this.candidates(this.changes, trigger.target, exclude))
 		);
-		for (const entry of affected)
+		for (const entry of affected) {
 			if (
-				triggers.some((trigger) =>
-					triggersIntersect(this.contract.index, trigger.range, entry.change.range)
+				triggers.some(
+					(trigger) =>
+						triggersIntersect(this.contract.index, trigger.target, entry.change.target) ||
+						changeCrossesBoundaryTrigger(this.contract.index, entry.change.target, trigger.target)
 				)
 			)
 				this.ownerForChange(entry.change, exclude, triggers);
+		}
 	}
 
 	validateChanges(
@@ -236,7 +244,7 @@ export class PlaybookGeometryIndex {
 	) {
 		// Item-local conflict order and diagnostic precedence stay in the canonical validator.
 		const triggers = [
-			...new Set(changes.flatMap((change) => this.triggerCandidates(change.range, exclude))),
+			...new Set(changes.flatMap((change) => this.triggerCandidates(change.target, exclude))),
 			...draft
 		];
 		validateChangeGeometry(this.contract.index, triggers, changes);
@@ -264,10 +272,10 @@ export class PlaybookGeometryIndex {
 			)
 		)
 			throw new PlaybookValidationError(`Duplicate Trigger ID: ${trigger.id}`);
-		const other = this.candidates(this.triggers, trigger.range, exclude).find(
+		const other = this.candidates(this.triggers, trigger.target, exclude).find(
 			(entry) =>
 				entry.itemId !== id &&
-				triggersIntersect(this.contract.index, entry.trigger.range, trigger.range)
+				triggersIntersect(this.contract.index, entry.trigger.target, trigger.target)
 		);
 		if (other)
 			throw new PlaybookValidationError(`Overlapping Triggers: ${other.trigger.id}, ${trigger.id}`);
@@ -293,7 +301,7 @@ export class PlaybookGeometryIndex {
 		for (const failure of this.failures.values()) throw failure;
 		for (const { item } of this.items.values()) {
 			validatePlaybookItemContent(item);
-			validateStructuralReplacementContent(this.contract.index, item);
+			validateStructuralReplacementContent(item);
 			validateChangeReferences(this.contract, item);
 		}
 	}
@@ -302,21 +310,15 @@ export class PlaybookGeometryIndex {
 	createDraftValidator() {
 		let previous = '',
 			failure: { diagnostic: unknown } | undefined;
-		return (exclude: string | undefined, item: PlaybookItem, isolated = false) => {
-			const key = JSON.stringify([this.version, exclude, isolated, playbookGeometryKey(item)]);
+		return (exclude: string | undefined, item: Parameters<typeof playbookGeometryKey>[0]) => {
+			const key = JSON.stringify([this.version, exclude, playbookGeometryKey(item)]);
 			if (key !== previous) {
 				previous = key;
 				failure = undefined;
 				try {
-					if (isolated) {
-						validateTriggers(this.contract.index, [item.trigger]);
-						for (const concession of item.concessions)
-							validateChangeGeometry(this.contract.index, [item.trigger], concession.changes);
-					} else {
-						this.validateTriggersReplacing(exclude, [item.trigger]);
-						for (const concession of item.concessions)
-							this.validateChanges(concession.changes, exclude, [item.trigger]);
-					}
+					this.validateTriggersReplacing(exclude, [item.trigger]);
+					for (const concession of item.concessions)
+						this.validateChanges(concession.changes, exclude, [item.trigger]);
 				} catch (diagnostic) {
 					failure = { diagnostic };
 				}

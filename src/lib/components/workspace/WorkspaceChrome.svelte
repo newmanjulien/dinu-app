@@ -5,13 +5,13 @@
 	import HeaderContent from '$lib/components/chrome/HeaderContent.svelte';
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
 	import DocumentSearchPanel from '$lib/components/search/DocumentSearchPanel.svelte';
-	import AppStatus from '$lib/components/chrome/AppStatus.svelte';
+	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
 	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
 	import { isHelpHidden } from '$lib/components/ui/modal/help-storage';
-	import { onMount, tick } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { getContractWorkspace } from '$lib/document/runtime/workspace-context';
 	import { useViewer } from '$lib/auth/viewer-session.svelte';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
@@ -34,23 +34,44 @@
 		helpReady: boolean;
 	} = $props();
 	const { source, renderer, viewer } = getContractWorkspace();
+	onDestroy(
+		getWorkspaceFeedback().registerDocument({
+			get feedback() {
+				return feedback;
+			},
+			get renderPending() {
+				return Boolean(viewer.displayedSnapshot && renderer.pending);
+			},
+			get renderError() {
+				return viewer.displayedSnapshot ? renderer.error : null;
+			},
+			get sourceStale() {
+				return Boolean(viewer.displayedSnapshot && source.issue);
+			},
+			get onRetryRender() {
+				return viewer.retry;
+			}
+		})
+	);
 	const accountViewer = useViewer();
 	let helpInitialized = $state(false);
 	let helpOpen = $state(false);
 	const documentAvailable = $derived(
-		viewer.visible && !source.issue && !renderer.error && !viewer.preparationBlocked
+		viewer.pagesVisible && !source.issue && !renderer.error && !viewer.preparationBlocked
 	);
 	const helpEnabled = $derived(helpInitialized && documentAvailable);
 	$effect(() => {
-		// Check the preference once per workspace opening, after its document is usable.
-		if (!helpReady || !documentAvailable || helpInitialized) return;
+		if (!helpReady || !documentAvailable) return;
+		// Rep Help opens once per workspace opening; Admin Help opens from its button.
+		if (helpInitialized) return;
 		helpInitialized = true;
-		helpOpen = !isHelpHidden(helpVariant);
+		helpOpen = helpVariant === 'rep' && !isHelpHidden();
 	});
 	function openHelp() {
-		if (helpEnabled) helpOpen = true;
+		if (!helpEnabled) return;
+		helpOpen = true;
 	}
-	const searchEnabled = $derived(Boolean(viewer.displayedSnapshot && viewer.visible));
+	const searchEnabled = $derived(Boolean(viewer.displayedSnapshot && viewer.pagesVisible));
 	const searchSession = new DocumentSearchSession();
 	let searchOpen = $state(false);
 	let searchPanelElement = $state<HTMLElement>();
@@ -146,35 +167,20 @@
 	});
 </script>
 
-<HeaderContent>
-	<div
-		class="pointer-events-none absolute top-[calc(100%+20px)] right-0 left-0 flex justify-center max-[999px]:top-[calc(100%+8px)] max-[999px]:right-3 max-[999px]:left-auto max-[999px]:w-[min(454px,calc(100vw-24px))] max-[999px]:flex-col max-[999px]:items-end max-[999px]:gap-2"
-	>
-		{#if searchOpen}
-			<div
-				use:protect
-				class="pointer-events-auto absolute top-0 left-[84px] w-[378px] max-[999px]:static max-[999px]:w-full"
-			>
-				<DocumentSearchPanel
-					session={searchSession}
-					bind:panelElement={searchPanelElement}
-					bind:inputElement={searchInputElement}
-				/>
-			</div>
-		{/if}
+{#if searchOpen}
+	<HeaderContent>
 		<div
-			class={`flex w-fit max-w-[min(640px,calc(100vw-32px))] flex-col gap-2 max-[999px]:w-full ${searchOpen ? 'ml-auto max-w-[calc(100vw-486px)] max-[999px]:max-w-none' : ''}`}
+			use:protect
+			class="pointer-events-auto absolute top-0 left-[84px] w-[378px] max-[999px]:static max-[999px]:w-full"
 		>
-			<AppStatus
-				{feedback}
-				renderPending={Boolean(viewer.displayedSnapshot && renderer.pending)}
-				renderError={viewer.displayedSnapshot ? renderer.error : null}
-				sourceStale={Boolean(viewer.displayedSnapshot && source.issue)}
-				onRetryRender={viewer.retry}
+			<DocumentSearchPanel
+				session={searchSession}
+				bind:panelElement={searchPanelElement}
+				bind:inputElement={searchInputElement}
 			/>
 		</div>
-	</div>
-</HeaderContent>
+	</HeaderContent>
+{/if}
 
 <div
 	use:protect
@@ -183,21 +189,20 @@
 	<SquareIconButton
 		bind:element={mobileSearchButton}
 		type="button"
-		rounded="lg"
 		disabled={!searchEnabled}
 		aria-label="Search contract"
 		aria-pressed={searchOpen}
 		aria-controls="document-search"
 		onclick={() => mobileSearchButton && toggleSearch(mobileSearchButton)}
 	>
-		<MagnifyingGlassIcon aria-hidden="true" size={19} weight="regular" />
+		<MagnifyingGlassIcon aria-hidden="true" class="size-[19px]" weight="regular" />
 	</SquareIconButton>
 	<SquareIconButton
 		type="button"
-		rounded="lg"
 		disabled={!helpEnabled}
 		aria-label="Help: How Dinu works"
-		onclick={openHelp}><InfoIcon aria-hidden="true" size={19} weight="regular" /></SquareIconButton
+		onclick={openHelp}
+		><InfoIcon aria-hidden="true" class="size-[19px]" weight="regular" /></SquareIconButton
 	>
 </div>
 
@@ -219,7 +224,7 @@
 {#if helpEnabled && helpOpen}
 	<HelpModal
 		variant={helpVariant}
-		isAdmin={helpVariant === 'rep' && accountViewer().profile.role === 'admin'}
+		isAdmin={helpVariant === 'rep' && accountViewer().membership.role === 'admin'}
 		onClose={() => (helpOpen = false)}
 	/>
 {/if}

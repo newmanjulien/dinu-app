@@ -1,7 +1,7 @@
-import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
 import type { ReviewTag } from '$lib/contract/approval';
-import { isTextTarget, type SourceRange, type SourceTarget } from '$lib/contract/source-model';
 import { targetPosition } from '$lib/contract/ranges';
+import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
+import { isTextTarget, type SourceRange, type SourceTarget } from '$lib/contract/source-model';
 import type { PaginatedPage } from './pagination/types';
 import { sourcePointBounds } from './selection/dom-selection';
 
@@ -34,7 +34,7 @@ type Token = {
 	span: HTMLElement;
 	start: number;
 	end: number;
-	containerKey: string;
+	blockKey: string;
 	generated: boolean;
 	top?: number | null;
 };
@@ -52,7 +52,7 @@ type CachedPage = {
 	fallbacks: Map<string, Fallback | null>;
 };
 
-/** Token order can differ from source order (tables, revisions, repeated headers).
+/** Token order can differ from source order because of revisions and pagination.
  * Prefix maxima also handle overlapping generated ranges without a document-wide scan. */
 function firstCandidate(page: CachedPage, start: number) {
 	let low = 0,
@@ -75,7 +75,7 @@ export class ReviewAnchorProjector {
 
 	project(
 		host: HTMLElement,
-		tags: readonly Pick<ReviewTag, 'itemId' | 'lifecycle' | 'range'>[],
+		tags: readonly Pick<ReviewTag, 'itemId' | 'applicationId' | 'target'>[],
 		index: SourceIndex,
 		pages: readonly PaginatedPage[],
 		scale: number,
@@ -90,15 +90,15 @@ export class ReviewAnchorProjector {
 			this.geometryKey = geometryKey;
 			this.locations = tags.flatMap<Location>((tag): Location[] => {
 				try {
-					const key = JSON.stringify([tag.itemId, tag.lifecycle]);
-					if (!isTextTarget(tag.range)) {
-						const position = targetPosition(index, tag.range);
+					const key = JSON.stringify([tag.itemId, tag.applicationId]);
+					if (!isTextTarget(tag.target)) {
+						const position = targetPosition(index, tag.target);
 						return [
 							{
 								kind: 'boundary' as const,
 								key,
 								itemId: tag.itemId,
-								afterBlockKey: tag.range.afterBlockKey,
+								afterBlockKey: tag.target.afterBlockKey,
 								start: position,
 								end: position
 							}
@@ -109,9 +109,9 @@ export class ReviewAnchorProjector {
 							kind: 'text' as const,
 							key,
 							itemId: tag.itemId,
-							range: tag.range.range,
-							start: pointPosition(index, tag.range.range.start),
-							end: pointPosition(index, tag.range.range.end)
+							range: tag.target.range,
+							start: pointPosition(index, tag.target.range.start),
+							end: pointPosition(index, tag.target.range.end)
 						}
 					];
 				} catch {
@@ -169,7 +169,7 @@ export class ReviewAnchorProjector {
 								span,
 								start: pointPosition(index, range.start),
 								end: pointPosition(index, range.end),
-								containerKey: index.byKey.get(range.start.sourceKey)!.containerKey,
+								blockKey: index.byKey.get(range.start.sourceKey)!.blockKey,
 								generated: Boolean(span.dataset.visualSource)
 							}
 						];
@@ -182,9 +182,9 @@ export class ReviewAnchorProjector {
 				const maxEnds = tokens.map((token) => (maxEnd = Math.max(maxEnd, token.end)));
 				const containers = new Map<string, Token[]>();
 				for (const token of tokens) {
-					const local = containers.get(token.containerKey);
+					const local = containers.get(token.blockKey);
 					if (local) local.push(token);
-					else containers.set(token.containerKey, [token]);
+					else containers.set(token.blockKey, [token]);
 				}
 				cached = {
 					page,
@@ -193,10 +193,11 @@ export class ReviewAnchorProjector {
 					maxEnds,
 					containers,
 					boundaries: new Map(
-						Array.from(
-							element.querySelectorAll<HTMLElement>('[data-structural-boundary]')
-						).flatMap((target) =>
-							target.dataset.structuralBoundary ? [[target.dataset.structuralBoundary, target]] : []
+						Array.from(element.querySelectorAll<HTMLElement>('[data-structural-boundary]')).flatMap(
+							(target) =>
+								target.dataset.structuralBoundary
+									? [[target.dataset.structuralBoundary, target]]
+									: []
 						)
 					),
 					projections: [],
@@ -287,7 +288,7 @@ export class ReviewAnchorProjector {
 						// Numbered paragraphs trim source whitespace. Find the nearest
 						// visible token in this passage, once per immutable page and point.
 						const unit = index.byKey.get(range.start.sourceKey)!;
-						for (const token of cached.containers.get(unit.containerKey) ?? []) {
+						for (const token of cached.containers.get(unit.blockKey) ?? []) {
 							const distance = Math.max(token.start - start, start - token.end, 0);
 							if (fallback && distance >= fallback.distance) continue;
 							if (token.top === undefined) {

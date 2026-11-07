@@ -1,9 +1,9 @@
-import { sameSourceTarget } from '$lib/contract/source-model';
 import type { ContractBlock } from '$lib/contract/model';
-import type { DocumentOverlayItem } from '$lib/playbook/document-overlay';
-import type { SourceIndex } from '$lib/contract/source-index';
 import type { Address } from '$lib/contract/numbering';
-import type { ContractChange, ConcessionSelection } from '$lib/playbook/model';
+import type { SourceIndex } from '$lib/contract/source-index';
+import { sameSourceTarget } from '$lib/contract/source-model';
+import type { DocumentOverlayItem } from '$lib/playbook/document-overlay';
+import type { ConcessionSelection, ContractChange } from '$lib/playbook/model';
 import type { PaginatedPage } from '../pagination/types';
 
 export type { ConcessionSelection } from '$lib/playbook/model';
@@ -13,8 +13,10 @@ export interface ContractRenderSource {
 	readonly blocks: readonly ContractBlock[];
 	readonly items: readonly DocumentOverlayItem[];
 	readonly sourceIndex: SourceIndex;
+	readonly artifacts?: import('./artifacts').DocumentArtifacts;
 }
 export interface RenderSnapshot {
+	readonly selectionDocument: import('../selection/selection-model').SelectionDocument;
 	readonly id: number;
 	readonly layoutEpoch: string;
 	readonly changedPages: readonly number[];
@@ -51,7 +53,7 @@ export function samePreviewChanges(
 		a.length === b.length &&
 		a.every(
 			(change, i) =>
-				sameSourceTarget(change.range, b[i].range) &&
+				sameSourceTarget(change.target, b[i].target) &&
 				JSON.stringify(change.replacement) === JSON.stringify(b[i].replacement)
 		)
 	);

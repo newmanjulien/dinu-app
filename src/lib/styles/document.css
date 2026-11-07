@@ -9,46 +9,17 @@
 	--document-highlight-search-active: rgba(249, 115, 22, 0.72);
 }
 
-.document-page {
-	position: relative;
-	isolation: isolate;
-	width: var(--contract-page-width);
-	height: var(--contract-page-height);
-	padding: var(--contract-page-top-padding) var(--contract-page-horizontal-padding)
-		var(--contract-page-bottom-padding);
-	overflow: hidden;
-	border: 0;
-	border-radius: 0;
-	outline: var(--surface-border-width) solid var(--color-edge);
-	outline-offset: calc(-1 * var(--surface-border-width));
-	background: var(--color-surface);
-	box-shadow: var(--shadow-card);
-}
-
-.document-page__number {
-	position: absolute;
-	right: 48px;
-	bottom: 32px;
-	font-size: 14px;
-	line-height: 1;
-	color: var(--color-ink-muted);
-}
-
-.document-page.first-page {
-	padding-top: var(--contract-first-page-top-padding);
-}
-
-.document-page__content,
-.layout-profile-surface {
-	width: var(--contract-content-width);
-}
-
 .contract-document {
 	font-weight: 400;
 	font-style: normal;
-	font-family: var(--font-document);
+	font-family: var(--contract-font);
+	font-size: var(--contract-font-size);
+	line-height: var(--contract-line-height);
+	letter-spacing: normal;
+	text-align: left;
 	color: var(--color-ink);
 	user-select: text;
+	white-space: pre-line;
 }
 
 .admin-selection-enabled .contract-document::selection,
@@ -63,120 +34,143 @@
 	box-sizing: border-box;
 }
 
-.document-stage[data-clause-hover],
-.document-stage[data-clause-hover] * {
+.document-stage[data-clause-hover]:not([data-source-selection-enabled]),
+.document-stage[data-clause-hover]:not([data-source-selection-enabled]) * {
 	cursor: pointer;
 }
 
-.playbook-trigger:focus-visible {
-	outline: 2px solid var(--color-accent);
-	outline-offset: 2px;
+/* The whole eligible page, including its side padding, accepts text dragging. */
+.document-stage[data-source-selection-enabled] .document-page {
+	cursor: text;
 }
-
-.contract-revision-removed {
-	text-decoration: line-through;
-	user-select: none;
-	-webkit-user-select: none;
+.document-stage[data-source-selection-enabled] .document-page [data-document-control],
+.document-stage[data-source-selection-enabled] .document-page button,
+.document-stage[data-source-selection-enabled] .document-page a {
+	cursor: pointer;
 }
-
-.contract-revision-added {
-	text-decoration: none;
+.document-stage[data-source-selection-enabled] .document-page [data-document-chrome] {
+	cursor: default;
 }
-
-.contract-flow {
-	display: flex;
-	flex-direction: column;
-}
-
-.contract-heading {
-	scroll-margin-top: calc(var(--app-header-height) + var(--document-viewport-gap));
-}
-
-.contract-heading:focus {
-	outline: none;
-}
-
-.contract-document h1,
-.contract-document h2,
-.contract-document h3,
-.contract-document p {
-	flex: 0 0 auto;
-	margin-right: 0;
-	margin-left: 0;
-}
-
-.contract-document h1 {
-	--document-block-margin-before: 0px;
-	--document-block-margin-after: 33px;
-	text-align: center;
-	margin-top: var(--document-block-margin-before);
-	margin-bottom: var(--document-block-margin-after);
-	font-size: 20px;
-	line-height: 0;
-	letter-spacing: -0.4px;
-}
-
-.contract-document h2 {
-	--document-block-margin-before: 34px;
-	--document-block-margin-after: 10px;
-	margin-top: var(--document-block-margin-before);
-	margin-bottom: var(--document-block-margin-after);
-	font-size: 17px;
-	line-height: 1.25;
-	letter-spacing: -0.25px;
-}
-
-/* Keep the browser's h3 spacing explicit so a structural boundary can occupy its real margin. */
-.contract-document h3 {
-	--document-block-margin-before: 1em;
-	--document-block-margin-after: 1em;
-	margin-top: var(--document-block-margin-before);
-	margin-bottom: var(--document-block-margin-after);
-}
-
-.contract-document p {
-	--document-block-margin-before: 0px;
-	--document-block-margin-after: 20px;
-	margin-top: var(--document-block-margin-before);
-	margin-bottom: var(--document-block-margin-after);
-	font-size: 15px;
-	line-height: 1.46;
-}
-
-.contract-document .contract-paragraph {
-	text-align: justify;
-}
-
-.contract-document .contract-paragraph:not(.is-final) {
-	--document-block-margin-after: 0px;
-	margin-bottom: var(--document-block-margin-after);
-}
-
-/* Structural boundaries and their saved anchors never participate in pagination geometry. */
-.contract-document .contract-block.has-structural-boundary {
+.selection-break-owner {
 	position: relative;
-	--structural-boundary-after: var(--document-block-margin-after);
+	display: block;
+	flex: 0 0 0;
+	height: 0;
+	width: 100%;
 }
 
-.contract-document .structural-boundary-target {
+.contract-document .contract-block {
+	flex: 0 0 auto;
+	margin: var(--document-block-margin-before, 0px) 0 0;
+	font: inherit;
+	letter-spacing: inherit;
+	text-align: inherit;
+}
+
+/* Absolute controls never add text, line boxes, or pagination space. */
+.structural-boundary-controls {
 	position: absolute;
-	z-index: 1;
-	inset-inline: 0;
+	pointer-events: none;
+	top: 100%;
+	left: 0;
+	width: 100%;
+	height: var(--boundary-gap);
+	--boundary-handle-size: calc(24px / var(--document-page-scale, 1));
+}
+
+.structural-boundary-controls button {
 	pointer-events: auto;
 }
 
-.contract-document .structural-boundary-target {
-	top: 100%;
-	height: var(--structural-boundary-after);
+.structural-boundary-target,
+.structural-boundary-control {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.structural-boundary-target {
+	pointer-events: none;
+}
+
+.structural-boundary-control {
+	padding: 0;
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+	user-select: none;
+	touch-action: pan-y;
+}
+
+.structural-boundary-control:hover,
+.structural-boundary-control:focus-visible {
+	background: var(--color-accent-soft);
+}
+
+.structural-boundary-control:focus-visible {
+	outline: 2px solid var(--color-accent);
+	outline-offset: -2px;
+}
+
+.structural-boundary-handle,
+.structural-boundary-target--gutter,
+.structural-boundary-control--gutter {
+	position: absolute;
+	inset: auto;
+	left: var(--boundary-gutter);
+	top: calc((var(--boundary-gap) - var(--boundary-handle-size)) / 2);
+	width: var(--boundary-handle-size);
+	height: var(--boundary-handle-size);
+}
+
+.structural-boundary-handle {
+	display: grid;
+	place-items: center;
+	border: 1px solid var(--color-edge);
+	border-radius: 4px;
+	background: var(--color-surface);
+	color: var(--color-ink-muted);
+}
+
+.structural-boundary-control--gutter .structural-boundary-handle {
+	inset: 0;
+}
+
+.structural-boundary-control:hover .structural-boundary-handle,
+.structural-boundary-control:focus-visible .structural-boundary-handle {
+	border-color: var(--color-accent);
+	color: var(--color-accent);
+}
+
+.structural-boundary-count {
+	position: absolute;
+	right: -4px;
+	bottom: -4px;
+	border-radius: 3px;
+	padding: 0 2px;
+	background: var(--color-surface);
+	font:
+		10px/12px Arial,
+		sans-serif;
+}
+
+.contract-document .contract-heading {
+	font-size: var(--contract-heading-font-size);
+}
+
+.contract-document .is-title {
+	font-size: var(--contract-title-font-size);
+	line-height: var(--contract-title-line-height);
+	font-weight: 400;
+	text-align: center;
+	white-space: pre-line;
 }
 
 .contract-table {
 	width: 100%;
-	margin: 12px 0 24px;
 	border-collapse: collapse;
 	table-layout: fixed;
-	font-size: 14px;
-	line-height: 1.4;
 }
 
 .contract-table th,
@@ -194,12 +188,7 @@
 	background: var(--color-fill-subtle);
 }
 
-.contract-table .playbook-trigger {
-	display: block;
-}
-
 .signature-table {
-	margin: 30px 0;
 	table-layout: auto;
 }
 
@@ -209,25 +198,6 @@
 	padding: 9px 12px 9px 0;
 	border: 0;
 	background: transparent;
-}
-
-.layout-profile-surface {
-	position: fixed;
-	top: 0;
-	left: -100000px;
-	height: auto;
-	visibility: hidden;
-	pointer-events: none;
-}
-
-/* One page-local layer paints all text highlights without changing text layout. */
-.document-highlights {
-	position: absolute;
-	inset: 0;
-	width: 100%;
-	height: 100%;
-	pointer-events: none;
-	mix-blend-mode: multiply;
 }
 
 .document-stage[data-highlights-ready] .document-page__content::selection,
@@ -245,6 +215,13 @@
 
 .document-highlight--trigger[data-trigger-state='selected'] {
 	fill: var(--document-highlight-trigger-selected);
+}
+
+.document-highlight--trigger[data-trigger-state='pending'] {
+	fill: var(--document-highlight-selection);
+	stroke: var(--color-accent);
+	stroke-width: 1;
+	stroke-dasharray: 3 2;
 }
 
 .document-highlight--revision-added {
@@ -289,4 +266,9 @@
 		background: Highlight;
 		color: HighlightText;
 	}
+}
+
+[data-annotation-projected][data-annotation-measured='true']:focus-visible {
+	outline: 2px solid var(--color-accent);
+	outline-offset: 2px;
 }

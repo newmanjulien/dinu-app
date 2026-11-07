@@ -7,7 +7,7 @@
 	const session = useViewerSession();
 </script>
 
-{#if session.admitted && account?.() && !account()!.needsInitialization && !session.closing}
+{#if session.workspaceAdmitted && account?.() && !account()!.needsInitialization && !session.closing}
 	{@render children()}
 {:else}
 	<AccountLoading {inline} />

@@ -133,7 +133,10 @@
 	});
 </script>
 
-<div class="dot-field pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+<div
+	class="mask-[linear-gradient(to_bottom,black_10%,transparent_40%,transparent_60%,black_90%)] pointer-events-none absolute inset-0 overflow-hidden"
+	aria-hidden="true"
+>
 	<svg class="absolute inset-0 size-full" class:invisible={ready} width="100%" height="100%">
 		<defs>
 			<pattern id="auth-dot-grid" width={spacing} height={spacing} patternUnits="userSpaceOnUse">
@@ -144,9 +147,3 @@
 	</svg>
 	<canvas bind:this={canvas} class="absolute inset-0 size-full"></canvas>
 </div>
-
-<style>
-	.dot-field {
-		mask-image: linear-gradient(to bottom, black 10%, transparent 40%, transparent 60%, black 90%);
-	}
-</style>

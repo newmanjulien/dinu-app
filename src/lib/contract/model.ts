@@ -14,25 +14,15 @@ export interface ResolvedRun {
 }
 export type ResolvedBlock =
 	| {
-			kind: 'heading';
-			blockKey: string;
-			anchor: string;
-			level: 1 | 2 | 3;
-			content: ResolvedRun[];
-			/** Exact source-owned boundaries physically hosted after this output block. */
-			boundariesAfter?: readonly import('./source-index').StructuralBoundary[];
-	  }
-	| {
 			kind: 'paragraph';
+			role: import('./source-model').ParagraphRole;
+			anchor?: string;
+			/** Legal depth is independent of the flat presentation role. */
+			numberingDepth?: number;
+			continueNumbering?: false;
 			blockKey: string;
 			content: ResolvedRun[];
 			/** Exact source-owned boundaries physically hosted after this output block. */
 			boundariesAfter?: readonly import('./source-index').StructuralBoundary[];
 	  }
-	| {
-			kind: 'table';
-			blockKey: string;
-			variant?: 'signature';
-			headerRowCount: number;
-			rows: { content: ResolvedRun[] }[][];
-	  };
+	| import('./source-model').SourceTable;

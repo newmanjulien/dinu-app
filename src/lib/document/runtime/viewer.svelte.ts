@@ -6,8 +6,8 @@ export class ContractViewerState {
 	restoreAnnotationFocus = $state<() => void>();
 	captureAnnotationFocus = $state<() => () => void>();
 	displayedSnapshot = $state.raw<RenderSnapshot | null>(null);
-	ready = $state(false);
-	prepared = $state(false);
-	visible = $state(false);
+	interactionEnabled = $state(false);
+	layoutPrepared = $state(false);
+	pagesVisible = $state(false);
 	preparationBlocked = $state(false);
 }

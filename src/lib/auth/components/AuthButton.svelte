@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import Button from '$lib/ui/Button.svelte';
-	import { accentButtonClass } from '$lib/ui/button-styles';
 	import type { ButtonHref } from '$lib/ui/types';
 
 	type Props = {
@@ -34,7 +33,8 @@
 	aria-keyshortcuts={ariaKeyshortcuts}
 	class={[
 		'relative h-auto min-h-button-sm w-full whitespace-normal [overflow-wrap:anywhere]',
-		variant === 'primary' && accentButtonClass
+		variant === 'primary' &&
+			'bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover'
 	]}
 >
 	{@render children()}

@@ -17,18 +17,17 @@
 		type LayoutProfileSurface
 	} from '$lib/document/pagination/profiler';
 	import {
-		readHeadingProfile,
 		readParagraphProfile,
 		readParagraphBounds,
 		readTableColumns,
 		readTableProfile
 	} from '$lib/document/pagination/profile-dom';
 	import BlockFragment from './BlockFragment.svelte';
+	import { CONTRACT_STYLE } from '$lib/contract/format';
 
 	let { surface = $bindable() }: { surface?: LayoutProfileSurface } = $props();
 	let element: HTMLDivElement;
-	let fragments = $state.raw<readonly PageFragment[]>([]);
-	const ignoreAnnotationSelect = () => {};
+	let fragment = $state.raw<PageFragment>();
 
 	onMount(() => {
 		countStartupWork('profileSurfaceMount');
@@ -52,11 +51,7 @@
 					visit: (profile: BlockLayoutProfile, readExact: () => BlockLayoutProfile) => T,
 					metrics?: LayoutProfileMetrics
 				): T {
-					let result!: T;
-					profile([block], expected, metrics, detail, (measured, exact) => {
-						result = visit(measured, exact);
-					});
-					return result;
+					return profile(block, expected, detail, visit, metrics);
 				}
 			};
 		}
@@ -67,101 +62,85 @@
 			epoch = undefined;
 			surface = undefined;
 		}
-		function profile(
-			blocks: readonly PreparedBlock[],
+		function profile<T>(
+			prepared: PreparedBlock,
 			expectedEpoch: string,
-			metrics?: LayoutProfileMetrics,
-			detail: GeometryDetail = 'exact',
-			visit?: (profile: BlockLayoutProfile, readExact: () => BlockLayoutProfile) => void
-		) {
+			detail: GeometryDetail,
+			visit: (profile: BlockLayoutProfile, readExact: () => BlockLayoutProfile) => T,
+			metrics?: LayoutProfileMetrics
+		): T {
 			const checkEpoch = () => {
 				if (!mounted || document.fonts.status !== 'loaded' || epoch !== expectedEpoch)
 					throw new StaleLayoutProfileError();
 			};
 			checkEpoch();
-			const blockReadMs = metrics ? blocks.map(() => 0) : [];
-			function write(next: readonly PageFragment[]) {
+			let blockReadMs = 0;
+			function write(next?: PageFragment) {
 				const startedAt = metrics ? performance.now() : 0;
 				try {
 					flushSync(() => {
-						fragments = next;
+						fragment = next;
 					});
 				} finally {
 					if (metrics) metrics.profileDomUpdateMs += performance.now() - startedAt;
 				}
 			}
-			function read(index: number, measure: () => void) {
+			function read<R>(measure: () => R): R {
 				const startedAt = metrics ? performance.now() : 0;
 				try {
-					measure();
+					return measure();
 				} finally {
 					if (metrics) {
 						const elapsed = performance.now() - startedAt;
 						metrics.profileReadMs += elapsed;
-						blockReadMs[index] += elapsed;
-						metrics.maxProfileBlockMs = Math.max(metrics.maxProfileBlockMs, blockReadMs[index]);
+						blockReadMs += elapsed;
+						metrics.maxProfileBlockMs = Math.max(metrics.maxProfileBlockMs, blockReadMs);
 					}
 				}
 			}
+			function currentElement(): HTMLElement {
+				const current = element.firstElementChild;
+				if (!(current instanceof HTMLElement)) throw new Error('Missing profile block.');
+				return current;
+			}
 			try {
-				write(blocks.map((block) => block.fragment));
+				const whole = prepared.fragment;
+				write(whole);
 				checkEpoch();
-				const elements = [...element.children];
-				if (elements.length !== blocks.length) throw new Error('Missing profile batch elements.');
-				const profiles: BlockLayoutProfile[] = [];
-				const fixed = [...fragments];
-				let hasTables = false;
-				// All first-pass reads follow one batch write, with no writes in this loop.
-				fragments.forEach((fragment, i) => {
-					read(i, () => {
-						const block = elements[i];
-						if (!(block instanceof HTMLElement)) throw new Error('Missing profile block.');
-						if (fragment.type === 'table') {
-							if (!(block instanceof HTMLTableElement)) throw new Error('Missing profile table.');
-							fixed[i] = { ...fragment, columnWidths: readTableColumns(block, fragment) };
-							hasTables = true;
-						} else
-							profiles[i] =
-								fragment.type === 'heading'
-									? readHeadingProfile(block, fragment)
-									: ((detail === 'bounds' ? readParagraphBounds(block, fragment) : undefined) ??
-										readParagraphProfile(block, fragment));
-					});
-				});
-				if (hasTables) {
-					// Canonicalize all tables together. Pagination never requests a row slice.
+				let measured: BlockLayoutProfile;
+				if (whole.type === 'table') {
+					const table = currentElement();
+					if (!(table instanceof HTMLTableElement)) throw new Error('Missing profile table.');
+					const fixed = { ...whole, columnWidths: read(() => readTableColumns(table, whole)) };
 					write(fixed);
 					checkEpoch();
-					fixed.forEach((fragment, i) => {
-						if (fragment.type !== 'table') return;
-						read(i, () => {
-							const table = element.children[i];
-							if (!(table instanceof HTMLTableElement))
-								throw new Error('Missing fixed profile table.');
-							profiles[i] = readTableProfile(table, fragment);
-						});
-					});
+					const canonical = currentElement();
+					if (!(canonical instanceof HTMLTableElement))
+						throw new Error('Missing fixed profile table.');
+					measured = read(() => readTableProfile(canonical, fixed));
+				} else {
+					const current = currentElement();
+					measured = read(
+						() =>
+							(detail === 'bounds' ? readParagraphBounds(current, whole) : undefined) ??
+							readParagraphProfile(current, whole)
+					);
 				}
 				checkEpoch();
-				visit?.(profiles[0], () => {
-					if (profiles[0].kind !== 'paragraph' || profiles[0].lines) return profiles[0];
+				const result = visit(measured, () => {
 					checkEpoch();
-					const block = element.children[0];
-					const fragment = fragments[0];
-					if (!(block instanceof HTMLElement) || fragment.type !== 'paragraph')
-						throw new Error('Missing scoped paragraph.');
-					read(0, () => {
-						profiles[0] = readParagraphProfile(block, fragment);
-					});
-					return profiles[0];
+					if (measured.kind === 'paragraph' && !measured.lines && whole.type === 'paragraph')
+						measured = read(() => readParagraphProfile(currentElement(), whole));
+					checkEpoch();
+					return measured;
 				});
 				checkEpoch();
-				return { epoch: expectedEpoch, profiles };
+				return result;
 			} finally {
-				// Release content and its hidden DOM after all reads, including failed batches.
-				write([]);
+				write();
 			}
 		}
+
 		// Never publish fallback-font geometry as a ready epoch. A live getter also
 		// invalidates retained handles before a queued result can enter the cache.
 		void document.fonts.ready.then(publish);
@@ -179,19 +158,14 @@
 </script>
 
 <div
-	class="layout-profile-surface contract-document contract-flow"
+	class="contract-document pointer-events-none invisible fixed top-0 left-[-100000px] flex h-auto w-(--contract-content-width) flex-col"
 	aria-hidden="true"
 	inert
 	bind:this={element}
+	style={CONTRACT_STYLE}
 	style:--contract-content-width={`${PAGE_FORMAT.contentWidth}px`}
 >
-	{#each fragments as fragment}
-		<BlockFragment
-			{fragment}
-			profileMode
-			selectedAnnotationId={null}
-			canOpenPlaybookItems={false}
-			onAnnotationSelect={ignoreAnnotationSelect}
-		/>
-	{/each}
+	{#if fragment}
+		<BlockFragment {fragment} profileMode />
+	{/if}
 </div>

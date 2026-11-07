@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { onDestroy } from 'svelte';
 	import { useConvexClient } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
@@ -51,6 +52,8 @@
 	}
 </script>
 
+<WorkspacePresentationReporter outcome="success" />
+
 <section
 	class="flex min-h-[calc(100dvh-var(--app-header-height))] w-full bg-page px-3 py-4 md:px-6 md:py-6"
 >
@@ -65,8 +68,7 @@
 				footerText="We display your email if you don't provide a name."
 				saving={busy.name}
 				errorText={errors.name}
-				onSave={(name) =>
-					perform('name', () => client.mutation(api.settings.savePersonalName, { name }))}
+				onSave={(name) => perform('name', () => client.mutation(api.profiles.setName, { name }))}
 			/>
 			<SettingsReadonlyFieldCard
 				title="Sign-in email"
@@ -88,7 +90,7 @@
 					errorText={errors.companyName}
 					onSave={(name) =>
 						perform('companyName', () =>
-							client.mutation(api.settings.saveCompanyName, { membershipId, name })
+							client.mutation(api.companies.setName, { membershipId, name })
 						)}
 				/>
 				<SettingsTextFieldCard
@@ -102,17 +104,16 @@
 					errorText={errors.approvalEmail}
 					onSave={(email) =>
 						perform('approvalEmail', () =>
-							client.mutation(api.settings.saveApprovalEmail, { membershipId, email })
+							client.mutation(api.companies.setApprovalEmail, { membershipId, email })
 						)}
 				/>
 			{/if}
 			<SettingsRoleCard
-				value={viewer().profile.role}
+				value={viewer().membership.role}
 				saving={busy.role}
 				disabled={session.blocked}
 				errorText={errors.role}
-				onSave={(role) =>
-					perform('role', () => client.mutation(api.settings.savePersonalRole, { role }))}
+				onSave={(role) => perform('role', () => client.mutation(api.memberships.setRole, { role }))}
 			/>
 			<SettingsAvatarCard
 				title="Your avatar"
@@ -126,7 +127,7 @@
 				{#snippet preview()}<Avatar
 						name={viewer().profile.name || viewer().profile.email}
 						avatarUrl={viewer().profile.avatarUrl}
-						size={68}
+						class="size-17"
 					/>{/snippet}
 			</SettingsAvatarCard>
 			{#if viewer().permissions.editCompanyProfile}
@@ -143,7 +144,7 @@
 							name={viewer().company.name}
 							avatarUrl={viewer().company.avatarUrl}
 							fallbackUrl={null}
-							size={68}
+							class="size-17"
 						/>{/snippet}
 				</SettingsAvatarCard>
 			{/if}

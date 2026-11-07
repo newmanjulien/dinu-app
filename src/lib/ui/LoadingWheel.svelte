@@ -1,8 +1,9 @@
 <script lang="ts">
-	let { label = 'Loading', size = 'size-6' }: { label?: string; size?: string } = $props();
+	import { cn } from '$lib/ui/cn';
+	let { label = 'Loading', class: className = '' }: { label?: string; class?: string } = $props();
 </script>
 
-<span class={`inline-flex ${size} shrink-0`} role="status">
+<span class={cn('inline-flex size-6 shrink-0', className)} role="status">
 	<svg
 		class="size-full animate-spin text-line-strong [animation-duration:1s] [animation-timing-function:steps(12)] motion-reduce:animate-none"
 		viewBox="0 0 24 24"

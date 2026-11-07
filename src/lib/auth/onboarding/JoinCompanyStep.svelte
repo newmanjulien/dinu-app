@@ -58,7 +58,7 @@
 			{/each}
 		{:else if invitations.data}
 			<div class="rounded-xl border-hairline border-edge bg-surface p-6 shadow-card text-center">
-				<UsersIcon size={24} weight="light" aria-hidden="true" class="mx-auto text-ink-muted" />
+				<UsersIcon weight="light" aria-hidden="true" class="size-6 mx-auto text-ink-muted" />
 				<h2 class="mt-4 text-sm font-medium">Ask a colleague for an invitation</h2>
 				<p class="mt-2 text-[13px] leading-5 text-ink-muted">
 					They’ll need to invite <span class="break-words text-ink">{account()?.profile.email}</span

@@ -191,9 +191,6 @@ export class CompositionArtifactStore {
 		this.#protected.clear();
 		for (const entry of roots) this.#release(entry);
 	}
-	get optionalSize() {
-		return this.#optional.size;
-	}
 }
 
 /** Standalone synchronous consumers cache only within their current composition. */

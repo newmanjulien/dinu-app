@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { rendering } from './rendering.svelte';
-	import type { ContractSession } from '../../src/lib/contract/sessions.svelte';
+	import type { ContractEditor } from '../../src/lib/contract/editors.svelte';
 	import type { Id } from '../../src/convex/_generated/dataModel';
 	let {
-		session,
+		editor,
 		onVisible
 	}: {
-		session: ContractSession;
+		editor: ContractEditor;
 		onVisible?: () => void;
 		snapshot?: unknown;
 		onFailure?: () => void;
@@ -17,7 +17,7 @@
 	});
 </script>
 
-<div aria-label="Contract viewer">{JSON.stringify(session.persistence?.choices)}</div>
-<button onclick={() => session.persistence?.select('item-a' as Id<'playbookItems'>, 'preferred')}
+<div aria-label="Contract viewer">{JSON.stringify(editor.persistence?.choices)}</div>
+<button onclick={() => editor.persistence?.select('item-a' as Id<'playbookItems'>, 'preferred')}
 	>Select concession</button
 >

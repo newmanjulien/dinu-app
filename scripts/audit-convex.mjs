@@ -5,9 +5,9 @@ import { companyArguments, companyDeployment } from './company-convex.mjs';
 
 const { companyId, exactSeed } = companyArguments({ audit: true });
 const deployment = await companyDeployment({ companyId, readOnly: true });
-const { blocks, items, publication } = await deployment.run('operator:readSeed', { companyId });
-assert.deepEqual(publication.blocks, blocks, 'Published blocks differ from the live baseline');
-assert.deepEqual(publication.items, items, 'Published items differ from live authoring');
+const { blocks, items, snapshot } = await deployment.run('operator:readSeed', { companyId });
+assert.deepEqual(snapshot.blocks, blocks, 'Saved blocks differ from the live baseline');
+assert.deepEqual(snapshot.items, items, 'Saved items differ from live authoring');
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 try {
 	const { validatePlaybook } = await server.ssrLoadModule('/src/lib/playbook/audit.ts');

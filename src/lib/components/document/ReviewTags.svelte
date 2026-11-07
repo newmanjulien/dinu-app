@@ -42,7 +42,9 @@
 	};
 	const tagsByItem = $derived(new Map(tags.map((tag) => [tag.itemId, tag])));
 	// Status changes update labels without reading document geometry again.
-	const geometryKey = $derived(JSON.stringify(tags.map((t) => [t.itemId, t.lifecycle, t.range])));
+	const geometryKey = $derived(
+		JSON.stringify(tags.map((t) => [t.itemId, t.applicationId, t.target]))
+	);
 	$effect(() => {
 		const root = host,
 			source = index;
@@ -131,7 +133,11 @@
 	}
 </script>
 
-<div class="review-gutter" aria-label="Concession reviews">
+<!-- The page covers the rightmost 8px of each tab; center the label in the exposed area. -->
+<div
+	class="absolute top-0 left-[calc(0px-var(--review-gutter))] z-0 w-(--review-gutter)"
+	aria-label="Concession reviews"
+>
 	{#each anchors as anchor, i (anchor.key)}
 		{@const tag = tagsByItem.get(anchor.itemId)}
 		{#if tag}
@@ -146,10 +152,16 @@
 				{#snippet children(descriptionId)}
 					<button
 						type="button"
-						class="review-tab"
-						class:approved={tag.status === 'approved'}
-						class:rejected={tag.status === 'rejected'}
-						class:waiting={!tag.admin && tag.status === 'pending'}
+						class={[
+							'absolute left-0 flex h-8.5 @min-[1150px]:h-[clamp(32px,2.6cqw,34px)] w-[calc(100%+8px)] cursor-pointer items-center justify-center gap-1 @min-[1150px]:gap-[clamp(3px,0.3cqw,4px)] rounded-l-lg border-0 pr-2 font-sans text-[13px] @min-[1150px]:text-[clamp(12px,1cqw,13px)] font-normal leading-[1.2] whitespace-nowrap shadow-control focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent aria-disabled:cursor-default',
+							!tag.admin && tag.status === 'pending'
+								? 'bg-control-fill text-ink-muted'
+								: tag.status === 'approved'
+									? 'bg-[color-mix(in_srgb,var(--color-success)_90%,white)] text-white'
+									: tag.status === 'rejected'
+										? 'bg-[color-mix(in_srgb,var(--color-danger)_90%,white)] text-white'
+										: 'bg-[color-mix(in_srgb,var(--color-accent)_90%,white)] text-white'
+						]}
 						style:top={`${anchor.top}px`}
 						use:register={anchor.key}
 						aria-label={`${label(tag)}: ${tag.description}`}
@@ -176,8 +188,8 @@
 					>
 						{label(tag)}{#if tag.admin}<CaretDownIcon
 								aria-hidden="true"
-								size={12}
 								weight="bold"
+								class="size-3 @min-[1150px]:size-[clamp(11px,0.9cqw,12px)]"
 							/>{/if}
 					</button>
 				{/snippet}
@@ -213,57 +225,3 @@
 		{/if}
 	{/each}
 </div>
-
-<style>
-	.review-gutter {
-		position: absolute;
-		left: calc(0px - var(--review-gutter));
-		top: 0;
-		width: var(--review-gutter);
-		z-index: 0;
-	}
-	.review-tab {
-		position: absolute;
-		left: 0;
-		/* The page covers the rightmost 8px; center the label in the exposed tab. */
-		width: calc(100% + 8px);
-		padding-right: 8px;
-		height: var(--review-tab-height, 34px);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: var(--review-tab-gap, 4px);
-		border: 0;
-		border-radius: 8px 0 0 8px;
-		background: color-mix(in srgb, var(--color-accent) 90%, white);
-		color: white;
-		font-family: var(--font-sans, sans-serif);
-		font-size: var(--review-tab-font-size, 13px);
-		font-weight: 400;
-		line-height: 1.2;
-		cursor: pointer;
-		white-space: nowrap;
-		box-shadow: var(--shadow-control);
-	}
-	.review-tab :global(svg) {
-		width: var(--review-tab-icon-size, 12px);
-		height: var(--review-tab-icon-size, 12px);
-	}
-	.review-tab:focus-visible {
-		outline: 2px solid var(--color-accent);
-		outline-offset: 3px;
-	}
-	.review-tab[aria-disabled='true'] {
-		cursor: default;
-	}
-	.approved {
-		background: color-mix(in srgb, var(--color-success) 90%, white);
-	}
-	.rejected {
-		background: color-mix(in srgb, var(--color-danger) 90%, white);
-	}
-	.waiting {
-		background: var(--color-control-fill);
-		color: var(--color-ink-muted);
-	}
-</style>

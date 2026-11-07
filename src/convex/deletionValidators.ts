@@ -1,13 +1,5 @@
 import { v } from 'convex/values';
 
-export const PREPARATION_TTL = 15 * 60_000;
-export const DELETION_ATTEMPT_MAX_LENGTH = 128;
-export const MEMBERSHIP_ELIGIBILITY_SCAN_LIMIT = 100;
-
-// Discovery targets and provider/write limits have separate owners.
-export const RECONCILIATION_PAGE_SIZE = 100;
-export const CLERK_USER_BATCH_SIZE = 100;
-export const ACCOUNT_DELETION_BATCH_SIZE = 25;
 export const deletionIdentity = v.object({ issuer: v.string(), clerkId: v.string() });
 
 const accountDeletion = v.object({
@@ -28,13 +20,17 @@ export const deletedUser = v.union(
 // Schema admission and worker order share one complete phase list.
 export const companyCleanupPhases = [
 	'invitations',
+	'hubspot',
 	'approvals',
 	'deliveries',
-	'emailSnapshots',
+	'emailSelectionChunks',
 	'decisions',
 	'contracts',
 	'contractDirectory',
 	'contractCleanups',
+	'validationCertificates',
+	'validationFacts',
+	'authoringMigrations',
 	'blocks',
 	'items',
 	'itemReceipts',
@@ -43,9 +39,7 @@ export const companyCleanupPhases = [
 	'pointer',
 	'baselines',
 	'itemRevisions',
-	'delegationAttachments',
-	'delegationRequests',
-	'delegationCancellations',
+	'csmBookings',
 	'memberships',
 	'company'
 ] as const;

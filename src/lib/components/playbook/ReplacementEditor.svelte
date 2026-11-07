@@ -12,8 +12,7 @@
 		sameReplacementAtoms,
 		type ReplacementAtomValue
 	} from '$lib/contract/replacement-content';
-	import type { DeepReadonly } from '$lib/playbook/draft';
-	import { fieldClass } from '$lib/ui/field-styles';
+	import type { DeepReadonly } from '../../immutable';
 	import {
 		clearReplacementReferenceHighlights,
 		setReplacementReferenceHighlights
@@ -300,8 +299,7 @@
 <div class="flex min-w-0 flex-col gap-2">
 	<div
 		bind:this={editor}
-		class={`${fieldClass} replacement-editor block min-h-28 resize-y overflow-auto whitespace-pre-wrap py-2 leading-[1.45]`}
-		class:empty
+		class={`w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted relative block min-h-28 resize-y overflow-auto whitespace-pre-wrap py-2 leading-[1.45] aria-disabled:bg-canvas ${empty ? 'before:pointer-events-none before:absolute before:text-ink-muted before:content-[attr(data-placeholder)]' : ''}`}
 		contenteditable={disabled ? 'false' : 'plaintext-only'}
 		role="textbox"
 		aria-label={label}
@@ -330,18 +328,6 @@
 </div>
 
 <style>
-	.replacement-editor {
-		position: relative;
-	}
-	.replacement-editor.empty::before {
-		position: absolute;
-		content: attr(data-placeholder);
-		color: var(--color-ink-muted);
-		pointer-events: none;
-	}
-	.replacement-editor[aria-disabled='true'] {
-		background: var(--color-canvas);
-	}
 	:global(::highlight(dinu-replacement-reference)) {
 		text-decoration: underline dotted color-mix(in srgb, var(--color-accent) 52%, transparent);
 		text-underline-offset: 0.16em;

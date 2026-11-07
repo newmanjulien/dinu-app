@@ -1,6 +1,0 @@
-npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
-
-> agreed@0.0.1 format:check
-> prettier --check src scripts
-
-sh: 1: prettier: not found

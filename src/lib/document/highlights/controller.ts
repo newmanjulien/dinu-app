@@ -1,5 +1,6 @@
 import {
 	buildLineMaps,
+	selectionTextHit,
 	rangePageNumbers,
 	selectedLineBounds,
 	measureRanges,
@@ -103,13 +104,12 @@ function sameHighlights(a: readonly HighlightRect[], b: readonly HighlightRect[]
 }
 type Group = {
 	kind: HighlightKind;
+	owner?: HTMLElement;
 	ranges: Map<Range, RangeRecord>;
 	pages?: ReadonlySet<number>;
 };
 type BoundarySelection = {
 	key: string;
-	startRatio: number;
-	endRatio: number;
 };
 type BoundaryGroup = {
 	kind: HighlightKind;
@@ -132,6 +132,7 @@ export class DocumentHighlightController {
 	#groups = new Map<string, Group>();
 	#boundaryGroups = new Map<string, BoundaryGroup>();
 	#structuralBoundaries = new Map<string, StructuralBoundaryTarget>();
+	#boundaryElements = new Map<string, HTMLElement>();
 	/** Range ownership survives unmeasured and dirty page geometry. */
 	#pageGroups = new Map<number, Map<string, Set<Range>>>();
 	#pages = new Map<number, PageRecord>();
@@ -152,6 +153,7 @@ export class DocumentHighlightController {
 	#paintDirty = new Set<number>();
 	#selectionDirty = true;
 	#nativeRanges: Range[] = [];
+	#selectionProjection: readonly Range[] | null = null;
 	#frame: number | undefined;
 	#destroyed = false;
 	#events = new AbortController();
@@ -167,9 +169,14 @@ export class DocumentHighlightController {
 		controllers.set(stage, this);
 		const options = { signal: this.#events.signal };
 		document.addEventListener('selectionchange', this.#selectionChanged, options);
+		const header = document.querySelector('[data-app-header]');
 		this.#resize = new ResizeObserver((entries) => {
 			const changed = new Set<number>();
 			for (const entry of entries) {
+				if (entry.target === header) {
+					this.projectionChanged();
+					continue;
+				}
 				const previous = this.#observed.get(entry.target);
 				if (!previous) continue;
 				const size = entry.borderBoxSize[0];
@@ -184,6 +191,7 @@ export class DocumentHighlightController {
 			}
 			this.#invalidatePages([...changed]);
 		});
+		if (header) this.#resize.observe(header, { box: 'border-box' });
 		this.#intersection = new IntersectionObserver((entries) => {
 			let changed = false;
 			for (const entry of entries) {
@@ -207,6 +215,14 @@ export class DocumentHighlightController {
 				const element =
 					record.target instanceof Element ? record.target : record.target.parentElement;
 				const page = element?.closest<HTMLElement>('.document-page');
+				if (
+					element?.closest('[data-annotation-layer]') ||
+					(record.type === 'childList' &&
+						[...record.addedNodes, ...record.removedNodes].every(
+							(node) => node instanceof HTMLElement && node.hasAttribute('data-annotation-layer')
+						))
+				)
+					continue;
 				if (!page) continue;
 				const number = Number(page.dataset.pageNumber);
 				if (record.type === 'attributes') {
@@ -234,7 +250,8 @@ export class DocumentHighlightController {
 		name: string,
 		kind: HighlightKind,
 		ranges: readonly Range[],
-		includedPages?: ReadonlySet<number>
+		includedPages?: ReadonlySet<number>,
+		owner?: HTMLElement
 	) {
 		if (this.#destroyed) return;
 		let group = this.#groups.get(name);
@@ -249,7 +266,8 @@ export class DocumentHighlightController {
 			)
 		);
 		if (!group && !next.size) return;
-		if (!group) this.#groups.set(name, (group = { kind, ranges: new Map() }));
+		if (!group) this.#groups.set(name, (group = { kind, ranges: new Map(), owner }));
+		group.owner = owner;
 		group.pages = includedPages ? new Set(includedPages) : undefined;
 		if (next.size === group.ranges.size) {
 			const previous = [...group.ranges.values()];
@@ -274,14 +292,13 @@ export class DocumentHighlightController {
 		if (changed) this.#schedule();
 	}
 	/** Paint structural selections that have source coordinates but no text Range. */
-	setStructuralBoundaryGroup(name: string, kind: HighlightKind, selections: readonly BoundarySelection[]) {
+	setStructuralBoundaryGroup(
+		name: string,
+		kind: HighlightKind,
+		selections: readonly BoundarySelection[]
+	) {
 		if (this.#destroyed) return;
-		const next = selections.filter(
-			(selection) =>
-				selection.key &&
-				Number.isFinite(selection.startRatio) &&
-				Number.isFinite(selection.endRatio)
-		);
+		const next = selections.filter((selection) => selection.key);
 		if (!next.length) {
 			this.clearStructuralBoundaryGroup(name);
 			return;
@@ -290,14 +307,10 @@ export class DocumentHighlightController {
 		if (
 			previous?.kind === kind &&
 			previous.selections.length === next.length &&
-			previous.selections.every(
-				(selection, index) =>
-					selection.key === next[index].key &&
-					selection.startRatio === next[index].startRatio &&
-					selection.endRatio === next[index].endRatio
-			)
+			previous.selections.every((selection, index) => selection.key === next[index].key)
 		)
 			return;
+		for (const rect of previous?.rects ?? []) this.#paintDirty.add(rect.page);
 		this.#boundaryGroups.set(name, {
 			kind,
 			selections: next.map((selection) => ({ ...selection })),
@@ -308,35 +321,23 @@ export class DocumentHighlightController {
 	}
 	clearStructuralBoundaryGroup(name: string) {
 		const group = this.#boundaryGroups.get(name);
-		if (group) {
-			this.#boundaryGroups.delete(name);
-			for (const rect of group.rects) this.#paintDirty.add(rect.page);
-		}
+		if (!group) return;
+		this.#boundaryGroups.delete(name);
+		for (const rect of group.rects) this.#paintDirty.add(rect.page);
 		this.#pruneStructuralBoundaries();
-		if (group) this.#schedule();
-	}
-	/** Return the source-owned physical blank margin for the current pointer coordinates. */
-	structuralBoundaryAt(clientX: number, clientY: number): StructuralBoundaryTarget | null {
-		if (this.#destroyed) return null;
-		const boundary = document
-			.elementFromPoint(clientX, clientY)
-			?.closest<HTMLElement>('[data-structural-boundary]');
-		return boundary && this.#stage.contains(boundary)
-			? this.#measureStructuralBoundary(boundary)
-			: null;
+		this.#schedule();
 	}
 	structuralBoundary(key: string): StructuralBoundaryTarget | null {
 		if (this.#destroyed) return null;
 		const target = this.#structuralBoundaries.get(key) ?? this.#structuralBoundaryTarget(key);
 		return target ? (this.#projectStructuralBoundary(target) ?? null) : null;
 	}
-	structuralBoundarySelectionBounds(key: string, startRatio: number, endRatio: number): DOMRect | null {
-		const target =
-			this.#structuralBoundaries.get(key) ?? this.#structuralBoundaryTarget(key);
+	structuralBoundarySelectionBounds(key: string): DOMRect | null {
+		const target = this.#structuralBoundaries.get(key) ?? this.#structuralBoundaryTarget(key);
 		if (!target) return null;
 		const projection = this.#pageProjection(target.page);
 		if (!projection) return null;
-		const highlight = structuralBoundaryRect(target, startRatio, endRatio);
+		const highlight = structuralBoundaryRect(target);
 		return new DOMRect(
 			projection.bounds.left + highlight.x * projection.scale,
 			projection.bounds.top + highlight.y * projection.scale,
@@ -376,9 +377,7 @@ export class DocumentHighlightController {
 	#structuralBoundaryTarget(key: string) {
 		const cached = this.#structuralBoundaries.get(key);
 		if (cached) return cached;
-		const element = this.#stage.querySelector<HTMLElement>(
-			`[data-structural-boundary="${CSS.escape(key)}"]`
-		);
+		const element = this.#boundaryElements.get(key);
 		if (element) this.#measureStructuralBoundary(element);
 		return this.#structuralBoundaries.get(key);
 	}
@@ -396,11 +395,12 @@ export class DocumentHighlightController {
 		if (!group) return;
 		const pages = new Set<number>();
 		const rects = group.selections.flatMap((selection) => {
+			const element = this.#boundaryElements.get(selection.key);
+			const number = Number(element?.closest<HTMLElement>('.document-page')?.dataset.pageNumber);
+			if (!this.#eagerPages.has(number)) return [];
 			const target = this.#structuralBoundaryTarget(selection.key);
 			if (target) pages.add(target.page);
-			return target
-				? [structuralBoundaryHighlight(target, selection.startRatio, selection.endRatio, group.kind)]
-				: [];
+			return target ? [structuralBoundaryHighlight(target, group.kind)] : [];
 		});
 		if (sameHighlights(group.rects, rects) && samePages(group.pages, pages)) return;
 		for (const rect of group.rects) this.#paintDirty.add(rect.page);
@@ -478,7 +478,13 @@ export class DocumentHighlightController {
 		if (page && !this.#geometryDirty.has(number)) {
 			let contributions = page.groups.get(name);
 			if (!contributions) page.groups.set(name, (contributions = new Map()));
-			contributions.set(range, measureRanges([page.geometry], [range], kind));
+			const owner = this.#groups.get(name)?.owner;
+			contributions.set(
+				range,
+				measureRanges([page.geometry], [range], kind).map((interval) =>
+					owner ? { ...interval, owner, annotationIds: [owner.dataset.annotationId!] } : interval
+				)
+			);
 		}
 		this.#paintDirty.add(number);
 	}
@@ -515,12 +521,62 @@ export class DocumentHighlightController {
 		this.#groups.delete(name);
 		this.#schedule();
 	}
+	/** Reuse measured line maps for out-of-flow annotation semantics and focus bounds. */
+	annotationBounds(name: string) {
+		const result: HighlightRect[] = [];
+		const numbers = new Set<number>();
+		for (const record of this.#groups.get(name)?.ranges.values() ?? [])
+			for (const number of record.pages) numbers.add(number);
+		for (const number of numbers) {
+			if (this.#geometryDirty.has(number)) continue;
+			const page = this.#pages.get(number);
+			for (const intervals of page?.groups.get(name)?.values() ?? [])
+				for (const interval of intervals)
+					result.push({
+						page: number,
+						x: interval.left,
+						y: interval.band.y,
+						width: interval.right - interval.left,
+						height: interval.band.height,
+						kind: 'trigger'
+					});
+		}
+		return result;
+	}
+	annotationsChanged(names: ReadonlySet<string>) {
+		for (const name of names)
+			for (const range of this.#groups.get(name)?.ranges.values() ?? [])
+				for (const page of range.pages) this.#paintDirty.add(page);
+		this.#schedule();
+	}
 	subscribe(listener: (pages: PageHighlights) => void) {
 		this.#listeners.add(listener);
 		listener(this.#publication);
 		return () => {
 			this.#listeners.delete(listener);
 		};
+	}
+	/** During a custom drag DOM Selection is output, never a second paint authority. */
+	setSelectionProjection(ranges: readonly Range[] | null) {
+		if (ranges === null && this.#selectionProjection === null) return;
+		if (
+			ranges &&
+			this.#selectionProjection &&
+			ranges.length === this.#selectionProjection.length &&
+			ranges.every((range, i) => sameRange(range, this.#selectionProjection![i]))
+		)
+			return;
+		this.#selectionProjection = ranges;
+		this.#selectionDirty = true;
+		this.#schedule();
+	}
+	selectionHit(pageElement: HTMLElement, x: number, y: number) {
+		const number = Number(pageElement.dataset.pageNumber);
+		this.#ensureGeometry(new Set([number]));
+		const page = this.#pages.get(number);
+		return page?.geometry.element === pageElement && !this.#geometryDirty.has(number)
+			? selectionTextHit(page.geometry, x, y)
+			: null;
 	}
 	hitTest(pageElement: HTMLElement, clientX: number, clientY: number): HTMLElement | null {
 		if (this.#destroyed) return null;
@@ -541,20 +597,37 @@ export class DocumentHighlightController {
 		const x = (clientX - bounds.left) / scale,
 			y = (clientY - bounds.top) / scale;
 		return (
-			page.triggers.find(
-				(interval) =>
-					interval.owner?.isConnected &&
-					x >= interval.left &&
-					x < interval.right &&
-					y >= interval.band.y &&
-					y < interval.band.y + interval.band.height
-			)?.owner ?? null
+			[
+				...page.triggers,
+				...[...page.groups.values()]
+					.flatMap((ranges) => [...ranges.values()].flat())
+					.filter((interval) => interval.owner)
+			]
+				.sort(
+					(a, b) =>
+						Number(a.owner?.dataset.annotationPriority ?? 0) -
+							Number(b.owner?.dataset.annotationPriority ?? 0) ||
+						(a.owner?.dataset.annotationId ?? '').localeCompare(b.owner?.dataset.annotationId ?? '')
+				)
+				.find(
+					(interval) =>
+						interval.owner?.isConnected &&
+						x >= interval.left &&
+						x < interval.right &&
+						y >= interval.band.y &&
+						y < interval.band.y + interval.band.height
+				)?.owner ?? null
 		);
 	}
 	setHoveredAnnotationId(annotationId: string | null) {
 		if (this.#destroyed || this.#hoveredAnnotationId === annotationId) return;
 		for (const [number, page] of this.#pages) {
+			const projected = [...page.groups.keys()].some((name) => {
+				const id = this.#groups.get(name)?.owner?.dataset.annotationId;
+				return id === this.#hoveredAnnotationId || id === annotationId;
+			});
 			if (
+				projected ||
 				(this.#hoveredAnnotationId !== null && page.annotationIds.has(this.#hoveredAnnotationId)) ||
 				(annotationId !== null && page.annotationIds.has(annotationId))
 			)
@@ -591,9 +664,11 @@ export class DocumentHighlightController {
 		// The viewer's font epoch commit invalidates once, after repagination has committed.
 		this.#schedule();
 	};
-	/** Scaling and viewport movement only change the projection of page-local measurements. */
+	/** Project text geometry; gutter controls keep a fixed screen size as the page scales. */
 	projectionChanged = () => {
 		if (this.#destroyed) return;
+		this.#structuralBoundaries.clear();
+		this.#refreshStructuralBoundaryGroups();
 		this.#visibilityDirty = true;
 		this.#projectionDirty = true;
 		this.#schedule();
@@ -603,6 +678,7 @@ export class DocumentHighlightController {
 		this.#ensureGeometry(new Set(rangePageNumbers(range)));
 	}
 	#selectionChanged = () => {
+		if (this.#selectionProjection !== null) return;
 		if (!this.#selectionDirty) {
 			const selection = document.getSelection();
 			const ranges =
@@ -631,7 +707,12 @@ export class DocumentHighlightController {
 			ranges.length === this.#nativeRanges.length &&
 			ranges.every((range, i) => sameRange(range, this.#nativeRanges[i]));
 		if (!unchanged) this.#nativeRanges = ranges.map((range) => range.cloneRange());
-		this.setGroup('native-selection', 'native-selection', this.#nativeRanges);
+		this.setGroup(
+			'native-selection',
+			this.#selectionProjection !== null ? 'authoring-selection' : 'native-selection',
+			this.#nativeRanges,
+			this.#eagerPages
+		);
 		this.#selectionDirty = false;
 	}
 	/**
@@ -645,14 +726,26 @@ export class DocumentHighlightController {
 				this.#stage.contains(range.startContainer) && this.#stage.contains(range.endContainer)
 		);
 		if (!owned.length) return null;
-		const pages = new Set(owned.flatMap(rangePageNumbers));
+		// Bounds need endpoint pages and already-visible pages, never every page in a long range.
+		const pages = new Set(
+			owned.flatMap((range) => {
+				const numbers = rangePageNumbers(range);
+				return numbers.filter(
+					(number, i) => i === 0 || i === numbers.length - 1 || this.#eagerPages.has(number)
+				);
+			})
+		);
 		this.#ensureGeometry(pages);
 		const intervals = [...pages]
 			.sort((a, b) => a - b)
 			.flatMap((number) => {
 				const page = this.#pages.get(number);
 				return page && !this.#geometryDirty.has(number)
-					? measureRanges([page.geometry], owned, 'native-selection')
+					? measureRanges(
+							[page.geometry],
+							owned,
+							this.#selectionProjection !== null ? 'authoring-selection' : 'native-selection'
+						)
 					: [];
 			});
 		return selectedLineBounds(intervals);
@@ -663,6 +756,9 @@ export class DocumentHighlightController {
 		this.#layoutEpoch = layoutEpoch;
 		if (previousEpoch !== layoutEpoch && document.fonts.status === 'loaded')
 			this.#awaitingFontCommit = false;
+		// Group ownership can move across an unchanged page's edge on a new model.
+		// Text geometry still reuses exact prepared pages; structural targets rebind lazily.
+		this.#structuralBoundaries.clear();
 		this.#observeContent();
 		this.#invalidatePages(
 			previousEpoch !== layoutEpoch ? [...this.#pageElements.keys()] : changedPages
@@ -716,6 +812,12 @@ export class DocumentHighlightController {
 			this.#geometryDirty.add(number);
 		}
 		this.#pageElements = elements;
+		this.#boundaryElements = new Map(
+			Array.from(
+				this.#stage.querySelectorAll<HTMLElement>('[data-structural-boundary]'),
+				(element) => [element.dataset.structuralBoundary!, element]
+			)
+		);
 		for (const [key, target] of this.#structuralBoundaries)
 			if (removedPages.has(target.page) || !this.#pageElements.has(target.page))
 				this.#structuralBoundaries.delete(key);
@@ -774,6 +876,15 @@ export class DocumentHighlightController {
 		)
 			return;
 		this.#eagerPages = eager;
+		this.#refreshStructuralBoundaryGroups();
+		if (this.#groups.has('native-selection')) {
+			this.setGroup(
+				'native-selection',
+				this.#selectionProjection !== null ? 'authoring-selection' : 'native-selection',
+				this.#nativeRanges,
+				eager
+			);
+		}
 		for (const listener of this.#eagerPageListeners) listener(new Set(eager));
 	}
 	#updateVisibility() {
@@ -796,7 +907,12 @@ export class DocumentHighlightController {
 	#measurementTargets() {
 		const targets = new Set(this.#eagerPages);
 		for (const group of this.#groups.values()) {
-			if (group.kind !== 'authoring-selection' && group.kind !== 'search-active') continue;
+			if (
+				group.kind !== 'authoring-selection' &&
+				group.kind !== 'search-active' &&
+				group.owner !== document.activeElement
+			)
+				continue;
 			for (const record of group.ranges.values())
 				for (const number of record.pages) targets.add(number);
 		}
@@ -857,15 +973,18 @@ export class DocumentHighlightController {
 			this.#updateVisibility();
 			const selection = document.getSelection();
 			const ranges =
-				selection && !selection.isCollapsed
-					? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i)).filter(
-							(range) =>
-								this.#stage.contains(range.startContainer) &&
-								this.#stage.contains(range.endContainer)
-						)
-					: [];
+				this.#selectionProjection !== null
+					? [...this.#selectionProjection]
+					: selection && !selection.isCollapsed
+						? Array.from({ length: selection.rangeCount }, (_, i) =>
+								selection.getRangeAt(i)
+							).filter(
+								(range) =>
+									this.#stage.contains(range.startContainer) &&
+									this.#stage.contains(range.endContainer)
+							)
+						: [];
 			const targets = this.#measurementTargets();
-			for (const range of ranges) for (const number of rangePageNumbers(range)) targets.add(number);
 			this.#ensureGeometry(targets);
 			if (this.#selectionDirty) {
 				this.#measureSelection(ranges);
@@ -928,6 +1047,7 @@ export class DocumentHighlightController {
 		this.#groups.clear();
 		this.#boundaryGroups.clear();
 		this.#structuralBoundaries.clear();
+		this.#boundaryElements.clear();
 		this.#pageGroups.clear();
 		this.#pages.clear();
 		this.#pageElements.clear();

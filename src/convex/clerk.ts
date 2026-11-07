@@ -1,10 +1,10 @@
 'use node';
 import { createClerkClient } from '@clerk/backend';
 import { v } from 'convex/values';
-import { env, internalAction } from './_generated/server';
-import type { ActionCtx } from './_generated/server';
 import { internal } from './_generated/api';
-import { ACCOUNT_DELETION_BATCH_SIZE, CLERK_USER_BATCH_SIZE } from './deletionValidators';
+import type { ActionCtx } from './_generated/server';
+import { env, internalAction } from './_generated/server';
+import { ACCOUNT_DELETION_BATCH_SIZE, CLERK_USER_BATCH_SIZE } from './deletionPolicy';
 
 async function existingUsers(userIds: string[]) {
 	try {

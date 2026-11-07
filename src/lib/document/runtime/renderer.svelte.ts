@@ -1,9 +1,11 @@
+import { iterateSelectionDocument } from '../selection/selection-model';
 import { tick } from 'svelte';
 import type { CompositionRequest } from '$lib/contract/composition-artifacts';
 import type { Priority } from './scheduler';
 import type { LayoutProfiles } from '../pagination/profile';
 import type { ContractCompositionEngine } from '$lib/contract/compose';
 import type { ResolvedBlock } from '$lib/contract/model';
+import { ContractSpacing } from '$lib/contract/format';
 import { DocumentArtifacts } from './artifacts';
 import { sameSelection, type ContractChange } from '$lib/playbook/model';
 import {
@@ -75,6 +77,7 @@ export class ContractRenderController {
 	#protectedGeometry?: { profiler: LayoutProfiler; owner: symbol };
 	#composition?: ContractCompositionEngine;
 	#artifacts?: DocumentArtifacts;
+	#ownsArtifacts = false;
 	get artifacts() {
 		return this.#artifacts;
 	}
@@ -90,7 +93,7 @@ export class ContractRenderController {
 		this.#cancelPaintObservation?.();
 		this.#commitListeners.clear();
 		this.#composition = undefined;
-		this.#artifacts?.destroy();
+		if (this.#ownsArtifacts) this.#artifacts?.destroy();
 		this.#artifacts = undefined;
 		this.#protectedGeometry?.profiler.release(this.#protectedGeometry.owner);
 		this.#protectedGeometry = undefined;
@@ -349,14 +352,16 @@ export class ContractRenderController {
 			perf.layoutEpoch = epoch;
 			perf.renderStartedAt = performance.now();
 		}
-		if (this.#artifacts?.source !== request.source) {
-			this.#artifacts?.destroy();
-			this.#artifacts = new DocumentArtifacts(request.source);
+		if (this.#artifacts?.source.sourceIndex !== request.source.sourceIndex) {
+			if (this.#ownsArtifacts) this.#artifacts?.destroy();
+			this.#artifacts = request.source.artifacts ?? new DocumentArtifacts(request.source);
+			this.#ownsArtifacts = !request.source.artifacts;
 			this.#composition = this.#artifacts.createComposer();
 		}
 		const artifacts = this.#artifacts;
 		const composer = this.#composition!;
 		const preparation = artifacts.createPreparation();
+		const spacing = new ContractSpacing();
 		const resolvedBlocks: ResolvedBlock[] = [];
 		const prepared: PreparedBlock[] = [];
 		const priority = request.priority ?? (() => 'foreground');
@@ -409,7 +414,7 @@ export class ContractRenderController {
 									}
 									if (next.value) {
 										resolvedBlocks.push(next.value);
-										preparing = preparation.iterate(next.value);
+										preparing = preparation.iterate(next.value, spacing);
 									}
 								}
 							} while (performance.now() - started < 4);
@@ -450,7 +455,8 @@ export class ContractRenderController {
 		}
 		checkCurrent();
 		const previousGeometry =
-			this.snapshot?.source === request.source && this.#geometry?.epoch === epoch
+			this.snapshot?.source.sourceIndex === request.source.sourceIndex &&
+			this.#geometry?.epoch === epoch
 				? this.#geometry
 				: undefined;
 		const local = request.profiler.createRequest(
@@ -592,8 +598,35 @@ export class ContractRenderController {
 			owner: Symbol('render-geometry'),
 			history
 		};
+		const selection = iterateSelectionDocument(
+			request.generation,
+			request.source.sourceIndex,
+			prepared,
+			pages
+		);
+		let selectionResult = selection.next();
+		try {
+			while (!selectionResult.done)
+				await request.profiler.scheduler.run(
+					priority,
+					() => {
+						checkCurrent();
+						const started = performance.now();
+						do {
+							selectionResult = selection.next();
+						} while (!selectionResult.done && performance.now() - started < 4);
+					},
+					request.abort.signal,
+					undefined,
+					'preparation',
+					perf
+				);
+		} finally {
+			selection.return(undefined as never);
+		}
 		const snapshot = Object.freeze({
 			id: request.generation,
+			selectionDocument: selectionResult.value!,
 			source: request.source,
 			concessions: request.concessions,
 			previewChanges: request.previewChanges,

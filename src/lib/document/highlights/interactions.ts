@@ -1,6 +1,7 @@
 import type { AnnotationActivation } from '../annotation-anchor';
 import type { DocumentHighlightController } from './controller';
 import { countOverlayWork } from '../runtime/render-perf';
+import { SELECTION_GESTURE, type GestureNotice } from '../selection/document-selection';
 
 const DRAG_DISTANCE = 5;
 
@@ -50,6 +51,7 @@ export class DocumentGestureInteractions {
 	#events = new AbortController();
 	#unsubscribe: () => void;
 	#hoverFrame: number | undefined;
+	#customClick = false;
 
 	constructor(
 		stage: HTMLElement,
@@ -64,6 +66,7 @@ export class DocumentGestureInteractions {
 		stage.addEventListener('pointermove', this.#hoverMove, options);
 		stage.addEventListener('pointerleave', this.#leave, options);
 		stage.addEventListener('click', this.#click, options);
+		stage.addEventListener(SELECTION_GESTURE, this.#selectionGesture, options);
 		window.addEventListener('pointermove', this.#trackMovement, options);
 		window.addEventListener('pointerup', this.#up, options);
 		window.addEventListener('pointercancel', this.#cancel, options);
@@ -124,6 +127,7 @@ export class DocumentGestureInteractions {
 	}
 
 	#updateHover = () => {
+		if (this.#stage.hasAttribute('data-selection-drag')) return;
 		this.#setHover(this.#pointer ? this.#hit(this.#pointer.x, this.#pointer.y) : null);
 	};
 	#scheduleHover = () => {
@@ -163,6 +167,7 @@ export class DocumentGestureInteractions {
 	};
 
 	#trackMovement = (event: PointerEvent) => {
+		if (this.#stage.hasAttribute('data-selection-drag')) return;
 		const gesture = this.#gesture;
 		if (
 			gesture?.pointerId === event.pointerId &&
@@ -172,6 +177,7 @@ export class DocumentGestureInteractions {
 	};
 
 	#hoverMove = (event: PointerEvent) => {
+		if (this.#stage.hasAttribute('data-selection-drag')) return;
 		if (!this.#policy.clauseActivation || !event.isPrimary || event.pointerType === 'touch') return;
 		this.#pointer = { x: event.clientX, y: event.clientY };
 		this.#scheduleHover();
@@ -211,9 +217,11 @@ export class DocumentGestureInteractions {
 
 	#click = (event: MouseEvent) => {
 		const completed = this.#completed;
+		const custom = this.#customClick;
+		this.#customClick = false;
 		this.#resetGesture();
 		// A completed native selection inside the document is the same click-away as its background.
-		if (this.#hasStageTextSelection()) {
+		if (!custom && this.#hasStageTextSelection()) {
 			if (
 				completed &&
 				this.#policy.backgroundActivation &&
@@ -251,6 +259,19 @@ export class DocumentGestureInteractions {
 		) {
 			this.#onIntent({ kind: 'activate-background' });
 		}
+	};
+	#selectionGesture = (event: Event) => {
+		const notice = (event as CustomEvent<GestureNotice>).detail;
+		this.#resetGesture();
+		this.#cancelHover();
+		this.#setHover(null);
+		this.#customClick = notice.kind !== 'start';
+		if (notice.kind === 'click') {
+			const owner = this.#ownerAt(notice.x, notice.y);
+			this.#completed = owner
+				? { kind: 'activate-clause', owner }
+				: { kind: 'activate-background' };
+		} else this.#completed = { kind: 'ignore' };
 	};
 
 	#activateClause(owner: HTMLElement, activation: AnnotationActivation) {

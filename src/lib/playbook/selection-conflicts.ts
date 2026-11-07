@@ -18,13 +18,13 @@ export function conflictsForConcession(
 	items: readonly DocumentOverlayItem[],
 	selection: ConcessionSelection,
 	itemId: string,
-	concessionId: string
+	concessionId: string,
+	conflicts = createChangeConflictChecker(index)
 ) {
 	const candidate = items
 		.find((i) => i.itemId === itemId)
 		?.concessions.find((c) => c.id === concessionId);
 	if (!candidate) return [];
-	const conflicts = createChangeConflictChecker(index);
 	return selectedItems(items, selection).filter(
 		(a) =>
 			a.itemId !== itemId &&
@@ -34,10 +34,10 @@ export function conflictsForConcession(
 export function activeConflicts(
 	index: SourceIndex,
 	items: readonly DocumentOverlayItem[],
-	selection: ConcessionSelection
+	selection: ConcessionSelection,
+	conflicts = createChangeConflictChecker(index)
 ) {
 	const active = selectedItems(items, selection);
-	const conflicts = createChangeConflictChecker(index);
 	return active.filter((a, i) =>
 		active.some(
 			(b, j) =>

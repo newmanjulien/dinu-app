@@ -381,4 +381,13 @@
 	{/if}
 {/if}
 
-{#if invitation}<div id="clerk-captcha"></div>{/if}
+<!-- Keep the host mounted while Clerk waits for a signup challenge. -->
+{#if joining || invitation}
+	<div
+		id="clerk-captcha"
+		class="flex justify-center"
+		data-cl-theme="light"
+		data-cl-size="compact"
+		data-cl-language="auto"
+	></div>
+{/if}

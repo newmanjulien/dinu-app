@@ -4,16 +4,10 @@ import { fitsPage } from './page-format';
 /** CSS-pixel equivalence for observed layout coordinates, never a page-fit allowance. */
 export const LAYOUT_COORDINATE_TOLERANCE = 0.01;
 
-export type BlockLayoutProfile = HeadingLayoutProfile | ParagraphBounds | TableLayoutProfile;
+export type BlockLayoutProfile = ParagraphBounds | TableLayoutProfile;
 
 /** Request-local content association. Profiles themselves contain no provenance or page state. */
 export type LayoutProfiles = ReadonlyMap<PreparedBlock, BlockLayoutProfile>;
-
-export interface HeadingLayoutProfile {
-	readonly kind: 'heading';
-	/** Complete flex-item height, including block margins. */
-	readonly outerHeight: number;
-}
 
 export interface ParagraphLine {
 	/** Half-open prepared-token interval ending at a complete observed visual line. */
@@ -76,9 +70,6 @@ function count(value: number): boolean {
  */
 export function validateBlockLayoutProfile(profile: BlockLayoutProfile): void {
 	switch (profile.kind) {
-		case 'heading':
-			requireGeometry(nonnegative(profile.outerHeight), 'heading outer height');
-			return;
 		case 'paragraph': {
 			requireGeometry(count(profile.tokenCount), 'paragraph token count');
 			requireGeometry(
@@ -180,7 +171,7 @@ export function paragraphLineRangeHeight(
 	return bottom - top;
 }
 
-/** Every fragment retains its CSS start margin; only the final fragment gets end spacing.
+/** Only the first fragment retains its CSS start margin; the final fragment gets end spacing.
  * A paragraph without visual lines retains its margins. Other empty ranges emit no fragment.
  */
 export function paragraphFragmentHeight(
@@ -191,7 +182,7 @@ export function paragraphFragmentHeight(
 	const contentHeight = paragraphLineRangeHeight(profile, startLine, endLine);
 	if (startLine === endLine && profile.lines.length > 0) return 0;
 	return (
-		profile.marginBlockStart +
+		(startLine === 0 ? profile.marginBlockStart : 0) +
 		contentHeight +
 		(endLine === profile.lines.length ? profile.marginBlockEnd : 0)
 	);
@@ -229,7 +220,7 @@ export function maximumParagraphLineEnd(
 	return best;
 }
 
-/** Headers, margins and explicit border edges repeat on every table fragment. */
+/** Headers and border edges repeat; the trailing block gap belongs only to the final row. */
 export function tableFragmentHeight(
 	profile: TableLayoutProfile,
 	startRow: number,
@@ -237,11 +228,11 @@ export function tableFragmentHeight(
 ): number {
 	requireRange(startRow, endRow, profile.bodyRowHeights.length);
 	let height =
-		profile.marginBlockStart +
+		(startRow === 0 ? profile.marginBlockStart : 0) +
 		profile.headerHeight +
 		profile.borderBlockStart +
 		profile.borderBlockEnd +
-		profile.marginBlockEnd;
+		(endRow === profile.bodyRowHeights.length ? profile.marginBlockEnd : 0);
 	for (let row = startRow; row < endRow; row++) height += profile.bodyRowHeights[row];
 	return height;
 }
@@ -260,7 +251,8 @@ export function maximumTableRowEnd(
 	let endRow = startRow;
 	while (endRow < profile.bodyRowHeights.length) {
 		const nextHeight = height + profile.bodyRowHeights[endRow];
-		if (!fitsPage(nextHeight, capacity)) break;
+		const finalGap = endRow + 1 === profile.bodyRowHeights.length ? profile.marginBlockEnd : 0;
+		if (!fitsPage(nextHeight + finalGap, capacity)) break;
 		height = nextHeight;
 		endRow++;
 	}

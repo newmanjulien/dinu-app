@@ -1,35 +1,35 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { ConvexError, v } from 'convex/values';
 import {
-	httpAction,
-	internalMutation,
-	internalQuery,
-	type QueryCtx,
-	type ActionCtx
-} from './_generated/server';
-import { internal } from './_generated/api';
-import type { Id } from './_generated/dataModel';
-import { requirePermission } from './auth';
-import { currentPointer } from './templates';
-import { baselineBlock } from './sourceValidators';
-import { baselineIntegrity, writeBaselineChunks } from './baselineStorage';
-import { documentBytes, publicationCapacity } from './templateCapacity';
-import { validateBaseline } from '../lib/contract/validate-source';
-import { cleanupBudget, CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
-import { deleteUnownedFile } from './storageOwnership';
-import {
 	BASELINE_MAX_BLOCKS,
 	BASELINE_MAX_BYTES,
 	DOCX_MAX_BYTES,
 	DOCX_PARSER_VERSION
 } from '../lib/contract/import/limits';
+import { baselineBlock } from '../lib/contract/source-validators';
+import { validateBaseline } from '../lib/contract/validate-source';
+import { internal } from './_generated/api';
+import type { Id } from './_generated/dataModel';
+import {
+	httpAction,
+	internalMutation,
+	internalQuery,
+	type ActionCtx,
+	type QueryCtx
+} from './_generated/server';
+import { requirePermission } from './auth';
+import { baselineIntegrity, writeBaselineChunks } from './baselineStorage';
+import { CLEANUP_DISCOVERY_PAGE_SIZE, cleanupBudget } from './cleanup';
+import { assertStorageCapacity, documentBytes } from './storageCapacity';
+import { deleteUnownedFile } from './storageOwnership';
+import { currentPointer } from './templates';
 
 import { DOCX_TYPE, issue, preparation } from './baselineUploadValidators';
 import {
-	readUploadBody,
 	uploadErrorMessage as message,
-	uploadPreflightResponse,
-	uploadResponse as response
+	readUploadBody,
+	uploadResponse as response,
+	uploadPreflightResponse
 } from './uploadHttp';
 
 const UPLOAD_TTL = 24 * 60 * 60_000;
@@ -55,7 +55,7 @@ async function emptyCompany(ctx: QueryCtx, companyId: Id<'company'>) {
 		pointer ||
 		versions.length ||
 		items.length ||
-		baselines.some((b) => b.state === 'published' || b.source !== 'docx')
+		baselines.some((b) => b.state === 'active' || b.source !== 'docx')
 	)
 		throw new ConvexError(
 			'This company already has a baseline or an import in progress. Its baseline cannot be replaced.'
@@ -92,7 +92,11 @@ export const reuse = internalMutation({
 	returns: v.union(v.null(), preparation),
 	handler: async (ctx, { membershipId, fileHash }) => {
 		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
-		const existing = reusable(await emptyCompany(ctx, access.companyId), access._id, fileHash);
+		const existing = reusable(
+			await emptyCompany(ctx, access.companyId),
+			access.profile._id,
+			fileHash
+		);
 		return existing
 			? {
 					preparedBaselineId: existing._id,
@@ -144,7 +148,7 @@ export const prepare = internalMutation({
 			).join('') !== args.fileHash
 		)
 			throw new ConvexError('The uploaded Word file is unavailable. Select it again.');
-		const existing = reusable(prepared, access._id, args.fileHash);
+		const existing = reusable(prepared, access.profile._id, args.fileHash);
 		if (existing && existing.fingerprint !== integrity.fingerprint)
 			throw new ConvexError('The prepared document is inconsistent.');
 		if (existing) return { preparedBaselineId: existing._id };
@@ -160,21 +164,21 @@ export const prepare = internalMutation({
 			fileHash: args.fileHash,
 			...integrity,
 			parserVersion: DOCX_PARSER_VERSION,
-			uploaderId: access._id,
+			uploaderId: access.profile._id,
 			issues: args.issues,
 			blockCount: args.blocks.length,
 			chunkCount: 0,
 			chunkReadBytes: 0,
 			expiresAt
 		};
-		await publicationCapacity(ctx, { documents: 1, bytes: documentBytes(preparedBaseline) });
+		await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(preparedBaseline) });
 		const preparedBaselineId = await ctx.db.insert('baselines', preparedBaseline);
 		const counters = await writeBaselineChunks(ctx, {
 			companyId: access.companyId,
 			baselineId: preparedBaselineId,
 			blocks: args.blocks
 		});
-		await publicationCapacity(ctx, {
+		await assertStorageCapacity(ctx, {
 			documents: 1,
 			bytes: documentBytes({ ...preparedBaseline, ...counters })
 		});
@@ -263,13 +267,15 @@ export const expire = internalMutation({
 		if (
 			!baseline ||
 			baseline.source !== 'docx' ||
-			baseline.state === 'published' ||
+			(baseline.state !== 'prepared' && baseline.state !== 'deleting') ||
+			typeof baseline.expiresAt !== 'number' ||
+			!Number.isFinite(baseline.expiresAt) ||
 			baseline.expiresAt > Date.now()
 		)
 			return null;
 		await ctx.db.patch('baselines', baselineId, { state: 'deleting' });
 		const { drain } = cleanupBudget(ctx);
-		const drained = await drain(
+		let drained = await drain(
 			'baselineChunks',
 			ctx.db
 				.query('baselineChunks')
@@ -277,6 +283,24 @@ export const expire = internalMutation({
 					q.eq('companyId', baseline.companyId).eq('baselineId', baselineId)
 				)
 		);
+		if (drained)
+			drained = await drain(
+				'baselineValidationChunks',
+				ctx.db
+					.query('baselineValidationChunks')
+					.withIndex('by_companyId_and_baselineId_and_order', (q) =>
+						q.eq('companyId', baseline.companyId).eq('baselineId', baselineId)
+					)
+			);
+		if (drained)
+			drained = await drain(
+				'baselineAuthoring',
+				ctx.db
+					.query('baselineAuthoring')
+					.withIndex('by_companyId_and_baselineId', (q) =>
+						q.eq('companyId', baseline.companyId).eq('baselineId', baselineId)
+					)
+			);
 		if (!drained) await ctx.scheduler.runAfter(0, internal.baselineUploads.expire, { baselineId });
 		else {
 			await ctx.db.delete('baselines', baselineId);

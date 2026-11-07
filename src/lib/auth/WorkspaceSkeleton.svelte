@@ -19,7 +19,7 @@
 {#if announce}<span role="status" class="sr-only">{label}</span>{/if}
 {#if header}
 	<div
-		class="flex h-[var(--app-header-height)] items-center gap-5 border-b-[length:var(--surface-border-width)] border-line bg-surface px-[3px] sm:px-[7px] md:px-[13px]"
+		class="flex h-[var(--app-nav-height)] items-center gap-5 border-b-[length:var(--surface-border-width)] border-line bg-surface px-[3px] sm:px-[7px] md:px-[13px]"
 		aria-hidden="true"
 	>
 		<SkeletonBlock class="h-[15px] w-8" />

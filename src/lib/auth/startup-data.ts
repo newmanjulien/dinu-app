@@ -1,8 +1,8 @@
-import { getContext, setContext } from 'svelte';
 import type { FunctionReturnType } from 'convex/server';
+import { getContext, setContext } from 'svelte';
 import type { api } from '../../convex/_generated/api';
 
-export type StartupData = FunctionReturnType<typeof api.profiles.startup> & {
+export type StartupData = FunctionReturnType<typeof api.accounts.startup> & {
 	sessionId: string;
 	userId: string;
 };

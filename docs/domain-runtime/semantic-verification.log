@@ -1,4 +1,0 @@
-(node:5) ExperimentalWarning: Transform Types is an experimental feature and might change at any time
-(Use `node --trace-warnings ...` to show where the warning was created)
-Compositor parity verified: 48 effective/redline states, including combined concessions, token/fragment provenance. SSR source-span checks were NOT run (Svelte unavailable).
-Complete seed domain audit passed: 113 blocks, 56 items. Frozen reference unchanged.

@@ -1,3 +1,24 @@
+import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
+import { ConvexError, v } from 'convex/values';
+import { internal } from './_generated/api';
+import type { Doc } from './_generated/dataModel';
+import {
+	internalMutation,
+	internalQuery,
+	mutation,
+	query,
+	type MutationCtx
+} from './_generated/server';
+import {
+	availableCompany,
+	membershipForProfile,
+	requireAccount,
+	requireCompany,
+	requirePermission
+} from './auth';
+import { activeDelivery, cancelJob, createDelivery } from './emailDeliveries';
+import { removeDelivery } from './emailDisposal';
+import { pendingInvitationDelivery } from './invitationDeliverySummary';
 import {
 	emailAddress,
 	invitationPreviewData,
@@ -5,26 +26,6 @@ import {
 	type InvitationPreviewData,
 	type InvitationResolutionData
 } from './invitationValidators';
-import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
-import { ConvexError, v } from 'convex/values';
-import {
-	query,
-	mutation,
-	internalMutation,
-	internalQuery,
-	type MutationCtx
-} from './_generated/server';
-import type { Doc } from './_generated/dataModel';
-import { internal } from './_generated/api';
-import { createDelivery, activeDelivery, cancelJob } from './emailDeliveries';
-import { removeDelivery } from './emailDisposal';
-import {
-	requireAccount,
-	membershipForProfile,
-	requirePermission,
-	availableCompany,
-	requireCompany
-} from './auth';
 const invitationView = v.object({
 	id: v.id('companyInvitations'),
 	email: v.string(),
@@ -224,17 +225,20 @@ export const prepareDelivery = internalMutation({
 			existing.expiresAt > Date.now()
 		)
 			return null;
+		// Keep historical setup completion when a resend replaces the delivery status.
+		if (existing?.deliveryStatus === 'sent' && access.company.colleaguesInvitedAt === undefined)
+			await ctx.db.patch('company', access.companyId, {
+				colleaguesInvitedAt: existing.deliveryStartedAt ?? existing._creationTime
+			});
 		if (oldDelivery) await removeDelivery(ctx, oldDelivery);
 		await cancelJob(ctx, existing?.expiryJobId);
 		const generation = (existing?.deliveryGeneration ?? 0) + 1;
 		const data = {
-			inviterProfileId: access._id,
+			inviterProfileId: access.profile._id,
 			tokenHash: args.tokenHash,
 			expiresAt: Date.now() + 7 * 86400_000,
 			expired: false,
-			deliveryStatus: 'sending' as const,
-			deliveryGeneration: generation,
-			deliveryStartedAt: Date.now()
+			...pendingInvitationDelivery(generation, Date.now())
 		};
 		let id;
 		if (existing) {
@@ -262,7 +266,7 @@ export const prepareDelivery = internalMutation({
 			deliveryId,
 			email,
 			companyName: access.company.name,
-			inviterName: access.name || access.email
+			inviterName: access.profile.name || access.profile.email
 		};
 	}
 });

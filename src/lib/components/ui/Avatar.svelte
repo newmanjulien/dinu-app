@@ -1,18 +1,19 @@
 <script lang="ts">
 	import { DEFAULT_USER_AVATAR_URL, resolveAvatarUrl } from '$lib/avatar';
+	import { cn } from '$lib/ui/cn';
 	import UserIcon from 'phosphor-svelte/lib/UserIcon';
 
 	let {
 		name,
 		avatarUrl,
 		fallbackUrl = DEFAULT_USER_AVATAR_URL,
-		size = 24,
+		class: className = '',
 		decorative = false
 	}: {
 		name: string;
 		avatarUrl: string | null;
 		fallbackUrl?: string | null;
-		size?: number;
+		class?: string;
 		decorative?: boolean;
 	} = $props();
 	let failedUrl = $state<string | null>(null);
@@ -37,16 +38,15 @@
 	role="img"
 	aria-label={name}
 	aria-hidden={decorative}
-	class="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-fill-subtle text-[10px] font-medium text-ink-muted"
-	style:width={`${size}px`}
-	style:height={`${size}px`}
+	class={cn(
+		'inline-flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-fill-subtle text-[10px] font-medium text-ink-muted',
+		className
+	)}
 >
 	{#if src}
 		<img
 			{src}
 			alt=""
-			width={size}
-			height={size}
 			class="size-full object-cover"
 			onerror={(event) => {
 				const failedSrc = event.currentTarget.getAttribute('src');
@@ -57,6 +57,6 @@
 	{:else if initials}
 		{initials}
 	{:else}
-		<UserIcon size={size * 0.6} aria-hidden="true" />
+		<UserIcon class="size-3/5" aria-hidden="true" />
 	{/if}
 </span>

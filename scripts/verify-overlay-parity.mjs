@@ -29,12 +29,7 @@ export function normalize(blocks) {
 		return result;
 	};
 	return blocks.map((block) =>
-		block.kind === 'table'
-			? {
-					...block,
-					rows: block.rows.map((row) => row.map((cell) => ({ content: runs(cell.content) })))
-				}
-			: { ...block, content: runs(block.content) }
+		block.kind === 'table' ? block : { ...block, content: runs(block.content) }
 	);
 }
 export function sortedKeys(_key, value) {
@@ -45,6 +40,20 @@ export function sortedKeys(_key, value) {
 					.map((key) => [key, value[key]])
 			)
 		: value;
+}
+/** Annotation render identity moved from a mutable trigger ID to an immutable item
+ * key. Compare every other provenance field against the unchanged frozen oracle. */
+export function frozenProvenanceKeys(key, value) {
+	if (
+		value?.kind === 'trigger' &&
+		typeof value.itemId === 'string' &&
+		typeof value.triggerId === 'string'
+	)
+		return sortedKeys(key, {
+			...value,
+			id: JSON.stringify(['trigger', value.itemId, value.triggerId])
+		});
+	return sortedKeys(key, value);
 }
 export async function verifyOverlayParity(server, final) {
 	const { composeContract } = await server.ssrLoadModule('/src/lib/contract/compose.ts');
@@ -86,14 +95,12 @@ export async function verifyOverlayParity(server, final) {
 			`${name} (${view}) differs from the frozen reference`
 		);
 		assert.equal(
-			createHash('sha256').update(JSON.stringify(actual, sortedKeys)).digest('hex'),
+			createHash('sha256').update(JSON.stringify(actual, frozenProvenanceKeys)).digest('hex'),
 			provenanceSha256,
 			`${name}: source/provenance changed`
 		);
 		const allTokens = actual.flatMap((b) =>
-			b.kind === 'table'
-				? b.rows.flat().flatMap((c) => tokenizeInline(c.content))
-				: tokenizeInline(b.content)
+			b.kind === 'table' ? b.rows.flat().map((value) => ({ value })) : tokenizeInline(b.content)
 		);
 		for (const token of allTokens) {
 			if (token.source) {
@@ -115,33 +122,31 @@ export async function verifyOverlayParity(server, final) {
 			prepared.map((block) => {
 				const f = block.fragment;
 				const profile =
-					f.type === 'heading'
-						? { kind: 'heading', outerHeight: f.tokens.length }
-						: f.type === 'paragraph'
-							? {
-									kind: 'paragraph',
-									tokenCount: f.tokens.length,
-									lines: f.tokens.map((_, i) => ({
-										startToken: i,
-										endToken: i + 1,
-										top: i,
-										bottom: i + 1
-									})),
-									contentHeight: f.tokens.length,
-									marginBlockStart: 0,
-									marginBlockEnd: 0
-								}
-							: {
-									kind: 'table',
-									columnWidths: Array.from({ length: f.rows[0].length }, () => 1),
-									headerRowCount: f.headerRowCount,
-									headerHeight: f.headerRowCount * 10,
-									bodyRowHeights: f.rows.slice(f.headerRowCount).map(() => 10),
-									marginBlockStart: 0,
-									marginBlockEnd: 0,
-									borderBlockStart: 0,
-									borderBlockEnd: 0
-								};
+					f.type === 'paragraph'
+						? {
+								kind: 'paragraph',
+								tokenCount: f.tokens.length,
+								lines: f.tokens.map((_, i) => ({
+									startToken: i,
+									endToken: i + 1,
+									top: i,
+									bottom: i + 1
+								})),
+								contentHeight: f.tokens.length,
+								marginBlockStart: 0,
+								marginBlockEnd: 0
+							}
+						: {
+								kind: 'table',
+								columnWidths: Array.from({ length: f.rows[0].length }, () => 1),
+								headerRowCount: f.headerRowCount,
+								headerHeight: f.headerRowCount * 10,
+								bodyRowHeights: f.rows.slice(f.headerRowCount).map(() => 10),
+								marginBlockStart: 0,
+								marginBlockEnd: 0,
+								borderBlockStart: 0,
+								borderBlockEnd: 0
+							};
 				validateBlockLayoutProfile(profile);
 				return [block, profile];
 			})
@@ -177,17 +182,19 @@ export async function verifyOverlayParity(server, final) {
 			(html.match(/data-generated=/g) ?? []).length,
 			allTokens.filter((t) => t.generated).length
 		);
-		const renderedMemberships = new Set(
-			[...html.matchAll(/data-annotation-memberships="([^"]*)"/g)].flatMap(([, value]) =>
-				JSON.parse(value.replaceAll('&quot;', '"').replaceAll('&amp;', '&'))
-			)
+		// Source spans are now layout-only. All former membership identities must
+		// remain available to the out-of-flow projection; its native controls and
+		// hit geometry require browser acceptance, not server markup assertions.
+		assert.equal((html.match(/data-annotation-memberships=/g) ?? []).length, 0);
+		const projectedMemberships = new Set(
+			final.items.flatMap((item) => item.annotations.map((annotation) => annotation.id))
 		);
 		for (const id of new Set(
 			allTokens.flatMap((token) =>
 				(token.annotations ?? []).filter((a) => a.kind === 'trigger').map((a) => a.id)
 			)
 		))
-			assert.ok(renderedMemberships.has(id), `Missing DOM Trigger annotation ${id}`);
+			assert.ok(projectedMemberships.has(id), `Missing projected Trigger annotation ${id}`);
 	}
 	console.log(
 		`Compositor parity verified: ${states.length} effective/redline states, including combined concessions, token/fragment provenance, and server-rendered source spans.`

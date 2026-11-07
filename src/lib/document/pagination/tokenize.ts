@@ -4,7 +4,17 @@ import type { InlineToken } from './types';
 
 // The browser can wrap after an ASCII hyphen inside a word. Expose that boundary
 // while retaining exact source slices/generated offsets; labels/references stay atomic.
-const TEXT_CHUNK = /[^\s-]+-?\s*|-\s*|\s+/gu;
+const TEXT_CHUNK = /\r\n|[\r\n]|[^\s-]+-?[^\S\r\n]*|-[^\S\r\n]*|[^\S\r\n]+/gu;
+
+function lineAnchor(token: Pick<InlineToken, 'annotations' | 'revision'>): InlineToken {
+	return {
+		value: '\u200b',
+		generated: 'empty-hit-target',
+		lineAnchor: true,
+		...(token.annotations ? { annotations: token.annotations } : {}),
+		...(token.revision ? { revision: token.revision } : {})
+	};
+}
 
 export function tokenizeInline(runs: readonly ResolvedRun[]): InlineToken[] {
 	return complete(iterateInlineTokens(runs));
@@ -26,9 +36,12 @@ export function* iterateInlineTokens(
 			const value = match[0],
 				offset = match.index;
 			const source = metadata.source;
+			const lineBreak = /[\r\n]/u.test(value);
+			if (lineBreak) tokens.push(lineAnchor(metadata));
 			tokens.push({
 				...metadata,
 				value,
+				...(lineBreak ? { lineBreak: true } : {}),
 				...(metadata.generatedOffset !== undefined
 					? { generatedOffset: metadata.generatedOffset + offset }
 					: {}),
@@ -45,5 +58,7 @@ export function* iterateInlineTokens(
 		}
 		yield undefined;
 	}
+	const last = tokens.at(-1);
+	if (last?.lineBreak) tokens.push(lineAnchor(last));
 	return tokens;
 }

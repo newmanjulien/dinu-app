@@ -4,7 +4,13 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'vite';
-import { readExport, transformExport } from './production-seed.mjs';
+import {
+	readExport,
+	transformExport,
+	remapSeedSelections,
+	seedParagraphRole,
+	retiredTableRule
+} from './production-seed.mjs';
 import { assertShape } from './seed-shape.mjs';
 
 export const readSeed = async (name) =>
@@ -27,11 +33,11 @@ export function differences(expected, actual, path = '') {
 		differences(expected[key], actual[key], `${path}/${key}`)
 	);
 }
-const allContent = (blocks) =>
-	blocks.flatMap((b) => (b.kind === 'table' ? b.rows.flat().flatMap((c) => c.content) : b.content));
+const allContent = (blocks) => blocks.flatMap((b) => (b.kind === 'table' ? [] : b.content));
 export function seedCounts(blocks, items) {
 	const concessions = items.flatMap((i) => i.concessions),
-		changes = concessions.flatMap((c) => c.changes);
+		changes = concessions.flatMap((c) => c.changes),
+		atoms = allContent(blocks);
 	return {
 		contractBlocks: blocks.length,
 		playbookItems: items.length,
@@ -42,15 +48,17 @@ export function seedCounts(blocks, items) {
 		changes: changes.length,
 		afterNotes: concessions.filter((c) => c.after !== undefined).length,
 		detailEntries: concessions.flatMap((c) => c.detail ?? []).length,
-		markedAtoms: allContent(blocks).filter((a) => a.marks !== undefined).length,
-		references: allContent(blocks).filter((a) => a.kind === 'reference').length,
+		markedAtoms: atoms.filter((a) => a.marks !== undefined).length,
+		references: atoms.filter((a) => a.kind === 'reference').length,
 		replacementReferences: changes
 			.flatMap((c) => c.replacement)
 			.filter((a) => a.kind === 'reference').length
 	};
 }
 function sourceCounts(source) {
-	const segments = allContent(source.blocks),
+	const segments = source.blocks.flatMap((b) =>
+			b.kind === 'table' ? b.rows.flat().flatMap((c) => c.content) : b.content
+		),
 		atoms = segments.flatMap((s) => s.content);
 	const preferred = source.boxes.flatMap((b) => b.preferredConcessions),
 		rare = source.boxes.flatMap((b) => b.rareConcessions),
@@ -163,7 +171,13 @@ export function historicalEffective(source, selected) {
 			return {
 				kind: b.kind,
 				blockKey: b.blockKey,
-				rows: b.rows.map((row) => row.map((c) => ({ content: runs(c.content) })))
+				rows: b.rows.map((row) =>
+					row.map((c) =>
+						runs(c.content)
+							.map((run) => run.text)
+							.join('')
+					)
+				)
 			};
 		let content = runs(b.content);
 		if (b.numbering) {
@@ -194,9 +208,14 @@ function visible(blocks, aliases = new Map()) {
 			? {
 					kind: b.kind,
 					blockKey: aliases.get(b.blockKey) ?? b.blockKey,
-					rows: b.rows.map((row) => row.map((c) => runs(c.content)))
+					rows: b.rows
 				}
-			: { kind: b.kind, blockKey: aliases.get(b.blockKey) ?? b.blockKey, content: runs(b.content) }
+			: {
+					kind: 'paragraph',
+					role: seedParagraphRole({ ...b, blockKey: aliases.get(b.blockKey) ?? b.blockKey }),
+					blockKey: aliases.get(b.blockKey) ?? b.blockKey,
+					content: runs(b.content)
+				}
 	);
 }
 function acceptRedline(blocks) {
@@ -209,11 +228,7 @@ function acceptRedline(blocks) {
 		}
 		return out;
 	};
-	return blocks.map((b) =>
-		b.kind === 'table'
-			? { ...b, rows: b.rows.map((row) => row.map((c) => ({ content: runs(c.content) }))) }
-			: { ...b, content: runs(b.content) }
-	);
+	return blocks.map((b) => (b.kind === 'table' ? b : { ...b, content: runs(b.content) }));
 }
 export async function reconcile(server, blocks, items) {
 	const source = await readExport(),
@@ -222,24 +237,29 @@ export async function reconcile(server, blocks, items) {
 		...differences(expected.blocks, blocks, 'contractBlocks'),
 		...differences(expected.items, items, 'playbookItems')
 	];
-	const { baselineBlock } = await server.ssrLoadModule('/src/convex/sourceValidators.ts');
+	const { baselineBlock } = await server.ssrLoadModule('/src/lib/contract/source-validators.ts');
 	const { playbookItem } = await server.ssrLoadModule('/src/convex/playbookValidators.ts');
 	blocks.forEach((b, i) => assertShape(b, baselineBlock.json, `block[${i}]`));
 	items.forEach((b, i) => assertShape(b, playbookItem.json, `item[${i}]`));
 	const { validatePlaybook } = await server.ssrLoadModule('/src/lib/playbook/audit.ts');
 	validatePlaybook(blocks, items);
 	const { semanticPlaybookDraft, equalConcession } = await server.ssrLoadModule(
-		'/src/lib/playbook/draft.ts'
+		'/src/lib/playbook/content.ts'
 	);
 	const { AuthoringContext } = await server.ssrLoadModule(
 		'/src/lib/playbook/authoring-context.svelte.ts'
 	);
-	const { savePlaybookItem } = await server.ssrLoadModule('/src/convex/admin.ts');
+	const { savePlaybookItem } = await server.ssrLoadModule('/src/convex/playbookItems.ts');
 	const { baselineIntegrity } = await server.ssrLoadModule('/src/convex/baselineStorage.ts');
-	const { businessItem, snapshotItem, itemRevision } = await server.ssrLoadModule(
-		'/src/convex/playbookItemRevisions.ts'
+	const { businessItem, snapshotItem, itemRevision, compactHead, hydrateHead } =
+		await server.ssrLoadModule('/src/convex/playbookItemRevisions.ts');
+	const { documentBytes } = await server.ssrLoadModule('/src/convex/storageCapacity.ts');
+	const { getConvexSize } = await import('convex/values');
+	const { itemStructure } = await server.ssrLoadModule('/src/lib/playbook/structure.ts');
+	const { buildSourceIndex } = await server.ssrLoadModule('/src/lib/contract/source-index.ts');
+	const { certifyValidationFacts, VALIDATION_CODEC_VERSION } = await server.ssrLoadModule(
+		'/src/lib/contract/validation-codec.ts'
 	);
-	const { documentBytes } = await server.ssrLoadModule('/src/convex/templateCapacity.ts');
 	const { render } = await server.ssrLoadModule('svelte/server');
 	const { default: RepPlaybookPanel } = await server.ssrLoadModule(
 		'/src/lib/components/playbook/RepPlaybookPanel.svelte'
@@ -271,18 +291,58 @@ export async function reconcile(server, blocks, items) {
 	const seededItems = items.map((item, index) => ({
 		...item,
 		companyId,
-		revision: 1,
-		publishedRevisionId: `seed-revision-${index}`,
+		contentRevision: 1,
+		currentRevisionId: `seed-revision-${index}`,
 		_id: `seed-item-${index}`,
+		renderKey: `seed-item-${index}`,
+		_creationTime: 0
+	}));
+	const seededHeads = seededItems.map((item) => ({
+		...compactHead(item),
+		_id: item._id,
+		_creationTime: item._creationTime
+	}));
+	const validationData = certifyValidationFacts(buildSourceIndex(blocks));
+	const validationChunk = {
+		_id: 'seed-validation-chunk',
+		_creationTime: 0,
+		companyId,
+		baselineId: 'seed-baseline',
+		order: 0,
+		data: validationData
+	};
+	const certificate = {
+		_id: 'seed-validation',
+		_creationTime: 0,
+		companyId,
+		baselineId: 'seed-baseline',
+		format: VALIDATION_CODEC_VERSION,
+		fingerprint: integrity.fingerprint,
+		chunkCount: 1,
+		chunkIds: [validationChunk._id],
+		dataBytes: validationData.byteLength,
+		readBytes: documentBytes(validationChunk)
+	};
+	const seededRevisions = seededItems.map((item) => ({
+		...itemRevision(item),
+		_id: item.currentRevisionId,
 		_creationTime: 0
 	}));
 	const seededVersion = {
 		_id: 'seed-version',
-		draft: true,
+		mutability: 'mutable',
 		_creationTime: 0,
 		companyId,
 		baselineId: 'seed-baseline',
-		publishedAt: 0,
+		updatedAt: 0,
+		authoringGeneration: 1,
+		structuralGeneration: 1,
+		validation: { format: VALIDATION_CODEC_VERSION, fingerprint: integrity.fingerprint },
+		headReadBytes: seededHeads.reduce((sum, head) => sum + documentBytes(head), 0),
+		structureResultBytes: seededItems.reduce(
+			(sum, item) => sum + getConvexSize(itemStructure(item)),
+			0
+		),
 		blockCount: blocks.length,
 		itemCount: items.length,
 		snapshotBytes: new TextEncoder().encode(
@@ -290,13 +350,8 @@ export async function reconcile(server, blocks, items) {
 		).byteLength,
 		contentReadBytes:
 			documentBytes(baselineChunk) +
-			seededItems.reduce(
-				(sum, item) =>
-					sum +
-					documentBytes({ ...itemRevision(item), _id: item.publishedRevisionId, _creationTime: 0 }),
-				0
-			),
-		items: seededItems.map((item) => ({ itemId: item._id, revisionId: item.publishedRevisionId }))
+			seededRevisions.reduce((sum, revision) => sum + documentBytes(revision), 0),
+		items: seededItems.map((item) => ({ itemId: item._id, revisionId: item.currentRevisionId }))
 	};
 	for (const [i, item] of items.entries()) {
 		const saved = seededItems[i];
@@ -308,9 +363,9 @@ export async function reconcile(server, blocks, items) {
 		assert.deepEqual(editing.payload, item, `Edit/save loses data: ${i}`);
 		validateConcessionUpdate(item, semanticPlaybookDraft(item));
 		// Exercise the actual existing-record mutation with an in-memory persistence
-		// adapter, including complete publication. Convex transaction guarantees are
+		// adapter, including complete template saving. Convex transaction guarantees are
 		// verified separately; this adapter checks preserved business payloads.
-		let persisted = structuredClone(saved);
+		let persisted = structuredClone(seededHeads[i]);
 		const tables = new Map([
 			['profiles', [{ _id: profileId, identity: identity.tokenIdentifier }]],
 			['memberships', [{ _id: membershipId, companyId, profileId, role: 'admin' }]],
@@ -321,7 +376,9 @@ export async function reconcile(server, blocks, items) {
 					{
 						_id: 'seed-pointer',
 						companyId,
-						versionId: 'seed-version'
+						versionId: 'seed-version',
+						authoringGeneration: 1,
+						structuralGeneration: 1
 					}
 				]
 			],
@@ -332,19 +389,22 @@ export async function reconcile(server, blocks, items) {
 						_id: 'seed-baseline',
 						companyId,
 						source: 'seed',
-						state: 'published',
+						state: 'active',
 						blockCount: blocks.length,
 						issues: [],
 						...integrity,
 						bootstrapKey: 'a'.repeat(64),
-						publishedAt: 0,
+						activatedAt: 0,
 						chunkCount: 1,
 						chunkReadBytes: documentBytes(baselineChunk)
 					}
 				]
 			],
 			['baselineChunks', [baselineChunk]],
-			['playbookItems', structuredClone(seededItems)],
+			['baselineAuthoring', [certificate]],
+			['baselineValidationChunks', [validationChunk]],
+			['playbookItems', structuredClone(seededHeads)],
+			['playbookItemRevisions', structuredClone(seededRevisions)],
 			['templateVersions', [seededVersion]]
 		]);
 		let nextId = 0;
@@ -374,7 +434,7 @@ export async function reconcile(server, blocks, items) {
 					return query;
 				},
 				insert: async (table, value) => {
-					const row = { ...value, _id: `publication-${++nextId}`, _creationTime: 0 };
+					const row = { ...value, _id: `template-version-${++nextId}`, _creationTime: 0 };
 					tables.set(table, [...(tables.get(table) ?? []), row]);
 					return row._id;
 				},
@@ -395,16 +455,21 @@ export async function reconcile(server, blocks, items) {
 			membershipId,
 			id: saved._id,
 			item: editing.payload,
-			expectedRevision: 1,
+			expectedContentRevision: 1,
 			operationId: '00000000-0000-4000-8000-000000000000'
 		});
 		assert.equal(result.status, 'saved', `Mutation rejected item ${i}`);
-		assert.deepEqual(businessItem(persisted), item, `Mutation drops business fields: ${i}`);
+		assert.deepEqual(
+			businessItem(await hydrateHead(ctx, persisted)),
+			item,
+			`Mutation drops business fields: ${i}`
+		);
 		const html = render(RepPlaybookPanel, {
 			props: { item: saved, onToggle: () => {}, onClose: () => {} }
 		}).body;
 		const userText = [
 			...Object.values(item.instructions ?? {}),
+			...(item.approvalPolicy.kind === 'required' ? [item.approvalPolicy.instructions] : []),
 			...item.concessions.map((c) => c.description)
 		];
 		for (const text of userText)
@@ -454,7 +519,7 @@ export async function reconcile(server, blocks, items) {
 	const frozen = JSON.parse(await readFile('data/reference/compositor.json', 'utf8'));
 	for (const state of frozen)
 		if (Object.keys(state.selected).length > 1 && !scenarios.some((s) => s.name === state.name))
-			scenarios.push({ name: state.name, selected: state.selected });
+			scenarios.push({ name: state.name, selected: remapSeedSelections(items, state.selected) });
 	for (const { name, selected } of scenarios) {
 		const old = historicalEffective(source, new Set(Object.values(selected)));
 		const effective = composeContract({
@@ -483,14 +548,19 @@ export async function reconcile(server, blocks, items) {
 		);
 	}
 	const oldCounts = sourceCounts(source),
-		newCounts = seedCounts(blocks, items);
+		newCounts = seedCounts(blocks, items),
+		retired = source.boxes.find((box) => box.clauseKey === retiredTableRule);
 	mismatches.push(
 		...differences(
 			{
 				...oldCounts,
 				contractBlocks: 112,
-				triggers: 56,
-				changes: 34,
+				playbookItems: 55,
+				triggers: 55,
+				concessions: 21,
+				preferred: oldCounts.preferred - retired.preferredConcessions.length,
+				rare: oldCounts.rare - retired.rareConcessions.length,
+				changes: 29,
 				afterNotes: 0,
 				detailEntries: 0,
 				markedAtoms: 0,
@@ -525,6 +595,12 @@ export async function reconcile(server, blocks, items) {
 		oldCounts,
 		newCounts,
 		approvedChanges: [
+			{
+				field: 'table-based discounts',
+				before: { items: 1, concessions: 5, changes: 5 },
+				after: { items: 0, concessions: 0, changes: 0 },
+				reason: 'User approved retiring monthly-fee-discount and making all table content static.'
+			},
 			{
 				field: 'markedAtoms',
 				before: oldCounts.markedAtoms,

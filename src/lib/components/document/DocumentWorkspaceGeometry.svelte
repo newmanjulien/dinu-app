@@ -50,18 +50,12 @@
 	>
 		{#if onPageResize}
 			<!-- Measure even while the document content is hidden or has not mounted. -->
-			<div class="page-width-probe" use:measurePage aria-hidden="true"></div>
+			<div
+				class="pointer-events-none invisible absolute h-0 w-(--paper-width)"
+				use:measurePage
+				aria-hidden="true"
+			></div>
 		{/if}
 		{@render children()}
 	</div>
 </div>
-
-<style>
-	.page-width-probe {
-		position: absolute;
-		width: var(--paper-width);
-		height: 0;
-		visibility: hidden;
-		pointer-events: none;
-	}
-</style>

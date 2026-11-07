@@ -21,12 +21,21 @@ const docx = common.extend({
 const seed = common.extend({
 	source: v.literal('seed'),
 	bootstrapKey: v.string(),
-	publishedAt: v.number()
+	activatedAt: v.number()
 });
 
 export const storedBaseline = v.union(
-	docx.extend({ state: v.literal('prepared'), expiresAt: v.number() }),
-	docx.extend({ state: v.literal('published'), publishedAt: v.number() }),
-	docx.extend({ state: v.literal('deleting'), expiresAt: v.number() }),
-	seed.extend({ state: v.literal('published') })
+	docx.extend({
+		state: v.literal('prepared'),
+		expiresAt: v.number()
+	}),
+	docx.extend({
+		state: v.literal('active'),
+		activatedAt: v.number()
+	}),
+	docx.extend({
+		state: v.literal('deleting'),
+		expiresAt: v.number()
+	}),
+	seed.extend({ state: v.literal('active') })
 );

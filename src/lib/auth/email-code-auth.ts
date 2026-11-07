@@ -209,7 +209,7 @@ export function getClerkErrorCode(error: unknown) {
 	return clerkErrors?.[0]?.code ?? (error as { code?: string })?.code;
 }
 
-export function getErrorMessage(error: unknown) {
+function getErrorMessage(error: unknown) {
 	const clerkErrors = (error as { errors?: { longMessage?: string; message?: string }[] })?.errors;
 	const clerkError = error as { longMessage?: string; message?: string };
 	return (

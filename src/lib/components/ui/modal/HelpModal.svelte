@@ -15,12 +15,12 @@
 	let hideHelp = $state(false);
 
 	onMount(() => {
-		hideHelp = isHelpHidden(variant);
+		if (variant === 'rep') hideHelp = isHelpHidden();
 	});
 
 	function handleHideHelpChange(checked: boolean) {
 		hideHelp = checked;
-		setHelpHidden(variant, checked);
+		setHelpHidden(checked);
 	}
 </script>
 
@@ -50,10 +50,7 @@
 								<p class="mt-1.5 text-[14px] leading-[1.6] text-ink-muted">
 									{#if highlight && highlightStart >= 0}
 										{step.description.slice(0, highlightStart)}<span
-											class="rounded-[3px] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]"
-											style:background={highlight.color === 'blue'
-												? 'var(--document-highlight-selection, var(--color-accent-soft))'
-												: 'var(--document-highlight-trigger, color-mix(in srgb, var(--color-success) 16%, transparent))'}
+											class={`rounded-[3px] [box-decoration-break:clone] [-webkit-box-decoration-break:clone] ${highlight.color === 'blue' ? 'bg-[var(--document-highlight-selection,var(--color-accent-soft))]' : 'bg-[var(--document-highlight-trigger,color-mix(in_srgb,var(--color-success)_16%,transparent))]'}`}
 										>
 											{highlight.text}
 										</span>{step.description.slice(highlightStart + highlight.text.length)}
@@ -67,12 +64,14 @@
 					{/each}
 				</ol>
 
-				<Checkbox
-					label="Don't show this again"
-					checked={hideHelp}
-					onCheckedChange={handleHideHelpChange}
-					className="mt-6"
-				/>
+				{#if variant === 'rep'}
+					<Checkbox
+						label="Don't show this again"
+						checked={hideHelp}
+						onCheckedChange={handleHideHelpChange}
+						class="mt-6"
+					/>
+				{/if}
 			</div>
 		</div>
 	</div>

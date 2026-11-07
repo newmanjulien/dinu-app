@@ -1,29 +1,22 @@
-import {
-	isTextTarget,
-	type SourceRange,
-	type SourcePoint,
-	type SourceTarget
-} from '$lib/contract/source-model';
-import { comparePoints, unitsInRange, validateRange } from '$lib/contract/ranges';
+import { unitsInRange } from '$lib/contract/ranges';
 import {
 	pointPosition,
 	resolvePoint,
 	type SourceIndex,
 	type SourceUnit
 } from '$lib/contract/source-index';
+import {
+	isTextTarget,
+	type SourcePoint,
+	type SourceRange,
+	type SourceTarget
+} from '$lib/contract/source-model';
 import { measureStructuralBoundaryTarget } from '$lib/document/highlights/geometry';
-
-/** A native browser selection translated into document source text. */
-export type MappedDocumentSelection = {
-	kind: 'text';
-	range: SourceRange;
-	/**
-	 * The browser range after expanding endpoints that landed inside an atomic source unit.
-	 * It is intentionally separate from the source range: source atoms are length one while their
-	 * visible labels can contain many characters.
-	 */
-	domRange: Range;
-};
+import {
+	breakGroupKeys,
+	legacyTextNavigationGroups,
+	type SelectionDocument
+} from './selection-model';
 
 type SourceTextToken = {
 	text: Text;
@@ -46,7 +39,7 @@ function sourceBlockSelector(
 }
 
 /** Read the source identity carried by one visible text token. */
-function sourceTextToken(
+export function sourceTextToken(
 	root: HTMLElement,
 	text: Text,
 	index: SourceIndex
@@ -58,7 +51,9 @@ function sourceTextToken(
 		!root.contains(parent) ||
 		!contract ||
 		!root.contains(contract) ||
-		parent.closest('[aria-hidden="true"], [data-document-control], [data-revision], del, ins')
+		parent.closest(
+			'[aria-hidden="true"], [data-document-control], [data-revision], del, ins, table'
+		)
 	)
 		return null;
 	const span = parent.closest<HTMLElement>('[data-source-start-key]');
@@ -89,51 +84,6 @@ function sourceTextToken(
 	}
 }
 
-/**
- * A double-click normally begins and ends in the same text node. Map that native selection from
- * its token directly, rather than making it depend on unrelated DOM around the paragraph.
- */
-function mapSingleTextSelection(
-	range: Range,
-	root: HTMLElement,
-	index: SourceIndex
-): MappedDocumentSelection | null | undefined {
-	if (
-		range.startContainer !== range.endContainer ||
-		range.startContainer.nodeType !== Node.TEXT_NODE
-	)
-		return undefined;
-	const token = sourceTextToken(root, range.startContainer as Text, index);
-	if (!token) return null;
-	const { text, unit, from, to } = token;
-	const normalizedRange = range.cloneRange();
-	if (unit.kind !== 'text') {
-		if (range.startOffset > 0) {
-			normalizedRange.setStart(text, 0);
-		}
-		if (range.endOffset < text.length) {
-			normalizedRange.setEnd(text, text.length);
-		}
-	}
-	const sourceRange: SourceRange = {
-		start: {
-			sourceKey: unit.sourceKey,
-			offset: unit.kind === 'text' ? from + range.startOffset : 0
-		},
-		end: { sourceKey: unit.sourceKey, offset: unit.kind === 'text' ? from + range.endOffset : 1 }
-	};
-	try {
-		validateRange(index, sourceRange);
-		return {
-			kind: 'text',
-			range: sourceRange,
-			domRange: normalizedRange
-		};
-	} catch {
-		return null;
-	}
-}
-
 /** Resolve source coordinates into visible text ranges, including fragments split across pages. */
 export function sourceRangeToDomRanges(
 	root: HTMLElement,
@@ -157,7 +107,7 @@ export function sourceRangeToDomRanges(
 	]);
 	if (!selector) return [];
 	for (const span of root.querySelectorAll<HTMLElement>(selector)) {
-		const nextBlock = span.closest('td, th, .contract-block');
+		const nextBlock = span.closest('.contract-block');
 		if (nextBlock !== block) current = undefined;
 		block = nextBlock;
 		if (span.closest('[data-revision], del, ins, [aria-hidden="true"]')) {
@@ -209,107 +159,49 @@ export function sourceRangeToDomRanges(
 	return ranges;
 }
 
-/**
- * Translate a captured native range into source coordinates. The caller owns browser-selection
- * lifecycle; this adapter deliberately has no dependency on window.getSelection().
- */
-export function mapDomRange(
-	range: Range,
+/** A captured envelope is imported only through its current production surface. */
+export function importDomSelection(
+	captured: import('./selection-gesture').CapturedNativeSelection,
+	context: import('./selection-surface').SelectionSurface
+) {
+	return context.importNative(captured);
+}
+
+/** All selected text, including unowned leading/trailing whitespace, is evidence. */
+export function readSelectedDomEnvelope(
 	root: HTMLElement,
-	index: SourceIndex
-): MappedDocumentSelection | null {
-	if (range.collapsed) return null;
-	if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
-	const singleText = mapSingleTextSelection(range, root, index);
-	if (singleText !== undefined) return singleText;
+	range: Range,
+	classify: (text: Text, from: number, to: number) => boolean
+): boolean {
+	if (
+		!root.isConnected ||
+		!root.contains(range.startContainer) ||
+		!root.contains(range.endContainer)
+	)
+		return false;
 	const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-	let first: SourceRange['start'] | undefined, last: SourceRange['end'] | undefined;
-	let startsWithSeparator = false,
-		endsWithSeparator = false;
-	const normalizedRange = range.cloneRange();
 	try {
 		for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 			const text = node as Text;
-			// Range endpoints are allowed to sit on element boundaries. Comparing every text node
-			// against the native range is deliberately more robust than walking from one boundary
-			// to the other: browsers use different ancestor/offset shapes for drag, double-click,
-			// and word selection at an inline boundary.
-			const start =
+			const from =
 				range.startContainer === text
 					? range.startOffset
 					: range.comparePoint(text, 0) >= 0
 						? 0
 						: text.length;
-			const end =
+			const to =
 				range.endContainer === text
 					? range.endOffset
 					: range.comparePoint(text, text.length) <= 0
 						? text.length
 						: 0;
-			if (start >= end) continue;
-			const parent = text.parentElement;
-			// Selection mapping has a strict DOM ownership boundary: text in the contract must be
-			// source-backed/generated, or explicitly ignored presentation/control content.
-			const contract = parent?.closest<HTMLElement>('.contract-document');
-			if (
-				!parent ||
-				!root.contains(parent) ||
-				!contract ||
-				!root.contains(contract) ||
-				parent.closest('[data-revision], del, ins')
-			)
-				return null;
-			// Structural controls are never contract source text. A normal selection may cross one,
-			// so omit it rather than rejecting the full interval.
-			if (parent.closest('[aria-hidden="true"], [data-document-control]')) continue;
-			const token = sourceTextToken(root, text, index);
-			if (!token) {
-				const separator = parent.closest<HTMLElement>('[data-generated="separator"]');
-				// Presentation text must be declared as a source-less separator. In particular,
-				// silently accepting formatting whitespace here would let an unowned node change a
-				// persisted selection's extent.
-				if (
-					!separator ||
-					!root.contains(separator) ||
-					separator.textContent !== text.data ||
-					separator.dataset.sourceStartKey ||
-					separator.dataset.sourceEndKey
-				)
-					return null;
-				if (!first) startsWithSeparator = true;
-				endsWithSeparator = true;
-				continue;
-			}
-			const { unit, from, to } = token;
-			if (unit.kind !== 'text') {
-				// References and numbered labels are one source unit, even though their rendered label
-				// spans multiple visible characters. A partial native selection is normal browser
-				// behaviour, so expand its endpoint rather than rejecting it.
-				if (range.startContainer === text && start > 0) {
-					normalizedRange.setStart(text, 0);
-				}
-				if (range.endContainer === text && end < text.length) {
-					normalizedRange.setEnd(text, text.length);
-				}
-			}
-			const a = { sourceKey: unit.sourceKey, offset: unit.kind === 'text' ? from + start : 0 };
-			const b = { sourceKey: unit.sourceKey, offset: unit.kind === 'text' ? from + end : 1 };
-			if (last && comparePoints(index, last, a) > 0) return null;
-			first ??= a;
-			last = b;
-			endsWithSeparator = false;
+			if (from >= to) continue;
+			if (text.parentElement?.closest('[data-document-chrome], [data-document-control]')) continue;
+			if (!classify(text, from, to)) return false;
 		}
-		if (!first || !last) return null;
-		if (startsWithSeparator || endsWithSeparator) return null;
-		const canonical = { start: first, end: last };
-		validateRange(index, canonical);
-		return {
-			kind: 'text',
-			range: canonical,
-			domRange: normalizedRange
-		};
+		return true;
 	} catch {
-		return null;
+		return false;
 	}
 }
 
@@ -320,10 +212,9 @@ export interface SourceOccurrencePreference {
 
 export function sourceOccurrence(span: HTMLElement): SourceOccurrencePreference {
 	const block = span.closest<HTMLElement>('[data-source-fragment-key]');
-	const cell = span.closest<HTMLTableCellElement>('td, th');
 	return {
 		pageNumber: Number(span.closest<HTMLElement>('.document-page')?.dataset.pageNumber),
-		fragmentIdentity: `${block?.dataset.blockKey ?? ''}:${cell?.dataset.sourceRow ?? ''}:${cell?.dataset.sourceCell ?? ''}`
+		fragmentIdentity: block?.dataset.sourceFragmentKey ?? ''
 	};
 }
 
@@ -405,7 +296,8 @@ function isRemovedToken(span: HTMLElement) {
 export function sourceTargetBounds(
 	root: HTMLElement,
 	target: SourceTarget,
-	index: SourceIndex
+	index: SourceIndex,
+	context: SelectionDocument | undefined
 ): DOMRect | null {
 	if (!isTextTarget(target)) {
 		for (const boundary of root.querySelectorAll<HTMLElement>(
@@ -455,7 +347,17 @@ export function sourceTargetBounds(
 	} catch {
 		return null;
 	}
-	return visible?.bounds ?? removed?.bounds ?? null;
+	if (visible) return visible.bounds;
+	for (const key of context && context.index === index
+		? legacyTextNavigationGroups(context, target).flatMap(breakGroupKeys)
+		: []) {
+		const element = root.querySelector<HTMLElement>(
+			`[data-structural-boundary="${CSS.escape(key)}"]`
+		);
+		const bounds = element && measureStructuralBoundaryTarget(element)?.bounds;
+		if (bounds) return bounds;
+	}
+	return removed?.bounds ?? null;
 }
 
 /** Locate a source point again after panel layout or pagination changes. */

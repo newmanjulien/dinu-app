@@ -8,7 +8,7 @@ export function observeSnapshotStorage() {
 	const transactions = new Set<Promise<void>>();
 	const connections = new Set<IDBDatabase>();
 	let onMetadataWrite:
-		((value: { contract: { revision: number } }, tx: IDBTransaction) => void) | undefined;
+		((value: { contract: { editRevision: number } }, tx: IDBTransaction) => void) | undefined;
 	vi.stubGlobal('indexedDB', new IDBFactory());
 
 	const transaction = IDBDatabase.prototype.transaction;
@@ -43,10 +43,10 @@ export function observeSnapshotStorage() {
 			return immutableWrites;
 		},
 		// Register before triggering a write; resolve when its real transaction commits.
-		committedRevision(revision: number) {
+		committedRevision(editRevision: number) {
 			return new Promise<void>((resolve, reject) => {
 				onMetadataWrite = (value, tx) => {
-					if (value.contract.revision !== revision) return;
+					if (value.contract.editRevision !== editRevision) return;
 					onMetadataWrite = undefined;
 					tx.addEventListener('complete', () => resolve(), { once: true });
 					tx.addEventListener('abort', () => reject(tx.error), { once: true });

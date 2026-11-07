@@ -23,10 +23,11 @@ dismissal and shortcuts.
 
 All modals use `$lib/ui/ModalShell.svelte`. Its `dialog` variant centers a
 content-height surface; its `panel` variant fills the available height and supports
-right alignment. The shared `--radius-modal` and `--spacing-modal` tokens define
-outer corners and default header/body/footer padding. Callers can set `maxWidth`
-and `contentPadding`; full-screen mobile panels use square corners. Only the body
-scrolls, keeping the header and optional footer visible.
+right alignment. The shared `--radius-modal` token defines outer corners. Tailwind
+classes on the shell elements set header/body padding to 20px and footer padding to
+20px horizontally and 18px vertically. Callers set surface widths with inline
+Tailwind classes such as `class="max-w-[420px]"`; full-screen mobile panels use
+square corners. Only the body scrolls, keeping the header and optional footer visible.
 
 Modal owners control `open` or conditionally mount the shell. Escape, backdrop
 clicks, and the close button request `onClose`; the shell stays open until the

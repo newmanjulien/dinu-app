@@ -1,11 +1,12 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { ConvexError, getConvexSize, getDocumentSize } from 'convex/values';
+import type { BaselineBlock } from '../lib/contract/source-model';
+import { MAX_STORAGE_DOCUMENT_BYTES } from '../lib/contract/storage-limits';
+import { MAX_CONTRACT_BLOCKS } from '../lib/playbook/validation';
 import type { Doc, Id } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
-import type { BaselineBlock } from '../lib/contract/source-model';
-import { MAX_CONTRACT_BLOCKS } from '../lib/playbook/validation';
-import { documentBytes, publicationCapacity, publicationRejected } from './templateCapacity';
-import { MAX_STORAGE_DOCUMENT_BYTES } from '../lib/contract/storage-limits';
+import { assertStorageCapacity, documentBytes } from './storageCapacity';
+import { templateRejected } from './templateCapacity';
 
 /** Canonical JSON for plain source/business values; array order remains significant. */
 function canonicalBytes(value: unknown): Uint8Array {
@@ -45,7 +46,7 @@ export function planBaselineChunks(args: {
 	blocks: readonly BaselineBlock[];
 }): Chunk[] {
 	if (!args.blocks.length || args.blocks.length > MAX_CONTRACT_BLOCKS)
-		throw publicationRejected('Contract exceeds supported size.');
+		throw templateRejected('Contract exceeds supported size.');
 	const chunks: Chunk[] = [];
 	let firstBlock = 0;
 	let blocks: BaselineBlock[] = [];
@@ -70,7 +71,7 @@ export function planBaselineChunks(args: {
 		bytes += blockBytes;
 		// A valid large block may use a chunk of its own, up to the native document cap.
 		if (bytes > MAX_STORAGE_DOCUMENT_BYTES)
-			throw publicationRejected('A template storage document exceeds supported size.');
+			throw templateRejected('A template storage document exceeds supported size.');
 	}
 	chunks.push(row(blocks));
 	return chunks;
@@ -90,7 +91,7 @@ export async function writeBaselineChunks(
 		(sum, chunk) => sum + documentBytes({ ...chunk, _id: measurementId, _creationTime: 0 }),
 		0
 	);
-	await publicationCapacity(ctx, {
+	await assertStorageCapacity(ctx, {
 		documents: chunks.length,
 		bytes: plannedBytes,
 		queries: chunks.length,
@@ -103,12 +104,13 @@ export async function writeBaselineChunks(
 		const saved = (await ctx.db.get('baselineChunks', id))!;
 		chunkReadBytes += documentBytes(saved);
 	}
+
 	return {
 		chunkCount: chunks.length,
 		chunkReadBytes
 	};
 }
-export async function readBaseline(
+export async function readBaselineMetadata(
 	ctx: QueryCtx,
 	baselineId: Id<'baselines'>,
 	companyId: Id<'company'>,
@@ -135,6 +137,16 @@ export async function readBaseline(
 		baseline.chunkReadBytes + 65_536 > 16 * 1024 * 1024
 	)
 		throw new ConvexError('This baseline is incomplete.');
+	return baseline;
+}
+
+export async function readBaseline(
+	ctx: QueryCtx,
+	baselineId: Id<'baselines'>,
+	companyId: Id<'company'>,
+	knownBaseline?: Doc<'baselines'>
+) {
+	const baseline = await readBaselineMetadata(ctx, baselineId, companyId, knownBaseline);
 	const rows = await ctx.db
 		.query('baselineChunks')
 		.withIndex('by_companyId_and_baselineId_and_order', (q) =>
@@ -166,7 +178,7 @@ export async function readBaseline(
 	if (integrity.blocksJsonBytes !== baseline.blocksJsonBytes)
 		throw new ConvexError('This baseline is incomplete.');
 	if (integrity.fingerprint !== baseline.fingerprint) throw new BaselineFingerprintError();
-	return { baseline, blocks };
+	return { baseline, blocks, chunks: rows };
 }
 
 export async function baselineBlocks(

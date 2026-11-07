@@ -1,21 +1,20 @@
-import type { BaselineBlock } from '../../src/lib/contract/source-model';
+import type { PlaybookItem } from '../../src/lib/playbook/model';
 import type { MutationCtx } from '../../src/convex/_generated/server';
-import type { Doc } from '../../src/convex/_generated/dataModel';
+import type { BaselineBlock } from '../../src/lib/contract/source-model';
 
 export const block: BaselineBlock = {
 	kind: 'paragraph',
+	role: 'body',
 	blockKey: 'paragraph-1',
 	order: 0,
 	content: [{ kind: 'text', sourceKey: 'text-1', text: 'Synthetic contract.' }]
 };
 
-export const item: Omit<
-	Doc<'playbookItems'>,
-	'_id' | '_creationTime' | 'companyId' | 'revision' | 'publishedRevisionId'
-> = {
+export const item: PlaybookItem = {
+	approvalPolicy: { kind: 'none' },
 	trigger: {
 		id: 'trigger',
-		range: {
+		target: {
 			kind: 'text',
 			range: { start: { sourceKey: 'text-1', offset: 0 }, end: { sourceKey: 'text-1', offset: 9 } }
 		}
@@ -51,4 +50,34 @@ export async function initializeViewer(ctx: MutationCtx) {
 		role: 'admin'
 	});
 	return { profileId: id, companyId, membershipId };
+}
+
+export const choicesFor = (selections: Record<string, string>) =>
+	Object.fromEntries(
+		Object.entries(selections).map(([id, concessionId]) => [id, { concessionId }])
+	);
+
+/** Stable ordered inputs for the canonical save protocol in existing fixtures. */
+export function commandsFor(
+	base: import('../../src/lib/contract/applications').ApplicationChoices,
+	choices: import('../../src/lib/contract/applications').ApplicationChoices,
+	operation: string
+): import('../../src/lib/contract/activity-commands').ActivityCommand[] {
+	return [...new Set([...Object.keys(base), ...Object.keys(choices)])]
+		.filter(
+			(id) =>
+				JSON.stringify(
+					base[id as import('../../src/convex/_generated/dataModel').Id<'playbookItems'>]
+				) !==
+				JSON.stringify(
+					choices[id as import('../../src/convex/_generated/dataModel').Id<'playbookItems'>]
+				)
+		)
+		.map((id, index) => ({
+			id: `${operation}:${index}`,
+			itemId: id as import('../../src/convex/_generated/dataModel').Id<'playbookItems'>,
+			choice:
+				choices[id as import('../../src/convex/_generated/dataModel').Id<'playbookItems'>] ?? null,
+			occurredAt: 123
+		}));
 }

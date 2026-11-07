@@ -1,4 +1,5 @@
 import { Unzip, UnzipInflate } from 'fflate';
+import { NUMBERING_PART } from '../../../contract/export/numbering';
 import {
 	DOCX_MAX_BYTES,
 	DOCX_MAX_EXPANDED_BYTES,
@@ -7,6 +8,9 @@ import {
 import { child, children, indexBy, parseXml, type XmlNode } from './xml';
 
 type Relationship = { id: string; type: string; target: string; external: boolean };
+
+// Accept the original metadata part when reopening older Dinu exports.
+const numberingParts = [NUMBERING_PART, 'customXml/oceans-numbering.xml'];
 
 function extract(
 	input: Uint8Array,
@@ -135,8 +139,18 @@ export function openPackage(input: Uint8Array) {
 	const relName = relationshipName(main);
 	const relBytes = extract(input, (name) => name === relName, retained, false).parts.get(relName);
 	const related = relationships(main, relBytes);
+	const canonical = related.filter(
+		(r) => r.type === 'customXml' && numberingParts.includes(r.target) && !r.external
+	);
+	const canonicalPart = canonical[0]?.target;
+	if (
+		canonical.length > 1 ||
+		numberingParts.some((name) => names.has(name) !== (name === canonicalPart))
+	)
+		throw new Error('The contract numbering metadata is incomplete. Export a fresh Word copy.');
 	const consumed = new Set([
 		main,
+		...(canonicalPart ? [canonicalPart] : []),
 		...related
 			.filter((r) => !r.external && ['styles', 'numbering', 'header'].includes(r.type))
 			.map((r) => r.target)
@@ -148,7 +162,7 @@ export function openPackage(input: Uint8Array) {
 		if (cached) return cached;
 		const bytes = parts.get(name);
 		if (!bytes) throw new Error(`The Word file is missing its referenced part: ${name}.`);
-		const node = parseXml(bytes, budget);
+		const node = parseXml(bytes, budget, name === canonicalPart ? 'contract' : 'word');
 		parsed.set(name, node);
 		parts.delete(name);
 		return node;
@@ -159,5 +173,11 @@ export function openPackage(input: Uint8Array) {
 			throw new Error(`Invalid Word ${type} relationship.`);
 		return matches.length ? read(matches[0].target) : undefined;
 	}
-	return { document: read(main), related, relatedPart, read };
+	return {
+		document: read(main),
+		canonicalNumbering: canonicalPart ? read(canonicalPart) : undefined,
+		related,
+		relatedPart,
+		read
+	};
 }

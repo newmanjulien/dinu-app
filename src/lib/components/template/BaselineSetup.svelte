@@ -10,37 +10,39 @@
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import InfoBar from '$lib/components/ui/InfoBar.svelte';
 	import FileTextIcon from 'phosphor-svelte/lib/FileTextIcon';
 	import CheckCircleIcon from 'phosphor-svelte/lib/CheckCircleIcon';
+	import CircleNotchIcon from 'phosphor-svelte/lib/CircleNotchIcon';
+	import ArrowsClockwiseIcon from 'phosphor-svelte/lib/ArrowsClockwiseIcon';
 	import { DOCX_MAX_BYTES, type ImportIssue } from '$lib/contract/import/limits';
 	import { saveError } from '$lib/contract/saved';
 	import Button from '$lib/ui/Button.svelte';
-	import { accentButtonClass } from '$lib/ui/button-styles';
+	import { useCsmPreload } from '$lib/components/chrome/csm-preload.svelte';
+	const preload = useCsmPreload();
 	let { getNavigationIntent }: { getNavigationIntent: () => number } = $props();
 	const viewer = useViewer();
 	const session = useViewerSession();
 	const client = useConvexClient();
 	const clerk = useClerkContext();
 	const membershipId = viewer().membership.id;
-	const admin = $derived(viewer().profile.role === 'admin');
+	const admin = $derived(viewer().membership.role === 'admin');
 	let fileInput = $state<HTMLInputElement>();
 	let fileName = $state('');
 	let preparedBaselineId = $state<Id<'baselines'> | null>(null);
 	let issues = $state.raw<ImportIssue[]>([]);
 	let parsing = $state(false);
-	let publishing = $state(false);
-	let confirmed = $state(false);
+	let advancing = $state(false);
 	let uploadError = $state('');
-	let publishError = $state('');
+	let setupError = $state('');
 	let dragDepth = $state(0);
 	let generation = 0;
 	let attempt: ReadAttempt | undefined;
 	const errors = $derived(issues.filter((i) => i.severity === 'error'));
 	const blocked = $derived(errors.length > 0);
 	const ready = $derived(!!preparedBaselineId && !blocked && !parsing);
-	const dragging = $derived(dragDepth > 0 && !publishing);
+	const busy = $derived(parsing || advancing);
+	const dragging = $derived(dragDepth > 0 && !busy);
 	function findText(context: string) {
 		const text = context.replace(/\s+/g, ' ').trim();
 		return text.length > 100 ? `${text.slice(0, 100).trimEnd()}…` : text;
@@ -55,19 +57,18 @@
 		cancel();
 		preparedBaselineId = null;
 		issues = [];
-		confirmed = false;
 		uploadError = '';
-		publishError = '';
+		setupError = '';
 		fileName = name;
 		parsing = false;
 	}
 	function chooseFile() {
-		if (!fileInput || publishing) return;
+		if (!fileInput || busy) return;
 		fileInput.value = '';
 		fileInput.click();
 	}
 	function selectFiles(files: FileList | null) {
-		if (!files?.length || !admin || publishing) return;
+		if (!files?.length || !admin || busy) return;
 		if (files.length !== 1) {
 			resetUpload();
 			uploadError = 'Upload one Word contract at a time.';
@@ -78,11 +79,11 @@
 	function dragEnter(event: DragEvent) {
 		if (!event.dataTransfer?.types.includes('Files')) return;
 		event.preventDefault();
-		if (!publishing) dragDepth++;
+		if (!busy) dragDepth++;
 	}
 	function dragOver(event: DragEvent) {
 		event.preventDefault();
-		if (event.dataTransfer) event.dataTransfer.dropEffect = publishing ? 'none' : 'copy';
+		if (event.dataTransfer) event.dataTransfer.dropEffect = busy ? 'none' : 'copy';
 	}
 	function drop(event: DragEvent) {
 		event.preventDefault();
@@ -101,16 +102,7 @@
 		}
 		parsing = true;
 		const current = generation;
-		const userId = session.userId;
-		const prepared = session.prepared;
-		const transportGeneration = session.transportGeneration;
-		const active = () =>
-			generation === current &&
-			!session.closing &&
-			session.userId === userId &&
-			session.prepared === prepared &&
-			session.transportGeneration === transportGeneration &&
-			viewer().membership.id === membershipId;
+		const active = uploadAccess();
 		const read = new ReadAttempt(30000);
 		attempt = read;
 		try {
@@ -125,19 +117,17 @@
 			);
 			url.searchParams.set('membershipId', membershipId);
 			url.searchParams.set('filename', file.name);
-			const response = await waitForRead(
-				fetch(url, {
-					method: 'POST',
-					headers: {
-						Authorization: `Bearer ${token}`,
-						'Content-Type':
-							'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-					},
-					body: file,
-					signal: read.signal
-				}),
-				read.signal
-			);
+			const pendingUpload = fetch(url, {
+				method: 'POST',
+				headers: {
+					Authorization: `Bearer ${token}`,
+					'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+				},
+				body: file,
+				signal: read.signal
+			});
+			preload.warm('setup', true);
+			const response = await waitForRead(pendingUpload, read.signal);
 			const result: unknown = await waitForRead(response.json(), read.signal);
 			if (!active()) return;
 			if (!result || typeof result !== 'object')
@@ -180,39 +170,47 @@
 			}
 		}
 	}
-	async function publish() {
-		if (
-			!admin ||
-			parsing ||
-			blocked ||
-			!confirmed ||
-			publishing ||
-			!preparedBaselineId ||
-			session.closing
-		)
-			return;
-		publishing = true;
-		publishError = '';
+	function uploadAccess() {
+		const current = generation,
+			userId = session.userId,
+			prepared = session.preparedSessionId,
+			transport = session.transportGeneration;
+		return () =>
+			generation === current &&
+			!session.closing &&
+			session.userId === userId &&
+			session.preparedSessionId === prepared &&
+			session.transportGeneration === transport &&
+			viewer().membership.id === membershipId;
+	}
+	async function goToLastStep() {
+		if (!admin || busy || blocked || !preparedBaselineId || session.closing) return;
+		advancing = true;
+		setupError = '';
 		const intent = getNavigationIntent();
 		const route = page.url.href;
 		const userId = session.userId;
-		const prepared = session.prepared;
+		const prepared = session.preparedSessionId;
 		const transportGeneration = session.transportGeneration;
 		try {
-			await client.mutation(api.templates.publishBaseline, { membershipId, preparedBaselineId });
+			preload.warm('setup');
+			await client.mutation(api.templates.setCompanyContract, {
+				membershipId,
+				preparedBaselineId
+			});
 			if (
 				getNavigationIntent() !== intent ||
 				page.url.href !== route ||
 				session.closing ||
 				session.userId !== userId ||
-				session.prepared !== prepared ||
+				session.preparedSessionId !== prepared ||
 				session.transportGeneration !== transportGeneration ||
 				viewer().membership.id !== membershipId
 			)
 				return;
-			await goto('/admin');
+			await goto('/admin', { state: { showDelegationOnboarding: true } });
 		} catch (cause) {
-			publishError =
+			setupError =
 				cause &&
 				typeof cause === 'object' &&
 				'data' in cause &&
@@ -221,9 +219,9 @@
 				'message' in cause.data &&
 				typeof cause.data.message === 'string'
 					? cause.data.message
-					: saveError(cause, 'Unable to publish the baseline. Try again.');
+					: saveError(cause, 'Unable to save your contract. Try again.');
 		} finally {
-			publishing = false;
+			advancing = false;
 		}
 	}
 </script>
@@ -233,15 +231,15 @@
 >
 	<div class="mx-auto max-w-[1262px]">
 		<div class="mx-auto mb-9 max-w-[440px] text-center">
-			<h1 class="text-[18px] leading-8 font-medium tracking-[-0.025em] text-ink">
+			<h1 class="text-[20px] leading-8 font-medium tracking-[-0.025em] text-ink">
 				Set up your company’s contract
 			</h1>
 			<p class="mt-1 text-[13px] leading-6 text-ink-muted">
 				{#if admin}
 					Upload the Word contract your team uses as the starting point for every new contract.
 				{:else}
-					Your team can start creating contracts once an admin uploads and publishes your company’s
-					starting contract.
+					Your team can start creating contracts once an admin sets up your company’s starting
+					contract.
 				{/if}
 			</p>
 		</div>
@@ -255,15 +253,19 @@
 					aria-label="Choose a Word contract"
 					class="hidden"
 					onchange={(event) => selectFiles(event.currentTarget.files)}
-					disabled={publishing}
+					disabled={busy}
 				/>
 				<section
-					aria-label="Upload Word contract"
+					aria-label={ready ? 'Go to last step' : 'Upload Word contract'}
 					class={[
 						'group relative flex min-h-[283px] flex-col items-center justify-center rounded-2xl px-5 py-8 text-center transition-colors motion-reduce:transition-none sm:px-10',
-						dragging
-							? 'bg-[color-mix(in_srgb,var(--color-canvas)_40%,var(--color-surface))]'
-							: 'bg-surface hover:bg-[color-mix(in_srgb,var(--color-canvas)_20%,var(--color-surface))] focus-within:bg-[color-mix(in_srgb,var(--color-canvas)_20%,var(--color-surface))]'
+						busy
+							? 'bg-[color-mix(in_srgb,var(--color-accent)_5%,var(--color-surface))]'
+							: ready
+								? 'bg-[color-mix(in_srgb,var(--color-success)_4%,var(--color-surface))]'
+								: dragging
+									? 'bg-[color-mix(in_srgb,var(--color-canvas)_40%,var(--color-surface))]'
+									: 'bg-surface hover:bg-[color-mix(in_srgb,var(--color-canvas)_20%,var(--color-surface))] focus-within:bg-[color-mix(in_srgb,var(--color-canvas)_20%,var(--color-surface))]'
 					]}
 					ondragenter={dragEnter}
 					ondragover={dragOver}
@@ -283,35 +285,79 @@
 							fill="none"
 							stroke="var(--color-edge)"
 							stroke-width="1"
-							stroke-dasharray="7 5"
+							stroke-dasharray={busy || ready ? undefined : '7 5'}
 							class={[
-								'transition-colors motion-reduce:transition-none group-hover:stroke-ink-muted/30 group-focus-within:stroke-ink-muted/30',
+								'transition-colors motion-reduce:transition-none',
+								busy
+									? 'stroke-accent/40'
+									: ready
+										? 'stroke-success/30'
+										: 'group-hover:stroke-ink-muted/30 group-focus-within:stroke-ink-muted/30',
 								dragging && 'stroke-ink-muted/30'
 							]}
 						/>
 					</svg>
-					<h2 class="w-full text-[14px] leading-6 font-medium text-ink [overflow-wrap:anywhere]">
-						{dragging ? 'Drop your Word contract here' : fileName || 'Drop your Word contract here'}
-					</h2>
-					<p role="status" class="mt-1.5 text-[13px] leading-5 text-ink-muted">
-						{#if publishing}
-							Publishing your contract…
-						{:else if parsing}
-							Checking your document…
-						{:else if uploadError}
-							Choose a new file to try again.
-						{:else if blocked}
-							A few corrections are needed before publishing.
+					<div class="mb-3 flex size-9 items-center justify-center" aria-hidden="true">
+						{#if busy}
+							<CircleNotchIcon class="size-8 animate-spin text-accent motion-reduce:animate-none" />
 						{:else if ready}
-							File checked and ready to publish.
+							<CheckCircleIcon class="size-8 text-success" />
 						{:else}
-							Or choose a Word file from your computer.
+							<FileTextIcon class="size-7 text-ink-muted" />
 						{/if}
-					</p>
-					<Button class={[accentButtonClass, 'mt-5']} onclick={chooseFile} disabled={publishing}
-						>{fileName ? 'Choose another file' : 'Choose a Word file'}</Button
-					>
-					<p class="mt-3 text-xs leading-5 text-ink-muted">Upload a .docx</p>
+					</div>
+					<div role="status" aria-atomic="true" class="w-full">
+						<h2 class="text-[15.5px] leading-6 font-medium text-ink [overflow-wrap:anywhere]">
+							{advancing
+								? 'Continuing…'
+								: parsing
+									? 'Checking your contract…'
+									: ready
+										? 'Your contract is ready'
+										: dragging
+											? 'Drop your Word contract here'
+											: fileName || 'Drop your Word contract here'}
+						</h2>
+						<p class="mx-auto mt-1.5 max-w-[440px] text-[13px] leading-5 text-ink-muted">
+							{#if ready}
+								The last setup step is to add instructions for reps.
+							{:else if parsing}
+								<span class="block truncate" title={fileName}>{fileName}</span>
+							{:else if uploadError}
+								Choose a new file to try again.
+							{:else if blocked}
+								A few corrections are needed before continuing.
+							{:else}
+								Or choose a Word file from your computer.
+							{/if}
+						</p>
+					</div>
+					{#if ready}
+						<Button class="mt-5" disabled={busy || session.closing} onclick={goToLastStep}
+							>{advancing ? 'Continuing…' : 'Go to last step'}</Button
+						>
+						<button
+							type="button"
+							class="mt-3 inline-flex items-center gap-1.5 text-xs text-ink-muted underline underline-offset-4 enabled:cursor-pointer"
+							disabled={busy || session.closing}
+							onclick={() => resetUpload()}
+						>
+							<ArrowsClockwiseIcon class="size-3.5" aria-hidden="true" />
+							Start again
+						</button>
+						{#if setupError}
+							<p role="alert" class="mt-3 text-[13px] leading-6 text-danger">{setupError}</p>
+						{/if}
+					{:else if !parsing}
+						<Button
+							class={[
+								'bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover',
+								'mt-5'
+							]}
+							onclick={chooseFile}
+							disabled={busy}>{fileName ? 'Choose another file' : 'Choose a Word file'}</Button
+						>
+					{/if}
 				</section>
 			{:else}
 				<section
@@ -322,7 +368,7 @@
 						class="mb-4 flex size-11 items-center justify-center rounded-button-xl bg-canvas/80 text-ink-muted"
 						aria-hidden="true"
 					>
-						<FileTextIcon size={22} />
+						<FileTextIcon class="size-5.5" />
 					</div>
 					<h2 id="waiting-for-contract" class="text-[14px] leading-6 font-medium text-ink">
 						Waiting for your company’s contract
@@ -339,9 +385,9 @@
 					label={admin ? 'This feature is in beta.' : 'Your admin needs to finish setup.'}
 				>
 					{#if admin}
-						Please email help@dinu.co if you can't upload your baseline contract.
+						Please email help@juliennewman.com if you can't upload your contract.
 					{:else}
-						Ask an admin to upload and publish your company’s starting contract.
+						Ask an admin to set up your company’s starting contract.
 					{/if}
 				</InfoBar>
 			{/if}
@@ -363,7 +409,7 @@
 						class="mt-4 rounded-base border-hairline border-edge bg-surface shadow-card p-4"
 					>
 						<h2 id="contract-corrections" class="text-sm leading-6 font-medium text-ink">
-							{errors.length === 1 ? 'One correction' : `${errors.length} corrections`} before publishing
+							{errors.length === 1 ? 'One correction' : `${errors.length} corrections`} before continuing
 						</h2>
 						<p class="mt-1 text-[13px] leading-6 text-ink-muted">
 							Make {errors.length === 1 ? 'this correction' : 'these corrections'} in Word, save the file,
@@ -385,44 +431,6 @@
 								</li>
 							{/each}
 						</ul>
-					</section>
-				{/if}
-
-				{#if ready}
-					<section
-						aria-labelledby="contract-ready"
-						class="mt-5 rounded-base border-hairline border-edge bg-surface shadow-card p-5 sm:p-6"
-					>
-						<div class="flex items-start gap-3">
-							<CheckCircleIcon size={22} class="mt-0.5 shrink-0 text-success" aria-hidden="true" />
-							<div>
-								<h2 id="contract-ready" class="text-sm leading-6 font-medium text-ink">
-									Ready to publish
-								</h2>
-								<p class="mt-1 text-[13px] leading-6 text-ink-muted">
-									Publish this contract, then add instructions to guide your team.
-								</p>
-							</div>
-						</div>
-						<div
-							class="mt-5 flex cursor-pointer items-start gap-3 rounded-button-lg border-hairline border-line bg-page p-4 text-[13px] leading-6 text-ink-secondary"
-						>
-							<Checkbox
-								label="I understand this will be my team’s permanent starting contract and can’t be replaced."
-								checked={confirmed}
-								onCheckedChange={(checked) => (confirmed = checked)}
-								disabled={publishing}
-								className="w-full gap-3 text-[13px] leading-6 text-ink-secondary"
-							/>
-						</div>
-						<Button
-							class="mt-5"
-							disabled={!confirmed || publishing || session.closing}
-							onclick={publish}>{publishing ? 'Publishing…' : 'Publish contract'}</Button
-						>
-						{#if publishError}
-							<p role="alert" class="mt-3 text-[13px] leading-6 text-danger">{publishError}</p>
-						{/if}
 					</section>
 				{/if}
 			{/if}

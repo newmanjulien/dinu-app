@@ -1,36 +1,35 @@
-import {
-	createCompositionRequest,
-	type CompositionArtifactStore,
-	type CompositionRequest,
-	type CompositionArtifact
-} from './composition-artifacts';
-import type { ConcessionSelection } from '../playbook/model';
-import type { ContractBlock, ContractView, ResolvedBlock, ResolvedRun } from './model';
-import type { Trigger, ContractChange, SourceRange } from '../playbook/model';
-import { isTextTarget, type InlineSource, type ReplacementAtom } from './source-model';
+import { createChangeConflictChecker } from '../playbook/conflicts';
 import {
 	triggerAnnotationId,
 	type AnnotationMembership,
 	type DocumentOverlayItem
 } from '../playbook/document-overlay';
 import { changeTriggerOwner } from '../playbook/geometry';
+import type { ConcessionSelection, ContractChange, SourceRange, Trigger } from '../playbook/model';
+import {
+	createCompositionRequest,
+	type CompositionArtifact,
+	type CompositionArtifactStore,
+	type CompositionRequest
+} from './composition-artifacts';
+import type { ContractBlock, ContractView, ResolvedBlock, ResolvedRun } from './model';
+import { canonicalNumberPattern } from './number-pattern';
+import { iterateNumberAddresses, referenceText, type Address } from './numbering';
+import { localContainer, targetContainers, unitsInRange } from './ranges';
+import { iterateRedlineDiff, iterateRedlineTextTokens, type RedlineToken } from './redline-diff';
 import {
 	buildSourceIndex,
 	iterateSourceIndex,
-	type SourceIndex,
 	pointPosition,
-	type SourceContainer
+	type SourceContainer,
+	type SourceIndex
 } from './source-index';
-import { localContainer, targetContainers, unitsInRange } from './ranges';
-import { iterateRedlineDiff, iterateRedlineTextTokens, type RedlineToken } from './redline-diff';
-import { canonicalNumberPattern } from './number-pattern';
-import { referenceText, iterateNumberAddresses, type Address } from './numbering';
-import { createChangeConflictChecker } from '../playbook/conflicts';
+import { isTextTarget, type InlineSource, type ReplacementAtom } from './source-model';
 import {
 	planStructuralChanges,
 	type ChangeOrigin,
-	type ReplacementAnnotation,
-	type GeneratedParagraph
+	type GeneratedParagraph,
+	type ReplacementAnnotation
 } from './structural-changes';
 
 type OwnedTrigger = Trigger & { itemId: string };
@@ -54,7 +53,7 @@ function emptyHitTarget(annotations: AnnotationMembership[]): ResolvedRun[] {
 			text: '\u00a0',
 			generated: 'empty-hit-target',
 			annotations,
-			visualSource: annotations[0]?.range,
+			visualSource: annotations[0]?.target,
 			generatedOffset: 0
 		}
 	];
@@ -79,9 +78,10 @@ export class ContractCompositionEngine {
 	#index?: SourceIndex;
 	#initialized = false;
 	#blocks: readonly ContractBlock[];
+	#numberingBlocks: readonly ContractBlock[] = [];
 	#atomsByKey = new Map<string, InlineSource>();
 	#items?: readonly DocumentOverlayItem[];
-	#triggers: OwnedTrigger[] = [];
+	#triggers: { text: OwnedTrigger[]; boundary: OwnedTrigger[] } = { text: [], boundary: [] };
 	#overlay = new WeakMap<
 		DocumentOverlayItem,
 		{
@@ -114,13 +114,7 @@ export class ContractCompositionEngine {
 		const index = this.#index ?? (yield* iterateSourceIndex(this.#blocks));
 		const atoms = new Map<string, InlineSource>();
 		for (const block of this.#blocks) {
-			if (block.kind === 'table') {
-				for (const row of block.rows)
-					for (const cell of row) {
-						for (const atom of cell.content) atoms.set(atom.sourceKey, atom);
-						yield undefined;
-					}
-			} else for (const atom of block.content) atoms.set(atom.sourceKey, atom);
+			if (block.kind !== 'table') for (const atom of block.content) atoms.set(atom.sourceKey, atom);
 			yield undefined;
 		}
 		const dependencies = new Map<string, Set<string>>();
@@ -142,6 +136,10 @@ export class ContractCompositionEngine {
 		this.#atomsByKey = atoms;
 		this.#dependencies = dependencies;
 		this.#initialized = true;
+	}
+	/** Effective source graph accepted by the latest composition, including inserted paragraphs. */
+	get numberingBlocks(): readonly ContractBlock[] {
+		return this.#numberingBlocks;
 	}
 	/** Numbering accepted by the most recent composition, including inserted paragraphs. */
 	get addresses(): ReadonlyMap<string, Address> {
@@ -183,7 +181,7 @@ export class ContractCompositionEngine {
 					change,
 					origin: { itemId: item.itemId, concessionId: concession!.id, changeIndex },
 					annotation: {
-						range: change.range,
+						target: change.target,
 						effect: item.annotations.find(
 							(annotation) =>
 								annotation.kind === 'concession-effect' &&
@@ -197,7 +195,7 @@ export class ContractCompositionEngine {
 			yield undefined;
 		}
 		for (const change of previewChanges) {
-			authoredChanges.push({ change, annotation: { range: change.range } });
+			authoredChanges.push({ change, annotation: { target: change.target } });
 			yield undefined;
 		}
 		const authoredConflicts = createChangeConflictChecker(index);
@@ -241,10 +239,10 @@ export class ContractCompositionEngine {
 					) + 1;
 			}
 		}
-		const triggers = items === this.#items ? this.#triggers : [];
+		const triggers = items === this.#items ? this.#triggers : { text: [], boundary: [] };
 		if (items !== this.#items)
 			for (const item of items) {
-				triggers.push({ ...item.trigger, itemId: item.itemId });
+				triggers[item.trigger.target.kind].push({ ...item.trigger, itemId: item.itemId });
 				yield undefined;
 			}
 		const overlays: {
@@ -259,20 +257,20 @@ export class ContractCompositionEngine {
 				const containers = new Map<string, PositionedAnnotation[]>();
 				const boundaries = new Map<string, AnnotationMembership[]>();
 				for (const annotation of item.annotations) {
-					if (!isTextTarget(annotation.range)) {
-						const local = boundaries.get(annotation.range.afterBlockKey) ?? [];
+					if (!isTextTarget(annotation.target)) {
+						const local = boundaries.get(annotation.target.afterBlockKey) ?? [];
 						local.push(annotation);
-						boundaries.set(annotation.range.afterBlockKey, local);
+						boundaries.set(annotation.target.afterBlockKey, local);
 						yield undefined;
 						continue;
 					}
 					const positioned = {
 						...annotation,
-						start: pointPosition(index, annotation.range.range.start),
-						end: pointPosition(index, annotation.range.range.end)
+						start: pointPosition(index, annotation.target.range.start),
+						end: pointPosition(index, annotation.target.range.end)
 					};
 					annotations.push(positioned);
-					for (const container of targetContainers(index, annotation.range)) {
+					for (const container of targetContainers(index, annotation.target)) {
 						const local = containers.get(container.containerKey) ?? [];
 						local.push(positioned);
 						containers.set(container.containerKey, local);
@@ -331,7 +329,7 @@ export class ContractCompositionEngine {
 		const patches = new Map<string, Patch[]>();
 		for (const patch of changes) {
 			const { change } = patch;
-			const range = change.range;
+			const range = change.target;
 			if (!isTextTarget(range))
 				throw new Error(`Boundary change escaped structural planning: ${range.afterBlockKey}`);
 			const key = localContainer(index, range.range);
@@ -348,6 +346,7 @@ export class ContractCompositionEngine {
 		}
 		// Accepted cursor metadata contains no completed content or alternative token arrays.
 		this.#current = current;
+		this.#numberingBlocks = structural.numberingBlocks;
 		this.#activeKey = activeKey;
 		this.#items = items;
 		this.#triggers = triggers;
@@ -356,10 +355,12 @@ export class ContractCompositionEngine {
 		function patchAnnotation(annotation: ReplacementAnnotation): Annotation {
 			const cached = patchOwners.get(annotation);
 			if (cached) return cached;
-			const selection = annotation.range;
-			// Real trigger validation stays independent of visual effect coverage.
-			const trigger = changeTriggerOwner(index, triggers, { range: selection, replacement: [] }) as
-				OwnedTrigger | undefined;
+			const selection = annotation.target;
+			// Attachment owners share the target kind; authoring validates all structural effects.
+			const trigger = changeTriggerOwner(index, triggers[selection.kind], {
+				target: selection,
+				replacement: []
+			}) as OwnedTrigger | undefined;
 			const memberships = isTextTarget(selection)
 				? (() => {
 						const start = pointPosition(index, selection.range.start);
@@ -374,7 +375,7 @@ export class ContractCompositionEngine {
 					})()
 				: (annotationsByBoundary.get(selection.afterBlockKey) ?? []);
 			const actualTrigger = trigger
-				? prioritized.get(triggerAnnotationId(trigger.itemId, trigger.id))
+				? prioritized.get(triggerAnnotationId(trigger.itemId))
 				: undefined;
 			const explicitEffect = annotation.effect ? prioritized.get(annotation.effect.id) : undefined;
 			const owner: Annotation = {
@@ -508,8 +509,8 @@ export class ContractCompositionEngine {
 			owner: Annotation
 		): Generator<undefined, ResolvedRun[] | null> {
 			const { change, start, end } = patch;
-			if (!isTextTarget(change.range)) return null;
-			const units = unitsInRange(index, change.range.range);
+			if (!isTextTarget(change.target)) return null;
+			const units = unitsInRange(index, change.target.range);
 			// Generated clause labels keep their existing whole-range presentation.
 			if (units.some((unit) => unit.kind === 'number')) return null;
 			const originalReferences = new Map<ReplacementAtom, string>(
@@ -907,11 +908,17 @@ export class ContractCompositionEngine {
 				? [promoted.numbering, owner, current.get(promoted.numbering.itemKey)]
 				: undefined;
 			const removed = structural.removed.has(block.blockKey);
+			const role = structural.roles.get(block.blockKey) ?? block.role;
+			const numbering = promoted?.numbering ?? block.numbering;
+			const numberingDepth = numbering ? current.get(numbering.itemKey)?.tokens.length : undefined;
 			return resolved(
 				[
 					block.blockKey,
 					block.kind,
-					block.kind === 'heading' ? [block.anchor, block.level] : null,
+					block.anchor,
+					role,
+					numberingDepth,
+					numbering?.continueSequence,
 					input.id,
 					promotion,
 					removed,
@@ -926,10 +933,12 @@ export class ContractCompositionEngine {
 					content = trimAfterNumber(content);
 					const boundary = index.structuralBoundaries.get(block.blockKey);
 					return {
-						...(block.kind === 'heading'
-							? { kind: 'heading' as const, anchor: block.anchor, level: block.level }
-							: { kind: 'paragraph' as const }),
+						kind: 'paragraph' as const,
+						...(block.anchor ? { anchor: block.anchor } : {}),
 						blockKey: block.blockKey,
+						role: role === 'title' && numbering ? 'body' : role,
+						...(numberingDepth ? { numberingDepth } : {}),
+						...(numbering?.continueSequence === false ? { continueNumbering: false as const } : {}),
 						content,
 						...(boundary ? { boundariesAfter: [boundary] } : {})
 					};
@@ -937,36 +946,8 @@ export class ContractCompositionEngine {
 			);
 		}
 		function* resolveBlock(block: ContractBlock): Generator<undefined, ResolvedBlock> {
-			if (block.kind !== 'table')
-				return nonTable(block, yield* composeContainer(index.containers.get(block.blockKey)!));
-			const rows: CompositionArtifact<ResolvedRun[]>[][] = [];
-			for (const [r, row] of block.rows.entries()) {
-				const cells: CompositionArtifact<ResolvedRun[]>[] = [];
-				for (const [c] of row.entries()) {
-					cells.push(
-						yield* composeContainer(index.containers.get(`${block.blockKey}/cell/${r}/${c}`)!)
-					);
-					yield undefined;
-				}
-				rows.push(cells);
-			}
-			return resolved(
-				[
-					block.blockKey,
-					'table',
-					block.variant,
-					block.headerRowCount,
-					rows.map((row) => row.map((cell) => cell.id))
-				],
-				rows.flat(),
-				() => ({
-					kind: 'table',
-					blockKey: block.blockKey,
-					...(block.variant ? { variant: block.variant } : {}),
-					headerRowCount: block.headerRowCount,
-					rows: rows.map((row) => row.map((cell) => ({ content: cell.value })))
-				})
-			);
+			if (block.kind === 'table') return block;
+			return nonTable(block, yield* composeContainer(index.containers.get(block.blockKey)!));
 		}
 		function* generatedAt(anchor: string): Generator<ResolvedBlock | undefined, void> {
 			for (const paragraph of structural.generated.get(anchor) ?? []) {

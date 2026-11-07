@@ -4,7 +4,7 @@ The repository owns three Loops transactional templates. [templates.json](../ema
 
 The user approved short contract notifications with summary counts and a contract link. Approval mail reports pending, previously reviewed and non-required counts; completed-review mail reports approved and not-approved counts. Zero counts are shown. Concession descriptions and individual reviewer labels are omitted from email; users open the saved contract for the concession details. On 2026-10-28 the user narrowed completed-review CC to the reviewer whose action triggered that notification. Subjects, link destinations, invitation copy and delivery/retry workflows retain their existing behavior.
 
-[emailNotifications.ts](../src/convex/emailNotifications.ts) prepares a typed notification containing its kind and scalar data: names, URLs and counts. Counts come from captured review statuses, so sending needs no concession-description queries. Delivery snapshots remain necessary for approval coverage and frozen counts. The pending completion captures the triggering reviewer ID atomically with that decision, and confirmation copies it into the delivery event; snapshots contain no reviewer IDs, and claims read no snapshot or attribution rows for CC. Immutable decision receipts retain historical reviewer identity. Cleanup C3B removes current attribution storage and reconciliation entirely; current reviews keep only concession, lifecycle and status.
+[emailNotifications.ts](../src/convex/emailNotifications.ts) prepares a typed notification containing its kind and scalar data: names, URLs and counts. Counts come from captured review statuses, so sending needs no concession-description queries. Delivery snapshots remain necessary for approval coverage and frozen counts. The pending completion captures the triggering reviewer ID atomically with that decision, and confirmation copies it into the delivery event; snapshots contain no reviewer IDs, and claims read no snapshot or attribution rows for CC. Immutable decision receipts retain historical reviewer identity. Current attribution storage and reconciliation are absent; current reviews keep only concession, lifecycle and status.
 
 [emailSender.ts](../src/convex/emailSender.ts) coordinates preparation, native provider quota, a fresh guarded claim, one external request and outcome persistence. [loopsEmail.ts](../src/convex/loopsEmail.ts) owns provider configuration, template selection, HTTP requests and safe response classification. Only completed-review sends include the `cc` variable. Each notification checks its own configured template ID, so an absent approval ID does not block invitations.
 
@@ -32,17 +32,14 @@ The commands resolve source paths relative to the script, independently of the w
 
 ## Activation and acceptance
 
-[Phase 18D](backend-redesign/phase-18-activation.md#18d--loops-activation-and-live-acceptance)
-is the current activation checkpoint. The user deliberately deferred it until
-backend cleanup was finished; no mailbox, publication or send is inferred from
-local completion. [Current architecture](backend-redesign/architecture.md) owns
-the event/review/snapshot model.
+[Current architecture](data-model.md) describes the event and review model.
+Local checks do not establish template publication or inbox delivery.
 
-On the explicitly agreed deployment, configure `LOOPS_API_KEY`, the three published template IDs and `APP_URL` as backend values. The final reset/deployment phase regenerates Convex types and mounts `@convex-dev/rate-limiter`. Remove obsolete SMTP values and the old wrapper's `LOOPS_TRANSACTIONAL_ID` then. No local cleanup phase authorizes deployment/reset automatically.
+On the explicitly agreed deployment, configure `LOOPS_API_KEY`, the three published template IDs and `APP_URL` as backend values. Backend deployment regenerates Convex types and mounts `@convex-dev/rate-limiter`. Remove obsolete SMTP values and the old wrapper's `LOOPS_TRANSACTIONAL_ID` then. No local cleanup phase authorizes deployment/reset automatically.
 
 Agree exact test recipients before external verification messages. Check the unchanged invitation, an approval with mixed pending/previously reviewed/non-required counts, zero groups, and completed reviews with approved/not-approved counts. Verify no concession details appear in email; details remain available when opening the saved contract. Check one/several reviewers with only the triggering reviewer in CC, reviewer changes across events, retry identity, a reviewer equal to the creator, empty/single CC, exact subjects/copy/link targets, paragraphs/line breaks, punctuation, ampersands, angle brackets and names. Confirm the verified domain and chosen mailbox; the API takes only the mailbox local part.
 
-Verify provider rejection, timeout/connection loss, late result persistence, explicit approval retry/cooldown, invitation resend/deadline, company hold/deletion, removed recipients and stale generations in the final runtime. The existing performance suite does not cover this complete external failure matrix. Also exercise retained CC/BCC/fallback cleanup, native draft compilation, interrupted publication/reuse and exclusive publishing. [C2's local diagnostics](backend-redesign/cleanup-c2-loops-publication.md) establish script orchestration, not live provider behavior. No authenticated Loops account calls, template publication or email sends occurred during the local Phase 13 implementation/rework or C2 cleanup. Public provider documentation was read for C2.
+Verify provider rejection, timeout/connection loss, late result persistence, explicit approval retry/cooldown, invitation resend/deadline, company hold/deletion, removed recipients and stale generations in the final runtime. The existing performance suite does not cover this complete external failure matrix. Also exercise retained CC/BCC/fallback cleanup, native draft compilation, interrupted publication/reuse and exclusive publishing.
 
 ## Outcomes and recovery
 

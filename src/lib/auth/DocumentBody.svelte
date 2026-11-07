@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { type Snippet } from 'svelte';
 	import { useViewer } from './viewer-session.svelte';
 	import { getWorkspaceRuntime } from './workspace-context.svelte';
@@ -15,17 +16,20 @@
 	const baselinePending = $derived(requiresBaseline && !viewer().templateReady);
 	let mounted = $state(false);
 	$effect(() => {
-		if ((!requiresDocument || runtime.ready) && !runtime.paused && !baselinePending) mounted = true;
+		if ((!requiresDocument || runtime.hostReady) && !runtime.paused && !baselinePending)
+			mounted = true;
 	});
 </script>
 
 {#if baselinePending}
 	{#if !runtime.paused}
+		<WorkspacePresentationReporter outcome="success" />
 		<BaselineSetup getNavigationIntent={() => runtime.navigationIntent} />
 	{/if}
 {:else if mounted}
 	<div hidden={runtime.paused} inert={runtime.paused}>{@render children?.()}</div>
-{:else if !runtime.paused && !runtime.ready}
+{:else if !runtime.paused && !runtime.hostReady}
+	<WorkspacePresentationReporter outcome={runtime.error ? 'error' : 'pending'} />
 	{#if !runtime.error}
 		<WorkspaceSkeleton label="Loading document viewer" />
 	{:else}

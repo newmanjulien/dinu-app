@@ -1,50 +1,55 @@
+import type { BreakPolicyContext, SelectionCandidate } from '../document/selection/selection-model';
 import type { CompiledContract } from '../contract/compiled-contract';
-import { countStartupWork } from '../document/runtime/render-perf';
-import { triggerAnnotationId } from './document-overlay';
-import {
-	immutable,
-	newPlaybookDraft,
-	semanticConcession,
-	type PlaybookDraft,
-	type DeepReadonly
-} from './draft';
-import { sameSourceTarget, type ReplacementAtom } from '../contract/source-model';
-import { targetContainers } from '../contract/ranges';
-import { hasMeaningfulReplacement } from '../contract/replacement-content';
 import type { Address } from '../contract/numbering';
+import { targetContainers } from '../contract/ranges';
 import { createReferenceCatalog, type ReferenceCatalog } from '../contract/reference-catalog';
+import { hasMeaningfulReplacement } from '../contract/replacement-content';
+import { sameSourceTarget, type ReplacementAtom } from '../contract/source-model';
+import { countStartupWork } from '../document/runtime/render-perf';
+import { immutable, type DeepReadonly } from '../immutable';
 import { AuthoringContext, type Workflow } from './authoring-context.svelte';
+import { semanticConcession } from './content';
+import { triggerAnnotationId } from './document-overlay';
+import { newPlaybookDraft, type PlaybookDraft } from './draft';
 import type { PlaybookGeometryIndex } from './geometry-index';
 import {
+	authoringInstructions,
 	newConcessionId,
+	type AuthoringInstructions,
 	type Concession,
-	type Instructions,
 	type PlaybookItemRecord,
 	type SourceTarget
 } from './model';
-import type { Operation, SaveTransport } from './save-transport';
+import type { Operation } from './save-transport';
 import {
+	evaluateConcessionAddition,
 	evaluateInitialSelection,
 	evaluateSecondarySelection,
-	evaluateConcessionAddition,
 	selectionIssueMessage,
-	type SelectionEligibility,
-	type SelectionIssue,
+	type AuthoringMode,
 	type SelectionAvailability,
-	type AuthoringMode
+	type SelectionEligibility,
+	type SelectionIssue
 } from './source-picking';
 
-type Source = {
+export type AuthoringSource = {
+	selectionContext?: BreakPolicyContext;
 	contract: CompiledContract | null;
 	geometry: PlaybookGeometryIndex | null;
-	items: readonly PlaybookItemRecord[] | null;
+	items: readonly { _id: string }[] | null;
 	available: boolean;
+	editingAvailable?: boolean;
+	editingUnavailableReason?: string;
 	itemsCurrent: boolean;
 	addresses?: ReadonlyMap<string, Address>;
 	lookup: (id: string) => {
 		record: PlaybookItemRecord;
 		annotations: readonly import('./document-overlay').DocumentAnnotation[];
 	} | null;
+	detailStatus?: (id: string) => 'present' | 'missing' | 'loading';
+};
+export type AuthoringRecovery = {
+	item: import('./model').PlaybookItem;
 };
 export type AuthoringTransition =
 	| { kind: 'switch-item'; itemId: string }
@@ -60,12 +65,9 @@ export type TransitionDecision =
 export type AuthoringOutcome = 'retained' | 'closed';
 export type TextSelectionPurpose = 'new-item' | 'secondary-location';
 
-/** Sole owner of editing commands, reconciliation, action policy and operation completion. */
+/** Route-attached draft commands and source validation. The workspace owns submitted work. */
 export class AuthoringController {
 	private context = $state.raw<AuthoringContext | null>(null);
-	private running: Promise<AuthoringOutcome> | null = null;
-	private transportGeneration = 0;
-	private completed = $state<{ kind: 'saved' | 'deleted' } | null>(null);
 	private issue = $state<SelectionIssue | null>(null);
 	private warning = $state('');
 	private referenceCatalogCache:
@@ -76,14 +78,15 @@ export class AuthoringController {
 		  }
 		| undefined;
 	constructor(
-		private transport: SaveTransport | null,
-		private source: () => Source
+		private source: () => AuthoringSource,
+		private submission: {
+			readonly available: boolean;
+			readonly reason: string;
+			submit(operation: Operation, recovery: AuthoringRecovery): boolean;
+		}
 	) {}
 	get entry(): object | null {
 		return this.context;
-	}
-	get completion(): DeepReadonly<typeof this.completed> {
-		return this.completed;
 	}
 	get draft() {
 		return this.context?.draft ?? null;
@@ -117,21 +120,16 @@ export class AuthoringController {
 	get dirty() {
 		return this.context?.dirty ?? false;
 	}
-	get unresolved() {
-		const kind = this.context?.operation.kind;
-		return kind === 'saving' || kind === 'uncertain';
-	}
 	get hasUnsavedWork() {
-		return this.dirty || this.unresolved;
+		return this.dirty;
 	}
 	private currentPhase = $derived.by(() => {
 		const context = this.context;
 		if (!context) return undefined;
 		if (
-			!this.unresolved &&
 			context.operation.kind !== 'missing' &&
 			context.remote &&
-			(!context.confirmed || context.remote.revision > context.confirmed.revision) &&
+			(!context.confirmed || context.remote.contentRevision > context.confirmed.contentRevision) &&
 			(this.dirty || this.composing)
 		)
 			return { kind: 'conflict' as const, remote: context.remote };
@@ -141,23 +139,43 @@ export class AuthoringController {
 		return this.currentPhase;
 	}
 	get canEdit() {
-		return this.phase?.kind === 'editing' || this.phase?.kind === 'rejected';
+		const source = this.source();
+		const id = this.context?.confirmed?._id;
+		return (
+			(source.editingAvailable ?? source.available) &&
+			source.itemsCurrent &&
+			(!id || !source.detailStatus || source.detailStatus(id) === 'present') &&
+			this.phase?.kind === 'editing'
+		);
+	}
+	private get editingUnavailableReason() {
+		if (this.statusMessage) return this.statusMessage;
+		const source = this.source();
+		if (source.editingUnavailableReason) return source.editingUnavailableReason;
+		if (!source.itemsCurrent) return 'Refreshing instructions…';
+		const id = this.context?.confirmed?._id;
+		if (id && source.detailStatus) {
+			const status = source.detailStatus(id);
+			if (status === 'loading') return 'Loading these instructions…';
+			if (status === 'missing')
+				return 'These instructions are no longer available. Cancel and select the clause again.';
+		}
+		return 'Instruction editing is temporarily unavailable.';
 	}
 	get canCancel() {
-		return Boolean(this.context) && !this.unresolved;
+		return Boolean(this.context);
 	}
 	get canDelete() {
-		return !this.creating && Boolean(this.context?.confirmed) && this.canEdit;
+		return (
+			!this.creating &&
+			Boolean(this.context?.confirmed) &&
+			this.canEdit &&
+			this.submission.available
+		);
 	}
 	get statusMessage() {
 		const phase = this.phase;
 		switch (phase?.kind) {
-			case 'saving':
-				return phase.operation.kind === 'delete' ? 'Deleting instruction box…' : 'Saving…';
-			case 'uncertain':
-				return `The ${phase.operation.kind === 'delete' ? 'deletion' : 'save'} is not confirmed. Retry to resolve it. ${phase.message}`;
-			case 'rejected':
-				return phase.operation.kind === 'delete' ? phase.message : '';
 			case 'conflict':
 				return 'This instruction box changed elsewhere. Your local edits are retained.';
 			case 'missing':
@@ -173,7 +191,7 @@ export class AuthoringController {
 		return this.creating && Boolean(this.creationConcession);
 	}
 	get secondarySelection() {
-		return this.creationConcession?.changes[1]?.range;
+		return this.creationConcession?.changes[1]?.target;
 	}
 	get otherClauseActive() {
 		return this.stagedCreation && this.step === 'other-part';
@@ -226,8 +244,8 @@ export class AuthoringController {
 				? this.statusMessage
 				: '';
 		if (reason) return reason;
-		const range = context.trigger.id === workflow.triggerId ? context.trigger.range : undefined;
-		const captured = workflow.concession.changes[0].range;
+		const range = context.trigger.id === workflow.triggerId ? context.trigger.target : undefined;
+		const captured = workflow.concession.changes[0].target;
 		if (!range || !sameSourceTarget(range, captured))
 			return 'This instruction box or its selected text changed. Cancel and start the addition again.';
 		return '';
@@ -242,42 +260,44 @@ export class AuthoringController {
 		return this.canEdit && this.stagedCreation && this.step === 'other-part';
 	}
 	get creationIncomplete() {
+		return Boolean(this.creationIncompleteReason);
+	}
+	private get creationIncompleteReason() {
 		const concession = this.creationConcession;
-		return Boolean(
-			concession &&
-			(!concession.description.trim() ||
-				!hasMeaningfulReplacement(concession.changes[0].replacement) ||
-				(this.otherClauseActive && !this.secondarySelection))
-		);
+		if (!concession) return '';
+		if (!concession.description.trim()) return 'Describe the concession before continuing.';
+		if (!hasMeaningfulReplacement(concession.changes[0].replacement))
+			return 'Add replacement text before continuing.';
+		if (this.otherClauseActive && !this.secondarySelection)
+			return 'Select the other part of the contract before saving.';
+		return '';
 	}
 	private currentPrimaryAction = $derived.by(() => {
 		const context = this.context;
 		const action =
 			this.stagedCreation && !this.lastStep ? 'advance' : this.addingConcession ? 'add' : 'save';
-		const reason =
+		const validation =
 			!context || !this.canEdit
 				? ''
 				: this.additionTargetReason ||
-					(this.addingConcession
-						? context.additionValidation
-						: context.rejectedSaveReason || context.validation);
-		const phase = this.phase;
-		const label =
-			phase?.kind === 'saving'
-				? phase.operation.kind === 'delete'
-					? 'Deleting…'
-					: 'Saving…'
-				: action === 'advance'
-					? 'Add the other part'
-					: action === 'add'
-						? 'Add'
-						: 'Save';
+					(this.addingConcession ? context.additionValidation : context.validation);
+		const reason = !context
+			? ''
+			: !this.canEdit
+				? this.editingUnavailableReason
+				: validation ||
+					(action === 'save' && !this.submission.available ? this.submission.reason : '') ||
+					this.creationIncompleteReason ||
+					(action === 'save' && !this.creating && !this.dirty ? 'No changes to save.' : '');
+		const label = action === 'advance' ? 'Add the other part' : action === 'add' ? 'Add' : 'Save';
 		return {
 			action,
 			label,
 			reason,
+			isError: Boolean(validation || this.statusMessage),
 			disabled:
 				!this.canEdit ||
+				(action === 'save' && !this.submission.available) ||
 				this.creationIncomplete ||
 				Boolean(reason) ||
 				(action === 'save' && !this.creating && !this.dirty)
@@ -305,11 +325,6 @@ export class AuthoringController {
 	assess(action: AuthoringTransition): TransitionDecision {
 		if (action.kind === 'switch-item' && this.draft?.persistedId === action.itemId)
 			return { kind: 'allowed' };
-		if (this.unresolved)
-			return {
-				kind: 'blocked',
-				message: 'Resolve the current operation before leaving or changing this instruction box.'
-			};
 		if (action.kind === 'cancel') return { kind: 'allowed' };
 		if (action.kind === 'attach-secondary')
 			return this.pickingSecondaryLocation
@@ -366,7 +381,7 @@ export class AuthoringController {
 
 	accept() {
 		countStartupWork('authoringAccept');
-		const { contract, geometry, items, itemsCurrent, lookup } = this.source();
+		const { contract, geometry, items, itemsCurrent, lookup, detailStatus } = this.source();
 		const context = this.context;
 		if (!context || !contract || !geometry || !items) return;
 		if (context.geometry !== geometry) context.validateGeometry = geometry.createDraftValidator();
@@ -377,9 +392,9 @@ export class AuthoringController {
 		if (itemsCurrent) {
 			const id = context.remote?._id ?? context.confirmed?._id;
 			const record = id ? lookup(id)?.record : null;
-			context.queryPresent = Boolean(record);
+			context.queryPresent = record ? true : id && detailStatus?.(id) === 'loading' ? null : false;
 			if (record) {
-				context.queryRevision = Math.max(context.queryRevision, record.revision);
+				context.queryRevision = Math.max(context.queryRevision, record.contentRevision);
 				this.observe(record);
 			}
 		}
@@ -392,23 +407,23 @@ export class AuthoringController {
 		const retained = this.source().lookup(context.confirmed._id);
 		if (
 			retained &&
-			retained.record.revision >= context.confirmed.revision &&
+			retained.record.contentRevision >= context.confirmed.contentRevision &&
 			!retained.annotations.some((annotation) => annotation.id === context.selectedAnnotationId)
 		)
 			context.selectedAnnotationId = null;
 	}
 	private observe(record: PlaybookItemRecord) {
 		const context = this.context!;
-		if (!context.remote || record.revision > context.remote.revision)
+		if (!context.remote || record.contentRevision > context.remote.contentRevision)
 			context.remote = immutable(record);
 	}
 	private reconcile() {
 		const context = this.context;
-		if (!context || this.unresolved || context.operation.kind === 'missing') return;
+		if (!context || context.operation.kind === 'missing') return;
 		if (
 			context.remote &&
 			context.queryPresent === false &&
-			context.queryRevision >= context.remote.revision
+			context.queryRevision >= context.remote.contentRevision
 		) {
 			context.operation = { kind: 'missing' };
 			return;
@@ -417,14 +432,14 @@ export class AuthoringController {
 			context.remote &&
 			!this.dirty &&
 			!this.composing &&
-			(!context.confirmed || context.remote.revision > context.confirmed.revision)
+			(!context.confirmed || context.remote.contentRevision > context.confirmed.contentRevision)
 		)
 			this.adopt(context.remote);
 	}
 	private adopt(record: PlaybookItemRecord) {
 		const context = this.context!;
 		context.confirmed = immutable(record);
-		context.instructions = { ...record.instructions };
+		context.instructions = authoringInstructions(record);
 		context.trigger = record.trigger;
 		context.concessions = record.concessions;
 		context.workflow = { kind: 'editing' };
@@ -436,23 +451,20 @@ export class AuthoringController {
 		this.release();
 		const context = new AuthoringContext(draft, confirmed, workflow);
 		this.context = context;
-		this.completed = null;
 		context.selectedAnnotationId = draft.persistedId
-			? triggerAnnotationId(draft.persistedId, draft.trigger.id)
+			? triggerAnnotationId(confirmed?.renderKey ?? draft.persistedId)
 			: null;
 		this.accept();
 		return context;
 	}
 	private release() {
-		if (this.context) this.context.attempt = null;
 		this.context = null;
-		this.running = null;
 		this.clearFeedback();
 	}
-	setInstruction(key: keyof Instructions, text: string) {
+	setInstruction(key: keyof AuthoringInstructions, text: string) {
 		const context = this.context;
 		if (!context || !this.canEdit) return;
-		const saved = context.confirmed?.instructions?.[key];
+		const saved = context.confirmed ? authoringInstructions(context.confirmed)[key] : undefined;
 		if (text === (saved ?? '') && saved === undefined) delete context.instructions[key];
 		else context.instructions[key] = text;
 		this.clearFeedback();
@@ -479,22 +491,37 @@ export class AuthoringController {
 		const contract = this.source().contract;
 		if (!change || !contract) return true;
 		return (
-			change.range.kind === 'boundary' ||
-			targetContainers(contract.index, change.range).every(
+			change.target.kind === 'boundary' ||
+			targetContainers(contract.index, change.target).every(
 				(container) => contract.index.blocks.get(container.blockKey)?.kind === 'paragraph'
 			)
 		);
 	}
 	private initialSelectionEligibility(range: SourceTarget): SelectionEligibility {
-		const { contract, items, available, geometry } = this.source();
-		if (!available || !contract || !items || !geometry)
+		const { contract, items, available, geometry, selectionContext } = this.source();
+		if (
+			!available ||
+			!contract ||
+			!items ||
+			!geometry ||
+			!selectionContext ||
+			selectionContext.index !== contract.index
+		)
 			return { allowed: false, issue: { kind: 'unavailable' } };
-		return evaluateInitialSelection(contract.index, range, geometry);
+		return evaluateInitialSelection(contract.index, range, geometry, selectionContext);
 	}
 	private secondarySelectionEligibility(range: SourceTarget): SelectionEligibility {
-		const { contract, items, available, geometry } = this.source();
+		const { contract, items, available, geometry, selectionContext } = this.source();
 		const context = this.context;
-		if (!available || !contract || !items || !geometry || !context?.composer)
+		if (
+			!available ||
+			!contract ||
+			!items ||
+			!geometry ||
+			!selectionContext ||
+			selectionContext.index !== contract.index ||
+			!context?.composer
+		)
 			return { allowed: false, issue: { kind: 'unavailable' } };
 		return evaluateSecondarySelection(
 			contract.index,
@@ -505,10 +532,19 @@ export class AuthoringController {
 				persistedId: context.confirmed?._id
 			},
 			geometry,
+			selectionContext,
 			context.composer
 		);
 	}
-	selectionEligibility(range: SourceTarget): SelectionAvailability {
+	selectionEligibility(candidate: SelectionCandidate): SelectionAvailability {
+		const selectionContext = this.source().selectionContext;
+		if (
+			!selectionContext ||
+			candidate.document !== selectionContext ||
+			candidate.document.index !== this.source().contract?.index
+		)
+			return { allowed: false, issue: { kind: 'unavailable' } };
+		const range = candidate.target;
 		const purpose = this.textSelectionPurpose;
 		if (!purpose)
 			return {
@@ -540,10 +576,10 @@ export class AuthoringController {
 		else this.reportIssue(permission.issue);
 	}
 	private requireSelectionAction(
-		range: SourceTarget,
+		candidate: SelectionCandidate,
 		mode: AuthoringMode
 	): SelectionEligibility | null {
-		const permission = this.selectionEligibility(range);
+		const permission = this.selectionEligibility(candidate);
 		if (!permission.allowed) {
 			this.reportSelectionFailure(permission);
 			return null;
@@ -555,35 +591,38 @@ export class AuthoringController {
 		}
 		return permission;
 	}
-	startExplanationFromSelection(range: SourceTarget) {
+	startExplanationFromSelection(candidate: SelectionCandidate) {
+		const range = candidate.target;
 		if (this.textSelectionPurpose !== 'new-item') {
 			this.reportBlocked(
 				'Finish or cancel the current authoring task before starting an explanation.'
 			);
 			return false;
 		}
-		if (!this.requireSelectionAction(range, 'explain')) return false;
+		if (!this.requireSelectionAction(candidate, 'explain')) return false;
 		this.begin(newPlaybookDraft(range), null, { kind: 'creating-explanation' });
 		return true;
 	}
-	startConcessionFromSelection(range: SourceTarget) {
+	startConcessionFromSelection(candidate: SelectionCandidate) {
+		const range = candidate.target;
 		const purpose = this.textSelectionPurpose;
 		if (purpose !== 'new-item') {
 			this.reportBlocked('Finish or cancel the current authoring task before adding a concession.');
 			return false;
 		}
-		if (!this.requireSelectionAction(range, 'concession')) return false;
+		if (!this.requireSelectionAction(candidate, 'concession')) return false;
 		return this.beginNewConcessionAt(range);
 	}
-	attachSecondaryLocation(range: SourceTarget) {
+	attachSecondaryLocation(candidate: SelectionCandidate) {
+		const range = candidate.target;
 		if (this.textSelectionPurpose !== 'secondary-location' || !this.context?.composer) {
 			this.reportBlocked('Choose the other-part step before selecting another passage.');
 			return false;
 		}
-		if (!this.requireSelectionAction(range, 'concession')) return false;
+		if (!this.requireSelectionAction(candidate, 'concession')) return false;
 		this.context.composer.changes = [
 			this.context.composer.changes[0],
-			{ range, replacement: [{ kind: 'text', text: '' }] }
+			{ target: range, replacement: [{ kind: 'text', text: '' }] }
 		];
 		this.clearFeedback();
 		return true;
@@ -593,7 +632,7 @@ export class AuthoringController {
 			id: newConcessionId(),
 			tier: 'preferred',
 			description: '',
-			changes: [{ range, replacement: [{ kind: 'text', text: '' }] }]
+			changes: [{ target: range, replacement: [{ kind: 'text', text: '' }] }]
 		};
 		this.begin(newPlaybookDraft(range), null, {
 			kind: 'creating-concession',
@@ -620,8 +659,15 @@ export class AuthoringController {
 	}
 	addConcession(tier: Concession['tier']) {
 		if (!this.permit({ kind: 'start-addition' })) return false;
-		const { contract, items, available, geometry } = this.source();
-		if (!available || !contract || !items || !geometry) {
+		const { contract, items, available, geometry, selectionContext } = this.source();
+		if (
+			!available ||
+			!contract ||
+			!items ||
+			!geometry ||
+			!selectionContext ||
+			selectionContext.index !== contract.index
+		) {
 			this.reportBlocked('Wait for the current contract');
 			return false;
 		}
@@ -633,16 +679,22 @@ export class AuthoringController {
 		};
 		const trigger = draft.trigger;
 		const range: SourceTarget =
-			trigger.range.kind === 'boundary'
-				? { kind: 'boundary', afterBlockKey: trigger.range.afterBlockKey }
+			trigger.target.kind === 'boundary'
+				? { kind: 'boundary', afterBlockKey: trigger.target.afterBlockKey }
 				: {
 						kind: 'text',
 						range: {
-							start: { ...trigger.range.range.start },
-							end: { ...trigger.range.range.end }
+							start: { ...trigger.target.range.start },
+							end: { ...trigger.target.range.end }
 						}
 					};
-		const permission = evaluateConcessionAddition(contract.index, range, draft, geometry);
+		const permission = evaluateConcessionAddition(
+			contract.index,
+			range,
+			draft,
+			geometry,
+			selectionContext
+		);
 		if (!permission.allowed) {
 			this.reportBlocked(selectionIssueMessage(permission.issue));
 			return false;
@@ -656,7 +708,7 @@ export class AuthoringController {
 			id: newConcessionId(),
 			tier,
 			description: '',
-			changes: [{ range, replacement: [{ kind: 'text', text: '' }] }]
+			changes: [{ target: range, replacement: [{ kind: 'text', text: '' }] }]
 		};
 		context.workflow = {
 			kind: 'adding-concession',
@@ -710,7 +762,7 @@ export class AuthoringController {
 		workflow.concession.changes = workflow.concession.changes.slice(0, 1);
 		this.clearFeedback();
 	}
-	primary(): AuthoringOutcome | Promise<AuthoringOutcome> {
+	primary(): AuthoringOutcome {
 		const context = this.context;
 		const { action, disabled } = this.primaryAction;
 		if (disabled || !context) return 'retained';
@@ -732,85 +784,47 @@ export class AuthoringController {
 				request: {
 					...(context.confirmed ? { id: context.confirmed._id } : {}),
 					item: context.payload,
-					expectedRevision: context.confirmed?.revision ?? 0,
+					expectedContentRevision: context.confirmed?.contentRevision ?? 0,
 					operationId: crypto.randomUUID()
 				}
 			})
 		);
 	}
-	retry() {
-		const state = this.context?.operation;
-		return state?.kind === 'uncertain'
-			? this.execute(state.operation)
-			: Promise.resolve<AuthoringOutcome>('retained');
-	}
-	remove(): AuthoringOutcome | Promise<AuthoringOutcome> {
+	remove(): AuthoringOutcome {
 		const record = this.context?.confirmed;
 		return this.canDelete && record
 			? this.execute(
-					immutable({ kind: 'delete', id: record._id, expectedRevision: record.revision })
+					immutable({
+						kind: 'delete',
+						id: record._id,
+						expectedContentRevision: record.contentRevision
+					})
 				)
 			: 'retained';
 	}
-	private execute(operation: Operation): Promise<AuthoringOutcome> {
+	private execute(operation: Operation): AuthoringOutcome {
 		const context = this.context;
-		if (!context || context.operation.kind === 'saving') return Promise.resolve('retained');
-		this.completed = null;
+		if (!context || !this.submission.available) return 'retained';
 		this.clearFeedback();
-		if (!this.transport) {
-			context.operation = {
-				kind: 'rejected',
-				operation,
-				message: 'Saving is unavailable: the backend is not configured.'
-			};
-			return Promise.resolve('retained');
-		}
-		const attempt = {};
-		context.attempt = attempt;
-		context.operation = { kind: 'saving', operation };
-		const work = (async (): Promise<AuthoringOutcome> => {
-			try {
-				const result = await Promise.resolve().then(() =>
-					this.context === context && context.attempt === attempt
-						? this.transport!(operation)
-						: null
-				);
-				if (!result || this.context !== context || context.attempt !== attempt) return 'retained';
-				switch (result.status) {
-					case 'saved':
-					case 'deleted':
-						this.release();
-						this.completed = { kind: result.status };
-						return 'closed';
-					case 'rejected':
-						context.operation = { kind: 'rejected', operation, message: result.message };
-						break;
-					case 'missing':
-						context.operation = { kind: 'missing' };
-						break;
-					case 'conflict':
-						this.observe(result.item);
-						context.operation = { kind: 'editing' };
-						break;
-				}
-				this.reconcile();
-			} catch (error) {
-				if (this.context !== context || context.attempt !== attempt) return 'retained';
-				context.operation = {
-					kind: 'uncertain',
-					operation,
-					message: error instanceof Error ? error.message : 'The connection was interrupted.'
-				};
-			} finally {
-				if (this.context === context && context.attempt === attempt) {
-					context.attempt = null;
-					this.running = null;
-				}
-			}
-			return 'retained';
-		})();
-		this.running = work;
-		return work;
+		const recovery = immutable({ item: context.payload });
+		if (!this.submission.submit(operation, recovery)) return 'retained';
+		this.release();
+		return 'closed';
+	}
+	/** Recovery is a new editing attempt; submitting it captures a fresh operation/revision. */
+	restore(recovery: AuthoringRecovery, current: PlaybookItemRecord | null) {
+		const context = this.begin(
+			{
+				...recovery.item,
+				instructions: recovery.item.instructions ?? {},
+				...(current ? { persistedId: current._id } : {})
+			},
+			current,
+			{ kind: current ? 'editing' : 'creating-explanation' }
+		);
+		context.instructions = authoringInstructions(recovery.item);
+		context.trigger = immutable(recovery.item.trigger);
+		context.concessions = immutable(recovery.item.concessions);
 	}
 	cancel(): AuthoringOutcome {
 		if (!this.permit({ kind: 'cancel' })) return 'retained';
@@ -824,7 +838,7 @@ export class AuthoringController {
 	}
 	/** A completed click-away closes a clean editor, but cancels work that would be discarded. */
 	dismissFromOutside(): AuthoringOutcome {
-		if (!this.context || this.unresolved) return 'retained';
+		if (!this.context) return 'retained';
 		if (this.dirty) return this.cancel();
 		this.release();
 		return 'closed';
@@ -844,27 +858,8 @@ export class AuthoringController {
 		this.clearFeedback();
 		this.reconcile();
 	}
-	async flush() {
-		const generation = this.transportGeneration;
-		if (this.running) await this.running;
-		return generation === this.transportGeneration && !this.hasUnsavedWork;
-	}
-	restartTransport() {
-		this.transportGeneration++;
-		const context = this.context;
-		if (context) {
-			context.attempt = null;
-			if (context.operation.kind === 'saving')
-				context.operation = {
-					kind: 'uncertain',
-					operation: context.operation.operation,
-					message: 'The connection changed. Retry to confirm this operation.'
-				};
-		}
-		this.running = null;
-	}
 	discard() {
-		this.transportGeneration++;
 		this.release();
+		this.referenceCatalogCache = undefined;
 	}
 }

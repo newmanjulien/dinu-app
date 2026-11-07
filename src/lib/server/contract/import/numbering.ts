@@ -164,10 +164,25 @@ export function resolveNumbering(
 	return valid;
 }
 
+/** Attachments own local reference scopes, independently of numbering inference. */
+export function assignNumberingScopes(blocks: readonly Block[]) {
+	let scope = 'agreement';
+	for (const block of blocks) {
+		if (block.kind === 'table') continue;
+		if (
+			/^\s*(?:EXHIBIT|SCHEDULE|APPENDIX)\s+[A-Z0-9]+\s*$/iu.test(
+				block.paragraph.plain.slice(block.paragraph.trim)
+			)
+		)
+			scope = block.blockKey;
+		block.paragraph.scope = scope;
+	}
+}
+
 // Word counters produce the displayed labels. Legal parents are resolved in a
 // separate pass shared by typed labels and automatic lists.
 type Candidate = {
-	block: Extract<Block, { kind: 'paragraph' | 'heading' }>;
+	block: Extract<Block, { kind: 'paragraph' }>;
 	label: string;
 	token: string;
 	prefix: string;
@@ -193,22 +208,16 @@ const romanPosition = (token: string) => tokenPosition(token, 'roman');
 function inferHierarchy(blocks: Block[], positions: Map<string, number>, issue: Issue) {
 	const candidates: Candidate[] = [];
 	const wordAddresses = numberAddresses(blocks);
-	let scope = 'agreement',
-		boundary = 'agreement';
+	assignNumberingScopes(blocks);
 	for (const block of blocks) {
-		if (block.kind === 'table') {
-			for (const row of block.rows) for (const cell of row) for (const p of cell) p.scope = scope;
-			continue;
-		}
+		if (block.kind === 'table') continue;
 		const word = block.numbering;
-		const match = !word && !block.paragraph.number ? typedLabel(block.paragraph.plain) : undefined;
-		// Exhibit titles need not have a Word Heading style. Each exhibit owns
-		// its own local addresses and sequences, including repeated A/B labels.
-		if (/^\s*(?:EXHIBIT|SCHEDULE|APPENDIX)\s+[A-Z0-9]+\s*$/iu.test(block.paragraph.plain))
-			scope = boundary = block.blockKey;
-		else if (block.kind === 'heading' && !word && !match && !block.paragraph.number)
-			boundary = block.blockKey;
-		block.paragraph.scope = scope;
+		const match =
+			!word && !block.paragraph.number && !block.paragraph.titleStyle
+				? typedLabel(block.paragraph.plain)
+				: undefined;
+		const scope = block.paragraph.scope!,
+			boundary = scope;
 		if (!word && !match) continue;
 		if (match && block.paragraph.fields.some((f) => f.start < match[0].length && f.end > 0))
 			continue;
@@ -361,7 +370,7 @@ function inferHierarchy(blocks: Block[], positions: Map<string, number>, issue: 
 				p.localPattern === c.localPattern &&
 				(indent === undefined ||
 					p.block.paragraph.indent === undefined ||
-					p.block.kind === 'heading' ||
+					Boolean(p.word) ||
 					(c.word &&
 						p.word &&
 						c.block.paragraph.number?.id === p.block.paragraph.number?.id &&
@@ -378,23 +387,25 @@ function inferHierarchy(blocks: Block[], positions: Map<string, number>, issue: 
 				: sibling
 					? sibling.parent
 					: indent !== undefined &&
-						  preceding?.block.kind !== 'heading' &&
+						  !preceding?.word &&
 						  preceding?.block.paragraph.indent !== undefined
 						? indent <= preceding.block.paragraph.indent + 120
 							? preceding.parent
 							: (stack.findLast(
 									(p) =>
-										p.block.kind !== 'heading' &&
+										!p.word &&
 										p.block.paragraph.indent !== undefined &&
 										p.block.paragraph.indent < indent - 120
 								) ?? preceding)
 						: stack.at(-1);
-		if (
-			(c.block.kind === 'heading' || /^(?:Article|Section|Clause|Part)\s/iu.test(c.label)) &&
-			!c.prefix &&
-			!c.word?.parentItemKey
-		)
+		if (/^(?:Article|Section|Clause|Part)\s/iu.test(c.label) && !c.prefix && !c.word?.parentItemKey)
 			c.parent = undefined;
+		const explicitDepth = c.block.paragraph.numberingDepth;
+		if (explicitDepth !== undefined) {
+			c.parent =
+				explicitDepth === 1 ? undefined : stack.findLast((p) => p.depth === explicitDepth - 1);
+			if (explicitDepth > 1 && !c.parent) c.valid = false;
+		}
 		c.depth = c.parent ? c.parent.depth + 1 : 1;
 		const offset = c.word
 			? c.depth - (c.block.paragraph.number!.depth + 1)
@@ -461,6 +472,10 @@ function inferHierarchy(blocks: Block[], positions: Map<string, number>, issue: 
 			itemKey: c.block.blockKey,
 			sequenceKey: `import-${c.sequence}`,
 			style: c.style,
+			...(c.block.paragraph.continueNumbering === false ||
+			(c.block.paragraph.continueNumbering === undefined && c.block.paragraph.heading)
+				? { continueSequence: false as const }
+				: {}),
 			...(c.minimumDigits ? { minimumDigits: c.minimumDigits } : {}),
 			...(c.alphabeticStyle ? { alphabeticStyle: c.alphabeticStyle } : {}),
 			labelPattern: c.pattern,

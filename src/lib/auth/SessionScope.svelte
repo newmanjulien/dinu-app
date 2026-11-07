@@ -5,7 +5,7 @@
 	import { setConvexClientContext, _authContextKey } from 'convex-svelte';
 	import { useClerkContext } from 'svelte-clerk';
 	import { useViewerSession } from './viewer-session.svelte';
-	import { ConvexSession } from './convex-session.svelte';
+	import { ConvexConnection } from './convex-connection.svelte';
 	import { ReadAttempt, waitForRead } from './attempt';
 	import { useStartupPreparation } from './startup-preparation';
 	import { recordStartup } from './startup-perf';
@@ -14,7 +14,7 @@
 	const clerk = useClerkContext();
 	const owner = useViewerSession();
 	const sessionId = untrack(() => clerk.auth.sessionId ?? clerk.session?.id);
-	const transport = new ConvexSession(
+	const transport = new ConvexConnection(
 		useStartupPreparation().take() ??
 			new ConvexClient(env.PUBLIC_CONVEX_URL!, {
 				disabled: !browser,

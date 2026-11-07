@@ -10,7 +10,8 @@
 	let data = $state.raw<StartupData | null>(null);
 	let generation = $state<number>();
 	$effect(() => {
-		if (session.prepared && generation === undefined) generation = session.transportGeneration;
+		if (session.preparedSessionId && generation === undefined)
+			generation = session.transportGeneration;
 	});
 	$effect(() => {
 		const request = page.data.startup;

@@ -1,14 +1,22 @@
 <script lang="ts">
+	import { ConvexError } from 'convex/values';
+	import { errorCode, workBlockMessage } from '$lib/contract/work-policy';
+	import HubSpotRelink from './HubSpotRelink.svelte';
+	import { journalDownload, flushDownloadAcks } from '$lib/contract/download-journal';
+	let repairHubSpot = $state(false);
+	let exportIdentity: { operationId: string; revision: number } | null = null;
+	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
+	import { ContractReviewController } from '$lib/contract/review-controller.svelte';
 	import { documentAnnotations } from '$lib/playbook/document-overlay';
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import { navigating, page } from '$app/state';
 	import { useAuth, useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
-	import type { ContractSnapshot } from '$lib/contract/saved';
-	import type { ContractSession } from '$lib/contract/sessions.svelte';
+	import type { TemplateContent } from '$lib/contract/saved';
+	import type { ContractEditor } from '$lib/contract/editors.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import { recordOpening } from '$lib/contract/browser-storage';
+	import { getContractOpenings } from '$lib/contract/snapshot-cache';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
 	import { createContractWorkspace } from '$lib/document/runtime/workspace-factory';
 	import { setContractWorkspace } from '$lib/document/runtime/workspace-context';
@@ -21,6 +29,7 @@
 	import RepPlaybookPanel from '$lib/components/playbook/RepPlaybookPanel.svelte';
 	import ReviewCompletedModal from '$lib/components/ui/modal/ReviewCompletedModal.svelte';
 	import WorkspaceChrome from './WorkspaceChrome.svelte';
+	import HeaderContent from '$lib/components/chrome/HeaderContent.svelte';
 	import { recordContractInput } from '$lib/document/runtime/render-perf';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import InteractionInputScope from '$lib/components/ui/InteractionInputScope.svelte';
@@ -29,40 +38,38 @@
 	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 	import Button from '$lib/ui/Button.svelte';
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
-	import { accentButtonClass } from '$lib/ui/button-styles';
 	import {
 		approvalCoversPending,
 		savedReviews,
 		selectedReviewApplications,
 		reviewStatus,
-		type ReviewTag,
-		type ReviewDecision,
-		type ReviewNavigation
+		type ReviewTag
 	} from '$lib/contract/approval';
 	import { saveError } from '$lib/contract/saved';
 	let {
 		snapshot,
-		session: contractSession,
-		admitted = true,
+		editor: contractEditor,
+		interactionAdmitted = true,
 		onVisible,
 		onFailure
 	}: {
-		snapshot: ContractSnapshot;
-		session: ContractSession;
-		admitted?: boolean;
+		snapshot: TemplateContent;
+		editor: ContractEditor;
+		interactionAdmitted?: boolean;
 		onVisible?: () => void;
 		onFailure?: () => void;
 	} = $props();
-	const initialContract = untrack(() => contractSession.metadata!);
-	const persistence = untrack(() => contractSession.persistence!);
+	const initialContract = untrack(() => contractEditor.metadata!);
+	const persistence = untrack(() => contractEditor.persistence!);
 	const metadata = {
 		get data() {
-			return contractSession.metadata;
+			return contractEditor.metadata;
 		},
 		get error() {
-			return contractSession.error;
+			return contractEditor.error;
 		}
 	};
+	const openings = untrack(() => getContractOpenings());
 	const runtime = getWorkspaceRuntime();
 	const resources = getDocumentResources();
 	const resource = resources
@@ -99,22 +106,22 @@
 	const membershipId = accountViewer().membership.id;
 	const contractId = untrack(() => initialContract._id);
 	let mounted = $state(false);
-	const approvalQuery = useQuery(api.approvals.latest, () =>
+	const approvalQuery = useQuery(api.contractApprovals.latest, () =>
 		mounted && auth.isAuthenticated && !runtime.paused ? { membershipId, id: contractId } : 'skip'
 	);
-	let requestingApproval = $state(false);
-	let approvalError = $state<string | null>(null);
 	const latestApproval = $derived(approvalQuery.data);
 	$effect(() => attachment?.update(persistence.choices));
 	let notifiedVisible = $state(false);
 	let recordedOpening = false;
+	let viewerPresentation =
+		$state<import('$lib/auth/workspace-presentation.svelte').PresentationOutcome>('pending');
 	const displayedStateReconciled = $derived.by(() => {
 		const displayed = viewer.displayedSnapshot;
 		return Boolean(
 			stateReconciled &&
 			!persistence.recoveryPending &&
-			viewer.visible &&
-			viewer.prepared &&
+			viewer.pagesVisible &&
+			viewer.layoutPrepared &&
 			displayed &&
 			displayed === workspace.renderer.snapshot &&
 			displayed.source === source.renderSource &&
@@ -138,7 +145,7 @@
 	$effect(() => {
 		if (
 			displayedStateReconciled &&
-			viewer.ready &&
+			viewer.interactionEnabled &&
 			!persistence.pending &&
 			!persistence.deleted &&
 			!workspace.renderer.error &&
@@ -147,7 +154,7 @@
 		) {
 			recordedOpening = true;
 			untrack(() => {
-				recordOpening(contractId);
+				openings.record(contractId);
 			});
 		}
 	});
@@ -162,10 +169,58 @@
 		)
 			untrack(() => onFailure?.());
 	});
+	const presentationOutcome = $derived(
+		persistence.deleted ||
+			(!source.renderSource && source.issue) ||
+			(viewerPresentation === 'error' && (workspace.renderer.error || viewer.preparationBlocked))
+			? 'error'
+			: viewerPresentation === 'success' &&
+				  displayedStateReconciled &&
+				  !source.issue &&
+				  !workspace.renderer.error &&
+				  !viewer.preparationBlocked
+				? 'success'
+				: 'pending'
+	);
 	let connected = $state(false);
 	let active = true;
+	let checkingDeal: Promise<void> | undefined;
+	async function checkDeal() {
+		if (!persistence.confirmed.hubspot) return;
+		if (checkingDeal) return checkingDeal;
+		const current = client
+			.action(api.hubspotDeals.check, { membershipId, contractId })
+			.then(({ outcome, generation }) => {
+				if (
+					active &&
+					outcome === 'unavailable' &&
+					generation === persistence.confirmed.hubspot?.generation
+				) {
+					persistence.blockWork('deal-unavailable');
+					throw new ConvexError({
+						code: 'deal-unavailable',
+						message: workBlockMessage('deal-unavailable')
+					});
+				}
+			})
+			.finally(() => {
+				if (checkingDeal === current) checkingDeal = undefined;
+			});
+		checkingDeal = current;
+		return current;
+	}
 	onMount(() => {
 		mounted = true;
+		const observe = () => {
+			if (document.visibilityState === 'visible') void checkDeal().catch(() => {});
+		};
+		observe();
+		document.addEventListener('visibilitychange', observe);
+		window.addEventListener('focus', observe);
+		return () => {
+			document.removeEventListener('visibilitychange', observe);
+			window.removeEventListener('focus', observe);
+		};
 	});
 	$effect(() => {
 		if (!mounted) return;
@@ -197,7 +252,7 @@
 	async function loadLatest() {
 		if (runtime.paused || session.blocked || !stateReconciled) return;
 		resolutionError = null;
-		if (!(await persistence.loadLatest()) && active)
+		if (!(await persistence.useConfirmedState()) && active)
 			resolutionError = 'We couldn’t load the latest contract state. Your changes are still here.';
 	}
 	let animateInspectorContent = $state(false);
@@ -262,68 +317,37 @@
 		selectedAnnotationId = null;
 	}
 
-	const isAdmin = $derived(accountViewer().profile.role === 'admin');
-	type DecisionAttempt = {
-		operationId: string;
-		concessionId: string;
-		lifecycle: string;
-		status: ReviewDecision;
-	};
-	let deciding = $state(false);
-	let dismissedCompletion = $state<number | null>(null);
-	let completionBusy = $state(false);
-	let completionError = $state<string | null>(null);
-	const awaitingCompletion = $derived(
-		isAdmin && persistence.confirmed.reviewCompletion?.kind === 'awaitingConfirmation'
-			? persistence.confirmed.reviewCompletion
-			: null
-	);
-	const completionGeneration = $derived(
-		awaitingCompletion ? persistence.confirmed.reviewGeneration : null
-	);
-	$effect(() => {
-		completionGeneration;
-		completionError = null;
+	const isAdmin = $derived(accountViewer().membership.role === 'admin');
+	const reviews: ContractReviewController = new ContractReviewController({
+		client,
+		membershipId,
+		contractId,
+		persistence,
+		isAdmin: () => isAdmin,
+		canReview: () => canReview,
+		preflight: checkDeal,
+		canRequest: () => approvalEligibilityReason === null,
+		tags: () => reviewTags
 	});
-	async function resolveCompletion(reset: boolean) {
-		if (completionBusy || !canReview || deciding || !awaitingCompletion) return;
-		const generation = persistence.confirmed.reviewGeneration;
-		completionBusy = true;
-		completionError = null;
-		try {
-			const result = await client.mutation(
-				reset ? api.approvals.resetCompletion : api.approvals.confirmCompletion,
-				{ membershipId, id: contractId, expectedGeneration: generation }
-			);
-			if (!active) return;
-			if (result.outcome === 'reset') {
-				decisionAttempts.clear();
-				decisionError = null;
-				reviewNavigation = {};
-			}
-		} catch (error) {
-			if (active && completionGeneration === generation)
-				completionError = saveError(error, 'We couldn’t save your choice. Try again.');
-		} finally {
-			if (active) completionBusy = false;
-		}
-	}
-	let decisionError = $state.raw<{
-		itemId: string;
-		attempt: DecisionAttempt;
-		changesStatus: boolean;
-		message: string;
-	} | null>(null);
-	let reviewNavigation = $state.raw<ReviewNavigation>();
+	onDestroy(() => reviews.destroy());
+	let dismissedCompletion = $state<number | null>(null);
+	const awaitingCompletion = $derived(reviews.completion);
+	const completionGeneration = $derived(reviews.completionGeneration);
+	$effect(() => {
+		persistence.confirmed;
+		isAdmin;
+		reviews.reconcile();
+	});
 	let reviewedLink = false;
 	let reviewLinkMessage = $state<string | null>(null);
 	const canReview = $derived(
-		isAdmin &&
+		!persistence.workBlock &&
+			isAdmin &&
 			editable &&
 			!persistence.pending &&
 			!persistence.error &&
 			connected &&
-			viewer.ready &&
+			viewer.interactionEnabled &&
 			!session.blocked
 	);
 	const reviewApplications = $derived(
@@ -331,24 +355,24 @@
 	);
 	const reviewGutter = $derived(reviewApplications.length ? REVIEW_GUTTER_WIDTH : 0);
 	const reviewTags = $derived.by<ReviewTag[]>(() =>
-		reviewApplications.map(({ item, concession, concessionPosition, range }) => {
-			const lifecycle = persistence.lifecycles[item._id];
+		reviewApplications.map(({ item, concession, concessionPosition, target: range }) => {
+			const applicationId = persistence.intent[item._id]?.applicationId ?? '';
 			const saved =
-				persistence.confirmed.selectedConcessions[item._id] === concession.id &&
-				persistence.confirmed.reviews[item._id]?.lifecycle === lifecycle;
+				persistence.confirmed.applications[item._id]?.concessionId === concession.id &&
+				persistence.confirmed.applications[item._id]?.approval?.applicationId === applicationId;
 			return {
 				itemId: item._id,
 				concessionId: concession.id,
 				concessionPosition,
-				lifecycle,
+				applicationId,
 				status:
 					!saved && isAdmin && persistence.pending
 						? 'approved'
-						: reviewStatus(persistence.confirmed, item._id, concession.id, lifecycle),
+						: reviewStatus(persistence.confirmed, item._id, concession.id, applicationId),
 				description: concession.description,
-				range,
+				target: range,
 				admin: isAdmin,
-				disabled: !canReview || deciding || completionBusy
+				disabled: !canReview || reviews.deciding || reviews.completionBusy
 			};
 		})
 	);
@@ -369,92 +393,16 @@
 			reviewedLink ||
 			page.url.searchParams.get('review') !== '1' ||
 			!stateReconciled ||
-			!viewer.ready ||
+			!viewer.interactionEnabled ||
 			persistence.pending
 		)
 			return;
 		reviewedLink = true;
 		if (!pendingApprovalCount) reviewLinkMessage = 'There are no concessions waiting for review.';
 		untrack(() => {
-			reviewNavigation = {};
+			reviews.navigation = {};
 		});
 	});
-	// Reuse an ambiguous operation only for the exact same decision and lifecycle.
-	const decisionAttempts = new Map<string, DecisionAttempt>();
-	function decisionSettled(itemId: string, attempt: DecisionAttempt, changesStatus = true) {
-		const confirmed = persistence.confirmed;
-		return (
-			confirmed.selectedConcessions[itemId as Id<'playbookItems'>] !== attempt.concessionId ||
-			confirmed.reviews[itemId as Id<'playbookItems'>]?.lifecycle !== attempt.lifecycle ||
-			(changesStatus &&
-				reviewStatus(confirmed, itemId, attempt.concessionId, attempt.lifecycle) === attempt.status)
-		);
-	}
-	$effect(() => {
-		persistence.confirmed;
-		for (const [itemId, attempt] of decisionAttempts) {
-			if (decisionSettled(itemId, attempt)) decisionAttempts.delete(itemId);
-		}
-		if (
-			decisionError &&
-			decisionSettled(decisionError.itemId, decisionError.attempt, decisionError.changesStatus)
-		)
-			decisionError = null;
-	});
-	async function decideReview(tag: ReviewTag, status: ReviewDecision) {
-		const current = reviewTags.find(
-			(t) =>
-				t.itemId === tag.itemId &&
-				t.lifecycle === tag.lifecycle &&
-				t.concessionId === tag.concessionId
-		);
-		if (!active || !current || current.disabled) return;
-		const prior = decisionAttempts.get(tag.itemId);
-		const attempt =
-			prior?.concessionId === tag.concessionId &&
-			prior.lifecycle === tag.lifecycle &&
-			prior.status === status &&
-			reviewStatus(persistence.confirmed, tag.itemId, tag.concessionId, tag.lifecycle) !== status
-				? prior
-				: {
-						operationId: crypto.randomUUID(),
-						concessionId: tag.concessionId,
-						lifecycle: tag.lifecycle,
-						status
-					};
-		// A decision already visible in live state is a fresh acknowledgement,
-		// even when the server has no metadata change to publish for this click.
-		const changesStatus = current.status !== status;
-		if (changesStatus) decisionAttempts.set(tag.itemId, attempt);
-		else decisionAttempts.delete(tag.itemId);
-		deciding = true;
-		decisionError = null;
-		try {
-			await client.mutation(api.approvals.decide, {
-				membershipId,
-				id: contractId,
-				itemId: tag.itemId as Id<'playbookItems'>,
-				concessionId: tag.concessionId,
-				lifecycle: tag.lifecycle,
-				status,
-				operationId: attempt.operationId
-			});
-			if (!active) return;
-			decisionAttempts.delete(tag.itemId);
-			if (persistence.confirmed.reviewCompletion?.kind !== 'awaitingConfirmation')
-				reviewNavigation = { afterItemId: tag.itemId };
-		} catch (error) {
-			if (active && !decisionSettled(tag.itemId, attempt, changesStatus))
-				decisionError = {
-					itemId: tag.itemId,
-					attempt,
-					changesStatus,
-					message: saveError(error, 'We couldn’t save this decision. Choose it again to retry.')
-				};
-		} finally {
-			if (active) deciding = false;
-		}
-	}
 
 	const matchingApproval = $derived(
 		latestApproval &&
@@ -465,7 +413,7 @@
 			? latestApproval
 			: null
 	);
-	const approvalSending = $derived(requestingApproval || latestApproval?.status === 'sending');
+	const approvalSending = $derived(reviews.requesting || latestApproval?.status === 'sending');
 	const approvalRequested = $derived(matchingApproval?.status === 'sent');
 	const approvalButtonLabel = $derived.by(() => {
 		if (approvalSending) return 'Sending approval request…';
@@ -477,7 +425,7 @@
 		return 'Ask for approval';
 	});
 	const approvalErrorMessage = $derived.by(() => {
-		if (approvalError) return approvalError;
+		if (reviews.requestError) return reviews.requestError;
 		if (approvalQuery.error)
 			return 'We couldn’t check approval request status. Reconnect or reload to try again.';
 		if (approvalSending) return null;
@@ -505,14 +453,15 @@
 	);
 	$effect(() => {
 		persistence.choices;
-		persistence.confirmed.companyName;
-		approvalError = null;
+		persistence.confirmed.buyerCompanyName;
+		reviews.requestError = null;
 	});
 	let exportError = $state<string | null>(null);
 	let wordAttempt = $state.raw<ReadAttempt | null>(null);
 	const preparingWord = $derived(wordAttempt !== null);
 	const actionDisabledReason = $derived.by(() => {
 		if (persistence.deleted) return 'This contract was deleted.';
+		if (persistence.blockedReason) return persistence.blockedReason;
 		if (session.blocked) return 'Reconnect to your account to continue.';
 		if (!connected) return 'Reconnect to continue.';
 		if (persistence.conflict) return 'Resolve the conflicting changes before continuing.';
@@ -523,8 +472,8 @@
 		if (navigating.to) return 'Please wait while the next page opens.';
 		return null;
 	});
-	const approvalDisabledReason = $derived.by(() => {
-		if (approvalSending) return 'Your approval request is being sent.';
+	const approvalEligibilityReason = $derived.by(() => {
+		if (latestApproval?.status === 'sending') return 'Your approval request is being sent.';
 		if (!pendingApprovalCount)
 			return rejectedApprovalCount
 				? 'The selected concessions were declined. Remove them or choose other concessions to request approval again.'
@@ -541,6 +490,9 @@
 			return approvalErrorMessage ?? 'Please wait before retrying the approval request.';
 		return null;
 	});
+	const approvalDisabledReason = $derived(
+		reviews.requesting ? 'Your approval request is being sent.' : approvalEligibilityReason
+	);
 	// Export readiness excludes document preparation so starting a download does not abort it.
 	const exportDisabledReason = $derived(
 		actionDisabledReason ??
@@ -554,26 +506,9 @@
 	const canRequestApproval = $derived(approvalDisabledReason === null);
 	let approvalHintTrigger = $state<HTMLSpanElement>();
 	let downloadHintTrigger = $state<HTMLSpanElement>();
-	const actionHintClass =
-		'rounded-md border-hairline border-edge bg-surface px-2 py-1 text-left text-xs leading-[1.4] text-ink shadow-floating';
-	async function askForApproval() {
-		if (!active || !canRequestApproval) return;
-		requestingApproval = true;
-		approvalError = null;
-		try {
-			await client.mutation(api.approvals.request, {
-				membershipId,
-				id: contractId,
-				expectedRevision: persistence.confirmed.revision
-			});
-		} catch (error) {
-			if (active) approvalError = saveError(error, 'We couldn’t request approval. Try again.');
-		} finally {
-			if (active) requestingApproval = false;
-		}
-	}
+
 	$effect(() => {
-		const revision = persistence.confirmed.revision;
+		const revision = persistence.confirmed.editRevision;
 		const generation = session.transportGeneration;
 		const ready = exportReady;
 		untrack(() => {
@@ -589,31 +524,61 @@
 	async function downloadSavedWord() {
 		if (!active || !canExport) return;
 		const attempt = new ReadAttempt(30_000);
-		wordRevision = persistence.confirmed.revision;
+		wordRevision = persistence.confirmed.editRevision;
 		wordGeneration = session.transportGeneration;
 		wordAttempt = attempt;
+		const identity =
+			exportIdentity?.revision === wordRevision
+				? exportIdentity
+				: (exportIdentity = { operationId: crypto.randomUUID(), revision: wordRevision });
 		exportError = null;
 		try {
-			const result = await waitForRead(
-				client.action(api.wordExport.generate, {
+			await waitForRead(checkDeal(), attempt.signal);
+			if (
+				attempt.signal.aborted ||
+				!active ||
+				wordAttempt !== attempt ||
+				!exportReady ||
+				persistence.confirmed.editRevision !== wordRevision ||
+				session.transportGeneration !== wordGeneration
+			)
+				return;
+			const generation = client
+				.action(api.wordExport.generate, {
 					membershipId,
 					id: contractId,
-					expectedRevision: wordRevision
-				}),
-				attempt.signal
-			);
+					expectedEditRevision: wordRevision,
+					operationId: identity.operationId
+				})
+				.catch((error) => {
+					// Observe authoritative retirement even after the foreground waiter is canceled.
+					if (
+						exportIdentity === identity &&
+						(errorCode(error) === 'DOWNLOAD_ATTEMPT_RETIRED' ||
+							(error instanceof ConvexError &&
+								typeof error.data === 'string' &&
+								/expired|unavailable|changed/.test(error.data)))
+					)
+						exportIdentity = null;
+					throw error;
+				});
+			const result = await waitForRead(generation, attempt.signal);
 			const response = await fetch(result.url, { signal: attempt.signal, cache: 'no-store' });
 			if (!response.ok) throw new Error('Download failed.');
 			const blob = await waitForRead(response.blob(), attempt.signal);
 			if (
+				attempt.signal.aborted ||
 				!active ||
 				wordAttempt !== attempt ||
 				!exportReady ||
-				persistence.confirmed.revision !== wordRevision ||
+				persistence.confirmed.editRevision !== wordRevision ||
 				session.transportGeneration !== wordGeneration
 			)
 				return;
 			downloadWord(blob, result.filename);
+			journalDownload(membershipId, result.attemptId, Date.now());
+			void flushDownloadAcks(client, membershipId);
+			if (exportIdentity === identity) exportIdentity = null;
 		} catch (error) {
 			if (active && wordAttempt === attempt)
 				exportError = saveError(error, 'We couldn’t prepare this download. Try again.');
@@ -622,13 +587,45 @@
 			if (wordAttempt === attempt) wordAttempt = null;
 		}
 	}
-	const actionButtonClass = `${accentButtonClass} h-11 px-5 text-sm`;
+
+	$effect(() => {
+		if (!session.blocked) void flushDownloadAcks(client, membershipId);
+	});
 </script>
+
+{#if repairHubSpot}<HubSpotRelink
+		{contractId}
+		link={persistence.confirmed.hubspot}
+		onClose={() => (repairHubSpot = false)}
+	/>{/if}
 
 <BoxDismissal owner={interactionOwner} active={inspectorVisible} onDismiss={close} />
 
-{#if admitted && !runtime.paused}
+<WorkspacePresentationReporter
+	active={interactionAdmitted && !runtime.paused}
+	outcome={presentationOutcome}
+/>
+
+{#if interactionAdmitted && !runtime.paused}
 	<WorkspaceChrome {feedback} helpVariant="rep" helpReady={notifiedVisible} />
+	{#if !persistence.deleted && persistence.workBlock}
+		<HeaderContent placement="notice">
+			<div
+				class="flex flex-wrap items-center justify-between gap-x-5 gap-y-2 border-t-[length:var(--surface-border-width)] border-line bg-[color-mix(in_srgb,var(--color-accent)_5%,white)] px-3 py-2.5 text-[12.5px] font-normal leading-relaxed text-ink sm:px-5"
+			>
+				<p class="min-w-0 flex-1 basis-[400px]" role="status" aria-live="polite" aria-atomic="true">
+					{persistence.blockedReason}
+				</p>
+				<Button
+					variant="secondary"
+					aria-haspopup="dialog"
+					onclick={() => (repairHubSpot = true)}
+					class="h-[31px] rounded-[7px]! self-center px-[9.5px] py-1 text-[11.75px] shadow-none not-disabled:not-aria-disabled:hover:bg-field-hover disabled:bg-field-hover"
+					>{persistence.confirmed.hubspot ? 'Link another deal' : 'Link a deal'}</Button
+				>
+			</div>
+		</HeaderContent>
+	{/if}
 {/if}
 {#if persistence.deleted}<p
 		role="alert"
@@ -673,7 +670,11 @@
 			if (event.type === 'click') recordContractInput(event);
 		}}
 	>
-		<main onclickcapture={recordContractInput} aria-label="Contract document">
+		<main
+			class="pt-14 pb-16 [--workspace-loading-inset:calc(var(--spacing)*30)] min-[1000px]:pt-6 min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*22)]"
+			onclickcapture={recordContractInput}
+			aria-label="Contract document"
+		>
 			{#snippet panelContent()}{#if item}<RepPlaybookPanel
 						{item}
 						animateContent={animateInspectorContent}
@@ -697,7 +698,7 @@
 							trigger={approvalHintTrigger}
 							standalone={false}
 							enabled={!canRequestApproval}
-							class={actionHintClass}
+							class="rounded-md border-hairline border-edge bg-surface px-2 py-1 text-left text-xs leading-[1.4] text-ink shadow-floating"
 						>
 							{#snippet children(descriptionId)}
 								<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
@@ -710,11 +711,11 @@
 									aria-describedby={!canRequestApproval ? descriptionId : undefined}
 								>
 									<Button
-										class={`${actionButtonClass} disabled:pointer-events-none`}
+										class="bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover h-11 px-5 text-sm disabled:pointer-events-none"
 										disabled={!canRequestApproval}
 										aria-describedby={!canRequestApproval ? descriptionId : undefined}
 										aria-live="polite"
-										onclick={askForApproval}
+										onclick={() => void reviews.requestApproval()}
 									>
 										{approvalButtonLabel}
 									</Button>
@@ -726,7 +727,7 @@
 							trigger={downloadHintTrigger}
 							standalone={false}
 							enabled={!canExport}
-							class={actionHintClass}
+							class="rounded-md border-hairline border-edge bg-surface px-2 py-1 text-left text-xs leading-[1.4] text-ink shadow-floating"
 						>
 							{#snippet children(descriptionId)}
 								<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
@@ -739,7 +740,7 @@
 									aria-describedby={!canExport ? descriptionId : undefined}
 								>
 									<Button
-										class={`${actionButtonClass} disabled:pointer-events-none`}
+										class="bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover h-11 px-5 text-sm disabled:pointer-events-none"
 										disabled={!canExport}
 										aria-describedby={!canExport ? descriptionId : undefined}
 										onclick={() => void downloadSavedWord()}>Download as .docx</Button
@@ -759,8 +760,11 @@
 						</p>
 					{/if}
 
-					{#if decisionError}<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
-							{decisionError.message}
+					{#if reviews.decisionError}<p
+							class="mt-3 text-center text-sm text-ink-muted"
+							role="alert"
+						>
+							{reviews.decisionError.message}
 						</p>{/if}
 					{#if preparingWord}
 						<p class="mt-3 text-center text-sm text-ink-muted" role="status">
@@ -777,8 +781,9 @@
 					{attachment}
 					entry={resource}
 					active={!runtime.paused}
+					onPresentation={(outcome) => (viewerPresentation = outcome)}
 					prepare={!runtime.paused}
-					interactive={admitted &&
+					interactive={interactionAdmitted &&
 						stateReconciled &&
 						(notifiedVisible || Boolean(workspace.renderer.error))}
 					hasPanel={inspectorVisible}
@@ -787,15 +792,15 @@
 					{selectedAnnotationId}
 					{reviewTags}
 					{reviewGutter}
-					{reviewNavigation}
-					onReviewDecision={decideReview}
+					reviewNavigation={reviews.navigation}
+					onReviewDecision={(tag, status) => void reviews.decide(tag, status)}
 					selectedConcessions={persistence.choices}
 					allowPlaybookNavigation
 					playbookNavigationReady={editable}
 					onRemoveConcession={(itemId) => {
 						if (editable) persistence.select(itemId as Id<'playbookItems'>, null);
 					}}
-					panelTarget={item?.trigger.range}
+					panelTarget={item?.trigger.target}
 					onSelect={selectClause}
 					onDocumentBackground={() => close(false)}
 				/>{/if}
@@ -806,27 +811,12 @@
 {#if awaitingCompletion && completionGeneration !== dismissedCompletion && !runtime.paused && !session.blocked && !navigating.to && !persistence.deleted}
 	{#key completionGeneration}
 		<ReviewCompletedModal
-			busy={completionBusy}
-			disabled={!canReview || deciding}
-			error={completionError}
-			onSend={() => void resolveCompletion(false)}
-			onReset={() => void resolveCompletion(true)}
+			busy={reviews.completionBusy}
+			disabled={!canReview || reviews.deciding}
+			error={reviews.completionError}
+			onSend={() => void reviews.resolveCompletion(false)}
+			onReset={() => void reviews.resolveCompletion(true)}
 			onClose={() => (dismissedCompletion = completionGeneration)}
 		/>
 	{/key}
 {/if}
-
-<style>
-	main {
-		--document-padding-top: calc(var(--spacing) * 14);
-		--document-padding-bottom: calc(var(--spacing) * 16);
-		--workspace-loading-inset: calc(var(--document-padding-top) + var(--document-padding-bottom));
-		padding-block: var(--document-padding-top) var(--document-padding-bottom);
-	}
-
-	@media (min-width: 1000px) {
-		main {
-			--document-padding-top: calc(var(--spacing) * 6);
-		}
-	}
-</style>

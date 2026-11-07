@@ -1,7 +1,7 @@
 import { afterNavigate, beforeNavigate, onNavigate } from '$app/navigation';
 import { page } from '$app/state';
-import { getContext, onMount, setContext, tick, untrack } from 'svelte';
 import { describeRoute } from '$lib/auth/routes';
+import { getContext, onMount, setContext, tick, untrack } from 'svelte';
 import type { ContractViewerState } from './viewer.svelte';
 
 const key = Symbol('document-navigation');
@@ -28,14 +28,19 @@ class DocumentNavigation {
 	}
 	visible(viewer: ContractViewerState) {
 		const destination = this.pending;
-		if (!destination || page.url.href !== destination.href || !viewer.visible || !viewer.prepared)
+		if (
+			!destination ||
+			page.url.href !== destination.href ||
+			!viewer.pagesVisible ||
+			!viewer.layoutPrepared
+		)
 			return;
 		void tick().then(() => {
 			if (
 				this.pending !== destination ||
 				page.url.href !== destination.href ||
-				!viewer.visible ||
-				!viewer.prepared
+				!viewer.pagesVisible ||
+				!viewer.layoutPrepared
 			)
 				return;
 			this.pending = undefined;
@@ -105,6 +110,6 @@ export function restoreDocumentNavigation(viewer: ContractViewerState) {
 	const navigation = getDocumentNavigation();
 	$effect(() => {
 		void navigation?.pending;
-		if (viewer.visible && viewer.prepared) untrack(() => navigation?.visible(viewer));
+		if (viewer.pagesVisible && viewer.layoutPrepared) untrack(() => navigation?.visible(viewer));
 	});
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, type Snippet } from 'svelte';
+	import { cn } from '$lib/ui/cn';
 	import FloatingSurface from './FloatingSurface.svelte';
 	import type { CloseReason } from './interactions';
 	let {
@@ -10,8 +11,7 @@
 		enabled = true,
 		leaveDelay = 140,
 		onpointerdown,
-		class:
-			className = 'rounded-base border-0 bg-ink-secondary px-2.5 py-2 text-left text-xs leading-[1.4] text-surface',
+		class: className = '',
 		children
 	}: {
 		text: string;
@@ -141,7 +141,10 @@
 			hovered = false;
 			settle();
 		}}
-		class={className}
+		class={cn(
+			'rounded-base border-0 bg-ink-secondary px-2.5 py-2 text-left text-xs leading-[1.4] text-surface',
+			className
+		)}
 	>
 		{text}
 	</FloatingSurface>

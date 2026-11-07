@@ -5,35 +5,37 @@ import type { PreparedBlock } from './prepare';
 
 export interface InlineToken extends Readonly<Omit<ResolvedRun, 'text' | 'annotations'>> {
 	readonly value: string;
+	readonly lineBreak?: boolean;
+	/** Source-less, zero-width glyph ensuring an otherwise empty forced line has geometry. */
+	readonly lineAnchor?: boolean;
 	readonly annotations?: readonly AnnotationMembership[];
 }
 
-export type PageFragment = HeadingFragment | ParagraphFragment | TableFragment;
+export type PageFragment = ParagraphFragment | TableFragment;
 
 export interface FragmentInterval {
 	readonly start: number;
 	readonly end: number;
 }
 
-export interface HeadingFragment {
-	readonly interval?: FragmentInterval;
-	readonly type: 'heading';
-	readonly blockKey: string;
-	readonly anchor: string;
-	readonly level: 1 | 2 | 3;
-	readonly tokens: readonly InlineToken[];
+interface FragmentSpacing {
+	/** One logical boundary gap; continuation fragments allocate no leading gap. */
+	readonly gapBefore?: number;
 }
 
-export interface ParagraphFragment {
+export interface ParagraphFragment extends FragmentSpacing {
+	readonly role: import('$lib/contract/source-model').ParagraphRole;
+	readonly anchor?: string;
+	readonly keepWithNext?: boolean;
 	readonly interval?: FragmentInterval;
 	readonly type: 'paragraph';
 	readonly blockKey: string;
 	readonly tokens: readonly InlineToken[];
-	readonly isContinuation: boolean;
 	readonly isFinal: boolean;
 }
 
-export interface TableFragment {
+export interface TableFragment extends FragmentSpacing {
+	readonly isFinal: boolean;
 	/** Runtime canonical columns, shared by every fragment of a profiled table. */
 	readonly columnWidths?: readonly number[];
 	/** Body-row interval; repeated headers are outside this interval. */

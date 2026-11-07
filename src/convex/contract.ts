@@ -1,14 +1,12 @@
-import { requireMembership } from './auth';
-import { v } from 'convex/values';
+/** Frozen baseline wire view for already-open v1 clients. */
+import { v, type Infer } from 'convex/values';
+import { api } from './_generated/api';
 import { query } from './_generated/server';
-import { baselineBlock as contractBlock } from './sourceValidators';
-import { baselineBlocks } from './baselineStorage';
+import { legacyBlock, legacyBlockView } from './legacyViews';
 
 export const getBlocks = query({
 	args: { membershipId: v.id('memberships') },
-	returns: v.array(contractBlock),
-	handler: async (ctx, args) => {
-		const { companyId, company } = await requireMembership(ctx, args.membershipId);
-		return company.baselineId ? baselineBlocks(ctx, company.baselineId, companyId) : [];
-	}
+	returns: v.array(legacyBlock),
+	handler: async (ctx, args): Promise<Infer<typeof legacyBlock>[]> =>
+		(await ctx.runQuery(api.baselines.blocks, args)).map(legacyBlockView)
 });

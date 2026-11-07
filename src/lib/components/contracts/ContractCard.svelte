@@ -4,7 +4,7 @@
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import DotsThreeVerticalIcon from 'phosphor-svelte/lib/DotsThreeVerticalIcon';
-	import type { SaveStatus } from '$lib/contract/sessions.svelte';
+	import type { SaveStatus } from '$lib/contract/editors.svelte';
 	import type { SavedContractCard } from '$lib/contract/card';
 	import type { Action } from 'svelte/action';
 	let {
@@ -26,6 +26,13 @@
 		onWarm: () => void;
 		onCool: () => void;
 	} = $props();
+	const workBlock = $derived(
+		contract.workBlock !== undefined
+			? contract.workBlock
+			: contract.hubspot?.availability === 'unavailable'
+				? 'deal-unavailable'
+				: null
+	);
 	let open = $state(false);
 	let hovered = false;
 	let focused = false;
@@ -62,16 +69,19 @@
 			if (!hovered) onCool();
 		}}
 		class="flex min-h-[96px] flex-col justify-between gap-1.5 rounded-xl px-3.5 py-3 pr-10.5 outline-none focus-visible:ring-1 focus-visible:ring-accent"
-		aria-label={`Open contract for ${contract.companyName}`}
+		aria-label={`Open contract for ${contract.buyerCompanyName}`}
 	>
-		<h2 class="line-clamp-2 break-words text-sm leading-5 font-medium" title={contract.companyName}>
-			{contract.companyName}
+		<h2
+			class="line-clamp-2 break-words text-[13.5px] leading-5 font-medium"
+			title={contract.buyerCompanyName}
+		>
+			{contract.buyerCompanyName}
 		</h2>
 		<div class="flex min-w-0 items-center gap-2 text-xs text-ink-muted">
 			<Avatar
 				name={contract.creator.name}
 				avatarUrl={contract.creator.avatarUrl}
-				size={20}
+				class="size-5"
 				decorative
 			/>
 			<p class="min-w-0 truncate" title={`Created by ${contract.creator.name}`}>
@@ -86,7 +96,7 @@
 	<div class="absolute top-2 right-1.5">
 		<SquareIconButton
 			bind:element={trigger}
-			size="sm"
+			class="size-7"
 			type="button"
 			disabled={deleting}
 			onclick={() => (open = !open)}
@@ -96,23 +106,24 @@
 					open = true;
 				}
 			}}
-			aria-label={`Options for ${contract.companyName}`}
+			aria-label={`Options for ${contract.buyerCompanyName}`}
 			aria-haspopup="menu"
 			aria-expanded={open}
 			aria-controls={open ? menuId : undefined}
 		>
-			<DotsThreeVerticalIcon size={19} weight="bold" aria-hidden="true" />
+			<DotsThreeVerticalIcon class="size-[19px]" weight="bold" aria-hidden="true" />
 		</SquareIconButton>
 	</div>
 	<Menu
 		{open}
 		{trigger}
 		id={menuId}
-		label={`Contract options for ${contract.companyName}`}
+		label={`Contract options for ${contract.buyerCompanyName}`}
 		onClose={() => (open = false)}
 	>
 		{#snippet children(close)}
 			<MenuItem
+				disabled={Boolean(workBlock)}
 				onclick={() => {
 					close();
 					onRename();

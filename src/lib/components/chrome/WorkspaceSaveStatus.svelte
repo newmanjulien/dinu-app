@@ -1,43 +1,23 @@
 <script lang="ts">
-	import { getContractSessions } from '$lib/contract/sessions.svelte';
+	import { getContractEditors } from '$lib/contract/editors.svelte';
+	import { afterNavigate } from '$app/navigation';
+	import { getWorkspaceFeedback } from './workspace-feedback.svelte';
+	import StatusBubble from './StatusBubble.svelte';
 	import { setInteractionOwner, type CloseReason } from '$lib/components/ui/interactions';
 	import FloatingSurface from '$lib/components/ui/FloatingSurface.svelte';
-	const sessions = getContractSessions();
+	import { getAdminAuthoringSession } from '$lib/playbook/admin-authoring-session.svelte';
+	const sessions = getContractEditors();
+	const authoring = getAdminAuthoringSession();
+	const feedback = getWorkspaceFeedback();
 	setInteractionOwner(Symbol('workspace-save-status'));
 	const id = $props.id();
 	let open = $state(false);
 	let trigger = $state<HTMLButtonElement>();
-	let showProgress = $state(false);
-	const notices = $derived(sessions.notices);
-	const attention = $derived(
-		notices.filter(
-			(notice) => ['Save failed', 'Conflict', 'Paused'].includes(notice.status) || notice.memoryOnly
-		)
-	);
-	const progressing = $derived(
-		notices.some((notice) => notice.status === 'Saving' || notice.status === 'Checking')
-	);
-	$effect(() => {
-		if (!progressing) {
-			showProgress = false;
-			return;
-		}
-		const timer = setTimeout(() => {
-			showProgress = true;
-		}, 250);
-		return () => clearTimeout(timer);
+	const notices = $derived(feedback.notices);
+	const label = $derived(authoring.status ?? feedback.label);
+	afterNavigate((navigation) => {
+		if (navigation.from?.url.href !== navigation.to?.url.href) open = false;
 	});
-	const label = $derived(
-		attention.length
-			? `${attention.length} ${attention.length === 1 ? 'contract needs' : 'contracts need'} attention`
-			: showProgress
-				? notices.some((notice) => notice.status === 'Checking')
-					? 'Checking changes…'
-					: 'Saving changes…'
-				: notices.some((notice) => notice.status === 'Saved')
-					? 'Changes saved'
-					: null
-	);
 	function close(reason: CloseReason) {
 		open = false;
 		if (reason === 'escape') trigger?.focus({ preventScroll: true });
@@ -45,29 +25,32 @@
 </script>
 
 {#if label || open}
-	<button
-		bind:this={trigger}
-		type="button"
-		aria-expanded={open}
-		aria-controls={id}
-		class="max-w-[45vw] cursor-pointer truncate rounded-button-sm px-2 py-1 text-xs text-ink-muted hover:bg-control-hover focus-visible:outline-2 focus-visible:outline-accent"
-		onclick={() => {
-			open = !open;
-		}}><span role="status">{label ?? 'Contract saves'}</span></button
-	>
+	<StatusBubble urgent={Boolean(feedback.attention.length || authoring.needsAttention)}>
+		{label ?? 'Saves'}
+		{#if notices.length || authoring.status || open}
+			<button
+				bind:this={trigger}
+				type="button"
+				aria-expanded={open}
+				aria-controls={id}
+				class="pointer-events-auto ml-2 cursor-pointer font-medium text-accent underline"
+				onclick={() => (open = !open)}>Details</button
+			>
+		{/if}
+	</StatusBubble>
 {/if}
 <FloatingSurface
 	{open}
 	{trigger}
 	{id}
 	role="group"
-	label="Contract saves"
+	label="Saves"
 	onClose={close}
 	maxWidth={420}
-	class="w-[min(400px,calc(100vw-24px))] rounded-base border-hairline border-edge bg-surface p-4 shadow-floating"
+	class="pointer-events-auto w-[min(400px,calc(100vw-24px))] rounded-base border-hairline border-edge bg-surface p-4 shadow-floating"
 >
 	<div class="mb-3 flex items-center justify-between gap-3">
-		<h2 class="text-sm font-medium">Contract saves</h2>
+		<h2 class="text-sm font-medium">Saves</h2>
 		<button
 			type="button"
 			class="text-xs underline"
@@ -77,7 +60,36 @@
 			}}>Close</button
 		>
 	</div>
-	{#if !notices.length}<p class="text-sm text-ink-muted">All changes are saved.</p>{/if}
+	{#if !notices.length && !authoring.status}<p class="text-sm text-ink-muted">
+			All changes are saved.
+		</p>{/if}
+	{#if authoring.status}
+		<div class="mb-4 text-sm" role="status">
+			<p class="font-medium">{authoring.status}</p>
+			{#if authoring.message}<p class="mt-1 text-xs text-ink-muted">{authoring.message}</p>{/if}
+			<div class="mt-2 flex gap-3 text-xs">
+				<a class="underline" href="/admin">Open Admin</a>
+				{#if authoring.phase === 'uncertain'}<button
+						type="button"
+						class="underline"
+						onclick={() => authoring.retry()}>Retry confirmation</button
+					>{/if}
+				{#if authoring.phase === 'confirmed' && (authoring.structureError || authoring.detailError)}<button
+						type="button"
+						class="underline"
+						onclick={() => authoring.retryReads()}>Retry refresh</button
+					>{/if}
+				{#if authoring.phase === 'recovery'}<button
+						type="button"
+						class="underline"
+						onclick={() => {
+							if (window.confirm('Discard the retained instruction draft?'))
+								authoring.discardRecovery();
+						}}>Discard draft</button
+					>{/if}
+			</div>
+		</div>
+	{/if}
 	<ul class="space-y-4">
 		{#each notices as notice (notice.id)}
 			<li class="text-sm">
@@ -92,13 +104,7 @@
 					</p>{/if}
 				{#if notice.status !== 'Saved'}
 					<div class="mt-2 flex gap-3 text-xs">
-						<a
-							class="underline"
-							href={`/contracts/${notice.id}`}
-							onclick={() => {
-								open = false;
-							}}>Open</a
-						>
+						<a class="underline" href={`/contracts/${notice.id}`}>Open</a>
 						{#if notice.status === 'Save failed'}<button
 								type="button"
 								class="underline"

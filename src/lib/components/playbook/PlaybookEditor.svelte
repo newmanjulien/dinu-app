@@ -4,9 +4,8 @@
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import Menu from '$lib/components/ui/Menu.svelte';
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
-	import { fieldClass } from '$lib/ui/field-styles';
 	import Button from '$lib/ui/Button.svelte';
-	import type { DeepReadonly } from '$lib/playbook/draft';
+	import type { DeepReadonly } from '../../immutable';
 	import type { Concession } from '$lib/playbook/model';
 	import { instructionsFields } from '$lib/playbook/instructions-fields';
 	import type { AuthoringController } from '$lib/playbook/authoring-controller.svelte';
@@ -21,14 +20,12 @@
 		animateContent = false,
 		onCancel,
 		onPrimary,
-		onRetry,
 		onDelete
 	}: {
 		controller: AuthoringController;
 		animateContent?: boolean;
 		onCancel: () => void;
 		onPrimary: () => void;
-		onRetry: () => void;
 		onDelete: () => void;
 	} = $props();
 	const entry = $derived(controller.entry);
@@ -39,15 +36,30 @@
 	const stagedCreation = $derived(controller.stagedCreation);
 	const phase = $derived(controller.phase);
 	const primaryAction = $derived(controller.primaryAction);
-	const actionError = $derived(primaryAction.reason);
-	const saving = $derived(phase?.kind === 'saving');
+	const actionReason = $derived(primaryAction.reason);
 	const forwardDisabled = $derived(primaryAction.disabled);
 	const menuId = $props.id();
 	let menuOpen = $state(false);
 	let menuButton = $state<HTMLButtonElement>();
 	const addButtons: Partial<Record<Concession['tier'], HTMLButtonElement>> = {};
 	const tiers = ['preferred', 'rare'] as const;
-	const textareaClass = `${fieldClass} block min-h-28 resize-y py-2 leading-[1.45]`;
+
+	function focusCreationField(fieldset: HTMLFieldSetElement) {
+		if (!creating) return;
+		const openedEntry = entry;
+		let active = true;
+		void tick().then(() => {
+			if (!active || controller.entry !== openedEntry || !controller.canEdit) return;
+			fieldset
+				.querySelector<HTMLElement>('textarea, [contenteditable="plaintext-only"]')
+				?.focus({ preventScroll: true });
+		});
+		return {
+			destroy() {
+				active = false;
+			}
+		};
+	}
 
 	async function requestConcessionDelete(concession: DeepReadonly<Concession>) {
 		if (!window.confirm(`Remove this concession from the draft?\n\n${concession.description}`))
@@ -75,8 +87,10 @@
 	{#key entry}
 		{#if !creating && draft.persistedId}
 			<div
-				class:clause-panel-content={animateContent}
-				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"
+				class={[
+					'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3',
+					animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
+				]}
 			>
 				<span class="min-w-0 text-[14px] font-medium text-ink-secondary"
 					>Edit the instructions your reps see</span
@@ -84,7 +98,7 @@
 				<div class="flex shrink-0 items-center gap-1">
 					<div>
 						<SquareIconButton
-							size="sm"
+							class="size-7"
 							type="button"
 							aria-label="Instruction box options"
 							disabled={!controller.canDelete}
@@ -100,7 +114,7 @@
 							}}
 							bind:element={menuButton}
 						>
-							<DotsThreeVerticalIcon aria-hidden="true" size={19} weight="bold" />
+							<DotsThreeVerticalIcon aria-hidden="true" class="size-[19px]" weight="bold" />
 						</SquareIconButton>
 						<Menu
 							open={menuOpen}
@@ -125,21 +139,26 @@
 			</div>
 		{:else}
 			<div
-				class:clause-panel-content={animateContent}
-				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-[14px] font-medium text-ink-secondary"
+				class={[
+					'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-[14px] font-medium text-ink-secondary',
+					animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
+				]}
 			>
 				<span class="min-w-0">{stagedCreation ? stepTitle : 'Explain this clause for reps'}</span>
 			</div>
 		{/if}
 		<fieldset
-			class:clause-panel-content={animateContent}
-			style:animation-delay={animateContent ? '24ms' : undefined}
+			use:focusCreationField
 			disabled={!controller.canEdit}
-			class="m-0 flex min-w-0 flex-col gap-2 border-0 p-0"
+			class={[
+				'm-0 flex min-w-0 flex-col gap-2 border-0 p-0',
+				animateContent &&
+					'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]'
+			]}
 		>
 			{#if !creating || !creationConcession}
 				<textarea
-					class={textareaClass}
+					class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted block min-h-28 resize-y py-2 leading-[1.45]"
 					aria-label="Summary for this clause"
 					placeholder={instructionsFields[0].placeholder}
 					bind:value={
@@ -182,7 +201,7 @@
 					{#each instructionsFields.slice(1) as field}
 						<PlaybookSection value={field.key} label={field.label} bind:open>
 							<textarea
-								class={textareaClass}
+								class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted block min-h-28 resize-y py-2 leading-[1.45]"
 								aria-label={`${field.label} for this clause`}
 								placeholder={field.placeholder}
 								bind:value={
@@ -225,18 +244,22 @@
 			{/if}
 		</fieldset>
 		<div
-			class:clause-panel-content={animateContent}
-			style:animation-delay={animateContent ? '48ms' : undefined}
-			class="flex flex-col gap-2"
+			class={[
+				'flex flex-col gap-2',
+				animateContent &&
+					'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:48ms]'
+			]}
 			aria-live="polite"
 		>
-			{#if controller.statusMessage}
-				<p class="m-0 text-sm" class:text-danger={!saving} role="status">
-					{controller.statusMessage}
+			{#if actionReason}
+				<p
+					id={`${menuId}-reason`}
+					class="m-0 text-sm"
+					class:text-danger={primaryAction.isError}
+					class:text-ink-secondary={!primaryAction.isError}
+				>
+					{actionReason}
 				</p>
-			{/if}
-			{#if actionError && controller.canEdit}
-				<p id={`${menuId}-validation`} class="m-0 text-sm text-danger">{actionError}</p>
 			{/if}
 			{#if controller.feedback}
 				<p class="m-0 text-sm text-danger" role="status">{controller.feedback}</p>
@@ -250,9 +273,7 @@
 						onclick={() => controller.cancelSecondaryLocationChoice()}>Cancel location</Button
 					>
 				{/if}
-				{#if phase?.kind === 'uncertain'}
-					<Button variant="secondary" onclick={onRetry}>Retry</Button>
-				{:else if phase?.kind === 'conflict'}
+				{#if phase?.kind === 'conflict'}
 					<Button variant="secondary" onclick={() => controller.useSaved()}
 						>Use saved version</Button
 					>
@@ -261,7 +282,7 @@
 				<Button
 					variant="secondary"
 					disabled={forwardDisabled}
-					aria-describedby={actionError && controller.canEdit ? `${menuId}-validation` : undefined}
+					aria-describedby={actionReason ? `${menuId}-reason` : undefined}
 					onclick={onPrimary}>{forwardLabel}</Button
 				>
 			</div>

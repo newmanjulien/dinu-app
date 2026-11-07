@@ -1,4 +1,5 @@
 import { SaxesParser } from 'saxes';
+import { NUMBERING_NAMESPACE } from '../../../contract/export/numbering';
 import { DOCX_MAX_XML_NODES, DOCX_MAX_XML_CHARACTERS } from '../../../contract/import/limits';
 
 export type XmlNode = {
@@ -19,6 +20,8 @@ const packageNamespaces = {
 	relationships: 'http://schemas.openxmlformats.org/package/2006/relationships',
 	types: 'http://schemas.openxmlformats.org/package/2006/content-types'
 } as const;
+// The legacy namespace remains readable; new exports use Dinu exclusively.
+const numberingNamespaces = new Set([NUMBERING_NAMESPACE, 'urn:oceans-agreed:numbering']);
 export const child = (n: XmlNode | undefined, name: string) =>
 	n?.children.find((c) => c.name === name);
 export const children = (n: XmlNode | undefined, name: string) =>
@@ -42,7 +45,7 @@ export function indexBy(nodes: XmlNode[], attribute: string): Map<string, XmlNod
 export function parseXml(
 	bytes: Uint8Array,
 	budget: { nodes: number; characters: number },
-	kind: 'word' | 'relationships' | 'types' = 'word'
+	kind: 'word' | 'relationships' | 'types' | 'contract' = 'word'
 ): XmlNode {
 	const root: XmlNode = { name: 'root', attrs: {}, children: [], text: '' };
 	const stack = [root];
@@ -77,7 +80,11 @@ export function parseXml(
 			attrs[name] = attribute.value;
 		}
 		const local =
-			kind === 'word' ? wordNamespaces.has(tag.uri) : tag.uri === packageNamespaces[kind];
+			kind === 'word'
+				? wordNamespaces.has(tag.uri)
+				: kind === 'contract'
+					? numberingNamespaces.has(tag.uri)
+					: tag.uri === packageNamespaces[kind];
 		consume(tag.local.length + (local ? 0 : tag.uri.length + 1));
 		const node: XmlNode = {
 			name: local ? tag.local : `${tag.uri}:${tag.local}`,

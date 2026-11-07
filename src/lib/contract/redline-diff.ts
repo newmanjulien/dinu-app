@@ -1,4 +1,3 @@
-import { complete } from './iteration';
 /** References compare by identity, independently of their current displayed number. */
 export interface RedlineToken {
 	key: string;
@@ -16,9 +15,6 @@ const MAX_DIFF_PARTS = 128;
 const MAX_ANCHOR_DEPTH = 16;
 const MIN_READABLE_RETENTION = 0.4;
 
-export function redlineTextTokens(text: string): RedlineToken[] {
-	return complete(iterateRedlineTextTokens(text));
-}
 export function* iterateRedlineTextTokens(text: string): Generator<undefined, RedlineToken[]> {
 	const tokens: RedlineToken[] = [];
 	for (const match of text.matchAll(
@@ -93,12 +89,6 @@ function* uniqueAnchors(
 	return result.reverse();
 }
 /** Bounded presentation alignment. null retains conventional whole-range redlining. */
-export function diffRedlineTokens(
-	a: readonly RedlineToken[],
-	b: readonly RedlineToken[]
-): readonly RedlineDiffPart[] | null {
-	return complete(iterateRedlineDiff(a, b));
-}
 export function* iterateRedlineDiff(
 	a: readonly RedlineToken[],
 	b: readonly RedlineToken[]

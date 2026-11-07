@@ -6,10 +6,7 @@ index filtered by `companyId`. Blank browsing uses
 Authorization checks the caller's current membership before either query. There
 is no prefix table, prefix writer, cleanup function, or global browsing index.
 
-The schema declares the directory search index directly; there is no staged
-conversion or source-record fallback. [Phase 10](backend-redesign/phase-10-contracts.md)
-removes the obsolete rollout machinery locally. Deployment/reset remains the
-separately approved Phase 18 operation in the [backend plan](backend-redesign/README.md).
+The schema declares the directory search index directly.
 
 ## Manual verification
 
@@ -30,7 +27,6 @@ return more than that target. Optional pagination arguments and result metadata
 are preserved.
 
 These checks require a configured deployment; the local performance suite does
-not certify search matching or live index readiness. Historical development
-measurements remain in [the performance results](phase8-performance-results.md).
+not certify search matching or live index readiness.
 
 Reference: [Convex full-text search](https://docs.convex.dev/search/text-search).

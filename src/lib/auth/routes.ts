@@ -31,6 +31,11 @@ const routes: Record<string, RouteDescription> = {
 		document: 'saved'
 	},
 	'/(workspace)/settings': { title: 'Manage your settings', availableDuringHold: true },
+	'/(workspace)/integrations/[slug]': {
+		title: 'Integration details',
+		navigation: '/',
+		description: 'Explore integrations for your contracts.'
+	},
 	'/(workspace)/team': { title: 'Manage your team' },
 	'/(entry)/login': { title: 'Sign in' },
 	'/(entry)/join': { title: 'Create your account' },
@@ -51,6 +56,10 @@ export function describeDestination(pathname: string): RouteDescription {
 		routes[`/(workspace)${suffix}`] ??
 		routes[`/(entry)${suffix}`] ??
 		routes[`/(onboarding)${suffix}`] ??
-		(/^\/contracts\/[^/]+$/.test(path) ? routes['/(workspace)/contracts/[id]'] : fallback)
+		(/^\/contracts\/[^/]+$/.test(path)
+			? routes['/(workspace)/contracts/[id]']
+			: /^\/integrations\/[^/]+$/.test(path)
+				? routes['/(workspace)/integrations/[slug]']
+				: fallback)
 	);
 }

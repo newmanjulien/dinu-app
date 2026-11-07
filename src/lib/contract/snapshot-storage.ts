@@ -1,8 +1,8 @@
-import { olderContractState, type ContractSnapshotResult, type ContractSnapshot } from './saved';
-import { CACHE_NAMESPACE } from './browser-storage';
-import { readContractMetadata, validTemplate } from './persisted-values';
-export { validSnapshot, validTemplate } from './persisted-values';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
+import type { CacheScope } from './browser-storage';
+import { validContractMetadata, validTemplate } from './persisted-values';
+import { olderContractState, type ContractSnapshotResult, type TemplateContent } from './saved';
+export { validSnapshot, validTemplate } from './persisted-values';
 
 export type ReadyContract = Extract<ContractSnapshotResult, { status: 'ready' }>;
 export const SNAPSHOT_ENTRIES = 24;
@@ -28,7 +28,7 @@ const writeContract = (write: Write) =>
 const writeBytes = (write: Write) =>
 	write.kind === 'put' ? write.entry.bytes : write.kind === 'update' ? write.bytes : 0;
 /** Disk payload must pass validation before entering shared memory. */
-type StoredSnapshot = { id: string; snapshot: ContractSnapshot };
+type StoredSnapshot = { id: string; snapshot: TemplateContent };
 type StoredMetadata = {
 	id: string;
 	contract: ReadyContract['contract'];
@@ -50,7 +50,7 @@ function readMetadata(value: unknown, id: string): StoredMetadata | undefined {
 		!Number.isFinite(metadata.usedAt)
 	)
 		return;
-	return readContractMetadata(metadata.contract, id) ? metadata : undefined;
+	return validContractMetadata(metadata.contract, id) ? metadata : undefined;
 }
 
 function result<T>(request: IDBRequest<T>): Promise<T> {
@@ -67,7 +67,7 @@ function completed(transaction: IDBTransaction) {
 }
 /** Independent disk LRU. Immutable content and frequently updated metadata have separate stores. */
 export class SnapshotStorage {
-	private namespace = CACHE_NAMESPACE;
+	constructor(private readonly scope: CacheScope) {}
 	private closed = false;
 	private database: Promise<IDBDatabase | undefined> | undefined;
 	private lifetime = new AbortController();
@@ -94,7 +94,7 @@ export class SnapshotStorage {
 			opening.signal.addEventListener('abort', failed, { once: true });
 			this.lifetime.signal.addEventListener('abort', failed, { once: true });
 			try {
-				const request = indexedDB.open(`${this.namespace}:snapshots`, 8);
+				const request = indexedDB.open(`${this.scope.namespace}:snapshots`, 11);
 				request.onupgradeneeded = () => {
 					// Retire obsolete confirmed history/metadata only. The sessionStorage
 					// intent journal has independent ownership and is never migrated here.
@@ -178,7 +178,7 @@ export class SnapshotStorage {
 		id: string,
 		companyId: string,
 		signal?: AbortSignal
-	): Promise<ContractSnapshot | undefined> {
+	): Promise<TemplateContent | undefined> {
 		try {
 			const db = await this.open();
 			if (!db || signal?.aborted) return;

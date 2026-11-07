@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
-	import { fieldClass } from '$lib/ui/field-styles';
 	import Button from '$lib/ui/Button.svelte';
 	let {
 		title,
+		nameLabel = 'Buyer company name',
 		initialName = '',
 		submitLabel = 'Save contract',
 		busyLabel = 'Saving…',
@@ -15,9 +15,11 @@
 		error = null,
 		onRetry,
 		onSubmit,
-		onClose
+		onClose,
+		onOpen
 	}: {
 		title: string;
+		nameLabel?: string;
 		initialName?: string;
 		submitLabel?: string;
 		busyLabel?: string;
@@ -29,6 +31,7 @@
 		onRetry?: () => void;
 		onSubmit: (name: string) => void;
 		onClose: () => void;
+		onOpen?: () => void;
 	} = $props();
 	const formId = $props.id();
 	let name = $state(untrack(() => initialName));
@@ -59,25 +62,28 @@
 	{open}
 	{title}
 	{onClose}
-	maxWidth={420}
+	class="max-w-[420px]"
 	dismissible={!busy}
 	showCloseButton={false}
 	closeOnBackdrop={false}
-	onOpen={focusName}
+	onOpen={() => {
+		focusName();
+		onOpen?.();
+	}}
 >
 	<form id={formId} onsubmit={submit}>
-		<label class="mb-2 block text-sm" for={`${formId}-name`}>Buyer company name</label>
+		<label class="mb-2 block text-sm" for={`${formId}-name`}>{nameLabel}</label>
 		<input
 			bind:this={input}
 			id={`${formId}-name`}
 			bind:value={name}
 			oninput={() => (validation = null)}
 			disabled={busy || lockName}
-			maxlength="200"
+			maxlength={200}
 			autocomplete="organization"
 			aria-invalid={Boolean(validation || error)}
 			aria-describedby={validation || error ? `${formId}-error` : undefined}
-			class={`${fieldClass} h-9`}
+			class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted h-9"
 		/>
 		{#if validation || error}<p
 				id={`${formId}-error`}

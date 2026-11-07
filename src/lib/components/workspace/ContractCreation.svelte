@@ -6,14 +6,14 @@
 	import { useConvexClient, useQuery } from 'convex-svelte';
 	import { ConvexError } from 'convex/values';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import { ConnectionInterruptedError } from '$lib/auth/convex-session.svelte';
+	import { ConnectionInterruptedError } from '$lib/auth/convex-connection.svelte';
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { beginCreation, creationPhase } from '$lib/contract/creation-perf';
-	import { saveError } from '$lib/contract/saved';
+	import { isHubSpotDealConflict, saveError } from '$lib/contract/saved';
 	import { ReadAttempt } from '$lib/auth/attempt';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
-	import type { ContractSnapshot } from '$lib/contract/saved';
+	import type { TemplateContent, ContractCreationInput } from '$lib/contract/saved';
 	import {
 		getDocumentResources,
 		type DocumentResource,
@@ -22,19 +22,23 @@
 	let {
 		onOpen,
 		onCreate,
+		onDealConflict = () => {},
 		showPreview = true,
 		createdId = $bindable<Id<'savedContracts'> | null>(null),
 		busy = $bindable(false),
 		error = $bindable<string | null>(null),
-		deleted = $bindable(false)
+		deleted = $bindable(false),
+		locked = $bindable(false)
 	}: {
 		onOpen: (id: Id<'savedContracts'>) => Promise<boolean>;
 		onCreate: () => void;
+		onDealConflict?: (dealId: string) => void;
 		showPreview?: boolean;
 		createdId?: Id<'savedContracts'> | null;
 		busy?: boolean;
 		error?: string | null;
 		deleted?: boolean;
+		locked?: boolean;
 	} = $props();
 	const runtime = getWorkspaceRuntime();
 	const client = useConvexClient();
@@ -43,24 +47,24 @@
 	const membershipId = viewer().membership.id;
 	const cache = getContractSnapshotCache(client);
 	const resources = getDocumentResources();
-	const published = useQuery(api.templates.current, () =>
+	const currentTemplate = useQuery(api.templates.current, () =>
 		createdId || runtime.paused ? 'skip' : { membershipId }
 	);
-	let template = $state.raw<ContractSnapshot>();
-	const preview = $derived(published.error ? undefined : template);
+	let template = $state.raw<TemplateContent>();
+	const preview = $derived(currentTemplate.error ? undefined : template);
 	const previewModule = loadComponent(
 		() => import('./ContractPreview.svelte'),
-		() => !resources && runtime.ready && !runtime.paused && Boolean(preview),
+		() => !resources && runtime.hostReady && !runtime.paused && Boolean(preview),
 		() => session.transportGeneration
 	);
 	const ContractPreview = $derived(previewModule.component);
 	let draft = $state.raw<DocumentResource>();
-	let draftSnapshot: ContractSnapshot | undefined;
+	let draftSnapshot: TemplateContent | undefined;
 	let draftVersion: Id<'templateVersions'> | undefined;
 	let host = $state<HTMLDivElement>();
 	let confirmed: ReadyContract['contract'] | undefined;
 	$effect(() => {
-		const versionId = published.data?.versionId;
+		const versionId = currentTemplate.data?.versionId;
 		const generation = session.transportGeneration;
 		if (!versionId || createdId || runtime.paused) return;
 		const attempt = new ReadAttempt(15_000);
@@ -78,7 +82,7 @@
 	});
 	$effect(() => {
 		const snapshot = preview;
-		if (!resources || !runtime.ready || runtime.paused || createdId || !snapshot) return;
+		if (!resources || !runtime.hostReady || runtime.paused || createdId || !snapshot) return;
 		untrack(() => {
 			const input = { blocks: { data: snapshot.blocks }, items: { data: snapshot.items } };
 			if (draft) draft.workspace.accept(input);
@@ -95,32 +99,55 @@
 		};
 	});
 	let creationRequest:
-		{ args: { companyName: string; operationId: string }; uncertain: boolean } | undefined;
+		| {
+				args: ContractCreationInput & { operationId: string };
+				uncertain: boolean;
+		  }
+		| undefined;
 	let active = true;
 	onDestroy(() => {
 		active = false;
 		if (draft && resources) resources.releaseDraft(draft);
 	});
-	export async function submit(companyName: string) {
-		if (!active || session.blocked || runtime.paused || !runtime.ready || busy || deleted) return;
+	export async function submit(input?: ContractCreationInput) {
+		if (!active || session.blocked || runtime.paused || !runtime.hostReady || busy || deleted)
+			return;
+		if (!createdId && !creationRequest && !input) return;
 		onCreate();
 		if (previewModule.failed) previewModule.retry();
 		const generation = session.transportGeneration;
-		beginCreation(Boolean(draft?.workspace.viewer.prepared));
+		beginCreation(Boolean(draft?.workspace.viewer.layoutPrepared));
 		busy = true;
 		error = null;
 		try {
 			if (!createdId) {
 				creationRequest ??= {
-					args: { companyName, operationId: crypto.randomUUID() },
+					args: { ...input!, operationId: crypto.randomUUID() },
 					uncertain: false
 				};
-				const result = await client.mutation(api.savedContracts.create, {
-					...creationRequest.args,
-					membershipId
-				});
+				locked = true;
+				const frozen = creationRequest.args;
+				const result =
+					frozen.kind === 'deal'
+						? await client.action(api.hubspotDeals.link, {
+								membershipId,
+								dealId: frozen.dealId,
+								operationId: frozen.operationId
+							})
+						: await client.mutation(api.contracts.create, {
+								membershipId,
+								buyerCompanyName: frozen.name,
+								operationId: frozen.operationId
+							});
 				if (!active) return;
 				if (session.transportGeneration !== generation) throw new ConnectionInterruptedError();
+				if (result.status === 'association-required') {
+					// Receipt-first transaction proved this immutable manual attempt did not commit.
+					creationRequest = undefined;
+					locked = false;
+					error = 'HubSpot is installed. Choose a deal to create your contract.';
+					return;
+				}
 				if (result.status === 'deleted') {
 					deleted = true;
 					throw new Error('deleted');
@@ -160,10 +187,16 @@
 		} catch (cause) {
 			if (!active) return;
 			if (!createdId && creationRequest) {
-				// A rejected first attempt rolled back. A later rejection cannot resolve
-				// an earlier uncertain attempt, so keep its original identity and arguments.
-				if (cause instanceof ConvexError && !creationRequest.uncertain) creationRequest = undefined;
-				else creationRequest.uncertain = true;
+				if (creationRequest.args.kind === 'deal' && isHubSpotDealConflict(cause)) {
+					const dealId = creationRequest.args.dealId;
+					creationRequest = undefined;
+					locked = false;
+					onDealConflict(dealId);
+				} else if (cause instanceof ConvexError && !creationRequest.uncertain) {
+					// A later generic rejection cannot resolve an earlier uncertain attempt.
+					creationRequest = undefined;
+					locked = false;
+				} else creationRequest.uncertain = true;
 			}
 			creationPhase('failed');
 			if (createdId && cache.isDeleted(createdId)) deleted = true;

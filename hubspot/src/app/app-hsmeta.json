@@ -1,0 +1,31 @@
+{
+  "uid": "dinu_contracts_app",
+  "type": "app",
+  "config": {
+    "description": "Link Dinu contracts to HubSpot deals and record contract activity as CRM Notes, with private DOCX download attachments.",
+    "name": "Dinu Contracts",
+    "distribution": "private",
+    "auth": {
+      "type": "oauth",
+      "redirectUrls": [
+        "http://localhost:5173/api/hubspot/callback"
+      ],
+      "requiredScopes": [
+        "oauth",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write",
+        "files.read",
+        "files.write"
+      ],
+      "optionalScopes": [],
+      "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": [
+        "https://api.hubapi.com"
+      ],
+      "iframe": [],
+      "img": []
+    }
+  }
+}

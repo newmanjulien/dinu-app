@@ -3,10 +3,12 @@ import { getContext, setContext, type Snippet } from 'svelte';
 const key = Symbol('header-content');
 export class HeaderContent {
 	content = $state.raw<Snippet>();
-	register(content: Snippet) {
-		this.content = content;
+	notice = $state.raw<Snippet>();
+	register(content: Snippet, placement: 'overlay' | 'notice' = 'overlay') {
+		const target = placement === 'notice' ? 'notice' : 'content';
+		this[target] = content;
 		return () => {
-			if (this.content === content) this.content = undefined;
+			if (this[target] === content) this[target] = undefined;
 		};
 	}
 }

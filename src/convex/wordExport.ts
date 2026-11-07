@@ -1,51 +1,20 @@
 'use node';
 
 import { v } from 'convex/values';
-import { action } from './_generated/server';
 import { internal } from './_generated/api';
+import { action } from './_generated/server';
 import { exportRequest } from './savedContractValidators';
-import { composeExport, contractName } from '../lib/contract/export/content';
-import { generateWord } from '../lib/server/contract/export/word';
-import { toDocumentOverlay } from '../lib/playbook/document-overlay';
 
-/** Generate only on request. Temporary files are retired even if the browser leaves. */
+/** Every new download has a stable attempt, including companies without HubSpot. */
 export const generate = action({
-	args: exportRequest.fields,
-	returns: v.object({ url: v.string(), filename: v.string() }),
-	handler: async (ctx, args): Promise<{ url: string; filename: string }> => {
-		const { contract, blocks, items, requiredReviews } = await ctx.runQuery(
-			internal.contractExports.source,
-			args
-		);
-		const blob = await generateWord(
-			composeExport({
-				blocks,
-				items: items.map(toDocumentOverlay),
-				activeConcessions: contract.selectedConcessions
-			}),
-			contract.companyName
-		);
-		const fileId = await ctx.storage.store(blob);
-		try {
-			const url = await ctx.runMutation(internal.contractExports.finalize, {
-				...args,
-				templateVersionId: contract.templateVersionId,
-				requiredReviews,
-				fileId
-			});
-			const timestamp = new Date()
-				.toISOString()
-				.slice(0, 19)
-				.replace('T', ' ')
-				.replaceAll(':', '-');
-			return { url, filename: `${contractName(contract.companyName)} - ${timestamp}.docx` };
-		} catch (error) {
-			try {
-				await ctx.runMutation(internal.storageOwnership.discardFile, { fileId });
-			} catch (cleanupError) {
-				console.error('Unable to delete failed contract export.', cleanupError);
-			}
-			throw error;
-		}
-	}
+	args: exportRequest.extend({ operationId: v.string() }).fields,
+	returns: v.object({ url: v.string(), filename: v.string(), attemptId: v.id('hubspotExports') }),
+	handler: (
+		ctx,
+		args
+	): Promise<{
+		url: string;
+		filename: string;
+		attemptId: import('./_generated/dataModel').Id<'hubspotExports'>;
+	}> => ctx.runAction(internal.hubspotExportActions.generate, args)
 });

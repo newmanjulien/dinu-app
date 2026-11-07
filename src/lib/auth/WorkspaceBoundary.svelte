@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { useAccount, useViewerSession, type Viewer } from './viewer-session.svelte';
@@ -50,6 +51,7 @@
 </script>
 
 {#snippet pending()}
+	<WorkspacePresentationReporter outcome={error ? 'error' : 'pending'} revision={retry} />
 	{#if member && !error}
 		<WorkspaceSkeleton label="Opening your workspace" />
 	{:else}

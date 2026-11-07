@@ -1,28 +1,28 @@
 // @vitest-environment edge-runtime
 /// <reference types="vite/client" />
-import type { FunctionReturnType } from 'convex/server';
 import { convexTest } from 'convex-test';
+import type { FunctionReturnType } from 'convex/server';
 import { expect, it, vi } from 'vitest';
+import { api } from '../../src/convex/_generated/api';
+import { baselineIntegrity, writeBaselineChunks } from '../../src/convex/baselineStorage';
+import schema from '../../src/convex/schema';
 import { AccountNavigation } from '../../src/lib/auth/account-navigation';
 import { AccountPreparation } from '../../src/lib/auth/account-preparation';
-import { api } from '../../src/convex/_generated/api';
-import schema from '../../src/convex/schema';
-import { baselineIntegrity, writeBaselineChunks } from '../../src/convex/baselineStorage';
 import { DOCX_PARSER_VERSION } from '../../src/lib/contract/import/limits';
 import { block, identity, initializeViewer } from './fixtures';
 const modules = import.meta.glob('../../src/convex/**/*.*s');
 function liveAccount(client: {
 	query: (
-		query: typeof api.profiles.viewer,
+		query: typeof api.accounts.viewer,
 		args: {}
-	) => Promise<FunctionReturnType<typeof api.profiles.viewer>>;
+	) => Promise<FunctionReturnType<typeof api.accounts.viewer>>;
 	mutation: (mutation: typeof api.profiles.initialize, args: {}) => Promise<null>;
 }) {
 	const preparation = new AccountPreparation();
 	return async () => {
-		const viewer = await client.query(api.profiles.viewer, {});
+		const viewer = await client.query(api.accounts.viewer, {});
 		await preparation.initialize(viewer, 1, () => client.mutation(api.profiles.initialize, {}));
-		return client.query(api.profiles.viewer, {});
+		return client.query(api.accounts.viewer, {});
 	};
 }
 

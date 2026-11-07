@@ -105,7 +105,7 @@
 			disabled={pending || session.blocked}
 			onclick={() => showStep('choose')}
 		>
-			<ArrowLeftIcon size={14} aria-hidden="true" /> Back
+			<ArrowLeftIcon class="size-3.5" aria-hidden="true" /> Back
 		</button>
 	</div>
 {/if}

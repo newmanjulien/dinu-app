@@ -1,27 +1,33 @@
 import { ConvexError, v, type Infer } from 'convex/values';
+import { concessionSelections } from '../lib/contract/applications';
+import { savedReviews } from '../lib/contract/approval';
+import { baselineBlock } from '../lib/contract/source-validators';
+import { internal } from './_generated/api';
 import { internalMutation, internalQuery, type QueryCtx } from './_generated/server';
-import { requireMembership, accessibleContract } from './auth';
-import { exportRequest } from './savedContractValidators';
-import { baselineBlock } from './sourceValidators';
+import { accessibleContract, requireMembership } from './auth';
 import { historicalItem } from './playbookValidators';
+import { exportRequest } from './savedContractValidators';
 import schema from './schema';
 import { snapshotReader } from './templates';
-import { savedReviews } from '../lib/contract/approval';
-import { internal } from './_generated/api';
+import { installation, requireContractWork } from './contractPolicy';
 
 const requiredReview = v.object({
 	itemId: v.id('playbookItems'),
 	concessionId: v.string(),
-	lifecycle: v.string()
+	applicationId: v.string()
 });
 
 async function currentContract(ctx: QueryCtx, args: Infer<typeof exportRequest>) {
 	const access = await requireMembership(ctx, args.membershipId);
-	if (!Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 0)
+	if (!Number.isSafeInteger(args.expectedEditRevision) || args.expectedEditRevision < 0)
 		throw new ConvexError('Invalid contract revision.');
 	const contract = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
 	if (!contract) throw new ConvexError('This contract was deleted.');
-	if (contract.revision !== args.expectedRevision)
+	await requireContractWork(ctx, contract);
+	// Old in-flight exports have no captured CRM destination. Never backfill one.
+	if (await installation(ctx, contract.companyId))
+		throw new ConvexError('Reload before downloading this contract.');
+	if (contract.editRevision !== args.expectedEditRevision)
 		throw new ConvexError(
 			'This contract changed. Wait for the latest saved version before downloading.'
 		);
@@ -29,7 +35,7 @@ async function currentContract(ctx: QueryCtx, args: Infer<typeof exportRequest>)
 }
 
 /** Capture authorization, saved choices, approvals and immutable content in one read. */
-export const source = internalQuery({
+export const capture = internalQuery({
 	args: exportRequest.fields,
 	returns: v.object({
 		contract: schema.doc('savedContracts'),
@@ -43,7 +49,7 @@ export const source = internalQuery({
 		const [blocks, items] = await Promise.all([
 			reader.blocks(),
 			reader.selectedItems(
-				contract.selectedConcessions,
+				concessionSelections(contract.applications),
 				'This contract contains an unavailable concession.'
 			)
 		]);
@@ -54,17 +60,17 @@ export const source = internalQuery({
 			contract,
 			blocks,
 			items,
-			requiredReviews: reviews.map(({ itemId, concessionId, lifecycle }) => ({
+			requiredReviews: reviews.map(({ itemId, concessionId, applicationId }) => ({
 				itemId,
 				concessionId,
-				lifecycle
+				applicationId
 			}))
 		};
 	}
 });
 
 /** Authorize delivery and retire the file in the same transaction. Content was validated at capture. */
-export const finalize = internalMutation({
+export const authorizeDownload = internalMutation({
 	args: exportRequest.extend({
 		templateVersionId: v.id('templateVersions'),
 		requiredReviews: v.array(requiredReview),
@@ -81,12 +87,12 @@ export const finalize = internalMutation({
 		)
 			throw new ConvexError('This template version is unavailable.');
 		if (
-			args.requiredReviews.some(({ itemId, concessionId, lifecycle }) => {
-				const review = contract.reviews[itemId];
+			args.requiredReviews.some(({ itemId, concessionId, applicationId }) => {
+				const review = contract.applications[itemId]?.approval;
 				return (
-					contract.selectedConcessions[itemId] !== concessionId ||
-					review?.concessionId !== concessionId ||
-					review.lifecycle !== lifecycle ||
+					contract.applications[itemId]?.concessionId !== concessionId ||
+					!review ||
+					review.applicationId !== applicationId ||
 					review.status !== 'approved'
 				);
 			})
@@ -100,3 +106,5 @@ export const finalize = internalMutation({
 		return url;
 	}
 });
+
+export { finalize, source } from './legacyExports';

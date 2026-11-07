@@ -31,7 +31,7 @@
 	});
 </script>
 
-{#if browser && identity && session.prepared === identity && !session.closing && AuthenticatedAccount}
+{#if browser && identity && session.preparedSessionId === identity && !session.closing && AuthenticatedAccount}
 	{#key identity}
 		<AuthenticatedAccount>{@render children()}</AuthenticatedAccount>
 	{/key}

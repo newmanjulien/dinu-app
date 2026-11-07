@@ -1,29 +1,34 @@
 import { browser } from '$app/environment';
 import { preloadCode } from '$app/navigation';
-import { recordColdStart } from '$lib/document/runtime/render-perf';
-import type { Id } from '../../convex/_generated/dataModel';
-import { api } from '../../convex/_generated/api';
-import {
-	SnapshotStorage,
-	validSnapshot,
-	validTemplate,
-	SNAPSHOT_ENTRIES,
-	SNAPSHOT_BYTES
-} from './snapshot-storage';
-import type { SnapshotEntry, SnapshotMetadata } from './snapshot-storage';
-import { forgetOpening, CACHE_MEMBERSHIP_ID, setCacheIdentity } from './browser-storage';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
+import { recordColdStart } from '$lib/document/runtime/render-perf';
+import { api } from '../../convex/_generated/api';
+import type { Id } from '../../convex/_generated/dataModel';
+import {
+	clearConfirmedCache,
+	createCacheScope,
+	RecentOpenings,
+	type CacheScope
+} from './browser-storage';
 import {
 	olderContractState,
 	type ContractSnapshotResult,
 	type ContractState,
-	type ContractSnapshot,
-	type ReadyContract
+	type ReadyContract,
+	type TemplateContent
 } from './saved';
+import type { SnapshotEntry, SnapshotMetadata } from './snapshot-storage';
+import {
+	SNAPSHOT_BYTES,
+	SNAPSHOT_ENTRIES,
+	SnapshotStorage,
+	validSnapshot,
+	validTemplate
+} from './snapshot-storage';
 
-import { queryOnce, type SnapshotClient } from './query-once';
-export type { SnapshotClient } from './query-once';
-type VersionFlight = { result: Promise<ContractSnapshot>; attempt: ReadAttempt; consumers: number };
+import { queryOnce, type SnapshotClient } from '$lib/query-once';
+export type { SnapshotClient } from '$lib/query-once';
+type VersionFlight = { result: Promise<TemplateContent>; attempt: ReadAttempt; consumers: number };
 
 type Entry = SnapshotEntry & { contractJson: string };
 type Flight = {
@@ -37,8 +42,10 @@ const BACKGROUND_CONCURRENCY = 2;
 
 /** Browser-only, membership-scoped snapshots. Mutable state is refreshed on every open. */
 class ContractSnapshotCache {
-	private readonly membershipId = CACHE_MEMBERSHIP_ID;
-	private disk = new SnapshotStorage();
+	private disk: SnapshotStorage;
+	private get membershipId() {
+		return this.scope.membershipId;
+	}
 	private client: SnapshotClient | undefined;
 	private versionFlights = new Map<string, VersionFlight>();
 	private deleted = new Set<string>();
@@ -50,14 +57,18 @@ class ContractSnapshotCache {
 	private flights = new Map<string, Flight>();
 	private queued = new Set<string>();
 	private bytes = 0;
-	private ready = false;
+	private backgroundAllowed = false;
 	private lifetime = new AbortController();
 	private code: Promise<void> | undefined;
 	private listeners = new Set<(data: ReadyContract) => void>();
 	private evictions = new Set<(id: string) => void>();
 	private failures = new Set<(id: string) => void>();
 	private visibility = () => this.pump();
-	constructor() {
+	constructor(
+		private readonly scope: CacheScope,
+		private readonly openings: RecentOpenings
+	) {
+		this.disk = new SnapshotStorage(scope);
 		document.addEventListener('visibilitychange', this.visibility);
 	}
 	subscribe(
@@ -97,11 +108,11 @@ class ContractSnapshotCache {
 	}
 
 	allowBackground() {
-		this.ready = true;
+		this.backgroundAllowed = true;
 		this.pump();
 	}
 	pauseBackground() {
-		this.ready = false;
+		this.backgroundAllowed = false;
 		for (const [id, flight] of this.flights) if (flight.background) this.cancelFlight(id, false);
 	}
 
@@ -123,7 +134,7 @@ class ContractSnapshotCache {
 		this.deleted.add(id);
 		this.evict(id);
 		this.disk.delete(id);
-		forgetOpening(id);
+		this.openings.forget(id);
 		for (const listener of this.evictions) listener(id);
 	}
 	isDeleted(id: string) {
@@ -179,7 +190,7 @@ class ContractSnapshotCache {
 		versionId: Id<'templateVersions'>,
 		companyId: Id<'company'>,
 		signal?: AbortSignal
-	): Promise<ContractSnapshot> {
+	): Promise<TemplateContent> {
 		signal?.throwIfAborted();
 		this.lifetime.signal.throwIfAborted();
 		const cached = this.versions.get(versionId);
@@ -194,7 +205,7 @@ class ContractSnapshotCache {
 			const readSignal = attempt.signal;
 			const work = Promise.resolve().then(async () => {
 				const diskAttempt = new ReadAttempt(250, readSignal);
-				let persisted: ContractSnapshot | undefined;
+				let persisted: TemplateContent | undefined;
 				try {
 					const diskSignal = diskAttempt.signal;
 					persisted = await waitForRead(
@@ -212,7 +223,7 @@ class ContractSnapshotCache {
 					persisted ??
 					(await queryOnce(
 						this.client,
-						api.templates.version,
+						api.templates.content,
 						{
 							membershipId: this.membershipId,
 							versionId
@@ -364,7 +375,7 @@ class ContractSnapshotCache {
 				(this.client
 					? await queryOnce(
 							this.client,
-							api.savedContracts.state,
+							api.contracts.state,
 							{ id, membershipId: this.membershipId },
 							signal
 						)
@@ -413,7 +424,7 @@ class ContractSnapshotCache {
 	}
 
 	private pump() {
-		if (this.lifetime.signal.aborted || !this.ready || document.hidden) return;
+		if (this.lifetime.signal.aborted || !this.backgroundAllowed || document.hidden) return;
 		while (
 			[...this.flights.values()].filter((flight) => flight.background).length <
 				BACKGROUND_CONCURRENCY &&
@@ -468,28 +479,48 @@ class ContractSnapshotCache {
 	}
 }
 
-let cache: ContractSnapshotCache | undefined;
+/** Account-owned resources survive route changes and always share one immutable scope. */
+function scopedResources(scope: CacheScope) {
+	return {
+		scope,
+		openings: new RecentOpenings(scope),
+		cache: undefined as ContractSnapshotCache | undefined
+	};
+}
+let resources = scopedResources(createCacheScope(null));
+
+export function replaceContractCacheScope(scope: CacheScope) {
+	if (resources.scope.namespace === scope.namespace) return;
+	releaseContractSnapshotCache();
+	resources.openings.close();
+	clearConfirmedCache(resources.scope);
+	resources = scopedResources(scope);
+}
 export function getContractSnapshotCache(client?: SnapshotClient) {
 	if (!browser) throw new Error('Contract snapshot cache is browser-only.');
-	cache ??= new ContractSnapshotCache();
+	const cache = (resources.cache ??= new ContractSnapshotCache(
+		resources.scope,
+		resources.openings
+	));
 	if (client) cache.connect(client);
 	return cache;
 }
-
+export const getContractOpenings = () => resources.openings;
 export function cancelPendingContractSnapshots() {
-	cache?.cancelPending();
+	resources.cache?.cancelPending();
 }
-
 export function releaseContractSnapshotCache() {
-	cache?.destroy();
-	cache = undefined;
+	resources.cache?.destroy();
+	resources.cache = undefined;
 }
-
-/** Registered once with the root session; it survives entry/workspace navigation. */
+/** Registered once with the account lifecycle; it survives entry/workspace navigation. */
 export const contractCacheResources = {
 	cancelReads: cancelPendingContractSnapshots,
 	clear: () => {
 		releaseContractSnapshotCache();
-		setCacheIdentity(null);
+		resources.openings.close();
+		clearConfirmedCache(resources.scope);
+		const scope = createCacheScope(null);
+		resources = scopedResources(scope);
 	}
 };

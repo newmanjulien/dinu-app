@@ -1,3 +1,30 @@
+export interface CapturedNativeSelection {
+	readonly range: Range;
+	readonly anchor: { node: Node; offset: number };
+	readonly focus: { node: Node; offset: number };
+	readonly backward: boolean;
+	readonly session: object;
+	readonly context: object;
+}
+export function captureNativeSelection(
+	range: Range,
+	anchor: { node: Node; offset: number },
+	focus: { node: Node; offset: number },
+	session: object,
+	context: object
+): CapturedNativeSelection {
+	const direction = range.cloneRange();
+	direction.setStart(anchor.node, anchor.offset);
+	direction.setEnd(focus.node, focus.offset);
+	return {
+		range: range.cloneRange(),
+		anchor,
+		focus,
+		backward: direction.collapsed && (anchor.node !== focus.node || anchor.offset !== focus.offset),
+		session,
+		context
+	};
+}
 const NAVIGATION_KEYS = new Set([
 	'ArrowLeft',
 	'ArrowRight',
@@ -8,116 +35,101 @@ const NAVIGATION_KEYS = new Set([
 	'PageUp',
 	'PageDown'
 ]);
-
-type Phase = 'idle' | 'native-selecting' | 'boundary-selecting' | 'completing';
-
-export interface SelectionBoundaryGesture {
-	start: () => void;
+export interface SelectionMouseGesture {
+	start: (event: MouseEvent) => void;
 	move: (event: PointerEvent) => void;
 	finish: (event: PointerEvent | undefined, cancelled: boolean) => void;
 }
-
-function isDocumentControl(target: EventTarget | null) {
+export function isDocumentControl(target: EventTarget | null) {
 	return (
 		target instanceof Element &&
-		Boolean(target.closest('[data-document-control], button, a, input, textarea, select'))
+		Boolean(
+			target.closest(
+				'[data-document-control], [data-document-chrome], [popover], button, a, input, textarea, select'
+			)
+		)
 	);
 }
-
-function isKeyboardSelectionEvent(event: KeyboardEvent) {
+export function isKeyboardSelectionEvent(event: KeyboardEvent) {
 	return (
 		(event.shiftKey && NAVIGATION_KEYS.has(event.key)) ||
 		((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a')
 	);
 }
 
-/**
- * Owns one native-selection gesture at a time. It captures and maps the browser range exactly
- * once after pointer/key input completes, so programmatic selections, stale candidates, and
- * arbitrary timers cannot become authoring input.
- */
+/** Exclusive input sessions. Mouse claiming waits for the real compatibility mousedown. */
 export function createSelectionInteraction({
+	context,
 	onNativeStart,
 	onNativeComplete,
 	onCancel,
-	onBoundaryStart
+	onMouseStart,
+	onNavigation
 }: {
-	onNativeStart: () => void;
-	onNativeComplete: (range: Range | null) => void;
+	context: object;
+	onNativeStart: (event?: KeyboardEvent) => void;
+	onNativeComplete: (selection: CapturedNativeSelection | null) => void;
 	onCancel: () => void;
-	onBoundaryStart: (event: PointerEvent) => SelectionBoundaryGesture | null;
+	onMouseStart?: (event: PointerEvent) => SelectionMouseGesture | null;
+	onNavigation?: (event: KeyboardEvent) => void;
 }) {
 	let container: HTMLElement | undefined;
-	let phase: Phase = 'idle';
-	let pointerId: number | undefined;
-	let frame: number | undefined;
-	let generation = 0;
-	let boundary: SelectionBoundaryGesture | undefined;
+	let phase: 'idle' | 'pending' | 'native' | 'mouse' | 'completing' = 'idle';
+	let pointerId: number | undefined,
+		frame: number | undefined,
+		generation = 0;
+	let mouse: SelectionMouseGesture | undefined;
+	let pending: PointerEvent | undefined;
+	let nativeSession: object = {};
 	let listeners: AbortController | undefined;
-	let boundaryListeners: AbortController | undefined;
-
-	function contains(target: EventTarget | null) {
-		return target instanceof Node && Boolean(container?.contains(target));
-	}
-
-	function currentRange(): Range | null {
+	const contains = (target: EventTarget | null) =>
+		target instanceof Node && Boolean(container?.contains(target));
+	function currentRange() {
 		const selection = window.getSelection();
-		if (
-			!selection ||
-			selection.isCollapsed ||
-			selection.rangeCount !== 1 ||
-			!contains(selection.anchorNode) ||
-			!contains(selection.focusNode)
-		)
-			return null;
-		return selection.getRangeAt(0).cloneRange();
+		return selection &&
+			!selection.isCollapsed &&
+			selection.rangeCount === 1 &&
+			contains(selection.anchorNode) &&
+			contains(selection.focusNode)
+			? captureNativeSelection(
+					selection.getRangeAt(0),
+					{ node: selection.anchorNode!, offset: selection.anchorOffset },
+					{ node: selection.focusNode!, offset: selection.focusOffset },
+					nativeSession,
+					context
+				)
+			: null;
 	}
-
-	function clearBoundaryListeners() {
-		boundaryListeners?.abort();
-		boundaryListeners = undefined;
-	}
-
-	function clearCompletion() {
-		if (frame !== undefined) cancelAnimationFrame(frame);
-		frame = undefined;
-	}
-
-	function releasePointer() {
-		if (pointerId === undefined || !container?.hasPointerCapture?.(pointerId)) return;
-		container.releasePointerCapture(pointerId);
-	}
-
 	function reset() {
 		generation++;
-		clearCompletion();
-		clearBoundaryListeners();
-		releasePointer();
-		pointerId = undefined;
-		boundary = undefined;
+		if (frame !== undefined) cancelAnimationFrame(frame);
+		frame = undefined;
+		const released = pointerId;
+		// Mark completion before releasePointerCapture can synchronously deliver lostcapture.
 		phase = 'idle';
+		pointerId = undefined;
+		pending = undefined;
+		mouse = undefined;
+		if (released !== undefined && container?.hasPointerCapture?.(released))
+			container.releasePointerCapture(released);
 	}
-
 	function cancel() {
-		const activeBoundary = phase === 'boundary-selecting' ? boundary : undefined;
-		const active = phase !== 'idle';
+		const active = phase !== 'idle',
+			gesture = phase === 'mouse' ? mouse : undefined;
 		reset();
-		activeBoundary?.finish(undefined, true);
+		gesture?.finish(undefined, true);
 		if (active) onCancel();
 	}
-
-	function beginNative(event?: PointerEvent) {
-		if (phase !== 'idle') cancel();
-		else reset();
-		phase = 'native-selecting';
-		pointerId = event?.pointerId;
-		onNativeStart();
+	function beginNative(event?: KeyboardEvent) {
+		phase = 'native';
+		nativeSession = {};
+		pending = undefined;
+		mouse = undefined;
+		onNativeStart(event);
 	}
-
-	function completeNativeSelection() {
-		if (phase !== 'native-selecting' && phase !== 'completing') return;
+	function completeNative() {
 		phase = 'completing';
-		clearCompletion();
+		if (frame !== undefined) cancelAnimationFrame(frame);
 		const token = generation;
 		frame = requestAnimationFrame(() => {
 			frame = undefined;
@@ -127,119 +139,130 @@ export function createSelectionInteraction({
 			onNativeComplete(range);
 		});
 	}
-
-	function finishBoundary(event: PointerEvent | undefined, cancelled: boolean) {
-		if (phase !== 'boundary-selecting' || !boundary) return;
-		const activeBoundary = boundary;
-		reset();
-		activeBoundary.finish(event, cancelled);
-		if (cancelled) onCancel();
-	}
-
 	function pointerDown(event: PointerEvent) {
 		if (
-			event.defaultPrevented ||
 			!event.isPrimary ||
 			event.button !== 0 ||
 			!contains(event.target) ||
 			isDocumentControl(event.target)
 		)
 			return;
-		const nextBoundary = onBoundaryStart(event);
-		if (nextBoundary) {
-			event.preventDefault();
-			if (phase !== 'idle') cancel();
-			else reset();
-			phase = 'boundary-selecting';
-			pointerId = event.pointerId;
-			boundary = nextBoundary;
-			onNativeStart();
-			nextBoundary.start();
-			container?.setPointerCapture?.(event.pointerId);
-			const controller = new AbortController();
-			boundaryListeners = controller;
-			const options = { signal: controller.signal };
-			document.addEventListener('scroll', () => finishBoundary(undefined, true), {
-				...options,
-				capture: true,
-				passive: true
-			});
-			window.addEventListener('resize', () => finishBoundary(undefined, true), {
-				...options,
-				passive: true
-			});
+		if (event.defaultPrevented) {
+			if (phase === 'idle') onCancel();
+			else cancel();
 			return;
 		}
-		beginNative(event);
+		if (phase !== 'idle') cancel();
+		pointerId = event.pointerId;
+		const candidate =
+			event.pointerType === 'mouse' && !event.ctrlKey && !event.metaKey && !event.altKey
+				? onMouseStart?.(event)
+				: null;
+		if (candidate) {
+			pending = event;
+			mouse = candidate;
+			phase = 'pending';
+		} else beginNative();
 	}
-
+	function mouseDown(event: MouseEvent) {
+		if (phase !== 'pending' || !pending) return;
+		// PointerEvent.detail is always zero. Canceling pointerdown would suppress this event.
+		if (event.detail > 1 && event.target === pending.target && !event.defaultPrevented) {
+			beginNative();
+			return;
+		}
+		if (
+			event.detail !== 1 ||
+			!event.cancelable ||
+			event.defaultPrevented ||
+			event.button !== 0 ||
+			event.target !== pending.target
+		) {
+			cancel();
+			return;
+		}
+		event.preventDefault();
+		phase = 'mouse';
+		pending = undefined;
+		mouse!.start(event);
+		if (phase === 'mouse' && pointerId !== undefined) {
+			try {
+				container?.setPointerCapture?.(pointerId);
+			} catch {
+				cancel();
+			}
+		}
+	}
 	function pointerUp(event: PointerEvent) {
 		if (pointerId !== event.pointerId) return;
-		if (phase === 'boundary-selecting') {
-			finishBoundary(event, false);
+		if (phase === 'mouse') {
+			const gesture = mouse;
+			reset();
+			gesture?.finish(event, false);
 			return;
 		}
+		if (phase === 'pending') {
+			cancel();
+			return;
+		}
+		if (phase !== 'native') return;
 		pointerId = undefined;
-		completeNativeSelection();
+		completeNative();
 	}
-
 	function pointerMove(event: PointerEvent) {
-		if (phase === 'boundary-selecting' && pointerId === event.pointerId) boundary?.move(event);
+		if (phase === 'mouse' && pointerId === event.pointerId) mouse?.move(event);
 	}
-
 	function pointerCancel(event: PointerEvent) {
-		if (pointerId !== event.pointerId) return;
-		if (phase === 'boundary-selecting') finishBoundary(event, true);
-		else cancel();
+		if (pointerId === event.pointerId) cancel();
 	}
-
 	function keyDown(event: KeyboardEvent) {
 		if (
 			event.defaultPrevented ||
-			document.querySelector('dialog:modal') ||
-			pointerId !== undefined ||
-			!isKeyboardSelectionEvent(event) ||
 			!contains(event.target) ||
-			isDocumentControl(event.target)
+			isDocumentControl(event.target) ||
+			document.querySelector('dialog:modal')
 		)
 			return;
-		if (phase !== 'native-selecting') beginNative();
+		if (event.key === 'Escape') {
+			cancel();
+			onNavigation?.(event);
+			return;
+		}
+		if (pointerId !== undefined) return;
+		if (isKeyboardSelectionEvent(event)) {
+			if (phase !== 'native') {
+				reset();
+				beginNative(event);
+			}
+		} else if (NAVIGATION_KEYS.has(event.key)) onNavigation?.(event);
 	}
-
 	function keyUp(event: KeyboardEvent) {
-		if (phase !== 'native-selecting' || pointerId !== undefined) return;
-		if (event.key === 'Shift' || !event.shiftKey) completeNativeSelection();
+		if (phase === 'native' && pointerId === undefined && (event.key === 'Shift' || !event.shiftKey))
+			completeNative();
 	}
-
-	function externalPointerDown(event: PointerEvent) {
+	function external(event: Event) {
 		if (phase !== 'idle' && !contains(event.target)) cancel();
 	}
-
-	function externalFocus(event: FocusEvent) {
-		if (phase !== 'idle' && !contains(event.target)) cancel();
-	}
-
 	function setContainer(next: HTMLElement | undefined) {
 		if (container === next) return;
-		if (phase !== 'idle') cancel();
+		cancel();
 		listeners?.abort();
-		listeners = undefined;
 		container = next;
 		if (!container) return;
-		const controller = new AbortController();
-		listeners = controller;
-		const options = { signal: controller.signal };
+		listeners = new AbortController();
+		const options = { signal: listeners.signal };
 		container.addEventListener('pointerdown', pointerDown, { ...options, capture: true });
-		window.addEventListener('pointermove', pointerMove, { ...options, passive: true });
-		window.addEventListener('pointerup', pointerUp, { ...options, passive: true });
-		window.addEventListener('pointercancel', pointerCancel, { ...options, passive: true });
+		container.addEventListener('mousedown', mouseDown, { ...options, capture: true });
+		container.addEventListener('lostpointercapture', pointerCancel, options);
+		window.addEventListener('pointermove', pointerMove, options);
+		window.addEventListener('pointerup', pointerUp, options);
+		window.addEventListener('pointercancel', pointerCancel, options);
 		window.addEventListener('blur', cancel, options);
-		document.addEventListener('pointerdown', externalPointerDown, { ...options, capture: true });
-		document.addEventListener('focusin', externalFocus, { ...options, capture: true });
-		document.addEventListener('keydown', keyDown, options);
+		document.addEventListener('pointerdown', external, { ...options, capture: true });
+		document.addEventListener('focusin', external, { ...options, capture: true });
+		document.addEventListener('keydown', keyDown, { ...options, capture: true });
 		document.addEventListener('keyup', keyUp, options);
 	}
-
 	return {
 		setContainer,
 		get selecting() {
@@ -248,9 +271,8 @@ export function createSelectionInteraction({
 		reset,
 		cancel,
 		destroy() {
-			if (phase !== 'idle') cancel();
+			cancel();
 			listeners?.abort();
-			listeners = undefined;
 			container = undefined;
 		}
 	};

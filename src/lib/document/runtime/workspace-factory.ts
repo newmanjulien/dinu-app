@@ -8,7 +8,12 @@ import type { ContractWorkspace } from './workspace-context';
 function querySnapshot(input: ContractSourceInput): ContractSourceInput {
 	return {
 		blocks: { data: input.blocks.data, error: input.blocks.error },
-		items: { data: input.items.data, error: input.items.error }
+		items: { data: input.items.data, error: input.items.error },
+		structure: input.structure
+			? { data: input.structure.data, error: input.structure.error }
+			: undefined,
+		details: input.details,
+		pendingRenderKey: input.pendingRenderKey
 	};
 }
 
@@ -28,7 +33,11 @@ export function createContractWorkspace(initial: ContractSourceInput): ContractW
 				prior.blocks.data !== current.blocks.data ||
 				prior.blocks.error !== current.blocks.error ||
 				prior.items.data !== current.items.data ||
-				prior.items.error !== current.items.error
+				prior.items.error !== current.items.error ||
+				prior.structure?.data !== current.structure?.data ||
+				prior.structure?.error !== current.structure?.error ||
+				prior.details !== current.details ||
+				prior.pendingRenderKey !== current.pendingRenderKey
 			) {
 				source.accept(current);
 				accepted = current;

@@ -1,16 +1,18 @@
 import { ConvexError, v } from 'convex/values';
-import { revokeInvitation } from './companyInvitations';
-import { internalMutation, mutation, type MutationCtx } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
-import { deleteUnownedFile } from './storageOwnership';
+import { internalMutation, mutation, type MutationCtx } from './_generated/server';
 import {
-	requireAccount,
-	requireMembership,
-	membershipForProfile,
-	requirePermission,
 	liveProfile,
-	requireCompany
+	membershipForProfile,
+	requireAccount,
+	requireCompany,
+	requireMembership,
+	requirePermission
 } from './auth';
+import { revokeInvitation } from './companyInvitations';
+import { emailAddress } from './emailValidators';
+import { normalizedName } from './names';
+import { deleteUnownedFile } from './storageOwnership';
 export const create = mutation({
 	args: { name: v.string() },
 	returns: v.id('company'),
@@ -129,6 +131,30 @@ export const recoverOwner = internalMutation({
 			cleanupJobId: undefined,
 			recoveryCompanyId: undefined
 		});
+		return null;
+	}
+});
+
+export const setName = mutation({
+	args: { membershipId: v.id('memberships'), name: v.string() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const access = await requirePermission(ctx, 'editCompanyProfile', args.membershipId);
+		const value = normalizedName(args.name, 120);
+		if (access.company.name !== value)
+			await ctx.db.patch('company', access.companyId, { name: value });
+		return null;
+	}
+});
+
+export const setApprovalEmail = mutation({
+	args: { membershipId: v.id('memberships'), email: v.string() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const access = await requirePermission(ctx, 'editCompanyProfile', args.membershipId);
+		const email = emailAddress(args.email);
+		if (access.company.approvalEmail !== email)
+			await ctx.db.patch('company', access.companyId, { approvalEmail: email });
 		return null;
 	}
 });

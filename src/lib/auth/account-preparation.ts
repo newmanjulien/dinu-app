@@ -1,7 +1,7 @@
 import type { FunctionReturnType } from 'convex/server';
 import type { api } from '../../convex/_generated/api';
 
-type Viewer = FunctionReturnType<typeof api.profiles.viewer>;
+type Viewer = FunctionReturnType<typeof api.accounts.viewer>;
 
 /** Only a confirmed live result may provision missing state, once per transport. */
 export class AccountPreparation {

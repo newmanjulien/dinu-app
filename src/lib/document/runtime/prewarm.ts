@@ -22,12 +22,13 @@ function* alternatives(
 	profiler: LayoutProfiler,
 	checkCurrent: () => void,
 	focusedItemId?: string,
-	history?: PaginationHistory
+	history?: PaginationHistory,
+	availableItems = snapshot.source.items
 ): Generator<GeometryWork | undefined, void> {
 	const { source, concessions } = snapshot;
 	const composer = artifacts.createComposer();
 	const preparation = artifacts.createPreparation();
-	const items = [...source.items].sort(
+	const items = [...availableItems].sort(
 		(a, b) => Number(b.itemId === focusedItemId) - Number(a.itemId === focusedItemId)
 	);
 	for (const item of items) {
@@ -38,8 +39,13 @@ function* alternatives(
 			try {
 				if (
 					choice !== undefined &&
-					conflictsForConcession(source.sourceIndex, source.items, concessions, item.itemId, choice)
-						.length
+					conflictsForConcession(
+						source.sourceIndex,
+						availableItems,
+						concessions,
+						item.itemId,
+						choice
+					).length
 				)
 					continue;
 				const selection = { ...concessions };
@@ -47,7 +53,7 @@ function* alternatives(
 				else selection[item.itemId] = choice;
 				const prepared: PreparedBlock[] = [];
 				for (const block of composer.iterate({
-					items: source.items,
+					items: availableItems,
 					activeConcessions: selection,
 					view: 'redline'
 				})) {
@@ -84,7 +90,8 @@ export function prewarmSavedConcessions(
 	profiler: LayoutProfiler,
 	artifacts: DocumentArtifacts,
 	focusedItemId?: string,
-	history?: PaginationHistory
+	history?: PaginationHistory,
+	availableItems = snapshot.source.items
 ): () => void {
 	const abort = new AbortController();
 	const release = profiler.trackAlternative(abort);
@@ -95,7 +102,15 @@ export function prewarmSavedConcessions(
 	const checkCurrent = () => {
 		if (!current()) throw new Error('Alternative preparation cancelled.');
 	};
-	const blocks = alternatives(snapshot, artifacts, profiler, checkCurrent, focusedItemId, history);
+	const blocks = alternatives(
+		snapshot,
+		artifacts,
+		profiler,
+		checkCurrent,
+		focusedItemId,
+		history,
+		availableItems
+	);
 	async function run() {
 		try {
 			let done = false;

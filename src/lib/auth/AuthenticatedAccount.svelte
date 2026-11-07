@@ -9,7 +9,7 @@
 
 <SessionScope>
 	<AccountGate>
-		<div inert={session.admitted && (session.blocked || Boolean(session.error))}>
+		<div inert={session.workspaceAdmitted && (session.blocked || Boolean(session.error))}>
 			{@render children()}
 		</div>
 	</AccountGate>

@@ -1,26 +1,20 @@
 import type { CompiledContract } from '../contract/compiled-contract';
-import type { PlaybookGeometryIndex } from './geometry-index';
-import type { Concession, Instructions, PlaybookItemRecord } from './model';
-import {
-	equalConcession,
-	immutable,
-	semanticInstructions,
-	semanticPlaybookDraft,
-	type PlaybookDraft,
-	type ReadonlyDraft
-} from './draft';
-import { instructionsFields } from './instructions-fields';
+import { immutable } from '../immutable';
+import { equalConcession, semanticInstructions, semanticPlaybookDraft } from './content';
+import { type PlaybookDraft, type ReadonlyDraft } from './draft';
 import { GeometryError } from './geometry';
+import type { PlaybookGeometryIndex } from './geometry-index';
+import type { AuthoringInstructions, Concession, PlaybookItemRecord } from './model';
+import { authoringInstructionKeys, authoringInstructions } from './model';
 import { geometrySelectionIssue, selectionIssueMessage } from './source-picking';
 import {
-	validatePlaybookItemContent,
+	MAX_CONTRACT_BLOCKS,
+	MAX_PLAYBOOK_ITEMS,
+	PlaybookValidationError,
 	validateChangeReferences,
 	validateConcessions,
-	PlaybookValidationError,
-	MAX_PLAYBOOK_ITEMS,
-	MAX_CONTRACT_BLOCKS
+	validatePlaybookItemContent
 } from './validation';
-import type { Operation } from './save-transport';
 
 type Composition = {
 	baseline: Concession;
@@ -33,12 +27,7 @@ export type Workflow =
 	| { kind: 'creating-explanation' }
 	| ({ kind: 'creating-concession' } & Composition)
 	| ({ kind: 'adding-concession'; triggerId: string } & Composition);
-export type OperationState =
-	| { kind: 'editing' }
-	| { kind: 'saving'; operation: Operation }
-	| { kind: 'uncertain'; operation: Operation; message: string }
-	| { kind: 'rejected'; operation: Operation; message: string }
-	| { kind: 'missing' };
+export type OperationState = { kind: 'editing' } | { kind: 'missing' };
 
 function validationReason(check: () => void): string {
 	try {
@@ -55,17 +44,16 @@ function validationReason(check: () => void): string {
 export class AuthoringContext {
 	confirmed = $state.raw<PlaybookItemRecord | null>(null);
 	remote = $state.raw<PlaybookItemRecord | null>(null);
-	instructions: Instructions = $state({});
+	instructions: AuthoringInstructions = $state({});
 	trigger = $state.raw<PlaybookDraft['trigger']>()!;
 	concessions = $state.raw<Concession[]>([]);
 	workflow: Workflow = $state({ kind: 'editing' });
 	operation = $state.raw<OperationState>({ kind: 'editing' });
 	selectedAnnotationId = $state<string | null>(null);
 	previewConcessionId = $state<string | null>(null);
-	// Absence only proves deletion after the query has observed the highest known revision.
+	// Absence only proves deletion after the query has observed the highest known contentRevision.
 	queryRevision = 0;
 	queryPresent: boolean | null = null;
-	attempt: object | null = null;
 	contract = $state.raw<CompiledContract | null>(null);
 	geometry = $state.raw<PlaybookGeometryIndex | null>(null);
 	geometryVersion = $state(0);
@@ -75,8 +63,8 @@ export class AuthoringContext {
 	constructor(draft: PlaybookDraft, confirmed: PlaybookItemRecord | null, workflow: Workflow) {
 		this.confirmed = this.remote = confirmed ? immutable(confirmed) : null;
 		// An existing editor opens from the domain's previously accepted query record.
-		this.queryRevision = confirmed?.revision ?? 0;
-		this.instructions = { ...draft.instructions };
+		this.queryRevision = confirmed?.contentRevision ?? 0;
+		this.instructions = authoringInstructions(draft);
 		this.trigger = immutable(confirmed?.trigger ?? draft.trigger);
 		this.concessions = immutable(confirmed?.concessions ?? draft.concessions);
 		this.workflow = workflow;
@@ -90,17 +78,20 @@ export class AuthoringContext {
 	initialSelection = $derived(
 		this.workflow.kind === 'editing'
 			? null
-			: (this.composer?.changes[0]?.range ?? this.trigger.range ?? null)
+			: (this.composer?.changes[0]?.target ?? this.trigger.target ?? null)
 	);
 	draft: ReadonlyDraft = $derived({
 		...(this.confirmed ? { persistedId: this.confirmed._id } : {}),
 		instructions: this.instructions,
+		approvalPolicy: semanticInstructions(this.instructions).approvalPolicy,
 		trigger: this.trigger,
 		concessions: this.concessions
 	});
 	private persistedDirty = $derived(
-		instructionsFields.some(
-			({ key }) => (this.instructions[key] ?? '') !== (this.confirmed?.instructions?.[key] ?? '')
+		authoringInstructionKeys.some(
+			(key) =>
+				(this.instructions[key] ?? '') !==
+				((this.confirmed ? authoringInstructions(this.confirmed)[key] : '') ?? '')
 		) ||
 			this.concessions.length !== (this.confirmed?.concessions.length ?? 0) ||
 			this.concessions.some((concession, i) => concession.id !== this.confirmed?.concessions[i]?.id)
@@ -176,24 +167,10 @@ export class AuthoringContext {
 			this.composerGeometryReason ||
 			this.composerReferencesReason
 	);
-	rejectedSaveReason = $derived(
-		this.operation.kind === 'rejected' &&
-			this.operation.operation.kind === 'save' &&
-			JSON.stringify(this.payload) === JSON.stringify(this.operation.operation.request.item)
-			? this.operation.message
-			: ''
-	);
 	private capacity() {
 		if (!this.contract || !this.geometry) return 'Wait for the contract source';
 		if (this.contract.blocks.length > MAX_CONTRACT_BLOCKS)
 			return 'Contract exceeds the supported source or Playbook size';
-		const operation = this.operation;
-		if (
-			(operation.kind === 'saving' || operation.kind === 'uncertain') &&
-			operation.operation.kind === 'save' &&
-			!operation.operation.request.id
-		)
-			return '';
 		void this.geometryVersion;
 		return this.itemCount -
 			(this.confirmed && this.geometry.items.has(this.confirmed._id) ? 1 : 0) >=
@@ -213,20 +190,11 @@ export class AuthoringContext {
 	private checkGeometry(concessions: Concession[]) {
 		if (!this.validateGeometry || !this.geometry) return 'Wait for the contract source';
 		void this.geometryVersion;
-		const operation = this.operation;
-		const isolated =
-			(operation.kind === 'saving' || operation.kind === 'uncertain') &&
-			operation.operation.kind === 'save' &&
-			!operation.operation.request.id;
 		return validationReason(() =>
-			this.validateGeometry!(
-				this.confirmed?._id,
-				{
-					trigger: this.trigger,
-					concessions
-				},
-				isolated
-			)
+			this.validateGeometry!(this.confirmed?._id, {
+				trigger: this.trigger,
+				concessions
+			})
 		);
 	}
 }

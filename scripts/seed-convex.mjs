@@ -16,12 +16,10 @@ const actual = await deployment.run('operator:readSeed', { companyId });
 if (
 	!isDeepStrictEqual(actual.blocks, blocks) ||
 	!isDeepStrictEqual(actual.items, items) ||
-	!isDeepStrictEqual(actual.publication.blocks, blocks) ||
-	!isDeepStrictEqual(actual.publication.items, items)
+	!isDeepStrictEqual(actual.snapshot.blocks, blocks) ||
+	!isDeepStrictEqual(actual.snapshot.items, items)
 )
-	throw new Error(
-		'Published company data differs from the seed. Refusing to overwrite or restore it.'
-	);
+	throw new Error('Saved company data differs from the seed. Refusing to overwrite or restore it.');
 console.log(
 	`Company ${companyId} seed round trip verified: ${blocks.length} blocks, ${items.length} items.`
 );

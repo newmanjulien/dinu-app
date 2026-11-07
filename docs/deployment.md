@@ -1,6 +1,15 @@
 # Production releases
 
-**Current release mechanics, 2026-10-30.** The pre-customer backend redesign changes strict data shapes. Before releasing it, follow the separately authorized [Phase 18 activation procedure](backend-redesign/phase-18-activation.md); an ordinary `main` push is a production deployment, not a reset or rehearsal. [Current architecture](backend-redesign/architecture.md) owns the backend model.
+**Clean reset, 2026-11-06.** Dinu uses development `disciplined-squid-496`
+and production `befitting-lyrebird-846`, both in the `dinu-app` Convex project.
+Both deployments were cleared, including obsolete tables, component data and
+stored files, then deployed with the current schema and functions. Clerk accounts
+were cleared in both environments. No seed data was restored. Development uses
+Clerk's test instance; production uses its separate live instance below.
+See [reset evidence](production-data-reconciliation.md). Frontend changes remain
+local and need website publication before clients can use the current app code.
+
+[Current architecture](data-model.md) describes the backend model.
 
 Push to `main` to release Dinu. Vercel builds the website and deploys Convex from
 the same checkout. Automatic deployments from other branches are disabled by
@@ -19,6 +28,11 @@ branches too; manual production deployments are still possible and should be avo
 | Clerk        | `ins_3LFqe1zQR22UO50Z6le0kuij55b`      |
 | Clerk issuer | `https://clerk.dinu.juliennewman.com`  |
 
+Local development selects `dev:disciplined-squid-496` in `.env.local` and uses
+Clerk issuer `https://expert-seal-1242.clerk.accounts.dev`. Its deletion webhook is
+`https://disciplined-squid-496.convex.site/clerk/webhook`. Keep development and
+preview Clerk keys separate from the live production keys.
+
 The target constants in [`scripts/check-deployment.mjs`](../scripts/check-deployment.mjs)
 are shared by both release phases. Convex URLs and the Clerk issuer are derived there.
 
@@ -26,7 +40,7 @@ Vercel **Production** needs these variables:
 
 | Variable                       | Value                                                                                                              |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `CONVEX_DEPLOY_KEY`            | Sensitive deployment-scoped production key named `vercel-production`; needs deployment and environment-read access |
+| `CONVEX_DEPLOY_KEY`            | Sensitive deployment-scoped production key; needs deployment and environment-read access |
 | `PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk Production publishable key (`pk_live_…`)                                                                     |
 | `CLERK_SECRET_KEY`             | Secret for the configured Clerk Production instance (`sk_live_…`), stored as Sensitive                             |
 
@@ -116,19 +130,19 @@ release. The same recovery applies if Vercel fails to publish after smoke succee
 
 To roll back application code, revert the affected changes while retaining this
 deployment configuration, then push to `main`. That releases both parts from the
-reverted source. A Vercel-only rollback does not roll back Convex. This ordinary release rollback does not migrate or restore data. The separately
-reviewed [activation recovery procedure](backend-redesign/phase-18-activation.md#18e--final-readiness-and-recovery-decision)
-must establish compatible code/data/storage/component restoration and explicit
-scheduler/external-outcome reconciliation before a destructive reset.
+reverted source. A Vercel-only rollback does not roll back Convex. This ordinary release rollback does not migrate or restore data. Data recovery requires compatible code, data, storage and component restoration,
+with scheduler and external-outcome reconciliation.
 
 Local `npm run dev` and `npm run build` are unchanged. Local development continues
 to use its existing configuration rather than the production release checker.
+
+Integration content ships with the website from `src/lib/integrations.ts`; no catalog initialization is required. Before the first static-catalog publication on a target, compare its stored editorial content with the shared code snapshot. Before deploying removal of the former catalog APIs, establish that supported served/open clients no longer need them. If clients remain or their status is uncertain, first publish the static frontend while retaining the old catalog backend/schema, then remove those APIs after client retirement. Legacy stored records need no cleanup for the application to work. See [integration catalog](integrations.md) for the transition and content maintenance.
 
 ## Verification
 
 Before release, run `node --check scripts/check-deployment.mjs`,
 `npm run verify` and `npx tsc --noEmit -p src/convex/tsconfig.json`.
-These verify script syntax, the existing 20 lifecycle/24 performance guarantees,
+These verify script syntax, the existing 26 lifecycle/23 performance checks,
 frontend/backend type checks and the production build. They do not automatically
 exercise release-checker retry, deadline or configuration-failure paths, or native
 resource/provider/browser acceptance.

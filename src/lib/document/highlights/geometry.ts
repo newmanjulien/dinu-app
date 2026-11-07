@@ -12,7 +12,7 @@ export interface HighlightRect {
 	width: number;
 	height: number;
 	kind: HighlightKind;
-	triggerState?: 'default' | 'hover' | 'selected';
+	triggerState?: 'default' | 'hover' | 'selected' | 'pending';
 }
 
 /**
@@ -27,7 +27,6 @@ export interface StructuralBoundaryTarget {
 	top: number;
 	width: number;
 	height: number;
-	minimumSelectionWidth: number;
 }
 
 export type StructuralBoundaryRect = Pick<HighlightRect, 'x' | 'y' | 'width' | 'height'>;
@@ -44,6 +43,7 @@ interface TextEntry {
 	trigger: HTMLElement | null;
 	revision: string | undefined;
 	selectable: boolean;
+	presentation: boolean;
 }
 interface TextRect extends Band {
 	left: number;
@@ -54,6 +54,10 @@ interface TextContainer {
 	element: HTMLElement;
 	texts: TextEntry[];
 	bands: Band[];
+	carets: Map<
+		Band,
+		{ node: Text; offset: number; x: number; affinity: 'upstream' | 'downstream' }[]
+	>;
 }
 export interface PageGeometry {
 	element: HTMLElement;
@@ -62,6 +66,166 @@ export interface PageGeometry {
 	/** DOM order, including nested text containers and table cells. */
 	textIndex: { entry: TextEntry; container: TextContainer }[];
 	textPositions: WeakMap<Text, number>;
+}
+
+/** Coordinate helper only. Selection state and source validation belong to the document. */
+export function selectionTextHit(page: PageGeometry, clientX: number, clientY: number) {
+	const { bounds, scale } = pageSpace(page.element);
+	if (!scale) return null;
+	const x = (clientX - bounds.left) / scale,
+		y = (clientY - bounds.top) / scale;
+	const distance = (point: number, low: number, high: number) =>
+		Math.max(low - point, 0, point - high);
+	const populated = (container: TextContainer) =>
+		container.bands.length > 0 &&
+		container.texts.some((entry) => !entry.presentation && entry.length);
+	const regions = new Map<HTMLElement, TextContainer[]>();
+	for (const container of page.containers) {
+		const region = container.element.closest<HTMLElement>('table') ?? container.element;
+		const values = regions.get(region) ?? [];
+		values.push(container);
+		regions.set(region, values);
+	}
+	let chosen: { element: HTMLElement; containers: TextContainer[]; distance: number } | undefined;
+	for (const [element, containers] of regions) {
+		if (!containers.some(populated) && !element.matches('table')) continue;
+		const rect = element.getBoundingClientRect();
+		const next = distance(clientY, rect.top, rect.bottom);
+		if (!chosen || next < chosen.distance) chosen = { element, containers, distance: next };
+	}
+	if (!chosen) return null;
+	const real = page.textIndex.filter(
+		({ entry, container }) => !entry.presentation && entry.length && container.bands.length
+	);
+	if (real.length) {
+		const first = real[0],
+			last = real.at(-1)!;
+		if (
+			clientY <
+			Math.min(...[...regions.keys()].map((element) => element.getBoundingClientRect().top))
+		)
+			return { node: first.entry.node, offset: 0, affinity: 'downstream' as const };
+		if (
+			clientY >
+			Math.max(...[...regions.keys()].map((element) => element.getBoundingClientRect().bottom))
+		)
+			return { node: last.entry.node, offset: last.entry.length, affinity: 'upstream' as const };
+	}
+	let container = chosen.containers[0];
+	if (chosen.element.matches('table')) {
+		if (!chosen.containers.some(populated)) return null;
+		let bestY = Infinity,
+			bestX = Infinity;
+		for (const candidate of chosen.containers) {
+			const rect = candidate.element.getBoundingClientRect();
+			const dy = distance(clientY, rect.top, rect.bottom),
+				dx = distance(clientX, rect.left, rect.right);
+			if (dy < bestY || (dy === bestY && dx < bestX)) {
+				container = candidate;
+				bestY = dy;
+				bestX = dx;
+			}
+		}
+		if (!populated(container)) {
+			const row = container.element.parentElement;
+			const sameRow = chosen.containers.filter(
+				(candidate) => candidate.element.parentElement === row && populated(candidate)
+			);
+			const candidates = sameRow.length ? sameRow : chosen.containers.filter(populated);
+			let nearest = Infinity;
+			for (const candidate of candidates) {
+				const rect = candidate.element.getBoundingClientRect();
+				const d = Math.hypot(
+					distance(clientX, rect.left, rect.right),
+					distance(clientY, rect.top, rect.bottom)
+				);
+				if (d < nearest) {
+					nearest = d;
+					container = candidate;
+				}
+			}
+		}
+	}
+	const band = nearestBand(container.bands, y);
+	if (!band) return null;
+	const insideBand = (rect: DOMRect) =>
+		rect.height > 0 &&
+		Math.abs((rect.top + rect.height / 2 - bounds.top) / scale - band.center) < band.height / 2;
+	const doc = page.element.ownerDocument as Document & {
+		caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+		caretRangeFromPoint?: (x: number, y: number) => Range | null;
+	};
+	const regionRect = container.element.getBoundingClientRect();
+	const probeX = Math.max(regionRect.left, Math.min(regionRect.right, clientX)),
+		probeY = bounds.top + band.center * scale;
+	const position = doc.caretPositionFromPoint?.(probeX, probeY),
+		nativeRange = position ? null : doc.caretRangeFromPoint?.(probeX, probeY);
+	const node = position?.offsetNode ?? nativeRange?.startContainer,
+		offset = position?.offset ?? nativeRange?.startOffset;
+	if (
+		node?.nodeType === Node.TEXT_NODE &&
+		offset !== undefined &&
+		container.texts.some((entry) => !entry.presentation && entry.node === node)
+	) {
+		const caret = doc.createRange();
+		caret.setStart(node, offset);
+		caret.collapse(true);
+		if (Array.from(caret.getClientRects()).some(insideBand))
+			return { node: node as Text, offset, affinity: 'downstream' as const };
+	}
+	// Lazy actual caret rectangles belong to the existing page geometry, including bidi/wrap edges.
+	let carets = container.carets.get(band);
+	if (!carets) {
+		carets = [];
+		const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+		for (const [i, entry] of container.texts.entries()) {
+			if (entry.presentation) {
+				if (!entry.rects.some((rect) => rect.band === band)) continue;
+				const next = container.texts.slice(i + 1).find((text) => !text.presentation && text.length);
+				const previous = container.texts
+					.slice(0, i)
+					.findLast((text) => !text.presentation && text.length);
+				const endpoint = next
+					? { node: next.node, offset: 0 }
+					: previous
+						? { node: previous.node, offset: previous.length }
+						: null;
+				if (endpoint)
+					carets.push({
+						...endpoint,
+						x: entry.rects[0].left,
+						affinity: next ? 'downstream' : 'upstream'
+					});
+				continue;
+			}
+			if (!entry.rects.some((rect) => rect.band === band)) continue;
+			const offsets = new Set([0, entry.length]);
+			for (const part of segmenter.segment(entry.node.data)) {
+				offsets.add(part.index);
+				offsets.add(part.index + part.segment.length);
+			}
+			for (const offset of offsets) {
+				const caret = doc.createRange();
+				caret.setStart(entry.node, offset);
+				caret.collapse(true);
+				for (const rect of caret.getClientRects())
+					if (insideBand(rect))
+						carets.push({
+							node: entry.node,
+							offset,
+							x: (rect.left - bounds.left) / scale,
+							affinity: offset === entry.length ? 'upstream' : 'downstream'
+						});
+			}
+		}
+		container.carets.set(band, carets);
+	}
+	let nearest: (typeof carets)[number] | undefined;
+	for (const caret of carets)
+		if (!nearest || Math.abs(caret.x - x) < Math.abs(nearest.x - x)) nearest = caret;
+	return nearest
+		? { node: nearest.node, offset: nearest.offset, affinity: nearest.affinity }
+		: null;
 }
 
 export interface MeasuredInterval {
@@ -99,23 +263,34 @@ function pageSpace(page: HTMLElement) {
 }
 
 /** Measure the explicit hit target placed over a source-owned structural margin. */
-export function measureStructuralBoundaryTarget(target: HTMLElement): StructuralBoundaryTarget | null {
+export function measureStructuralBoundaryTarget(
+	target: HTMLElement
+): StructuralBoundaryTarget | null {
 	const key = target.dataset.structuralBoundary;
 	const page = target.closest<HTMLElement>('.document-page');
 	const content = target.closest<HTMLElement>('.document-page__content');
-	if (!key || !page || !content || !target.isConnected)
-		return null;
+	if (!key || !page || !content || !target.isConnected) return null;
 	const pageSpace = page.getBoundingClientRect();
 	const contentBounds = content.getBoundingClientRect();
 	const targetBounds = target.getBoundingClientRect();
 	const scale = pageSpace.width / page.offsetWidth;
 	if (!Number.isFinite(scale) || scale <= 0) return null;
-	const top = Math.max(targetBounds.top, contentBounds.top, pageSpace.top);
-	const bottom = Math.min(targetBounds.bottom, contentBounds.bottom, pageSpace.bottom);
-	const left = Math.max(targetBounds.left, contentBounds.left, pageSpace.left);
-	const right = Math.min(targetBounds.right, contentBounds.right, pageSpace.right);
-	if (bottom - top < 1 || right - left < 1) return null;
-	const fontSize = parseFloat(getComputedStyle(target).fontSize);
+	// Text gaps are bounded horizontally by the text column. Gutter controls and end-of-page
+	// insertion points live outside the content box, but always inside the physical page.
+	const gutter = target.classList.contains('structural-boundary-target--gutter');
+	const top = Math.max(targetBounds.top, pageSpace.top);
+	const bottom = Math.min(targetBounds.bottom, pageSpace.bottom);
+	const left = Math.max(
+		targetBounds.left,
+		gutter ? pageSpace.left : contentBounds.left,
+		pageSpace.left
+	);
+	const right = Math.min(
+		targetBounds.right,
+		gutter ? pageSpace.right : contentBounds.right,
+		pageSpace.right
+	);
+	if ((bottom - top) / scale < 1 || (right - left) / scale < 1) return null;
 	return {
 		key,
 		page: Number(page.dataset.pageNumber),
@@ -123,39 +298,20 @@ export function measureStructuralBoundaryTarget(target: HTMLElement): Structural
 		left: (left - pageSpace.left) / scale,
 		top: (top - pageSpace.top) / scale,
 		width: (right - left) / scale,
-		height: (bottom - top) / scale,
-		// In this document font, one em is the visual width of two ordinary spaces.
-		minimumSelectionWidth: Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 15
+		height: (bottom - top) / scale
 	};
 }
 
-/** Project a dragged position in a structural gap onto a compact, two-space selection rectangle. */
-export function structuralBoundaryRect(
-	target: StructuralBoundaryTarget,
-	startRatio: number,
-	endRatio: number
-): StructuralBoundaryRect {
-	const clamp = (value: number) => Math.max(0, Math.min(1, value));
-	const start = target.left + clamp(startRatio) * target.width;
-	const end = target.left + clamp(endRatio) * target.width;
-	const minimum = Math.min(target.minimumSelectionWidth, target.width);
-	const width = Math.max(minimum, Math.abs(end - start));
-	const preferredLeft = end >= start ? start : start - width;
-	const left = Math.max(target.left, Math.min(preferredLeft, target.left + target.width - width));
-	return { x: left, y: target.top, width, height: target.height };
+/** A structural insertion point is selected as one complete gap or gutter control. */
+export function structuralBoundaryRect(target: StructuralBoundaryTarget): StructuralBoundaryRect {
+	return { x: target.left, y: target.top, width: target.width, height: target.height };
 }
 
 export function structuralBoundaryHighlight(
 	target: StructuralBoundaryTarget,
-	startRatio: number,
-	endRatio: number,
 	kind: HighlightKind
 ): HighlightRect {
-	return {
-		page: target.page,
-		...structuralBoundaryRect(target, startRatio, endRatio),
-		kind
-	};
+	return { page: target.page, ...structuralBoundaryRect(target), kind };
 }
 
 /** All text on a container's line supplies the same band, including unhighlighted runs. */
@@ -184,9 +340,15 @@ export function buildLineMaps(
 				for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 					// Page-local geometry depends on document content and layout.
 					// Outer wrappers govern accessibility and interaction, not text measurements.
-					const hidden = node.parentElement?.closest('[aria-hidden="true"]');
+					const anchor = node.parentElement?.closest('[data-selection-line-anchor]');
+					const hidden = node.parentElement?.closest(
+						'[aria-hidden="true"], [data-document-control]'
+					);
 					if (
-						(hidden && content?.contains(hidden)) ||
+						(hidden && content?.contains(hidden) && !anchor) ||
+						node.parentElement?.closest(
+							'[data-selection-collapsed], [data-generated="empty-hit-target"]:not([data-selection-line-anchor])'
+						) ||
 						node.parentElement?.closest(TEXT_CONTAINER_SELECTOR) !== container
 					)
 						continue;
@@ -194,7 +356,7 @@ export function buildLineMaps(
 					const range = document.createRange();
 					range.selectNodeContents(node);
 					for (const rect of range.getClientRects()) {
-						if (!rect.width || !rect.height) continue;
+						if (!rect.height) continue;
 						const y = (rect.top - bounds.top) / scale,
 							height = rect.height / scale;
 						rects.push({
@@ -205,13 +367,34 @@ export function buildLineMaps(
 							right: (rect.right - bounds.left) / scale
 						});
 					}
+					// Hard-break characters can have no ink rectangle in a browser. Their real
+					// collapsed carets still supply line bands, including CRLF-only cells.
+					for (const match of (node as Text).data.matchAll(/\r\n|[\r\n]/gu)) {
+						for (const offset of [match.index, match.index + match[0].length]) {
+							range.setStart(node, offset);
+							range.collapse(true);
+							for (const rect of range.getClientRects()) {
+								if (!rect.height) continue;
+								const y = (rect.top - bounds.top) / scale,
+									height = rect.height / scale;
+								rects.push({
+									y,
+									height,
+									center: y + height / 2,
+									left: (rect.left - bounds.left) / scale,
+									right: (rect.right - bounds.left) / scale
+								});
+							}
+						}
+					}
 					texts.push({
 						node: node as Text,
 						length: (node as Text).length,
 						rects,
 						trigger: node.parentElement?.closest<HTMLElement>('.playbook-trigger') ?? null,
 						revision: node.parentElement?.closest<HTMLElement>('[data-revision]')?.dataset.revision,
-						selectable: getComputedStyle(node.parentElement!).userSelect !== 'none'
+						selectable: getComputedStyle(node.parentElement!).userSelect !== 'none',
+						presentation: Boolean(anchor)
 					});
 				}
 				const bands: Band[] = [];
@@ -241,6 +424,7 @@ export function buildLineMaps(
 				containers.push({
 					element: container,
 					bands,
+					carets: new Map(),
 					texts: texts.map((entry) => ({
 						...entry,
 						rects: entry.rects.map((rect) => ({ ...rect, band: nearestBand(bands, rect.center)! }))
@@ -342,7 +526,7 @@ export function measureRanges(
 		for (const [i, input] of ranges.entries()) {
 			if (!includesPage(memberships[i], page.number)) continue;
 			for (const { entry, container } of rangeTextEntries(page, input)) {
-				if (kind === 'native-selection' && !entry.selectable) continue;
+				if (entry.presentation || (kind === 'native-selection' && !entry.selectable)) continue;
 				const interval = textInterval(input, entry.node);
 				if (!interval) continue;
 				if (search) measuredNodes++;
@@ -398,6 +582,7 @@ export function measureRevisions(pages: PageGeometry[]): MeasuredInterval[] {
 		page.containers.flatMap((container) => {
 			const intervals: MeasuredInterval[] = [];
 			for (const entry of container.texts) {
+				if (entry.presentation) continue;
 				if (entry.revision !== 'added' && entry.revision !== 'removed') continue;
 				for (const rect of entry.rects)
 					intervals.push({
@@ -427,6 +612,7 @@ export function measureTriggers(pages: PageGeometry[]): MeasuredInterval[] {
 		page.containers.flatMap((container) => {
 			const intervals: MeasuredInterval[] = [];
 			for (const entry of container.texts) {
+				if (entry.presentation) continue;
 				const owner = entry.trigger;
 				if (!owner) continue;
 				const ids = annotationIds(owner);
@@ -501,7 +687,11 @@ function subtractGroup(
 	type Piece = { interval: MeasuredInterval; x: number; y: number; width: number; height: number };
 	const result: Piece[] = [];
 	for (const interval of intervals.sort(
-		(a, b) => HIGHLIGHT_THEME[b.kind].priority - HIGHLIGHT_THEME[a.kind].priority
+		(a, b) =>
+			HIGHLIGHT_THEME[b.kind].priority - HIGHLIGHT_THEME[a.kind].priority ||
+			Number(a.owner?.dataset.annotationPriority ?? 0) -
+				Number(b.owner?.dataset.annotationPriority ?? 0) ||
+			(a.owner?.dataset.annotationId ?? '').localeCompare(b.owner?.dataset.annotationId ?? '')
 	)) {
 		let pieces: Piece[] = [
 			{
@@ -539,12 +729,14 @@ function subtractGroup(
 			...(owner
 				? {
 						triggerState:
-							owner.dataset.annotationSelected === 'true'
-								? ('selected' as const)
-								: hoveredAnnotationId !== null &&
-									  interval.annotationIds?.includes(hoveredAnnotationId)
-									? ('hover' as const)
-									: ('default' as const)
+							owner.dataset.annotationPending === 'true'
+								? ('pending' as const)
+								: owner.dataset.annotationSelected === 'true'
+									? ('selected' as const)
+									: hoveredAnnotationId !== null &&
+										  interval.annotationIds?.includes(hoveredAnnotationId)
+										? ('hover' as const)
+										: ('default' as const)
 					}
 				: {})
 		};

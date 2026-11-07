@@ -1,5 +1,11 @@
 <script lang="ts">
+	import type {
+		AnnotationAdmission,
+		AuthoringSelectionRequest
+	} from '$lib/playbook/authoring-selection';
+
 	import { setAnnotationRegistry } from '$lib/document/annotation-registry';
+	import { DocumentAnnotationProjection } from '$lib/document/annotation-projection';
 	import { restoreDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	import {
 		annotationOccurrence,
@@ -7,15 +13,25 @@
 		type AnnotationActivation,
 		type AnnotationOccurrence
 	} from '$lib/document/annotation-anchor';
-	import { triggerAnnotationId, type AnnotationMembership } from '$lib/playbook/document-overlay';
+	import type { AnnotationMembership } from '$lib/playbook/document-overlay';
 	import { tick, untrack, onMount, onDestroy, type Snippet } from 'svelte';
 	import type { ContractChange, SourceTarget } from '$lib/playbook/model';
 	import { isTextTarget, sameSourceTarget } from '$lib/contract/source-model';
 	import { pointPosition } from '$lib/contract/source-index';
-	import { unitsInRange, validateTarget } from '$lib/contract/ranges';
+	import {
+		breakGroupKeys,
+		boundaryTargetBreakGroups,
+		legacyTextNavigationGroups
+	} from '$lib/document/selection/selection-model';
+	import { DocumentSelectionController } from '$lib/document/selection/document-selection';
+	import { targetPosition, unitsInRange, validateTarget } from '$lib/contract/ranges';
+	import { PlaybookValidationError } from '$lib/playbook/validation-error';
 	import { EMPTY_PREVIEW_CHANGES, type ConcessionSelection } from '$lib/document/runtime/types';
 	import { afterPaint, type Priority } from '$lib/document/runtime/scheduler';
-	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
+	import {
+		getDocumentResources,
+		type ViewerBindings
+	} from '$lib/document/runtime/resources.svelte';
 	import {
 		recordColdStart,
 		recordDocumentReady,
@@ -61,6 +77,7 @@
 		interactive = true,
 		retained = false,
 		prepare = true,
+		instructionPreload,
 		priority = () => 'foreground',
 		hasPanel = false,
 		followScroll = false,
@@ -73,19 +90,23 @@
 		selectedConcessions,
 		onRemoveConcession,
 		selectedAnnotationId = null,
+		selectionRequest = null,
 		selectedRanges = [],
 		previewChanges = EMPTY_PREVIEW_CHANGES,
 		panelTarget,
 		picking = false,
 		allowPlaybookNavigation = true,
+		sourceSelectionEnabled = false,
 		playbookNavigationReady = true,
 		onSelect,
-		onDocumentBackground
+		onDocumentBackground,
+		onPresentation
 	}: {
 		active?: boolean;
 		interactive?: boolean;
 		retained?: boolean;
 		prepare?: boolean;
+		instructionPreload?: ViewerBindings['instructionPreload'];
 		priority?: Priority;
 		hasPanel?: boolean;
 		followScroll?: boolean;
@@ -98,15 +119,20 @@
 		selectedConcessions: ConcessionSelection;
 		onRemoveConcession: (itemId: string) => void;
 		selectedAnnotationId?: string | null;
+		selectionRequest?: AuthoringSelectionRequest | null;
 		selectedRanges?: readonly SourceTarget[];
 		previewChanges?: readonly ContractChange[];
 		/** The selected clause's stable source target; click position never affects panel geometry. */
 		panelTarget?: SourceTarget;
 		picking?: boolean;
 		allowPlaybookNavigation?: boolean;
+		sourceSelectionEnabled?: boolean;
 		playbookNavigationReady?: boolean;
-		onSelect: (itemId: string, annotationId: string) => boolean | void;
+		onSelect: (itemId: string, annotationId: string) => AnnotationAdmission | boolean | void;
 		onDocumentBackground?: () => void;
+		onPresentation?: (
+			outcome: import('$lib/auth/workspace-presentation.svelte').PresentationOutcome
+		) => void;
 	} = $props();
 	const { source, renderer, viewer } = getContractWorkspace();
 	restoreDocumentNavigation(viewer);
@@ -117,34 +143,90 @@
 	let pageElementsSnapshot = $state.raw<typeof snapshot>();
 	const structuralBoundaryAnnotations = $derived.by(() => {
 		const byKey = new Map<string, AnnotationMembership[]>();
-		const boundaries = pageElementsSnapshot?.source.sourceIndex.structuralBoundaries;
-		for (const item of pageElementsSnapshot?.source.items ?? [])
+		const index = pageElementsSnapshot?.source.sourceIndex;
+		if (!index) return byKey;
+		for (const item of source.annotations)
 			for (const annotation of item.annotations) {
-				if (annotation.range.kind !== 'boundary') continue;
-				const boundary = boundaries?.get(annotation.range.afterBlockKey);
-				if (!boundary) continue;
-				const annotations = byKey.get(boundary.afterBlockKey) ?? [];
-				if (!byKey.has(boundary.afterBlockKey)) byKey.set(boundary.afterBlockKey, annotations);
-				annotations.push({
-					...annotation,
-					applied:
-						annotation.kind === 'concession-effect' &&
-						pageElementsSnapshot?.concessions[item.itemId] === annotation.concessionId
-				});
+				let keys: string[];
+				try {
+					const context = pageElementsSnapshot!.selectionDocument;
+					keys = (
+						annotation.target.kind === 'boundary'
+							? boundaryTargetBreakGroups(context, annotation.target)
+							: legacyTextNavigationGroups(context, annotation.target)
+					).flatMap(breakGroupKeys);
+				} catch {
+					continue;
+				}
+				for (const key of keys) {
+					const annotations = byKey.get(key) ?? [];
+					if (!byKey.has(key)) byKey.set(key, annotations);
+					annotations.push({
+						...annotation,
+						applied:
+							annotation.kind === 'concession-effect' &&
+							pageElementsSnapshot?.concessions[item.itemId] === annotation.concessionId
+					});
+				}
 			}
 		return byKey;
+	});
+	$effect(() => {
+		const controller = highlights;
+		if (!controller) return;
+		controller.setStructuralBoundaryGroup(
+			'saved-structural-instructions',
+			'trigger',
+			[...structuralBoundaryAnnotations]
+				.filter(([, memberships]) =>
+					memberships.some(
+						(member) =>
+							member.target.kind === 'boundary' && (member.kind === 'trigger' || member.applied)
+					)
+				)
+				.map(([key]) => ({ key }))
+		);
 	});
 	let mountedGeneration = $state(0);
 	$effect(() => {
 		if (!active) activationComplete = false;
-		else if (viewer.prepared && viewer.visible) activationComplete = true;
+		else if (viewer.layoutPrepared && viewer.pagesVisible) activationComplete = true;
 	});
 	let highlights = $state<DocumentHighlightController>();
 	let documentGestures = $state<DocumentGestureInteractions>();
 	let highlightRects = $state.raw<PageHighlights>(new Map());
+	let annotationProjection = $state.raw<DocumentAnnotationProjection>();
+	$effect(() => {
+		const stage = viewer.documentStageElement,
+			controller = highlights;
+		if (!active || !stage || !controller) return;
+		const projection = new DocumentAnnotationProjection(
+			stage,
+			controller,
+			annotationRegistry,
+			selectAnnotation
+		);
+		annotationProjection = projection;
+		return () => {
+			projection.destroy();
+			annotationProjection = undefined;
+		};
+	});
+	$effect(() => {
+		const projection = annotationProjection,
+			commit = pageElementsSnapshot;
+		if (!projection || !commit) return;
+		projection.update(
+			commit,
+			source.annotations,
+			selectedAnnotationId,
+			navigationCapable,
+			canOpenPlaybookItems
+		);
+	});
 	$effect(() => {
 		const stage = viewer.documentStageElement;
-		if (!active || !stage || !viewer.visible) return;
+		if (!active || !stage || !viewer.pagesVisible) return;
 		const abort = new AbortController();
 		let controller: DocumentHighlightController | undefined;
 		let unsubscribe: (() => void) | undefined;
@@ -178,6 +260,32 @@
 			documentGestures = undefined;
 		};
 	});
+	$effect(() => {
+		const stage = viewer.documentStageElement,
+			commit = pageElementsSnapshot,
+			controller = highlights;
+		if (
+			!active ||
+			!sourceSelectionEnabled ||
+			renderer.pending ||
+			!viewer.interactionEnabled ||
+			!current ||
+			!stage ||
+			!commit ||
+			commit !== snapshot ||
+			!controller
+		)
+			return;
+		let cancelled = false;
+		let selection: DocumentSelectionController | undefined;
+		void tick().then(() => {
+			if (!cancelled) selection = new DocumentSelectionController(stage, commit, controller);
+		});
+		return () => {
+			cancelled = true;
+			selection?.destroy();
+		};
+	});
 	let notifiedController: DocumentHighlightController | undefined;
 	let notifiedPages: readonly PaginatedPage[] = [];
 	$effect(() => {
@@ -203,6 +311,100 @@
 		void pageScale;
 		highlights?.projectionChanged();
 	});
+	$effect(() => {
+		const report = instructionPreload,
+			controller = highlights,
+			annotations = source.annotations,
+			commit = pageElementsSnapshot,
+			navigation = navigationCapable;
+		void mountedPages;
+		void annotationProjection;
+		if (
+			!active ||
+			!report ||
+			!controller ||
+			!commit ||
+			commit.source.sourceIndex !== source.compiled?.index
+		)
+			return;
+		let cancelled = false;
+		let release: (() => void) | undefined;
+		// Both projected text owners and Svelte boundary/grouped controls commit before this tick.
+		void tick().then(() => {
+			if (
+				cancelled ||
+				!active ||
+				instructionPreload !== report ||
+				highlights !== controller ||
+				source.annotations !== annotations ||
+				pageElementsSnapshot !== commit ||
+				commit.source.sourceIndex !== source.compiled?.index ||
+				navigationCapable !== navigation
+			)
+				return;
+			const occurrences: {
+				page: number;
+				position: number;
+				annotationId: string;
+				itemId: string;
+			}[] = [];
+			for (const item of annotations) {
+				if (item.itemId.startsWith('pending:')) continue;
+				for (const annotation of item.annotations) {
+					let position: number;
+					try {
+						position = targetPosition(commit.source.sourceIndex, annotation.target);
+					} catch (error) {
+						if (error instanceof PlaybookValidationError) continue;
+						throw error;
+					}
+					for (const owner of annotationRegistry.forAnnotation(annotation.id)) {
+						if (!owner.isConnected) continue;
+						const page = owner.closest<HTMLElement>('.document-page');
+						const number = Number(page?.dataset.pageNumber ?? owner.dataset.pageNumber);
+						if (!Number.isInteger(number) || number < 1) continue;
+						occurrences.push({
+							page: number,
+							position,
+							annotationId: annotation.id,
+							itemId: item.itemId
+						});
+					}
+				}
+			}
+			occurrences.sort(
+				(a, b) =>
+					a.page - b.page ||
+					a.position - b.position ||
+					(a.annotationId < b.annotationId ? -1 : a.annotationId > b.annotationId ? 1 : 0) ||
+					(a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0)
+			);
+			const byPage = new Map<number, Set<string>>();
+			for (const occurrence of occurrences) {
+				let ids = byPage.get(occurrence.page);
+				if (!ids) byPage.set(occurrence.page, (ids = new Set()));
+				ids.add(occurrence.itemId);
+			}
+			let previous: string[] | undefined;
+			// Subscribe after the complete map exists; the controller replays its current pages.
+			release = controller.subscribeEagerPages((pages) => {
+				if (cancelled) return;
+				const ids = [
+					...new Set(
+						[...pages].sort((a, b) => a - b).flatMap((page) => [...(byPage.get(page) ?? [])])
+					)
+				];
+				if (previous && ids.length === previous.length && ids.every((id, i) => id === previous![i]))
+					return;
+				previous = ids;
+				report(ids);
+			});
+		});
+		return () => {
+			cancelled = true;
+			release?.();
+		};
+	});
 	const authoringRanges = new Map<
 		SourceTarget,
 		{
@@ -215,16 +417,20 @@
 		const root = viewer.documentStageElement,
 			commit = pageElementsSnapshot,
 			controller = highlights;
-		if (!root || !commit || !controller || !viewer.visible) return;
+		if (!root || !commit || !controller || !viewer.pagesVisible) return;
 		const selected = new Set(selectedRanges);
 		for (const range of authoringRanges.keys())
 			if (!selected.has(range)) authoringRanges.delete(range);
-		const boundarySelections: { key: string; startRatio: number; endRatio: number }[] = [];
+		const boundarySelections: { key: string }[] = [];
+		const legacyNavigation: { key: string }[] = [];
 		const ranges = selectedRanges.flatMap((target) => {
 			const index = commit.source.sourceIndex;
 			if (!isTextTarget(target)) {
-				if (index.structuralBoundaries.has(target.afterBlockKey))
-					boundarySelections.push({ key: target.afterBlockKey, startRatio: 0, endRatio: 0 });
+				boundarySelections.push(
+					...boundaryTargetBreakGroups(commit.selectionDocument, target).flatMap((group) =>
+						breakGroupKeys(group).map((key) => ({ key }))
+					)
+				);
 				return [];
 			}
 			const sourceRange = target.range;
@@ -259,6 +465,11 @@
 				};
 				authoringRanges.set(target, cached);
 			}
+			legacyNavigation.push(
+				...legacyTextNavigationGroups(commit.selectionDocument, target).flatMap((group) =>
+					breakGroupKeys(group).map((key) => ({ key }))
+				)
+			);
 			return cached.ranges;
 		});
 		controller.setGroup('authoring', 'authoring-selection', ranges);
@@ -266,6 +477,11 @@
 			'authoring-structural-boundaries',
 			'authoring-selection',
 			boundarySelections
+		);
+		controller.setStructuralBoundaryGroup(
+			'authoring-legacy-navigation',
+			'authoring-selection',
+			legacyNavigation
 		);
 	});
 	$effect(() => {
@@ -284,7 +500,7 @@
 			if (!(owner instanceof HTMLElement) || !stage.contains(owner) || owner.tabIndex < 0) return;
 			const annotationId = owner.dataset.annotationId;
 			if (!annotationId) return;
-			const occurrence = annotationOccurrence(annotationId, { owner });
+			const occurrence = annotationOccurrence(annotationRegistry, annotationId, { owner });
 			const version = focusVersion;
 			void tick().then(() => {
 				if (
@@ -302,7 +518,7 @@
 				const anchor = index
 					? resolveAnnotationAnchor(annotationRegistry, index, annotationId, occurrence)
 					: undefined;
-				(anchor?.owner ?? stage).focus({ preventScroll: true });
+				annotationRegistry.focus(anchor?.owner ?? stage);
 			});
 		});
 		return () => {
@@ -455,7 +671,7 @@
 	);
 	const navigationCapable = $derived(active && allowPlaybookNavigation && !picking);
 	const canOpenPlaybookItems = $derived(
-		interacting && viewer.prepared && current && navigationCapable && playbookNavigationReady
+		interacting && viewer.layoutPrepared && current && navigationCapable && playbookNavigationReady
 	);
 	const documentBackgroundDismissalEnabled = $derived(hasPanel && Boolean(onDocumentBackground));
 	const protectDocumentStage = $derived(hasPanel);
@@ -472,10 +688,26 @@
 	const panelResolved = $derived(Boolean(panelPosition));
 	let panelPositionChange = $state(0);
 	let selectedOccurrence = $state.raw<AnnotationOccurrence | null>(null);
+	let admittedOccurrence = $state.raw<{
+		token: object;
+		annotationId: string;
+		occurrence: AnnotationOccurrence | null;
+	} | null>(null);
 	let pageViewport = $state<HTMLDivElement>();
 	const loading = $derived(
-		!renderer.error && (!pages.length || (active && !viewer.visible && !viewer.preparationBlocked))
+		!renderer.error &&
+			(!pages.length || (active && !viewer.pagesVisible && !viewer.preparationBlocked))
 	);
+	const presentationOutcome = $derived(
+		hasActiveConflicts || (renderer.error && (!pages.length || incomplete))
+			? 'error'
+			: viewer.layoutPrepared && viewer.pagesVisible && current
+				? 'success'
+				: 'pending'
+	);
+	$effect(() => {
+		if (active) onPresentation?.(presentationOutcome);
+	});
 	const pageScale = $derived(displayWidth / PAGE_FORMAT.width);
 	const displayHeight = $derived(
 		(mountedPages.length * PAGE_FORMAT.height +
@@ -495,18 +727,23 @@
 		const fallbackTrigger = target
 			? source.geometry
 					?.triggersIntersecting(target)
-					.find((trigger) => sameSourceTarget(trigger.range, target))
+					.find((trigger) => sameSourceTarget(trigger.target, target))
 			: undefined;
 		const fallback = fallbackTrigger
 			? [...(source.geometry?.triggerIds.get(fallbackTrigger.id) ?? [])][0]
 			: undefined;
 		const id =
-			annotationId ?? (fallback ? triggerAnnotationId(fallback.itemId, fallback.trigger.id) : null);
+			annotationId ??
+			(fallback
+				? source.annotations
+						.find((item) => item.itemId === fallback.itemId)
+						?.annotations.find((annotation) => annotation.kind === 'trigger')?.id
+				: null);
 		const point = target && isTextTarget(target) ? target.range.start : undefined;
 		return resolveAnnotationAnchor(
 			annotationRegistry,
 			index,
-			id,
+			id ?? null,
 			occurrence?.annotationId === id ? occurrence : null,
 			point
 		);
@@ -514,12 +751,17 @@
 	/** Retain source coordinates so focus can return after the editor and preview disappear. */
 	function captureAnnotationFocus() {
 		const id = selectedAnnotationId,
-			occurrence = selectedOccurrence,
+			occurrence =
+				selectionRequest?.status === 'pending' &&
+				admittedOccurrence?.token === selectionRequest.token
+					? admittedOccurrence.occurrence
+					: selectedOccurrence,
 			target = panelTarget;
 		return () => {
 			if (!active) return;
 			const anchor = annotationAnchor(id, occurrence, target);
-			(anchor?.owner ?? viewer.documentStageElement)?.focus({ preventScroll: true });
+			const owner = anchor?.owner ?? viewer.documentStageElement;
+			if (owner) annotationRegistry.focus(owner);
 		};
 	}
 	function restoreAnnotationFocus() {
@@ -529,9 +771,10 @@
 		const target = panelTarget,
 			stage = viewer.documentStageElement,
 			index = snapshot?.source.sourceIndex,
+			selectionDocument = pageElementsSnapshot?.selectionDocument,
 			layout = layoutElement;
 		return active && hasPanel && target && stage && index && layout
-			? { target, stage, index, layout }
+			? { target, stage, index, layout, selectionDocument }
 			: undefined;
 	}
 	function panelPositionRequestIsCurrent(
@@ -543,6 +786,7 @@
 			Boolean(panelTarget && sameSourceTarget(panelTarget, request.target)) &&
 			viewer.documentStageElement === request.stage &&
 			snapshot?.source.sourceIndex === request.index &&
+			pageElementsSnapshot?.selectionDocument === request.selectionDocument &&
 			layoutElement === request.layout
 		);
 	}
@@ -556,7 +800,12 @@
 		}
 		await tick();
 		if (!panelPositionRequestIsCurrent(request)) return;
-		const bounds = sourceTargetBounds(request.stage, request.target, request.index);
+		const bounds = sourceTargetBounds(
+			request.stage,
+			request.target,
+			request.index,
+			request.selectionDocument
+		);
 		// A prior resolved position remains during a clause switch until the new page DOM commits.
 		// An initial panel has no fallback position, so it never renders at an arbitrary page top.
 		if (!bounds) return;
@@ -574,8 +823,16 @@
 		activation: AnnotationActivation
 	) {
 		if (!canOpenPlaybookItems) return;
-		if (onSelect(itemId, annotationId) === false) return;
-		selectedOccurrence = annotationOccurrence(annotationId, activation);
+		const occurrence = annotationOccurrence(annotationRegistry, annotationId, activation);
+		const admission = onSelect(itemId, annotationId);
+		if (admission === false || (typeof admission === 'object' && admission.status === 'rejected'))
+			return;
+		if (typeof admission === 'object' && admission.status === 'accepted')
+			admittedOccurrence = { token: admission.token, annotationId, occurrence };
+		else {
+			admittedOccurrence = null;
+			selectedOccurrence = occurrence;
+		}
 		if (panelPosition) panelPositionChange += 1;
 	}
 	function handleDocumentIntent(intent: DocumentGestureIntent) {
@@ -590,8 +847,23 @@
 	});
 	$effect(() => {
 		const selected = selectedAnnotationId,
-			open = hasPanel;
+			open = hasPanel,
+			request = selectionRequest,
+			available = active;
 		untrack(() => {
+			if (!available) {
+				admittedOccurrence = null;
+				selectedOccurrence = null;
+				return;
+			}
+			const admitted = admittedOccurrence;
+			if (admitted) {
+				if (request?.token !== admitted.token) admittedOccurrence = null;
+				else if (request.status === 'opened' && open && selected === admitted.annotationId) {
+					selectedOccurrence = admitted.occurrence;
+					admittedOccurrence = null;
+				}
+			}
 			if (!open || selectedOccurrence?.annotationId !== selected) selectedOccurrence = null;
 		});
 	});
@@ -631,11 +903,13 @@
 	});
 	function retryRender() {
 		if (!prepare) return;
+		source.setSelection(selectedConcessions);
 		if (requestedModel.error) {
 			renderer.fail(requestedModel.error);
 			return;
 		}
-		if (profiler && source.renderSource && !hasActiveConflicts)
+		if (profiler && source.renderSource && !hasActiveConflicts) {
+			onPresentation?.('pending');
 			renderer.request({
 				source: source.renderSource,
 				concessions: selectedConcessions,
@@ -644,12 +918,14 @@
 				progressive: !activationComplete,
 				profiler
 			});
+		}
 	}
 	$effect(() => {
 		const enabled = prepare;
+		const selection = selectedConcessions;
+		untrack(() => source.setSelection(selection));
 		const layoutProfiler = profiler,
 			model = source.renderSource,
-			selection = selectedConcessions,
 			preview = previewChanges,
 			blocked = hasActiveConflicts,
 			error = requestedModel.error;
@@ -711,7 +987,8 @@
 			commit = snapshot;
 		if (
 			!interacting ||
-			!viewer.prepared ||
+			(source.compactStructure && !hasPanel) ||
+			!viewer.layoutPrepared ||
 			!current ||
 			previewChanges.length ||
 			!commit ||
@@ -719,9 +996,9 @@
 		)
 			return;
 		const artifacts = renderer.artifacts;
-		if (!artifacts || artifacts.source !== commit.source) return;
+		if (!artifacts || artifacts.source.sourceIndex !== commit.source.sourceIndex) return;
 		const focusedItemId = hasPanel
-			? commit.source.items.find((item) =>
+			? source.annotations.find((item) =>
 					item.annotations.some((annotation) => annotation.id === selectedAnnotationId)
 				)?.itemId
 			: undefined;
@@ -731,7 +1008,8 @@
 				layoutProfiler,
 				artifacts,
 				focusedItemId,
-				renderer.paginationHistory
+				renderer.paginationHistory,
+				source.contentOverlays
 			)
 		);
 	});
@@ -808,20 +1086,20 @@
 		return () => abort.abort();
 	});
 	$effect(() => {
-		viewer.visible =
+		viewer.pagesVisible =
 			active &&
 			Boolean(mountedPages.length) &&
 			(activationComplete ||
 				(mountedGeneration === targetGeneration && (partialEligible || current)));
 		viewer.displayedSnapshot =
-			viewer.visible &&
+			viewer.pagesVisible &&
 			pageElementsSnapshot &&
 			(pageElementsSnapshot.id === targetGeneration || activationComplete)
 				? pageElementsSnapshot
 				: null;
 	});
 	$effect(() => {
-		if (!viewer.visible) return;
+		if (!viewer.pagesVisible) return;
 		const abort = new AbortController();
 		void afterPaint(abort.signal)
 			.then(() => recordColdStart('first-exact-display'))
@@ -829,15 +1107,15 @@
 		return () => abort.abort();
 	});
 	$effect(() => {
-		if (active && viewer.visible && snapshot && profiler)
+		if (active && viewer.pagesVisible && snapshot && profiler)
 			untrack(() => renderer.protectGeometry(profiler!));
 	});
 	let lastReadySnapshot: typeof snapshot;
 	let visibleGeneration = 0;
 	$effect(() => {
 		const prepared = current && pageElementsSnapshot === snapshot;
-		viewer.prepared = prepared;
-		viewer.ready = interacting && prepared;
+		viewer.layoutPrepared = prepared;
+		viewer.interactionEnabled = interacting && prepared && !renderer.pending;
 		if (interacting && prepared) {
 			if (lastReadySnapshot === snapshot) recordColdStart('prepared-page-elements-reused');
 			lastReadySnapshot = snapshot;
@@ -859,15 +1137,18 @@
 		if (prepared) lastReadySnapshot = snapshot;
 	});
 	onDestroy(() => {
-		viewer.ready = false;
-		viewer.visible = false;
+		viewer.interactionEnabled = false;
+		viewer.pagesVisible = false;
 		viewer.displayedSnapshot = null;
 		viewer.documentStageElement = undefined;
 		viewer.retry = undefined;
 		viewer.restoreAnnotationFocus = undefined;
 		viewer.captureAnnotationFocus = undefined;
 		annotationRegistry.clear();
-		if (!retained) renderer.destroy();
+		if (!retained) {
+			renderer.destroy();
+			source.destroy();
+		}
 	});
 </script>
 
@@ -913,10 +1194,11 @@
 	>
 		{#snippet documentContent()}
 			{#if pages.length}
+				<!-- Keep page siblings adjacent; native envelopes reject unowned whitespace. -->
+				<!-- prettier-ignore -->
 				<div
-					class="page-viewport relative isolate shrink-0 focus:outline-none"
+					class="page-viewport relative isolate w-full shrink-0 focus:outline-none"
 					bind:this={pageViewport}
-					style:width="100%"
 					style:height={`${displayHeight}px`}
 				>
 					<ReviewTags
@@ -924,18 +1206,19 @@
 						tags={reviewTags}
 						navigation={reviewNavigation}
 						onDecision={onReviewDecision}
-						ready={interacting && viewer.ready}
+						ready={interacting && viewer.interactionEnabled}
 						index={pageElementsSnapshot?.source.sourceIndex ?? snapshot?.source.sourceIndex}
 						pages={mountedPages}
 						scale={pageScale}
-					/>
-					<div
+					/><div
 						class="page-stack absolute top-0 left-0 z-1 flex w-(--contract-page-width) origin-top-left flex-col gap-(--contract-page-gap)"
 						style:transform={`scale(${pageScale})`}
+						style:--document-page-scale={pageScale}
 					>
 						{#each mountedPages as page (page.number)}
 							<DocumentPage
 								{page}
+								selectionDocument={pageElementsSnapshot?.selectionDocument}
 								interactive={active && (interactive || allowPlaybookNavigation)}
 								highlights={highlightRects.get(page.number) ?? EMPTY_HIGHLIGHTS}
 								{selectedAnnotationId}
@@ -944,10 +1227,10 @@
 								{structuralBoundaryAnnotations}
 								onAnnotationSelect={selectAnnotation}
 							/>
-						{/each}
-						{#if incomplete}
+						{/each}{#if incomplete}
 							<div
 								class="px-6 py-3 text-center text-sm text-ink-secondary"
+								data-document-chrome
 								role={renderer.error ? 'alert' : 'status'}
 							>
 								{#if renderer.error}

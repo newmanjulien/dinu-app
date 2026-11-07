@@ -5,7 +5,6 @@
 
 	type Props = {
 		email: string;
-		description?: string;
 		code: string;
 		errorText: string | null;
 		isSubmitting: boolean;
@@ -17,7 +16,6 @@
 
 	let {
 		email,
-		description,
 		code = $bindable(),
 		errorText,
 		isSubmitting,
@@ -29,7 +27,7 @@
 	const canSubmit = $derived(code.trim().length > 0 && !isSubmitting);
 </script>
 
-<AuthStepFrame title="Enter your code" {description}>
+<AuthStepFrame title="Enter your code">
 	<form
 		class="grid gap-3.5"
 		onsubmit={(event) => {

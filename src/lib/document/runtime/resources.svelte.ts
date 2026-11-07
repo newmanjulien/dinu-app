@@ -1,20 +1,30 @@
-import { getContext, setContext, untrack } from 'svelte';
-import type { Snippet } from 'svelte';
-import type { ReviewTag, ReviewDecision, ReviewNavigation } from '$lib/contract/approval';
-import type { ContractChange, SourceTarget } from '$lib/playbook/model';
+import type {
+	AnnotationAdmission,
+	AuthoringSelectionRequest
+} from '$lib/playbook/authoring-selection';
+import { concessionSelections } from '$lib/contract/applications';
+import type { ReviewDecision, ReviewNavigation, ReviewTag } from '$lib/contract/approval';
 import type { ContractSnapshotResult } from '$lib/contract/saved';
-import type { ContractSourceInput } from './source.svelte';
-import type { createContractWorkspace } from './workspace-factory';
-import type { ContractWorkspace } from './workspace-context';
+import { getContractOpenings } from '$lib/contract/snapshot-cache';
+import type { ContractChange, SourceTarget } from '$lib/playbook/model';
+import { sameSelection } from '$lib/playbook/model';
+import type { Snippet } from 'svelte';
+import { getContext, setContext, untrack } from 'svelte';
 import type { ContractLayoutProfiles } from './layout-context.svelte';
 import { recordColdStart } from './render-perf';
-import { recentOpenings } from '$lib/contract/browser-storage';
-import { sameSelection } from '$lib/playbook/model';
+import type { ContractSourceInput } from './source.svelte';
 import { type ConcessionSelection } from './types';
+import type { ContractWorkspace } from './workspace-context';
+import type { createContractWorkspace } from './workspace-factory';
 
 export interface ViewerBindings {
+	onPresentation?: (
+		outcome: import('$lib/auth/workspace-presentation.svelte').PresentationOutcome
+	) => void;
 	active?: boolean;
 	prepare?: boolean;
+	/** Demand only; instruction bodies and subscriptions belong to the authoring session. */
+	instructionPreload?: (ids: readonly string[]) => void;
 	reviewTags?: readonly ReviewTag[];
 	/** Reserved by the workspace before document pagination or review-tag projection. */
 	reviewGutter?: number;
@@ -27,6 +37,7 @@ export interface ViewerBindings {
 	interactive?: boolean;
 	followScroll?: boolean;
 	selectedAnnotationId?: string | null;
+	selectionRequest?: AuthoringSelectionRequest | null;
 	selectedRanges?: readonly SourceTarget[];
 	previewChanges?: readonly ContractChange[];
 	/** The selected clause's stable source target; click position is intentionally not retained here. */
@@ -34,10 +45,11 @@ export interface ViewerBindings {
 	picking?: boolean;
 	/** Whether this document offers playbook navigation, independent of temporary readiness. */
 	allowPlaybookNavigation?: boolean;
+	sourceSelectionEnabled?: boolean;
 	/** Additional action guard; does not remove mounted button semantics or focus. */
 	playbookNavigationReady?: boolean;
 	onRemoveConcession: (itemId: string) => void;
-	onSelect: (itemId: string, annotationId: string) => boolean | void;
+	onSelect: (itemId: string, annotationId: string) => AnnotationAdmission | boolean | void;
 	/** A resolved click on ordinary document content, after selection/drag classification. */
 	onDocumentBackground?: () => void;
 }
@@ -86,12 +98,14 @@ export class DocumentResource {
 		this.target = undefined;
 		this.bindings = undefined;
 		this.workspace.renderer.destroy();
+		this.workspace.source.destroy?.();
 	}
 }
 const RESOURCES = Symbol('document-resources');
 
 /** Layout-owned document work; route-owned interaction bindings never outlive their route. */
 export class DocumentResources {
+	private readonly openings = getContractOpenings();
 	entries = $state.raw<readonly DocumentResource[]>([]);
 	active = $state.raw<DocumentResource>();
 	warming = $state(true);
@@ -134,7 +148,7 @@ export class DocumentResources {
 						entry.workspace.viewer.preparationBlocked
 					),
 					prepared:
-						entry.workspace.viewer.prepared &&
+						entry.workspace.viewer.layoutPrepared &&
 						Boolean(
 							profiler &&
 							entry.workspace.source.renderSource &&
@@ -257,7 +271,7 @@ export class DocumentResources {
 			items: { data: data.snapshot.items }
 		});
 		entry.id = data.id;
-		entry.confirmedChoices = data.contract.selectedConcessions;
+		entry.confirmedChoices = concessionSelections(data.contract.applications);
 		this.update(entry, entry.confirmedChoices);
 		// The mounted viewer owns the render mode and its first-page paint handshake.
 		if (entry.workspace.renderer.error) entry.workspace.viewer.retry?.();
@@ -272,7 +286,7 @@ export class DocumentResources {
 			blocks: { data: data.snapshot.blocks },
 			items: { data: data.snapshot.items }
 		});
-		entry.confirmedChoices = data.contract.selectedConcessions;
+		entry.confirmedChoices = concessionSelections(data.contract.applications);
 		if (!entry.active) this.update(entry, entry.confirmedChoices);
 		return entry;
 	}
@@ -340,7 +354,7 @@ export class DocumentResources {
 		this.#failed.delete(entry.id);
 		const profiler = this.profiles.profiler;
 		if (
-			entry.workspace.viewer.prepared &&
+			entry.workspace.viewer.layoutPrepared &&
 			profiler &&
 			entry.workspace.source.renderSource &&
 			entry.workspace.renderer.isCurrent({
@@ -360,8 +374,8 @@ export class DocumentResources {
 		if (entry.id === 'admin') entry.allowed = false;
 		entry.bindings = undefined;
 		entry.target = undefined;
-		entry.workspace.viewer.ready = false;
-		entry.workspace.viewer.visible = false;
+		entry.workspace.viewer.interactionEnabled = false;
+		entry.workspace.viewer.pagesVisible = false;
 		if (this.active === entry) this.active = undefined;
 		this.update(entry, entry.id === 'admin' ? {} : entry.confirmedChoices);
 		this.#trim();
@@ -369,9 +383,9 @@ export class DocumentResources {
 	candidates(ranked: readonly string[], budget = this.#preparationBudget) {
 		if (!sameOrder(this.#rank, ranked)) this.#rank = [...ranked];
 		this.#preparationBudget = budget;
-		const recent = recentOpenings().find((opening) =>
-			this.entries.some((entry) => entry.id === opening.id)
-		)?.id;
+		const recent = this.openings
+			.read()
+			.find((opening) => this.entries.some((entry) => entry.id === opening.id))?.id;
 		const reserved = this.entries
 			.filter(
 				(entry) =>
@@ -413,7 +427,7 @@ export class DocumentResources {
 		if (this.#destroyed) return;
 		const entry = this.entries.find((entry) => entry.id === data.id);
 		if (entry) {
-			entry.confirmedChoices = data.contract.selectedConcessions;
+			entry.confirmedChoices = concessionSelections(data.contract.applications);
 			if (!entry.active) this.update(entry, entry.confirmedChoices);
 			return;
 		}
@@ -446,7 +460,7 @@ export class DocumentResources {
 		recordColdStart('document-resource-evicted');
 	}
 	#removable(saved: readonly DocumentResource[]) {
-		const recent = recentOpenings()[0]?.id;
+		const recent = this.openings.read()[0]?.id;
 		const rank = (entry: DocumentResource) => {
 			const index = this.#rank.indexOf(entry.id);
 			return entry.id === recent ? -1 : index < 0 ? Number.MAX_SAFE_INTEGER : index;

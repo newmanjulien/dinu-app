@@ -1,6 +1,0 @@
-Initial-selection old-scan/index comparison passed: 1936 seed source/Trigger ranges, including empty anchors, reference atoms and table cells.
-Secondary/addition issue-precedence comparison passed: 3872 selections.
-Old/full-index audit acceptance comparison passed: 10 valid and duplicate-Trigger variants. No frozen reference changes.
-(node:5) ExperimentalWarning: Transform Types is an experimental feature and might change at any time
-(Use `node --trace-warnings ...` to show where the warning was created)
-(node:5) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time

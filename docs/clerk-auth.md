@@ -8,9 +8,15 @@ no discovery or email-domain matching. Accounts belong to one company at a time.
 Clerk owns identity and verified sign-in email. Convex owns profiles, memberships,
 roles, company settings, and invitation records. Settings never updates another
 user's profile or Clerk's name. See [the company schema and rollout
-runbook](private-companies-rollout.md) and [current activation procedure](backend-redesign/phase-18-activation.md) before updating an existing deployment.
+runbook](private-companies-rollout.md) and [production releases](deployment.md).
 
 ## Development configuration
+
+The configured Dinu development backend is `disciplined-squid-496` in the
+`dinu-app` project, using Clerk issuer
+`https://expert-seal-1242.clerk.accounts.dev`. Production uses the separate live
+instance at `https://clerk.dinu.juliennewman.com` with backend
+`befitting-lyrebird-846`. Never use live Clerk keys in local development or previews.
 
 Create a Dinu **development** application in Clerk. Enable email verification
 codes for signup and sign-in, open signup, self-deletion, and reverification for
@@ -58,15 +64,53 @@ Add a Clerk webhook for **user.deleted** at
 not `.cloud`. Copy its signing secret to the matching Convex deployment. A valid
 delivery is acknowledged only after the permanent deletion marker commits.
 
-For ordinary development after the authorized initial activation, run `npx convex dev`
-against the confirmed development target, then `npm run dev`. During the pre-customer
-redesign, use Phase 18's target/archive/reset/deploy gates first; do not use dev/codegen
-to bypass them.
+For local development, run `npx convex dev` against the confirmed development
+target, then `npm run dev`.
 The browser uses Convex's authenticated Svelte integration with Clerk's `convex`
 token. Each Clerk session gets a fresh Convex client; local snapshot caches are
 scoped to profile and membership and cleared on logout, deletion, account changes,
 or membership changes. Server
 snapshot reads forward an authenticated token and return `private, no-store`.
+
+## Signup CAPTCHA
+
+Join and anonymous invitations share one stable `#clerk-captcha` host in
+`EmailCodeFlow.svelte`. It stays mounted outside the loading, email, and code
+branches, including while Clerk waits for a challenge. Ordinary Login does not
+mount it. Keep the host present before signup calls; without it, Clerk's legacy
+Smart protection falls back to an invisible check that cannot offer a falsely
+flagged person an interactive challenge.
+
+This integration uses **legacy Smart protection**. Confirm that mode in the
+matching Clerk instance before release. Clerk decides when interaction is needed;
+automatic checks can still take time before the email code is requested. The host
+uses supported light, compact, and automatic-language options. Its 150px compact
+width fits the auth column on narrow screens. Local styles only center it, with
+no reserved height, padding, or margins while idle. Clerk owns expansion, retries,
+and cleanup; do not hide or clip the challenge or override its dimensions. The
+provider controls the iframe's internal styling. Terminal errors use the existing
+form alert and retry button; refresh is a fallback for an unrecoverable attempt.
+
+See [Clerk's legacy integration and supported customization](https://clerk.com/docs/js-frontend/guides/development/custom-flows/authentication/bot-sign-up-protection#legacy-bot-sign-up-protection).
+Do not migrate this Svelte custom flow to newer Protect challenges as part of a
+CAPTCHA styling change; it does not currently meet those custom-flow SDK/UI
+requirements.
+
+After `npm run build` checks types and production bundling, manually verify:
+
+- Normal Join completes without an unnecessary interactive task or empty panel;
+  a challenged signup can complete the visible widget while the form is sending.
+- Challenge expiry or loading failure shows useful feedback and allows recovery;
+  retry, resend, change-email, and leaving/reopening the flow still work.
+- Keyboard access, zoom, and narrow mobile layouts keep the challenge usable.
+- Ordinary Login, invitations for existing and new accounts, and Clerk tickets
+  still work without duplicate hosts or stale updates.
+
+Development and production use separate Clerk instances and may have different
+protection settings. [Testing Tokens bypass protection](https://clerk.com/docs/guides/development/testing/overview#testing-tokens),
+so they cannot prove the challenged path. Record any unavailable challenge,
+failure, or abandoned-request path as unverified; a successful unchallenged local
+signup does not establish production behavior or eliminate the reported delay.
 
 ## Preparing an account for a user
 
@@ -236,15 +280,6 @@ the latest intent is confirmed, or the user explicitly resolves a conflict.
 “Use latest version” pauses follow-up saving while waiting for an active request.
 If its outcome is still uncertain, it retains the draft and reports failure.
 
-## Fresh development reset
-
-Follow the [current Phase 18 procedure](backend-redesign/phase-18-activation.md):
-identify/inventory the exact target, establish archive/restoration evidence and
-review quiescence/reset/job/storage operations before authorization. Existing
-Clerk accounts remain independent; normal onboarding initializes a missing
-application profile and creates the company. The ordinary atomic bootstrap uses
-that real company ID. No current local check has performed this reset.
-
 ## Deletion and recovery
 
 An owner with another live colleague must transfer ownership before account
@@ -291,7 +326,7 @@ writes use separate 25-identity batches. The company scan works after the profil
 is gone. Only a complete duplicate-free/requested-ID-only response whose count
 matches the filtered provider total establishes absence; failures and partial
 responses establish no deletion and do not starve later subsets/pages. Actual
-Clerk subset/count semantics remain Phase 18 acceptance. Each deletion marker tracks
+Clerk subset/count semantics require native verification. Each deletion marker tracks
 one cleanup job chain; repeated webhooks reuse an active chain, and stale jobs
 do no work. Recovery isolates individual failures and advances through all pages.
 Inspect `deletedUsers.complete`, `companyDeletions.status`, and scheduled-function
@@ -325,7 +360,7 @@ through reconciliation. Check live successor selection and ownerless recovery.
 Compare scoped counts, snapshot links, historical creator IDs and selections.
 Confirm failed or incomplete Clerk lookups never start deletion, and an uncertain
 client deletion result preserves dispatched consent. Exercise the deletion races
-listed in [the deletion runbook](company-deletion.md#activation-and-verification).
+listed in [the deletion runbook](company-deletion.md#verification).
 The local suite/build does not
 certify these live authorization and reset checks.
 

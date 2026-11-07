@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
+	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { untrack, onDestroy } from 'svelte';
 	import { creationPhase } from '$lib/contract/creation-perf';
 	import { goto } from '$app/navigation';
@@ -14,6 +16,7 @@
 	import NewContract from './NewContract.svelte';
 	const documentNavigation = getDocumentNavigation();
 	const runtime = getWorkspaceRuntime();
+	const presentation = useWorkspacePresentation();
 	const session = useViewerSession();
 	let { data }: { data: ContractDestination } = $props();
 	let savedRequested = $state(false);
@@ -101,26 +104,32 @@
 </script>
 
 {#if data.kind === 'saved' && (!creating || (creationTarget && attempt > 0))}
-	{#if SavedContract && runtime.ready}{#key `${data.id}:${attempt}`}
+	{#if SavedContract && runtime.hostReady}{#key `${data.id}:${attempt}`}
 			{@const mountedId = data.id}
 			{@const mountedAttempt = attempt}
 			<!-- Preparation can finish before the naming dialog hands off the workspace. -->
 			<SavedContract
 				id={mountedId}
-				admitted={!creating}
+				interactionAdmitted={!creating}
 				onVisible={() => visible(mountedId, mountedAttempt)}
 				onFailure={() => failure(mountedId, mountedAttempt)}
 			/>
 		{/key}
 	{:else if runtime.error || saved.failed}
+		<WorkspacePresentationReporter active={!creating} outcome="error" />
 		<LoadingState layout="workspace">
 			<p role="alert" class="text-sm">{runtime.error || 'We couldn’t load the contract viewer.'}</p>
 			<button
 				class="text-sm underline"
-				onclick={() => (runtime.error ? runtime.retry() : saved.retry())}>Try again</button
+				onclick={() => {
+					presentation?.restart();
+					runtime.error ? runtime.retry() : saved.retry();
+				}}>Try again</button
 			>
 		</LoadingState>
-	{:else}<LoadingPagination label="Loading contract" />{/if}
+	{:else}<WorkspacePresentationReporter active={!creating} outcome="pending" /><LoadingPagination
+			label="Loading contract"
+		/>{/if}
 {/if}
 {#if creating}<NewContract
 		onOpen={openSaved}

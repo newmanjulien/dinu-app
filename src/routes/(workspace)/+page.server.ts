@@ -1,8 +1,8 @@
 import { env } from '$env/dynamic/public';
-import { ConvexHttpClient } from 'convex/browser';
-import { api } from '../../convex/_generated/api';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import type { StartupData } from '$lib/auth/startup-data';
+import { ConvexHttpClient } from 'convex/browser';
+import { api } from '../../convex/_generated/api';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = ({ locals, isDataRequest }) => {
@@ -32,7 +32,7 @@ export const load: PageServerLoad = ({ locals, isDataRequest }) => {
 					globalThis.fetch(input, { ...init, signal: read.signal, cache: 'no-store' })
 			});
 			client.setAuth(token);
-			return { ...(await client.query(api.profiles.startup, {})), userId, sessionId };
+			return { ...(await client.query(api.accounts.startup, {})), userId, sessionId };
 		})(),
 		read.signal
 	)

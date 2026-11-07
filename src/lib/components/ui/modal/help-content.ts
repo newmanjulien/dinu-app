@@ -14,7 +14,7 @@ type HelpContent = {
 export const helpContent = {
 	rep: {
 		title: 'How Dinu works',
-		intro: 'Dinu helps sales reps understand, negotiate and close sales contracts on their own.',
+		intro: 'Dinu helps you understand, negotiate and close sales contracts.',
 		steps: [
 			{
 				title: 'Open a clause',

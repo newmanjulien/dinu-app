@@ -1,8 +1,9 @@
 import type { PaginationOptions } from 'convex/server';
 import { textPrefix } from '../lib/text';
-import type { MutationCtx, QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
+import type { MutationCtx, QueryCtx } from './_generated/server';
 import { liveCompanyMember } from './auth';
+import { installation, blockForConnection } from './contractPolicy';
 
 /** Update in the same transaction as every contract metadata write. */
 export async function writeDirectory(ctx: MutationCtx, contract: Doc<'savedContracts'>) {
@@ -14,7 +15,8 @@ export async function writeDirectory(ctx: MutationCtx, contract: Doc<'savedContr
 		contractId: contract._id,
 		companyId: contract.companyId,
 		creatorId: contract.creatorId,
-		companyName: contract.companyName,
+		hubspot: contract.hubspot,
+		buyerCompanyName: contract.buyerCompanyName,
 		savedAt: contract.savedAt,
 		createdAt: contract._creationTime
 	};
@@ -38,13 +40,14 @@ export async function readDirectory(
 	search: string,
 	paginationOpts: PaginationOptions
 ) {
+	const connection = await installation(ctx, companyId);
 	const term = textPrefix(search.trim(), 200);
 	const result = await (
 		term
 			? ctx.db
 					.query('contractDirectory')
-					.withSearchIndex('search_companyName', (q) =>
-						q.search('companyName', term).eq('companyId', companyId)
+					.withSearchIndex('search_buyerCompanyName', (q) =>
+						q.search('buyerCompanyName', term).eq('companyId', companyId)
 					)
 			: ctx.db
 					.query('contractDirectory')
@@ -72,7 +75,9 @@ export async function readDirectory(
 		page: await Promise.all(
 			result.page.map(async (contract) => ({
 				_id: contract.contractId,
-				companyName: contract.companyName,
+				hubspot: contract.hubspot,
+				workBlock: blockForConnection(connection, contract.hubspot),
+				buyerCompanyName: contract.buyerCompanyName,
 				savedAt: contract.savedAt,
 				creator: await resolveCreator(contract.creatorId)
 			}))

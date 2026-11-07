@@ -1,7 +1,7 @@
-import type { ContractChange } from './model';
-import { pointPosition, type SourceIndex } from '../contract/source-index';
+import { crossesBoundary, targetContainers, targetPosition } from '../contract/ranges';
+import type { ValidationSourceFacts } from '../contract/validation-source';
 import { isTextTarget } from '../contract/source-model';
-import { targetContainers } from '../contract/ranges';
+import type { ContractChange } from './model';
 
 export type ChangeFootprint =
 	| {
@@ -9,22 +9,32 @@ export type ChangeFootprint =
 			start: number;
 			end: number;
 	  }
-	| { kind: 'boundary'; afterBlockKey: string };
+	| { kind: 'boundary'; afterBlockKey: string; position: number };
 
-export function changeFootprint(index: SourceIndex, change: ContractChange): ChangeFootprint {
-	targetContainers(index, change.range);
-	if (!isTextTarget(change.range))
-		return { kind: 'boundary', afterBlockKey: change.range.afterBlockKey };
+export function changeFootprint(
+	index: ValidationSourceFacts,
+	change: ContractChange
+): ChangeFootprint {
+	targetContainers(index, change.target);
+	if (!isTextTarget(change.target))
+		return {
+			kind: 'boundary',
+			afterBlockKey: change.target.afterBlockKey,
+			position: targetPosition(index, change.target)
+		};
 	return {
 		kind: 'text',
-		start: pointPosition(index, change.range.range.start),
-		end: pointPosition(index, change.range.range.end)
+		start: targetPosition(index, change.target),
+		end: targetPosition(index, change.target, true)
 	};
 }
 
 function footprintsConflict(x: ChangeFootprint, y: ChangeFootprint): boolean {
-	if (x.kind === 'boundary' || y.kind === 'boundary')
-		return x.kind === 'boundary' && y.kind === 'boundary' && x.afterBlockKey === y.afterBlockKey;
+	if (x.kind === 'boundary')
+		return y.kind === 'boundary'
+			? x.afterBlockKey === y.afterBlockKey
+			: crossesBoundary(y.start, y.end, x.position);
+	if (y.kind === 'boundary') return crossesBoundary(x.start, x.end, y.position);
 	const xInsertion = x.start === x.end,
 		yInsertion = y.start === y.end;
 	return Boolean(
@@ -38,14 +48,18 @@ function footprintsConflict(x: ChangeFootprint, y: ChangeFootprint): boolean {
 	);
 }
 
-export function changesConflict(index: SourceIndex, a: ContractChange, b: ContractChange): boolean {
+export function changesConflict(
+	index: ValidationSourceFacts,
+	a: ContractChange,
+	b: ContractChange
+): boolean {
 	return footprintsConflict(changeFootprint(index, a), changeFootprint(index, b));
 }
 
 /** Request-local memo: each change's source coordinates are resolved at most once.
  * Keeping it local also accepts in-place draft edits on the next validation call.
  */
-export function createChangeConflictChecker(index: SourceIndex) {
+export function createChangeConflictChecker(index: ValidationSourceFacts) {
 	const footprints = new WeakMap<ContractChange, ChangeFootprint>();
 	const footprint = (change: ContractChange) => {
 		let value = footprints.get(change);

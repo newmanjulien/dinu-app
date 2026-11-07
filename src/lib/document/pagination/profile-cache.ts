@@ -89,33 +89,31 @@ function normalizeProfile(profile: BlockLayoutProfile): BlockLayoutProfile {
 	// Copy only geometry fields and freeze nested arrays: neither caller mutation nor
 	// extra properties on a surface result may carry content/provenance into the cache.
 	return Object.freeze(
-		profile.kind === 'heading'
-			? { kind: 'heading', outerHeight: profile.outerHeight }
-			: profile.kind === 'paragraph'
-				? {
-						kind: 'paragraph',
-						tokenCount: profile.tokenCount,
-						marginBlockStart: profile.marginBlockStart,
-						marginBlockEnd: profile.marginBlockEnd,
-						contentHeight: profile.contentHeight,
-						lines:
-							profile.lines &&
-							Object.freeze(
-								profile.lines.map(({ startToken, endToken, top, bottom }) =>
-									Object.freeze({ startToken, endToken, top, bottom })
-								)
+		profile.kind === 'paragraph'
+			? {
+					kind: 'paragraph',
+					tokenCount: profile.tokenCount,
+					marginBlockStart: profile.marginBlockStart,
+					marginBlockEnd: profile.marginBlockEnd,
+					contentHeight: profile.contentHeight,
+					lines:
+						profile.lines &&
+						Object.freeze(
+							profile.lines.map(({ startToken, endToken, top, bottom }) =>
+								Object.freeze({ startToken, endToken, top, bottom })
 							)
-					}
-				: {
-						kind: 'table',
-						columnWidths: Object.freeze([...profile.columnWidths]),
-						marginBlockStart: profile.marginBlockStart,
-						marginBlockEnd: profile.marginBlockEnd,
-						headerRowCount: profile.headerRowCount,
-						headerHeight: profile.headerHeight,
-						bodyRowHeights: Object.freeze([...profile.bodyRowHeights]),
-						borderBlockStart: profile.borderBlockStart,
-						borderBlockEnd: profile.borderBlockEnd
-					}
+						)
+				}
+			: {
+					kind: 'table',
+					columnWidths: Object.freeze([...profile.columnWidths]),
+					marginBlockStart: profile.marginBlockStart,
+					marginBlockEnd: profile.marginBlockEnd,
+					headerRowCount: profile.headerRowCount,
+					headerHeight: profile.headerHeight,
+					bodyRowHeights: Object.freeze([...profile.bodyRowHeights]),
+					borderBlockStart: profile.borderBlockStart,
+					borderBlockEnd: profile.borderBlockEnd
+				}
 	);
 }

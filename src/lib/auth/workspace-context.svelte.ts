@@ -2,7 +2,7 @@ import { getContext, setContext } from 'svelte';
 
 const key = Symbol('workspace-runtime');
 export interface WorkspaceRuntime {
-	readonly ready: boolean;
+	readonly hostReady: boolean;
 	readonly paused: boolean;
 	readonly error: string;
 	readonly navigationIntent: number;

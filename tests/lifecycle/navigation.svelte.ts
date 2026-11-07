@@ -1,7 +1,8 @@
 export const page = $state({
 	url: new URL('https://test.local/contracts/contract-a'),
 	route: { id: '/(workspace)/contracts/[id]' },
-	data: {} as Record<string, unknown>
+	data: {} as Record<string, unknown>,
+	state: {} as App.PageState
 });
 export const screen = $state({
 	home: false,
@@ -16,3 +17,9 @@ export const goto = (path: string) => navigate(path);
 export const resolve = (path: string) => path;
 export const beforeNavigate = () => {};
 export const preloadCode = async () => {};
+
+export const navigating = $state({ to: null as null | { url: URL } });
+export const replaceState = (url: URL, state: App.PageState) => {
+	page.url = url;
+	page.state = state;
+};

@@ -1,21 +1,16 @@
-import type { HelpVariant } from './help-content';
+const HIDE_HELP_STORAGE_KEY = 'hide-dinu-guide';
 
-const HIDE_HELP_STORAGE_KEYS: Record<HelpVariant, string> = {
-	rep: 'hide-dinu-guide',
-	admin: 'hide-dinu-admin-guide'
-};
-
-export function isHelpHidden(variant: HelpVariant): boolean {
+export function isHelpHidden(): boolean {
 	try {
-		return localStorage.getItem(HIDE_HELP_STORAGE_KEYS[variant]) === 'true';
+		return localStorage.getItem(HIDE_HELP_STORAGE_KEY) === 'true';
 	} catch {
 		return false;
 	}
 }
 
-export function setHelpHidden(variant: HelpVariant, hidden: boolean): void {
+export function setHelpHidden(hidden: boolean): void {
 	try {
-		localStorage.setItem(HIDE_HELP_STORAGE_KEYS[variant], String(hidden));
+		localStorage.setItem(HIDE_HELP_STORAGE_KEY, String(hidden));
 	} catch {
 		/* Storage is optional. */
 	}

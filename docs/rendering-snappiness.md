@@ -5,12 +5,12 @@ browser geometry, and runs one resumable paginator with internal page-boundary c
 publish exact closed pages before remaining pagination finishes; the complete
 `RenderSnapshot` adopts those frozen page objects. Warm updates retain the displayed
 complete document until their complete replacement commits. A cache-only render never
-touches the profiling DOM. See [current verification](staggered-opening-verification.md)
-for browser observations and remaining acceptance limits.
+touches the profiling DOM. See [verification and limits](#verification-and-limits) for automated checks and
+remaining browser acceptance limits.
 
 ## Composition and preparation
 
-The workspace renderer owns a source-scoped artifact store shared with concession warming.
+The workspace source controller owns a baseline-scoped artifact store shared with rendering and concession warming.
 Composition engines keep their own source index, Trigger lookup, numbering metadata,
 dependencies and cursors. Completed container content and resolved blocks are interned
 using complete content/provenance versions; preparation engines share weak caches of
@@ -21,10 +21,11 @@ The store owns a reference-counted dependency graph, with request-local working 
 released on completion, failure or cancellation. Foreground working references survive
 pagination until the complete snapshot promotes its current artifacts. Composer fields
 hold no independent container, generated-content or resolved-output caches. Replacing the
-accepted render source or destroying its renderer releases the store. Cancelled work can
+baseline or destroying the workspace source releases the store; layout epochs and content
+source changes borrow it without clearing completed artifacts. Cancelled work can
 contribute completed optional artifacts without publishing a snapshot.
 
-Container versions include patches, annotations, view and applicable numbering/reference
+Runtime container versions include active patches, view and applicable numbering/reference
 addresses, including references introduced by replacements. Ordered structural transfers,
 incoming suffixes and cutoffs reference immutable input artifact IDs and transfer intervals.
 Resolved versions reference those artifacts before constructing output, avoiding expanded
@@ -32,16 +33,78 @@ run/provenance serialization on warm hits. The same complete version path handle
 request, including removal of a previous transfer. Synchronous one-shot consumers keep only
 request-local artifacts and skip resolved-output interning.
 
-`LayoutPreparationEngine` reuses prepared blocks by resolved identity and table-cell
-tokens by cell-content identity. Geometry fingerprints include text, revisions,
-annotation segmentation and layout-affecting fragment properties. They exclude source
+`LayoutPreparationEngine` reuses prepared blocks by resolved identity, including
+whole static tables. Each cell produces a plain display token without source
+coordinates; there is no cell-level preparation cache. Table geometry uses raw
+cell text, header count, and variant. Text-block geometry fingerprints include
+text, revisions, line anchors/breaks and layout-affecting fragment properties. They exclude source
 coordinates and generated offsets, which remain on current tokens. Matching geometry
 permits profile reuse; matching prepared content identity permits page reuse.
 
 Live authoring removes the entire selected range and adds the complete replacement.
 Saved concessions may use a bounded readable redline. Effective wording, source slices,
 generated offsets and annotations follow the rules in
-[Document projection and composition](overlay-rendering.md).
+[the data model](data-model.md).
+
+## Annotation updates
+
+`DocumentDomain` accepts compact structure separately from hydrated selected details.
+`/admin` subscribes to `currentStructure` and keeps a bounded live instruction-detail pool.
+It starts warming as soon as the baseline matches ready structure, independently of renderer
+readiness: all fitting instructions, with 64 optional entries, eight first responses in flight
+and a 4 MiB encoded retained-body budget (not a total-memory bound). Selected/editor/save
+targets are pinned outside those optional limits. Completed owner transitions immediately
+account for demoted records in the optional budget; pending switches retain the actual editor
+pin. Closing or switching retains warm details; the last eight admitted real selections/opens,
+including successful existing-item restores, and nearby pages take priority over remaining
+structure order.
+Nearby demand reuses `subscribeEagerPages` and complete semantic annotation-owner memberships,
+including boundary and grouped controls, without extra page observers or text measurement.
+Memberships rebuild after owner commit, including boundary controls returning from location
+picking, and sort by page and semantic source position before deduplicating the current window.
+Each eligible reporting lifetime receives the current eager-page replay, including stationary
+same-baseline read restarts; retired callbacks cannot change current demand.
+Only selected/save-confirmation records enter the stable hydrated-detail projection. Optional
+arrivals do not notify foreground authoring reconciliation, change document render identity or
+paginate. Optional errors remain local to warming; accepted successful current reads retire
+only their own failed-read suppression. Deactivation, pause, blocking, freezing, suspension and
+baseline mismatch release optional work and nearby reporting; any released/recreated read
+requires a fresh observation.
+Successful structure acceptance memoizes the exact immutable
+array, pending render key, compiled contract identity and certification mode; detail hydration
+continues independently. Failed acceptance invalidates that shortcut. Certified structural
+snapshots build interval buckets in one
+pass, avoiding repeated audits of unchanged neighbors. Baseline blocks and their fingerprint
+arrive atomically; authoring readiness requires matching current structure. Detail readiness
+also requires an authoritative successful watermark and matching revision. An unavailable
+detail is loading/error, not proof that its rule was deleted. Warm selections reuse their
+existing current live snapshot synchronously; cold selections wait in the anchored rail/sheet
+without adding a loading row or changing document height. Editing copy can continue while
+a wording preview lays out; new source selection requires the coherent displayed snapshot.
+
+Only active replacement effects contribute to `ContractRenderSource`. Annotation-only
+updates retain that source, prepared tokens, pages and `selectionDocument`; they schedule no
+composition, token preparation, paragraph profiling or pagination. Actual wording changes
+reuse the baseline artifact store and compatible pagination history. Admin alternative warming
+requires an open panel, so confirming an instruction does not start optional layout work.
+
+`DocumentAnnotationProjection` indexes mounted token provenance once per complete snapshot
+and projects changed annotation ranges over the shared highlight controller's measured line
+maps. It handles baseline source, removed runs, generated replacement intervals, repeated
+occurrences and structural aliases. Every valid mounted occurrence has a named out-of-flow
+keyboard owner in source/priority order, with Enter/Space and selected/disabled states,
+even before its highlight geometry is measured. Complete clipped source/generated coverage
+determines focus restoration. Cold owners use a nonpainting page-local fallback; focus
+prepares only that owner's page. Native cold focus reveals measured bounds, while
+programmatic restoration preserves scroll. Deferred measurement never restores focus or
+reveals after a newer user intent. Bounds lookup uses the group's own pages, and ordering
+runs only when membership, anchor, identity or priority changes. Pending/selection state
+updates paint and ARIA independently.
+Pointer hit testing uses exact projected intervals and existing drag/selection/obscuring-UI
+policy. Annotation IDs use immutable render keys, so a pending new item keeps its semantic
+owner after the database ID arrives. Pending targets have dashed paint and disabled activation.
+Structural gaps use their existing independent controls. Annotation DOM and state changes do
+not invalidate text layout; font/content changes retain the existing geometry invalidation.
 
 ## Browser geometry compilation
 
@@ -66,8 +129,8 @@ components at contract content width. Profile mode retains layout wrappers while
 heading IDs, focus semantics and Trigger activation. Each source leaf carries an unconditional
 `data-contract-token` marker. Hidden leaves omit unused source-coordinate and interaction
 attributes by default; `PUBLIC_CONTRACT_PROFILE_METADATA=1` restores them. Visible leaves
-always retain all selection and provenance metadata. Text, spans, marks, annotation and
-revision wrappers, and layout classes remain identical. A synchronous scoped operation
+always retain all selection and provenance metadata. Text, source spans, revision wrappers and layout classes remain identical. Annotation
+activation owners sit outside the text flow and never appear on the profile surface. A synchronous scoped operation
 mounts one block, reads its geometry, lets pagination request immediate detail, and clears
 it before returning, including on failure. The surface is never held across an asynchronous
 wait. Tables still use the additional canonical-column write/read pass before affected
@@ -263,105 +326,19 @@ perform incremental pagination, reconciliation and one atomic snapshot commit. T
 
 ## Verification and limits
 
-November 5, 2026 audit-remediation verification: `npm run verify` passed 26 lifecycle
-checks, 23 performance checks, type checking (zero errors or warnings) and the production
-build. Existing suite counts reflect the current workspace; no tests were added or expanded
-for this work. No browser checks were performed.
+Run `npm run verify` for the existing lifecycle and performance suites, type checks
+and production build. See [performance checks](performance-checks.md) for their
+automated guarantees and limits.
 
-Temporary read-only Node/Vite probes passed 131 seed workflows, 660 randomized composition
-comparisons (including cancellation), and 2,500 incremental/full pagination comparisons.
-They compared complete content/provenance, fragment intervals and page assignments, including
-the cross-paragraph merge-to-paragraph-break regression. Repeated warmed seed choices required
-zero newly prepared blocks. Mixed bounds/exact associations, including empty exact paragraphs,
-survived cache eviction/reactivation without profiling. Focused warming admitted missing shapes
-through a full 256-entry optional geometry cache; applying the focused choice then required zero
-foreground surface transactions.
+`npm run seed:verify` checks frozen output hashes, token/fragment conservation and
+server-rendered source attributes. Semantic hashes cover original Trigger ownership;
+full provenance hashes also cover secondary effects and their applied state.
+Review output differences before updating expectations. Do not rewrite frozen
+references merely to obtain a passing result.
 
-Cache pressure preserved 600 current artifacts while retaining at most 256 optional roots.
-A separate 300-paragraph GC probe kept the composer and preparation engine alive after a
-fully prepared candidate was canceled: all 300 current blocks remained, while only 128
-alternative blocks and 128 prepared alternatives remained under the shared 256-entry budget.
-Destroying the store made all those resolved/prepared artifacts collectible. An actual
-controller probe confirmed zero outstanding working requests after cancellation, failure,
-source replacement and destruction, alongside progressive opening, atomic updates, last-valid
-snapshot retention and epoch invalidation.
-
-On the admitted amplified annotation fixture, a warm hit serialized 11,815 characters of
-version descriptors instead of 9,275,674 characters of expanded resolved output. The largest
-serialized value was 7,282 characters, with no resolved-output serialization. Single local
-diagnostic samples observed approximately 17.75 ms versus 0.04 ms of serialization, and
-19.01 ms versus 0.09 ms for the largest composer iterator step. These are instrumented Node
-samples, not a controlled production latency comparison. Browser click-to-paint, native
-selection, scroll stability, real font epochs and browser geometry remain unverified.
-
-Initial refactor verification, before audit remediation: `npm run test:perf` passed all 24 checks,
-`npm run test:lifecycle` passed all 27 checks, and type checks and the production build
-passed. No tests were added or expanded and no browser checks were performed.
-Temporary Node/Vite probes compared 131 incremental compositions and paginations with
-full recomputation, including saved Apply/remove choices, rapid toggles, combined
-concessions, authoring previews, paragraph insertion/merge/removal, tables, references,
-structural boundary insertion and cancellation. All successful pre-refactor seed outputs
-retained their content/provenance. The formerly failing `mutual-indemnification` boundary
-now uses the same prioritized annotation lookup as text replacements.
-
-The probes also observed zero newly prepared blocks for all warmed seed choices,
-zero profiling calls with cached exact geometry, a 256-entry optional artifact limit,
-and protected current artifacts. A separate 2,500-transition randomized probe
-compared full and incremental page assignments across insertions, deletions, headings,
-paragraph continuations and table rows, including heading lookahead that pulls content
-onto a previous page. Cache pressure retained 600 current artifacts while limiting
-alternatives to 256. A scheduler probe observed foreground, alternative, background order. A controller probe confirmed progressive page adoption,
-atomic updates, cancellation without stale commits, failure retention, source replacement,
-epoch invalidation, focused insertion warming with zero foreground profiling calls, and
-destruction. Synthetic surfaces do not establish real browser geometry or mounting behavior.
-
-A paired Node benchmark of a warmed coordinated concession used 30 measured trials after
-six warmup trials, alternating old/new order. Median composition was 0.918 ms before and
-0.439 ms after; preparation was 0.173 ms before and 0.013 ms after (four newly prepared blocks
-before, zero after). Synthetic pagination was 0.077 ms before and 0.084 ms after. Geometry,
-scheduler waits, DOM mounting and physical paint were excluded. These small local phase
-samples do not establish production click latency. Browser click-to-paint, native selection,
-scroll stability, real font epochs and geometry remain unverified.
-
-The observations below predate the progressive opening lifecycle and describe earlier
-geometry/runtime verification. Current measurements, commands and outstanding acceptance
-checks are in [staggered opening verification](staggered-opening-verification.md).
-
-Build/type checking and edited-file formatting pass. Focused local Chrome inspections
-covered the 113-block baseline, all 21 saved concessions in effective/redline views,
-paragraph and table continuations, canonical signature-table columns, final spacing,
-heading placement, token/provenance conservation and explicit oversized-unit failures.
-Production-component fragments matched profile heights without page overflow.
-
-Viewer inspection covered 44 Apply/remove transitions: at most one foreground batch per
-transition, zero for a repeated warm choice, and retained DOM/native selection on unchanged
-pages. Whole-range authoring across pages, Trigger activation, annotation anchoring,
-incremental search, highlights, viewport stability, font invalidation, supersession,
-failure retention, retry, cancellation and destruction were inspected separately.
-Idle inspection used 29 single-block batches, followed by 42 Apply/remove transitions
-with zero foreground batches. It also checked no idle snapshot publication, cancellation,
-foreground priority and one concurrent surface call. These are development fixture checks,
-not production latency benchmarks or backend/navigation verification. No test suite was added.
-
-Cache-pressure inspection retained all 300 current shapes across repeated resolution and
-kept Apply cache-only after warming 170 alternatives. Warming 400 alternatives stopped at
-256 optional entries. Changed-block enumeration reduced seed warming from 2,373 preparation
-calls to 42 for 29 new shapes. Queued cancellation/supersession skipped obsolete profiling;
-failed composition/preparation retained durations and partial counters. All 79 unsplit seed
-paragraphs reused their prepared token arrays. Simplified reconciliation retained repeated
-pages while rejecting changed intervals, canonical columns and provenance.
-
-Focused telemetry inspection confirmed 113 cold misses in one batch, one miss/batch for
-an uncached paragraph edit, and zero for cached and prewarmed transitions. Four missing
-block occurrences with two fingerprints required two profiles in one batch. Table-pass
-timings, hidden-content cleanup, failed-batch accounting, click timestamps, the 100-sample
-limit and unchanged foreground samples during idle warming passed. Edited files pass
-Prettier; repository-wide formatting still reports nine unrelated existing files.
-
-Commands and the frozen-reference policy are documented in
-[Document projection and composition](overlay-rendering.md#verification). The seed verifier
-uses synthetic geometry for semantic and fragment conservation; it cannot establish browser
-pagination. Review rendering differences before updating frozen expectations.
+Seed verification uses synthetic geometry and cannot establish browser pagination.
+Browser click-to-paint, native selection, scroll stability, font epochs and highlight
+geometry require browser verification. Use production traces for latency claims.
 
 ## Startup diagnostics
 
@@ -377,6 +354,9 @@ These diagnostics use the existing development / `PUBLIC_CONTRACT_PERF=1` gate.
 viewer/profile mounts, layout epochs, render phases, interaction readiness, and
 paint opportunity. They are not a substitute for controlled production traces.
 
-See [domain implementation and verification](document-domain-runtime.md) for current
-ownership, work observations, and outstanding checks, and
-[cold-start evidence](cold-start-performance.md) for historical browser measurements.
+The existing seed verifier still checks all 48 frozen effective/redline states, exact source
+and generated provenance, and token/fragment conservation. It maps only trigger annotation
+IDs to their former encoding when comparing frozen provenance hashes; the hashes are unchanged.
+Server markup checks source/generated spans and preserved projection memberships. Projected
+native hit targets, accessibility, geometry, focus and annotation-independent layout require
+the browser acceptance described in `docs/lifecycle.md`; existing suites do not certify them.

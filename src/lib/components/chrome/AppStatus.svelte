@@ -1,4 +1,6 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
+	import StatusBubble from './StatusBubble.svelte';
 	import type { OperationStatus as StatusItem } from './operation-status';
 	import type { RenderFailure } from '$lib/document/runtime/types';
 
@@ -7,13 +9,15 @@
 		renderPending = false,
 		renderError = null,
 		sourceStale = false,
-		onRetryRender
+		onRetryRender,
+		saveFeedback
 	}: {
 		feedback?: StatusItem | null;
 		renderPending?: boolean;
 		renderError?: RenderFailure | null;
 		sourceStale?: boolean;
 		onRetryRender?: () => void;
+		saveFeedback?: Snippet;
 	} = $props();
 	// Presentation only. Pending generations do not reset the delay during a burst.
 	let showUpdating = $state(false);
@@ -29,10 +33,7 @@
 </script>
 
 {#snippet status(item: StatusItem)}
-	<div
-		class="pointer-events-none rounded-xl border-hairline border-edge bg-surface px-2.5 py-1.5 text-[14px] leading-5 text-ink-secondary shadow-floating max-[999px]:w-full max-[999px]:px-3 max-[999px]:py-1 max-[999px]:text-sm"
-		role={item.urgent ? 'alert' : 'status'}
-	>
+	<StatusBubble urgent={item.urgent}>
 		{item.message}
 		{#each item.actions ?? [] as action}
 			<button
@@ -41,7 +42,7 @@
 				onclick={action.run}>{action.label}</button
 			>
 		{/each}
-	</div>
+	</StatusBubble>
 {/snippet}
 
 {#if feedback?.urgent}{@render status(feedback)}{/if}
@@ -57,5 +58,6 @@
 		message: 'The latest source updates are unavailable. Your current contract is kept.'
 	})}
 {/if}
+{@render saveFeedback?.()}
 {#if feedback && !feedback.urgent}{@render status(feedback)}{/if}
 {#if updating}{@render status({ message: 'Updating contract…' })}{/if}

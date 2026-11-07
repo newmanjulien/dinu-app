@@ -2,11 +2,8 @@
 	import { useAuth, useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../convex/_generated/api';
 	import { discardMembershipDrafts } from '$lib/contract/draft-recovery.svelte';
-	import { setCacheIdentity } from '$lib/contract/browser-storage';
-	import {
-		contractCacheResources,
-		releaseContractSnapshotCache
-	} from '$lib/contract/snapshot-cache';
+	import { createCacheScope } from '$lib/contract/browser-storage';
+	import { contractCacheResources, replaceContractCacheScope } from '$lib/contract/snapshot-cache';
 	import { setAccount, useViewerSession, type AccountViewer } from './viewer-session.svelte';
 	import { AccountPreparation } from './account-preparation';
 	import { ReadAttempt, waitForRead } from './attempt';
@@ -18,7 +15,7 @@
 	const auth = useAuth();
 	const session = useViewerSession();
 	session.registerResources(contractCacheResources);
-	const viewer = useQuery(api.profiles.viewer, () => (auth.isAuthenticated ? {} : 'skip'));
+	const viewer = useQuery(api.accounts.viewer, () => (auth.isAuthenticated ? {} : 'skip'));
 	const startup = useStartupData();
 	let receivedViewer = $state(false);
 	const data = $derived.by(() => {
@@ -80,11 +77,12 @@
 					account?.profile.id !== value.profile.id ||
 					account?.membership?.id !== value.membership?.id
 				) {
-					releaseContractSnapshotCache();
-					setCacheIdentity(
-						value.membership
-							? { profileId: value.profile.id, membershipId: value.membership.id }
-							: null
+					replaceContractCacheScope(
+						createCacheScope(
+							value.membership
+								? { profileId: value.profile.id, membershipId: value.membership.id }
+								: null
+						)
 					);
 				}
 				if (account?.membership && account.membership.id !== value.membership?.id && session.userId)

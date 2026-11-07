@@ -1,3 +1,5 @@
+import { CONTRACT_FORMAT } from '$lib/contract/format';
+
 const PAGE_WIDTH = 816;
 const HORIZONTAL_PADDING = 96;
 
@@ -13,7 +15,7 @@ export const PAGE_FORMAT = {
 } as const;
 
 // Bump when production typography, fragment markup or geometry CSS changes.
-export const LAYOUT_EPOCH = `document-layout-v3:${JSON.stringify(PAGE_FORMAT)}`;
+export const LAYOUT_EPOCH = `document-layout-v10:${JSON.stringify([PAGE_FORMAT, CONTRACT_FORMAT])}`;
 export function pageCapacity(pageIndex: number): number {
 	return (
 		PAGE_FORMAT.height -

@@ -10,13 +10,13 @@
 {#if announce}<span role="status" class="sr-only">{label}</span>{/if}
 <div data-testid="pagination-loading">
 	<div
-		class="paper"
+		class="aspect-(--paper-ratio) w-full overflow-hidden bg-surface shadow-card outline-(length:--surface-border-width) outline-edge outline-offset-[calc(-1*var(--surface-border-width))]"
 		aria-hidden="true"
 		style:--paper-ratio={`${PAGE_FORMAT.width} / ${PAGE_FORMAT.height}`}
 		style:--paper-padding={`${(PAGE_FORMAT.horizontalPadding / PAGE_FORMAT.width) * 100}%`}
 		style:--paper-top-padding={`${(PAGE_FORMAT.firstTopPadding / PAGE_FORMAT.width) * 100}%`}
 	>
-		<div class="paper-content">
+		<div class="px-(--paper-padding) py-(--paper-top-padding)">
 			<SkeletonBlock class="mx-auto mb-10 h-[23px] w-1/2" />
 			{#each [0, 1, 2, 3] as paragraph (paragraph)}
 				<div class="mb-8 space-y-3">
@@ -30,18 +30,3 @@
 		</div>
 	</div>
 </div>
-
-<style>
-	.paper {
-		width: 100%;
-		aspect-ratio: var(--paper-ratio);
-		overflow: hidden;
-		outline: var(--surface-border-width) solid var(--color-edge);
-		outline-offset: calc(-1 * var(--surface-border-width));
-		background: var(--color-surface);
-		box-shadow: var(--shadow-card);
-	}
-	.paper-content {
-		padding: var(--paper-top-padding) var(--paper-padding);
-	}
-</style>

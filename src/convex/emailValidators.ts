@@ -1,5 +1,5 @@
 import { ConvexError, v, type Infer } from 'convex/values';
-import { reviewStatus } from './contractValidators';
+import { approvalState } from '../lib/contract/applications';
 
 /** One plain mailbox, with the same identity at storage and provider boundaries. */
 export function emailAddress(input: string) {
@@ -35,34 +35,32 @@ export const emailSelection = v.object({
 	itemId: v.id('playbookItems'),
 	concessionId: v.string(),
 	concessionPosition: v.optional(v.number()),
-	lifecycle: v.optional(v.string()),
-	reviewStatus: v.optional(reviewStatus)
+	approval: v.optional(approvalState)
 });
 export type EmailSelection = Infer<typeof emailSelection>;
-export const emailEvent = v.union(
-	v.object({
-		kind: v.literal('approval'),
-		contractId: v.id('savedContracts'),
-		requestId: v.string(),
-		companyName: v.string(),
-		templateVersionId: v.id('templateVersions'),
-		recipientEmail: v.string()
-	}),
-	v.object({
-		kind: v.literal('decision'),
-		contractId: v.id('savedContracts'),
-		reviewGeneration: v.number(),
-		reviewerId: v.id('profiles'),
-		companyName: v.string(),
-		templateVersionId: v.id('templateVersions')
-	}),
-	v.object({
-		kind: v.literal('invitation'),
-		invitationId: v.id('companyInvitations'),
-		generation: v.number(),
-		recipientEmail: v.string()
-	})
-);
+export const approvalEmailEvent = v.object({
+	kind: v.literal('approval'),
+	contractId: v.id('savedContracts'),
+	requestId: v.string(),
+	buyerCompanyName: v.string(),
+	templateVersionId: v.id('templateVersions'),
+	recipientEmail: v.string()
+});
+export const decisionEmailEvent = v.object({
+	kind: v.literal('decision'),
+	contractId: v.id('savedContracts'),
+	reviewGeneration: v.number(),
+	reviewerId: v.id('profiles'),
+	buyerCompanyName: v.string(),
+	templateVersionId: v.id('templateVersions')
+});
+export const invitationEmailEvent = v.object({
+	kind: v.literal('invitation'),
+	invitationId: v.id('companyInvitations'),
+	generation: v.number(),
+	recipientEmail: v.string()
+});
+export const emailEvent = v.union(approvalEmailEvent, decisionEmailEvent, invitationEmailEvent);
 export type EmailEvent = Infer<typeof emailEvent>;
 
 const claimedDispatch = emailRecipients.extend({ kind: v.literal('claimed') });
@@ -101,13 +99,13 @@ const deliveryFields = {
 export const emailDelivery = v.union(
 	v.object({
 		...deliveryFields,
-		event: v.union(emailEvent.members[0], emailEvent.members[1]),
+		event: v.union(approvalEmailEvent, decisionEmailEvent),
 		contractId: v.id('savedContracts'),
 		execution: scheduledExecution
 	}),
 	v.object({
 		...deliveryFields,
-		event: emailEvent.members[2],
+		event: invitationEmailEvent,
 		execution: v.object({
 			kind: v.literal('inline'),
 			deadline: v.number(),

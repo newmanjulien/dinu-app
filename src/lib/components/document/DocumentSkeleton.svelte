@@ -21,10 +21,19 @@
 </script>
 
 {#if announce}<span role="status" class="sr-only">{label}</span>{/if}
-<div class="document-skeleton" class:embedded class:admin aria-hidden="true">
+<div
+	class={embedded
+		? 'p-0'
+		: admin
+			? 'pt-2 pb-12 min-[1000px]:pt-5'
+			: 'pt-14 pb-16 min-[1000px]:pt-6'}
+	aria-hidden="true"
+>
 	{#if admin && !embedded}
-		<div class="admin-heading-row px-2 text-center text-[13px] leading-6 text-ink-muted">
-			Edit the instructions reps will see
+		<div
+			class="mb-2 grid min-h-(--mobile-utility-rail-height) place-items-center min-[1000px]:mb-4 min-[1000px]:block min-[1000px]:min-h-0 px-2 text-center text-[13px] leading-6 text-ink-muted"
+		>
+			Edit the instructions reps see
 		</div>
 	{/if}
 	<DocumentWorkspaceGeometry {reviewGutter} {hasPanel}>
@@ -34,35 +43,3 @@
 		{#if hasPanel}<DocumentPanelSkeleton />{/if}
 	</DocumentWorkspaceGeometry>
 </div>
-
-<style>
-	.document-skeleton {
-		padding-block: 56px 64px;
-	}
-	.document-skeleton.admin {
-		padding-top: 8px;
-		padding-bottom: 48px;
-	}
-	.document-skeleton.admin .admin-heading-row {
-		display: grid;
-		min-height: var(--mobile-utility-rail-height);
-		place-items: center;
-		margin-bottom: 8px;
-	}
-	.document-skeleton.embedded {
-		padding: 0;
-	}
-	@media (min-width: 1000px) {
-		.document-skeleton:not(.embedded) {
-			padding-top: 24px;
-		}
-		.document-skeleton.admin {
-			padding-top: 24px;
-		}
-		.document-skeleton.admin .admin-heading-row {
-			display: block;
-			min-height: 0;
-			margin-bottom: 20px;
-		}
-	}
-</style>

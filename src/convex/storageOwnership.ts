@@ -7,14 +7,10 @@ const ORPHAN_GRACE = 24 * 60 * 60_000;
 
 /** Read ownership inside the same transaction as deletion, including staged uploads. */
 export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
-	const [baseline, attachment, profile, company] = await Promise.all([
+	const [baseline, profile, company, exportAttempt] = await Promise.all([
 		ctx.db
 			.query('baselines')
 			.withIndex('by_originalFileId', (q) => q.eq('originalFileId', fileId))
-			.first(),
-		ctx.db
-			.query('delegationAttachments')
-			.withIndex('by_storageId', (q) => q.eq('storageId', fileId))
 			.first(),
 		ctx.db
 			.query('profiles')
@@ -23,9 +19,13 @@ export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
 		ctx.db
 			.query('company')
 			.withIndex('by_avatarId', (q) => q.eq('avatarId', fileId))
+			.first(),
+		ctx.db
+			.query('hubspotExports')
+			.withIndex('by_fileId', (q) => q.eq('fileId', fileId))
 			.first()
 	]);
-	return !!(baseline || attachment || profile || company);
+	return !!(baseline || profile || company || exportAttempt);
 }
 
 /** Release the owner's reference first, then check all owners in this transaction. */

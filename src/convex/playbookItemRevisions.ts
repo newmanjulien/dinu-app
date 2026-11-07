@@ -1,16 +1,24 @@
-import type { MutationCtx } from './_generated/server';
 import type { Infer } from 'convex/values';
-import type { historicalItem } from './playbookValidators';
 import type { PlaybookItem } from '../lib/playbook/model';
+import type { DetailRecord } from '../lib/playbook/structure';
+import { playbookStructure } from '../lib/playbook/structure';
+import { encodeStructure, decodeStructure } from '../lib/playbook/structure-codec';
 import type { Doc, Id } from './_generated/dataModel';
-import { documentBytes, publicationCapacity } from './templateCapacity';
+import type { MutationCtx, QueryCtx } from './_generated/server';
+import type { historicalItem } from './playbookValidators';
+import { assertStorageCapacity, documentBytes } from './storageCapacity';
 
 export type HistoricalItem = Infer<typeof historicalItem>;
 
 /** Project the business fields without persistence metadata. */
 export function businessItem(item: PlaybookItem): PlaybookItem {
-	const { trigger, instructions, concessions } = item;
-	return { trigger, ...(instructions === undefined ? {} : { instructions }), concessions };
+	const { trigger, instructions, concessions, approvalPolicy } = item;
+	return {
+		approvalPolicy,
+		trigger,
+		...(instructions === undefined ? {} : { instructions }),
+		concessions
+	};
 }
 export function snapshotItem(item: HistoricalItem): HistoricalItem {
 	return {
@@ -18,16 +26,20 @@ export function snapshotItem(item: HistoricalItem): HistoricalItem {
 		_id: item._id,
 		_creationTime: item._creationTime,
 		companyId: item.companyId,
-		revision: item.revision
+		contentRevision: item.contentRevision
 	};
 }
-export function itemRevision(saved: HistoricalItem) {
+export function itemRevision(
+	saved: HistoricalItem & Partial<Pick<DetailRecord, 'lastOperation' | 'renderKey'>>
+) {
 	return {
 		companyId: saved.companyId,
 		itemId: saved._id,
 		itemCreatedAt: saved._creationTime,
-		revision: saved.revision,
-		body: businessItem(saved)
+		contentRevision: saved.contentRevision,
+		body: businessItem(saved),
+		...(saved.lastOperation ? { lastOperation: saved.lastOperation } : {}),
+		...(saved.renderKey ? { renderKey: saved.renderKey } : {})
 	};
 }
 export function historicalRevision(saved: Doc<'playbookItemRevisions'>): HistoricalItem {
@@ -36,66 +48,136 @@ export function historicalRevision(saved: Doc<'playbookItemRevisions'>): Histori
 		_id: saved.itemId,
 		_creationTime: saved.itemCreatedAt,
 		companyId: saved.companyId,
-		revision: saved.revision
+		contentRevision: saved.contentRevision
 	};
 }
 export async function storeItemRevision(
 	ctx: MutationCtx,
-	saved: HistoricalItem,
-	draftVersionId?: Id<'templateVersions'>
+	saved: HistoricalItem & Partial<Pick<DetailRecord, 'lastOperation' | 'renderKey'>>,
+	mutableVersionId?: Id<'templateVersions'>
 ) {
-	const revision = { ...itemRevision(saved), draftVersionId };
-	await publicationCapacity(ctx, { documents: 1, bytes: documentBytes(revision) });
-	return ctx.db.insert('playbookItemRevisions', revision);
+	const contentRevision = { ...itemRevision(saved), mutableVersionId };
+	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(contentRevision) });
+	return ctx.db.insert('playbookItemRevisions', contentRevision);
 }
 
-/** A draft-only revision can be replaced because no saved contract can reference it. */
+/** A mutable revision can be replaced because no saved contract can reference it. */
 export async function replaceDraftItemRevision(
 	ctx: MutationCtx,
 	revisionId: Id<'playbookItemRevisions'>,
-	saved: HistoricalItem,
-	draftVersionId: Id<'templateVersions'>
+	saved: HistoricalItem & Partial<Pick<DetailRecord, 'lastOperation' | 'renderKey'>>,
+	mutableVersionId: Id<'templateVersions'>
 ) {
-	const revision = { ...itemRevision(saved), draftVersionId };
-	await publicationCapacity(ctx, { documents: 1, bytes: documentBytes(revision) });
-	await ctx.db.replace('playbookItemRevisions', revisionId, revision);
+	const contentRevision = { ...itemRevision(saved), mutableVersionId };
+	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(contentRevision) });
+	await ctx.db.replace('playbookItemRevisions', revisionId, contentRevision);
 	return revisionId;
 }
 
-/** A newly allocated revision becomes mutable only after its draft version is known. */
+/** A newly allocated revision becomes mutable after its owning version is known. */
 export async function markDraftItemRevision(
 	ctx: MutationCtx,
 	revisionId: Id<'playbookItemRevisions'>,
-	draftVersionId: Id<'templateVersions'>
+	mutableVersionId: Id<'templateVersions'>
 ) {
-	const revision = await ctx.db.get('playbookItemRevisions', revisionId);
-	if (!revision || revision.draftVersionId) return;
-	await publicationCapacity(ctx, {
+	const contentRevision = await ctx.db.get('playbookItemRevisions', revisionId);
+	if (!contentRevision || contentRevision.mutableVersionId) return 0;
+	const beforeBytes = documentBytes(contentRevision);
+	const afterBytes = documentBytes({ ...contentRevision, mutableVersionId });
+	await assertStorageCapacity(ctx, {
 		documents: 1,
-		bytes: documentBytes({ ...revision, draftVersionId })
+		bytes: afterBytes
 	});
-	await ctx.db.patch('playbookItemRevisions', revisionId, { draftVersionId });
+	await ctx.db.patch('playbookItemRevisions', revisionId, { mutableVersionId });
+	return afterBytes - beforeBytes;
 }
 
-/** Allocation and the revision head commit in the same publication transaction. */
+/** Compact heads are the only live storage format written by canonical writers. */
+export function compactHead(saved: DetailRecord) {
+	return {
+		format: 1 as const,
+		companyId: saved.companyId,
+		contentRevision: saved.contentRevision,
+		currentRevisionId: saved.currentRevisionId,
+		...(saved.lastOperation ? { lastOperation: saved.lastOperation } : {}),
+		renderKey: saved.renderKey,
+		structure: encodeStructure(playbookStructure(saved))
+	};
+}
+export function headStructure(head: Doc<'playbookItems'>) {
+	return 'format' in head ? decodeStructure(head.structure) : playbookStructure(head);
+}
+export function liveRevision(revision: Doc<'playbookItemRevisions'>): DetailRecord {
+	return {
+		...historicalRevision(revision),
+		currentRevisionId: revision._id,
+		...(revision.lastOperation ? { lastOperation: revision.lastOperation } : {}),
+		renderKey: revision.renderKey ?? revision.itemId
+	};
+}
+export async function hydrateHead(
+	ctx: QueryCtx,
+	head: Doc<'playbookItems'>,
+	knownRevision?: Doc<'playbookItemRevisions'> | null
+): Promise<DetailRecord> {
+	const revision =
+		knownRevision === undefined
+			? head.currentRevisionId
+				? await ctx.db.get('playbookItemRevisions', head.currentRevisionId)
+				: null
+			: knownRevision;
+	if (
+		!revision ||
+		revision.companyId !== head.companyId ||
+		revision.itemId !== head._id ||
+		revision.itemCreatedAt !== head._creationTime ||
+		revision.contentRevision !== head.contentRevision
+	)
+		throw new Error('The saved rule revision is missing.');
+	return {
+		...liveRevision(revision),
+		...(head.lastOperation ? { lastOperation: head.lastOperation } : {}),
+		renderKey: 'format' in head ? head.renderKey : head._id
+	};
+}
+/** Allocate identity cheaply; publish the complete packed head once in the same transaction. */
 export async function createAuthoringItem(
 	ctx: MutationCtx,
-	content: Omit<Doc<'playbookItems'>, '_id' | '_creationTime' | 'revision' | 'publishedRevisionId'>
-) {
-	const created = { ...content, revision: 1 };
-	const bytes = documentBytes(created);
-	await publicationCapacity(ctx, {
+	content: PlaybookItem & {
+		companyId: Id<'company'>;
+		lastOperation?: DetailRecord['lastOperation'];
+		renderKey?: string;
+	}
+): Promise<DetailRecord> {
+	const initial = {
+		format: 1 as const,
+		companyId: content.companyId,
+		contentRevision: 1,
+		...(content.lastOperation ? { lastOperation: content.lastOperation } : {}),
+		renderKey: content.renderKey ?? content.lastOperation?.id ?? '',
+		structure: new ArrayBuffer(0)
+	};
+	await assertStorageCapacity(ctx, {
 		documents: 1,
-		bytes,
+		bytes: documentBytes(initial),
 		queries: 1,
-		readDocuments: 1,
-		readBytes: bytes
+		readDocuments: 1
 	});
-	const id = await ctx.db.insert('playbookItems', created);
-	const saved = (await ctx.db.get('playbookItems', id))!;
-	const publishedRevisionId = await storeItemRevision(ctx, saved);
-	const next = { ...saved, publishedRevisionId };
-	await publicationCapacity(ctx, { documents: 1, bytes: documentBytes(next) });
-	await ctx.db.patch('playbookItems', id, { publishedRevisionId });
+	const id = await ctx.db.insert('playbookItems', initial);
+	const head = (await ctx.db.get('playbookItems', id))!;
+	const saved: DetailRecord = {
+		...businessItem(content),
+		_id: id,
+		_creationTime: head._creationTime,
+		companyId: content.companyId,
+		contentRevision: 1,
+		...(content.lastOperation ? { lastOperation: content.lastOperation } : {}),
+		renderKey: initial.renderKey || id
+	};
+	const currentRevisionId = await storeItemRevision(ctx, saved);
+	const next = { ...saved, currentRevisionId };
+	const packedHead = compactHead(next);
+	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(packedHead) });
+	await ctx.db.replace('playbookItems', id, packedHead);
 	return next;
 }

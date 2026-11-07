@@ -1,107 +1,54 @@
 <script lang="ts">
-	import type { AnnotationActivation } from '$lib/document/annotation-anchor';
-	import type { StructuralBoundary } from '$lib/contract/source-index';
-	import type { AnnotationMembership } from '$lib/playbook/document-overlay';
-	import InlineContent from './InlineContent.svelte';
-	import StructuralBoundaryAnchor from './StructuralBoundaryAnchor.svelte';
+	import RevisionText from './RevisionText.svelte';
 	import { fragmentKey, type PageFragment } from '$lib/document/pagination/types';
 
 	let {
 		fragment,
+		collapsed = false,
 		profileMode = false,
-		interactive = true,
-		navigationCapable = false,
-		selectedAnnotationId,
-		canOpenPlaybookItems,
-		structuralBoundaries = [],
-		structuralBoundaryAnnotations = new Map(),
-		onAnnotationSelect
+		interactive = true
 	}: {
 		fragment: PageFragment;
+		collapsed?: boolean;
 		/** Preserve layout markup while suppressing global IDs and interactive semantics. */
 		profileMode?: boolean;
 		interactive?: boolean;
-		navigationCapable?: boolean;
-		selectedAnnotationId: string | null;
-		canOpenPlaybookItems: boolean;
-		/** Metadata only; the page highlighter measures each boundary's adjacent margin. */
-		structuralBoundaries?: readonly StructuralBoundary[];
-		structuralBoundaryAnnotations?: ReadonlyMap<string, readonly AnnotationMembership[]>;
-		onAnnotationSelect: (
-			itemId: string,
-			annotationId: string,
-			activation: AnnotationActivation
-		) => void;
 	} = $props();
+	const tokenIndices = $derived(
+		!profileMode && fragment.type === 'paragraph'
+			? new Map(fragment.tokens.map((token, i) => [token, (fragment.interval?.start ?? 0) + i]))
+			: undefined
+	);
 </script>
 
-{#snippet structuralBoundaryElements()}
-	{#each structuralBoundaries as boundary (boundary.afterBlockKey)}
-		<span
-			class="structural-boundary-target"
-			data-structural-boundary={boundary.afterBlockKey}
-			aria-hidden="true"
-		></span>{#if !profileMode}
-			<StructuralBoundaryAnchor
-				boundary={boundary}
-				annotations={structuralBoundaryAnnotations.get(boundary.afterBlockKey) ?? []}
-				selected={(structuralBoundaryAnnotations.get(boundary.afterBlockKey) ?? []).some(
-					(annotation) => annotation.id === selectedAnnotationId
-				)}
-				{interactive}
-				{navigationCapable}
-				{canOpenPlaybookItems}
-				{onAnnotationSelect}
-			/>
-		{/if}
-	{/each}
-{/snippet}
-
-{#if fragment.type === 'heading'}
+{#if fragment.type === 'paragraph'}
 	<svelte:element
-		this={`h${fragment.level}`}
-		id={profileMode ? undefined : fragment.anchor}
-		class="contract-block contract-heading"
-		class:has-structural-boundary={Boolean(structuralBoundaries.length)}
-		data-block-key={fragment.blockKey}
-		data-source-fragment-key={fragmentKey(fragment)}
-		tabindex={interactive && !profileMode ? -1 : undefined}
-	>
-		<InlineContent
-			{profileMode}
-			{interactive}
-			{navigationCapable}
-			tokens={fragment.tokens}
-			{selectedAnnotationId}
-			canOpenPlaybookItems={canOpenPlaybookItems && interactive && !profileMode}
-			{onAnnotationSelect}
-		/>{@render structuralBoundaryElements()}
-	</svelte:element>
-{:else if fragment.type === 'paragraph'}
-	<p
-		class="contract-block contract-paragraph"
-		class:is-continuation={fragment.isContinuation}
+		this={fragment.role === 'title' ? 'h1' : fragment.role === 'heading' ? 'h2' : 'p'}
+		id={profileMode || fragment.interval?.start ? undefined : fragment.anchor}
+		class="contract-block scroll-mt-[calc(var(--app-header-height)+var(--document-viewport-gap))] focus:outline-none"
+		class:contract-heading={fragment.role !== 'body'}
+		class:contract-paragraph={fragment.role === 'body'}
+		class:is-title={fragment.role === 'title'}
 		class:is-final={fragment.isFinal}
-		class:has-structural-boundary={Boolean(structuralBoundaries.length)}
 		data-block-key={fragment.blockKey}
+		data-selection-collapsed={collapsed ? '' : undefined}
 		data-source-fragment-key={fragmentKey(fragment)}
+		style:--document-block-margin-before={`${fragment.interval?.start ? 0 : (fragment.gapBefore ?? 0)}px`}
+		tabindex={interactive && !profileMode && fragment.anchor && !fragment.interval?.start
+			? -1
+			: undefined}
 	>
-		<InlineContent
-			{profileMode}
-			{interactive}
-			{navigationCapable}
-			tokens={fragment.tokens}
-			{selectedAnnotationId}
-			canOpenPlaybookItems={canOpenPlaybookItems && interactive && !profileMode}
-			{onAnnotationSelect}
-		/>{@render structuralBoundaryElements()}
-	</p>
+		<RevisionText {profileMode} tokens={fragment.tokens} {tokenIndices} />
+	</svelte:element>
 {:else}
 	<table
 		class="contract-block contract-table"
+		class:is-final={fragment.isFinal}
 		class:signature-table={fragment.variant === 'signature'}
 		data-block-key={fragment.blockKey}
+		data-selection-collapsed={collapsed ? '' : undefined}
 		data-source-fragment-key={fragmentKey(fragment)}
+		style:--document-block-margin-before={`${fragment.interval?.start ? 0 : (fragment.gapBefore ?? 0)}px`}
 		style:table-layout={fragment.columnWidths ? 'fixed' : undefined}
 	>
 		{#if fragment.columnWidths}
@@ -114,15 +61,11 @@
 				<tr
 					>{#each row as cell, cellIndex}
 						<th scope="col" data-source-row={rowIndex} data-source-cell={cellIndex}>
-							<InlineContent
-								{profileMode}
-								{interactive}
-								{navigationCapable}
-								tokens={cell.tokens}
-								{selectedAnnotationId}
-								canOpenPlaybookItems={canOpenPlaybookItems && interactive && !profileMode}
-								{onAnnotationSelect}
-							/>
+							{#each cell.tokens as token}{#if token.lineAnchor}<span
+										class="select-none"
+										aria-hidden="true"
+										data-selection-line-anchor>{token.value}</span
+									>{:else}{token.value}{/if}{/each}
 						</th>{/each}</tr
 				>
 			{/each}
@@ -135,15 +78,11 @@
 							data-source-row={(fragment.interval?.start ?? 0) + rowIndex + fragment.headerRowCount}
 							data-source-cell={cellIndex}
 						>
-							<InlineContent
-								{profileMode}
-								{interactive}
-								{navigationCapable}
-								tokens={cell.tokens}
-								{selectedAnnotationId}
-								canOpenPlaybookItems={canOpenPlaybookItems && interactive && !profileMode}
-								{onAnnotationSelect}
-							/>
+							{#each cell.tokens as token}{#if token.lineAnchor}<span
+										class="select-none"
+										aria-hidden="true"
+										data-selection-line-anchor>{token.value}</span
+									>{:else}{token.value}{/if}{/each}
 						</td>{/each}</tr
 				>
 			{/each}

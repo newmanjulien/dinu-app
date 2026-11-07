@@ -1,16 +1,17 @@
-import { api } from '../../src/convex/_generated/api';
 import { getFunctionName } from 'convex/server';
-import type { SnapshotClient } from '../../src/lib/contract/snapshot-cache';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { api } from '../../src/convex/_generated/api';
+import type { Id } from '../../src/convex/_generated/dataModel';
+import { createCacheScope } from '../../src/lib/contract/browser-storage';
+import type { SnapshotClient } from '../../src/lib/contract/snapshot-cache';
 import {
 	getContractSnapshotCache,
-	releaseContractSnapshotCache
+	releaseContractSnapshotCache,
+	replaceContractCacheScope
 } from '../../src/lib/contract/snapshot-cache';
 import type { ReadyContract } from '../../src/lib/contract/snapshot-storage';
-import type { Id } from '../../src/convex/_generated/dataModel';
 import { block, item } from './fixtures';
 import { observeSnapshotStorage } from './snapshot-storage-observer';
-import { setCacheIdentity } from '../../src/lib/contract/browser-storage';
 
 const id = 'synthetic-contract' as Id<'savedContracts'>;
 const itemId = 'synthetic-item' as Id<'playbookItems'>;
@@ -25,11 +26,10 @@ function fixture(): ReadyContract {
 			companyId,
 			templateVersionId: 'synthetic-template' as Id<'templateVersions'>,
 			_creationTime: 1,
-			companyName: 'Synthetic Buyer',
+			buyerCompanyName: 'Synthetic Buyer',
 			savedAt: 123,
-			reviews: {},
-			selectedConcessions: {},
-			revision: 0,
+			applications: {},
+			editRevision: 0,
 			reviewGeneration: 0,
 			stateVersion: 1,
 			reviewCompletion: null,
@@ -42,7 +42,7 @@ function fixture(): ReadyContract {
 			items: [
 				{
 					...item,
-					revision: 1,
+					contentRevision: 1,
 					companyId,
 					_id: itemId,
 					_creationTime: 1
@@ -62,9 +62,7 @@ function networkFixture() {
 			.mockImplementation((reference, _args, callback, onError) => {
 				let subscribed = true;
 				const work =
-					getFunctionName(reference) === getFunctionName(api.savedContracts.state)
-						? state()
-						: version();
+					getFunctionName(reference) === getFunctionName(api.contracts.state) ? state() : version();
 				void work.then(
 					(value: never) => {
 						if (subscribed) callback(value);
@@ -89,10 +87,12 @@ describe('snapshot caching work', () => {
 		storage = observeSnapshotStorage();
 		vi.stubGlobal('document', Object.assign(new EventTarget(), { hidden: false }));
 		vi.stubGlobal('window', {});
-		setCacheIdentity({
-			profileId: 'synthetic-profile' as Id<'profiles'>,
-			membershipId: 'synthetic-membership' as Id<'memberships'>
-		});
+		replaceContractCacheScope(
+			createCacheScope({
+				profileId: 'synthetic-profile' as Id<'profiles'>,
+				membershipId: 'synthetic-membership' as Id<'memberships'>
+			})
+		);
 	});
 
 	afterEach(async () => {
@@ -134,16 +134,14 @@ describe('snapshot caching work', () => {
 		expect(storage.immutableWrites).toBe(1);
 		if (reopened.status !== 'ready') throw new Error('Expected a ready fixture.');
 		const confirmedState = {
-			companyName: 'Confirmed Buyer',
-			reviews: {
+			buyerCompanyName: 'Confirmed Buyer',
+			applications: {
 				[itemId]: {
 					concessionId: 'preferred',
-					lifecycle: 'synthetic-application',
-					status: 'approved' as const
+					approval: { applicationId: 'synthetic-application', status: 'approved' as const }
 				}
 			},
-			selectedConcessions: { [itemId]: 'preferred' },
-			revision: 1,
+			editRevision: 1,
 			reviewGeneration: 1,
 			stateVersion: 2,
 			reviewCompletion: null,
@@ -173,16 +171,15 @@ describe('snapshot caching work', () => {
 		expect(state).not.toHaveBeenCalled();
 		expect(version).not.toHaveBeenCalled();
 		cache.updateState(id, {
-			companyName: 'Latest',
-			reviews: {},
-			selectedConcessions: {},
-			revision: 2,
+			buyerCompanyName: 'Latest',
+			applications: {},
+			editRevision: 2,
 			reviewGeneration: 2,
 			stateVersion: 3,
 			reviewCompletion: null,
 			lastOperationId: 'latest'
 		});
-		expect(cache.seedConfirmed(data)?.contract.revision).toBe(2);
+		expect(cache.seedConfirmed(data)?.contract.editRevision).toBe(2);
 		expect(cache.peek(id)?.snapshot).toBe(data.snapshot);
 		expect(storage.immutableWrites).toBe(1);
 		cache.remove(id);

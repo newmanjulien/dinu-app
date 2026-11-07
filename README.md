@@ -6,7 +6,7 @@ For production configuration and the coordinated Vercel/Convex release process,
 see [Production releases](docs/deployment.md).
 
 The immutable contract source is separate from the Playbook. A Playbook Item has
-one or more Triggers, optional instructions, and negotiation concessions. Each
+one Trigger, optional instructions, an explicit approval policy, and negotiation concessions. Each
 concession applies an atomic set of source-coordinate Contract Changes.
 
 `/` owns a `RepWorkspace` and `RepPlaybookPanel`. `/admin` owns an `AdminWorkspace`
@@ -15,7 +15,7 @@ machinery. The viewer receives only the derived document overlay, not instructio
 draft state or save operations.
 
 Admins select unowned source to create an item or click a Trigger to edit its
-complete item. One local draft supports instructions, multiple Triggers, preferred
+complete item. One local draft supports instructions, a Trigger, preferred
 and rare concessions, multiple changes, and structured contract references.
 Save validates and submits the complete instruction box; Cancel discards local
 changes without writing. Adding a concession to an existing box updates only the
@@ -68,13 +68,13 @@ Follow [Clerk setup and rollout](docs/clerk-auth.md) before starting `convex dev
 the backend needs the matching JWT issuer. Local verification and production builds
 can run before Clerk is configured; the app shows a setup screen until keys exist.
 The canonical bootstrap data is `data/convex`: 112 immutable blocks and
-56 Playbook Items, containing 56 Triggers, 26 concessions and 34 changes.
+55 Playbook Items, containing 55 Triggers, 21 concessions and 29 changes.
 The seed command refuses to overwrite edited runtime records and resumes an
 interrupted items-first import. It only loads initial company templates.
 
-This schema requires canonical baseline/revision links, creators, review maps, and
-numbering/reference patterns. Clear incompatible database data before deployment,
-then create the company through normal onboarding and reseed it. Follow [the fresh reset runbook](docs/private-companies-rollout.md#fresh-development-reset).
+The [current data model](docs/data-model.md) explains ownership, revisions, approval
+applications, and lifecycle owners. See [production releases](docs/deployment.md)
+for deployment; an ordinary deployment does not migrate existing data.
 
 ## Server and browser responsibilities
 
@@ -115,8 +115,9 @@ approval recipient in Settings. Backend configuration requires an HTTP(S) app
 origin without credentials, a path, query, or fragment. Missing configuration
 causes a failed delivery without sending a provider request.
 
-An applied concession requires approval when its saved playbook instruction's
-“Changes need to be approved” field contains nonblank text. Pending or rejected
+An applied concession requires approval when its captured playbook item's
+`approvalPolicy.kind` is `required`. The existing “Changes need to be approved”
+text editor sets that policy for nonblank guidance and clears it when empty. Pending or rejected
 concessions block Word download. Approval decisions belong to the saved application
 lifecycle, and changing selections advances the review generation. Approval requests
 capture the company name, recipient, and concession details. Their workspace link
@@ -124,7 +125,7 @@ is `APP_URL/contracts/<contract ID>?review=1`.
 
 All senders share `emailDeliveries` and its dispatch, completion, recovery, retry,
 and cancellation rules. Immutable descriptions are stored in bounded
-`emailSnapshots` chunks. Recipients and access are checked again before dispatch.
+`emailSelectionChunks` chunks. Recipients and access are checked again before dispatch.
 The provider receives an idempotency key scoped to the deployment, delivery, and
 attempt. A successful response confirms provider acceptance; inbox delivery still
 requires manual verification.
@@ -159,12 +160,9 @@ npm run build
 configured deployment without comparing deployment-specific IDs to seed IDs. Add `--seed`
 to require an exact business-data match to the local seed. The local
 verifier uses deterministic row identities only within verification; no second
-business identity is stored. It compares all 58 frozen compositor states,
+business identity is stored. It compares the frozen compositor states,
 including full source/provenance signatures, pagination token conservation and
-server-rendered provenance attributes; see the [reference policy](docs/overlay-rendering.md#verification).
-
-Contract creation, immutable publication, development measurements, and the staged
-rollout are documented in [the creation report](docs/contract-creation-performance.md).
+server-rendered provenance attributes; see the [reference policy](docs/rendering-snappiness.md#verification-and-limits).
 
 Dinu uses open verified email signup and private companies. Each account creates a
 company, accepts an invitation, or waits for a colleague. There is no company
@@ -176,8 +174,7 @@ deletes their account, with former-colleague attribution where needed. See
 [authentication configuration](docs/clerk-auth.md) and
 [the schema and rollout runbook](docs/private-companies-rollout.md).
 
-See [workspace ownership](docs/persistent-workspace.md),
-[rendering](docs/overlay-rendering.md), [performance](docs/rendering-snappiness.md),
+See the [data model](docs/data-model.md), [rendering](docs/rendering-snappiness.md),
 and [editor lifecycle](docs/lifecycle.md).
 
 ### Authoring behavior
@@ -191,13 +188,6 @@ Creation mode is absent from live records and immutable snapshots. Every item ha
 a required revision; admin creation and seed imports both start at revision 1.
 Deploy the Convex schema and mutations together with the frontend after the reset.
 
-Cold-start implementation, rollback flags, recorded evidence, and outstanding production
-measurement gates are documented in [the performance report](docs/cold-start-performance.md).
-
-The [document domain implementation report](docs/document-domain-runtime.md) records
-ownership, the revision-writer audit, available verification, and open build/browser
-gates for the incremental runtime refactor.
-
 ## Production-data seed restoration
 
 The cleaned supplied Convex export is retained under `data/migration/source` as the
@@ -210,6 +200,5 @@ old provision rules. `seed:verify` requires that reconciliation to pass.
 The seed generator produces the same text and boundary target format used by
 runtime records. Archived inline bold/italic formatting is discarded; concessions
 store their current description and contract changes.
-Read [the reconciliation and cutover report](docs/production-data-reconciliation.md)
-before any development rehearsal or production cutover. The seed command requires an explicit company and matching development/local
+See the [current seed and activation status](docs/production-data-reconciliation.md). The seed command requires an explicit company and matching development/local
 target; it cannot load production or overwrite existing edited content.

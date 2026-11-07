@@ -5,7 +5,7 @@
 
 @theme {
 	--font-sans: 'Inter Variable', Inter, sans-serif;
-	--font-document: Arial, Helvetica, sans-serif;
+	--font-editorial: Newsreader, 'Times New Roman', serif;
 
 	--color-canvas: #f1f3f4;
 	--color-page: #fafafa;
@@ -46,12 +46,12 @@
 	--radius-button-lg: 10px;
 	--radius-button-xl: 12px;
 	--spacing-button-sm: 38px;
-	--spacing-modal: 24px;
 }
 
 :root {
 	--surface-border-width: 0.5px;
-	--app-header-height: 30px;
+	--app-nav-height: 30px;
+	--app-header-height: var(--app-nav-height);
 	--document-viewport-gap: 16px;
 	--mobile-utility-rail-height: calc(
 		var(--spacing) * 9 + var(--surface-border-width) + var(--surface-border-width)
@@ -71,10 +71,6 @@
 	}
 }
 
-.clause-panel-content {
-	animation: clause-panel-content-in 140ms ease-out both;
-}
-
 @keyframes clause-panel-content-in {
 	from {
 		opacity: 0;
@@ -86,15 +82,9 @@
 	}
 }
 
-@media (prefers-reduced-motion: reduce) {
-	.clause-panel-content {
-		animation: none;
-	}
-}
-
 @media (min-width: 768px) {
 	:root {
-		--app-header-height: 35px;
+		--app-nav-height: 35px;
 	}
 }
 
@@ -105,8 +95,4 @@ body {
 
 html {
 	scrollbar-gutter: stable;
-}
-
-.font-editorial {
-	font-family: Newsreader, 'Times New Roman', serif;
 }

@@ -31,27 +31,27 @@ export function contractNotification(
 		let approvedCount = 0;
 		let rejectedCount = 0;
 		for (const selection of selections) {
-			if (selection.reviewStatus === 'approved') approvedCount++;
-			else if (selection.reviewStatus === 'rejected') rejectedCount++;
+			if (selection.approval?.status === 'approved') approvedCount++;
+			else if (selection.approval?.status === 'rejected') rejectedCount++;
 			else throw new Error('Completed review snapshot contains an unresolved concession.');
 		}
 		return {
 			kind: 'decision',
-			data: { companyName: event.companyName, url, approvedCount, rejectedCount }
+			data: { companyName: event.buyerCompanyName, url, approvedCount, rejectedCount }
 		};
 	}
 	let pendingCount = 0;
 	let reviewedCount = 0;
 	let notRequiredCount = 0;
 	for (const selection of selections) {
-		if (selection.reviewStatus === undefined) notRequiredCount++;
-		else if (selection.reviewStatus === 'pending') pendingCount++;
+		if (selection.approval?.status === undefined) notRequiredCount++;
+		else if (selection.approval?.status === 'pending') pendingCount++;
 		else reviewedCount++;
 	}
 	return {
 		kind: 'approval',
 		data: {
-			companyName: event.companyName,
+			companyName: event.buyerCompanyName,
 			url: `${url}?review=1`,
 			pendingCount,
 			reviewedCount,

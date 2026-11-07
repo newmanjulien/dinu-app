@@ -1,3 +1,4 @@
+import type { ValidationSourceFacts, ValidationUnit } from './validation-source';
 import { PlaybookValidationError } from '../playbook/validation-error';
 import type { BaselineBlock, InlineSource, SourcePoint } from './source-model';
 import { numberSourceKey } from './source-model';
@@ -6,18 +7,18 @@ import { iterateNumberAddresses, referenceText, type Address } from './numbering
 export interface SourceUnit {
 	readonly sourceKey: string;
 	readonly kind: InlineSource['kind'] | 'number';
-	readonly containerKey: string;
 	readonly blockKey: string;
-	readonly inTable: boolean;
+	readonly containerKey: string;
 	readonly position: number;
 	/** UTF-16 code units for text (same as DOM offsets), 1 for atomic units. */
 	readonly length: number;
 	readonly displayText: string;
 }
 export interface SourceContainer {
-	readonly containerKey: string;
 	readonly blockKey: string;
-	readonly inTable: boolean;
+	readonly containerKey: string;
+	/** Tables separate selectable text regions, even when every cell is empty. */
+	readonly region: number;
 	readonly units: readonly SourceUnit[];
 }
 export interface SourceIndex {
@@ -60,12 +61,12 @@ export function* iterateSourceIndex(
 	const numberingItems = new Map<string, BaselineBlock>();
 	const structuralBoundaries = new Map<string, StructuralBoundary>();
 	let position = 0;
+	let region = 0;
 	let previousOrder = -1;
 	function* container(
 		block: BaselineBlock,
 		containerKey: string,
-		content: readonly InlineSource[],
-		inTable: boolean
+		content: readonly InlineSource[]
 	) {
 		const local: SourceUnit[] = [];
 		function add(sourceKey: string, kind: SourceUnit['kind'], length: number, displayText: string) {
@@ -76,9 +77,8 @@ export function* iterateSourceIndex(
 				kind,
 				length,
 				displayText,
-				containerKey,
 				blockKey: block.blockKey,
-				inTable,
+				containerKey,
 				position
 			});
 			units.push(unit);
@@ -86,7 +86,7 @@ export function* iterateSourceIndex(
 			byKey.set(sourceKey, unit);
 			position += length;
 		}
-		if (!inTable && block.numbering)
+		if (block.kind !== 'table' && block.numbering)
 			add(
 				numberSourceKey(block.numbering.itemKey),
 				'number',
@@ -113,9 +113,9 @@ export function* iterateSourceIndex(
 		containers.set(
 			containerKey,
 			Object.freeze({
-				containerKey,
 				blockKey: block.blockKey,
-				inTable,
+				containerKey,
+				region,
 				units: Object.freeze(local)
 			})
 		);
@@ -138,12 +138,9 @@ export function* iterateSourceIndex(
 		blockMap.set(block.blockKey, block);
 		if (block.numbering) numberingItems.set(block.numbering.itemKey, block);
 		if (block.kind === 'table') {
-			for (const [r, row] of block.rows.entries())
-				for (const [c, cell] of row.entries()) {
-					yield* container(block, `${block.blockKey}/cell/${r}/${c}`, cell.content, true);
-					yield undefined;
-				}
-		} else yield* container(block, block.blockKey, block.content, false);
+			// Static tables have no selectable source, but separate flow even when empty.
+			region++;
+		} else yield* container(block, block.blockKey, block.content);
 		yield undefined;
 	}
 	// Structural boundaries are metadata, not zero-length source text. In particular they never
@@ -155,7 +152,6 @@ export function* iterateSourceIndex(
 		// to a real trailing margin on its preceding paragraph or heading.
 		if (!before) continue;
 		if (before?.kind === 'table' || after?.kind === 'table') continue;
-		if (before?.kind !== 'paragraph' && after?.kind !== 'paragraph') continue;
 		structuralBoundaries.set(
 			before.blockKey,
 			Object.freeze({
@@ -177,7 +173,9 @@ export function* iterateSourceIndex(
 		structuralBoundaries
 	};
 }
-export function resolvePoint(index: SourceIndex, point: SourcePoint): SourceUnit {
+export function resolvePoint(index: SourceIndex, point: SourcePoint): SourceUnit;
+export function resolvePoint(index: ValidationSourceFacts, point: SourcePoint): ValidationUnit;
+export function resolvePoint(index: ValidationSourceFacts, point: SourcePoint): ValidationUnit {
 	const unit = index.byKey.get(point.sourceKey);
 	if (
 		!unit ||
@@ -188,6 +186,6 @@ export function resolvePoint(index: SourceIndex, point: SourcePoint): SourceUnit
 		throw new PlaybookValidationError(`Invalid source point: ${point.sourceKey}@${point.offset}`);
 	return unit;
 }
-export function pointPosition(index: SourceIndex, point: SourcePoint): number {
+export function pointPosition(index: ValidationSourceFacts, point: SourcePoint): number {
 	return resolvePoint(index, point).position + point.offset;
 }

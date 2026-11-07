@@ -55,6 +55,55 @@ export function* iteratePreparedDocument(
 			throw new Error(`Missing or mismatched layout profile for "${block.fragment.blockKey}".`);
 		return profile;
 	}
+	const followingHeights = new Map<number, number>();
+	/** Keep headings and collapsed blanks with the first actual body line or table row. */
+	function* followingHeight(index: number): Generator<PaginationStep, number> {
+		const prefix: { index: number; height: number }[] = [];
+		let height = 0;
+		for (; index < blocks.length; index++) {
+			const cached = followingHeights.get(index);
+			if (cached !== undefined) {
+				height = cached;
+				break;
+			}
+			const next = blocks[index];
+			const profile = yield* profileFor(
+				next,
+				next.fragment.type === 'paragraph' ? 'exact' : 'bounds'
+			);
+			if (profile.kind === 'paragraph') {
+				if (!profile.lines) throw new Error('Heading lookahead requires exact observed lines.');
+				if (next.fragment.type === 'paragraph' && next.fragment.keepWithNext) {
+					prefix.push({
+						index,
+						height: paragraphFragmentHeight(
+							{ ...profile, lines: profile.lines },
+							0,
+							profile.lines.length
+						)
+					});
+					continue;
+				}
+				if (!profile.lines.length) {
+					prefix.push({
+						index,
+						height: paragraphFragmentHeight({ ...profile, lines: profile.lines }, 0, 0)
+					});
+					continue;
+				}
+				height = paragraphFirstLineHeight({ ...profile, lines: profile.lines });
+			} else {
+				height = tableFragmentHeight(profile, 0, Math.min(1, profile.bodyRowHeights.length));
+			}
+			followingHeights.set(index, height);
+			break;
+		}
+		for (let offset = prefix.length - 1; offset >= 0; offset--) {
+			height += prefix[offset].height;
+			followingHeights.set(prefix[offset].index, height);
+		}
+		return height;
+	}
 	const checkpoint = (blockIndex: number, offset = 0): PaginationCheckpoint => ({
 		pageNumber: page.number + 1,
 		blockIndex,
@@ -74,8 +123,7 @@ export function* iteratePreparedDocument(
 		remaining = capacityAt(page.number - 1);
 	}
 	function accept(prepared: PreparedBlock, fragment: PageFragment, height: number) {
-		const carriesBoundaries =
-			fragment.type === 'heading' || (fragment.type === 'paragraph' && fragment.isFinal);
+		const carriesBoundaries = fragment.type === 'paragraph' && fragment.isFinal;
 		const boundaries = carriesBoundaries ? (prepared.boundariesAfter ?? []) : [];
 		page.placements.push({
 			prepared,
@@ -89,25 +137,8 @@ export function* iteratePreparedDocument(
 		const block = blocks[index];
 		const whole = block.fragment;
 		yield undefined;
-		let profile = yield* profileFor(block);
-		if (whole.type === 'heading' && profile.kind === 'heading') {
-			const next = blocks[index + 1];
-			const following =
-				next?.fragment.type === 'paragraph' ? yield* profileFor(next, 'exact') : undefined;
-			if (following?.kind === 'paragraph' && !following.lines)
-				throw new Error('Heading lookahead requires exact observed lines.');
-			const required =
-				profile.outerHeight +
-				(following?.kind === 'paragraph' && following.lines
-					? paragraphFirstLineHeight({ ...following, lines: following.lines })
-					: 0);
-			if (!fits(required) && page.placements.length) yield* newPage(index);
-			if (!fits(required))
-				throw new Error(
-					`Heading "${whole.anchor}" cannot fit with its required spacing and following line on an empty page.`
-				);
-			accept(block, whole, profile.outerHeight);
-		} else if (whole.type === 'table' && profile.kind === 'table') {
+		const profile = yield* profileFor(block);
+		if (whole.type === 'table' && profile.kind === 'table') {
 			const rowCount = whole.rows.length - whole.headerRowCount;
 			if (
 				profile.headerRowCount !== whole.headerRowCount ||
@@ -120,11 +151,13 @@ export function* iteratePreparedDocument(
 				interval: { start: 0, end: rowCount },
 				columnWidths: profile.columnWidths
 			};
+			const preceding = page.placements.at(-1)?.fragment;
 			// Preserve the move-whole-table rule before considering body-row splits.
 			if (
 				!offset &&
 				!fits(height) &&
 				page.placements.length &&
+				!(preceding?.type === 'paragraph' && preceding.keepWithNext) &&
 				fitsPage(height, capacityAt(page.number))
 			)
 				yield* newPage(index);
@@ -149,6 +182,7 @@ export function* iteratePreparedDocument(
 					block,
 					{
 						...table,
+						isFinal: end === rowCount,
 						interval: { start, end },
 						rows: [
 							...headers,
@@ -162,6 +196,16 @@ export function* iteratePreparedDocument(
 			}
 		} else if (whole.type === 'paragraph' && profile.kind === 'paragraph') {
 			const outerHeight = profile.marginBlockStart + profile.contentHeight + profile.marginBlockEnd;
+			if (!offset && whole.keepWithNext) {
+				const required = outerHeight + (yield* followingHeight(index + 1));
+				// Placement is a preference. Impossible groups/chains use ordinary line splitting.
+				if (
+					!fits(required) &&
+					page.placements.length &&
+					fitsPage(required, capacityAt(page.number))
+				)
+					yield* newPage(index);
+			}
 			if (!offset && fits(outerHeight)) {
 				if (profile.tokenCount !== whole.tokens.length)
 					throw new Error(`Paragraph layout profile does not match "${whole.blockKey}".`);

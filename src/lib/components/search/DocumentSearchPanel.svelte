@@ -5,7 +5,6 @@
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
 	import type { DocumentSearchSession } from '$lib/document/search/search-session.svelte';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
-	import { fieldShellClass, fieldInputClass } from '$lib/ui/field-styles';
 
 	let {
 		session,
@@ -40,16 +39,17 @@
 	aria-label="Search"
 	data-utility-panel="document-search"
 >
-	<label class={`${fieldShellClass} flex h-9 items-center gap-2`}>
+	<label
+		class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-ink aria-disabled:bg-canvas aria-disabled:text-ink-muted flex h-9 items-center gap-2"
+	>
 		<span class="sr-only">Find in document</span>
 		<MagnifyingGlassIcon
 			aria-hidden="true"
-			size={17}
 			weight="regular"
-			class="shrink-0 text-ink-muted"
+			class="size-[17px] shrink-0 text-ink-muted"
 		/>
 		<input
-			class={fieldInputClass}
+			class="min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted w-full flex-1 border-0 bg-transparent p-0 text-inherit outline-none [&::-webkit-search-cancel-button]:hidden"
 			bind:this={inputElement}
 			type="search"
 			value={session.query}
@@ -78,7 +78,7 @@
 					disabled={!session.resultCount}
 					onclick={() => session.previous()}
 				>
-					<CaretUpIcon aria-hidden="true" size={20} weight="bold" />
+					<CaretUpIcon aria-hidden="true" class="size-5" weight="bold" />
 				</SquareIconButton>
 				<SquareIconButton
 					type="button"
@@ -86,7 +86,7 @@
 					disabled={!session.resultCount}
 					onclick={() => session.next()}
 				>
-					<CaretDownIcon aria-hidden="true" size={20} weight="bold" />
+					<CaretDownIcon aria-hidden="true" class="size-5" weight="bold" />
 				</SquareIconButton>
 			</div>
 		</div>

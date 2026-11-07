@@ -5,7 +5,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createServer } from 'vite';
 import { readSeed, reconcile } from './reconcile-production-seed.mjs';
-import { normalize, sortedKeys } from './verify-overlay-parity.mjs';
+import { normalize, sortedKeys, frozenProvenanceKeys } from './verify-overlay-parity.mjs';
+import { remapSeedSelections } from './production-seed.mjs';
+const paragraphRoles = process.argv.length === 3 && process.argv[2] === '--paragraph-roles';
+if (process.argv.length > 2 && !paragraphRoles)
+	throw new Error('Usage: node scripts/refresh-production-references.mjs [--paragraph-roles]');
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 try {
 	const blocks = await readSeed('contractBlocks'),
@@ -18,12 +22,18 @@ try {
 		toDocumentOverlay({ ...item, _id: `seed-item-${i}`, _creationTime: 0 })
 	);
 	const previous = JSON.parse(await readFile('data/reference/compositor.json', 'utf8'));
-	const states = [...previous];
-	for (const [i, item] of items.entries())
+	const states = previous.flatMap((state) => {
+		const selected = remapSeedSelections(items, state.selected);
+		if (Object.keys(state.selected).length && !Object.keys(selected).length) return [];
+		return [{ ...state, selected }];
+	});
+	for (const item of items)
 		for (const c of item.concessions)
 			for (const view of ['effective', 'redline'])
-				if (!states.some((s) => s.name === c.id && s.view === view))
-					states.push({ name: c.id, view, selected: { [`seed-item-${i}`]: c.id } });
+				assert.ok(
+					states.some((s) => s.name === c.id && s.view === view && typeof s.sha256 === 'string'),
+					`Missing trusted reference: ${c.id} (${view}); refusing a provenance-only refresh`
+				);
 	const hash = (value) =>
 		createHash('sha256').update(JSON.stringify(value, sortedKeys)).digest('hex');
 	for (const state of states) {
@@ -33,8 +43,22 @@ try {
 			view: state.view,
 			activeConcessions: state.selected
 		});
-		state.sha256 = hash(normalize(rendered));
-		state.provenanceSha256 = hash(rendered);
+		assert.equal(
+			hash(normalize(paragraphRoles ? priorRepresentation(rendered) : rendered)),
+			state.sha256,
+			`${state.name}: displayed output changed; refusing a provenance-only refresh`
+		);
+		if (paragraphRoles) {
+			assert.equal(
+				hash(priorRepresentation(rendered)),
+				state.provenanceSha256,
+				`${state.name}: source/provenance changed beyond paragraph representation`
+			);
+			state.sha256 = hash(normalize(rendered));
+		}
+		state.provenanceSha256 = createHash('sha256')
+			.update(JSON.stringify(rendered, frozenProvenanceKeys))
+			.digest('hex');
 	}
 	await writeFile('data/reference/compositor.json', JSON.stringify(states, null, '\t') + '\n');
 	console.log(
@@ -42,4 +66,34 @@ try {
 	);
 } finally {
 	await server.close();
+}
+
+/** The prior seed used anchors only on heading blocks; all source/provenance stays checked. */
+function priorRepresentation(blocks) {
+	const oldHeadingKeys = new Set(
+		blocks.filter((block) => block.kind !== 'table' && block.anchor).map((block) => block.blockKey)
+	);
+	return blocks.map((block) => {
+		if (block.kind === 'table') return block;
+		const {
+			role,
+			numberingDepth: _depth,
+			continueNumbering: _continuation,
+			boundariesAfter,
+			...source
+		} = block;
+		// Unified paragraphs also expose formerly unavailable heading-to-heading insertion edges.
+		const priorBoundaries = boundariesAfter?.filter(
+			(boundary) =>
+				!oldHeadingKeys.has(boundary.afterBlockKey) ||
+				(boundary.nextBlockKey && !oldHeadingKeys.has(boundary.nextBlockKey))
+		);
+		return {
+			...source,
+			kind: block.anchor ? 'heading' : 'paragraph',
+			...(block.anchor ? { level: role === 'title' ? 1 : 2 } : {}),
+			...(role === 'title' ? { role } : {}),
+			...(priorBoundaries?.length ? { boundariesAfter: priorBoundaries } : {})
+		};
+	});
 }

@@ -1,7 +1,6 @@
 # Contract directory
 
-Current architecture: [backend model](backend-redesign/architecture.md). Target/archive/reset/deploy and remaining native/browser/provider verification: [Phase 18](backend-redesign/phase-18-activation.md). Local implementation evidence does not establish deployment.
-
+Current architecture: [data model](data-model.md). Release mechanics: [production releases](deployment.md).
 
 `contractDirectory` is the sole source for Home browsing and customer-name search.
 It stores contract/company/creator IDs, displayed company name, save time and the
@@ -25,16 +24,3 @@ Contract deletion removes its directory row immediately and leaves a durable
 company-scoped cleanup marker for decisions, deliveries and their snapshots.
 Company deletion drains directory rows and cleanup markers with the shared bounded
 worker budget.
-
-[Phase 10](backend-redesign/phase-10-contracts.md) records the implementation and
-acceptance limits. All 24 existing performance tests, backend TypeScript, Svelte
-checks and production build passed locally. Creation still requires two
-contract/receipt writes and one directory write without reading/compiling template
-content. No tests were added or assertions weakened.
-
-The October 25, 2026 development observation of one 299-JSON-byte directory record
-is historical context only; it is not a current scale or latency measurement.
-Deployed search/pagination, cleanup interruption/company overlap and actual
-opening timing remain unverified. The earlier readiness/backfill rollout procedure
-is retired. Source/schema changes have not been deployed; Phase 18 owns the agreed
-target-specific fresh reset and bootstrap.

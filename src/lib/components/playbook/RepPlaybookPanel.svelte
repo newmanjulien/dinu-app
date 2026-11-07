@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { authoringInstructions } from '$lib/playbook/model';
 	import type { PlaybookItemRecord } from '$lib/playbook/model';
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
@@ -8,6 +9,8 @@
 	import PlaybookCard from './PlaybookCard.svelte';
 	import PlaybookSection from './PlaybookSection.svelte';
 	import PlaybookText from './PlaybookText.svelte';
+	import Hint from '$lib/ui/Hint.svelte';
+	import type { HintId } from '$lib/ui/hints';
 	let {
 		item,
 		selected,
@@ -30,20 +33,21 @@
 	let open = $state<string | null>(null);
 	let appliedConcession = $state<string | null>(null);
 	const itemId = $derived(item._id);
-	const approvalHint = $derived(
+	const displayedInstructions = $derived(authoringInstructions(item));
+	const approvalHint = $derived<HintId | null>(
 		appliedConcession && selected === appliedConcession
 			? isAdmin
-				? "You've auto-approved this concession yourself"
-				: item.instructions?.changesNeedApproval?.trim()
-					? 'This concession will stay pending until you request and get approval'
-					: 'You have the authority to make this concession without approval'
-			: ''
+				? 'concessionAutoApproved'
+				: item.approvalPolicy.kind === 'required'
+					? 'concessionApprovalRequired'
+					: 'concessionWithinAuthority'
+			: null
 	);
 	const hasSummary = $derived(Boolean(item.instructions?.summary?.trim()));
 	const hasSections = $derived(
 		Boolean(
 			item.concessions.length ||
-			instructionsFields.slice(1).some((field) => item.instructions?.[field.key]?.trim())
+			instructionsFields.slice(1).some((field) => displayedInstructions[field.key]?.trim())
 		)
 	);
 	$effect(() => {
@@ -56,27 +60,26 @@
 <PlaybookCard label="Instruction box">
 	{#key itemId}
 		<div
-			class={`${hasSummary ? 'block' : 'hidden'} ${animateContent ? 'clause-panel-content' : ''} @max-[1150px]:grid @max-[1150px]:grid-cols-[minmax(0,1fr)_auto] @max-[1150px]:items-center @max-[1150px]:gap-6`}
+			class={`${hasSummary ? 'block' : 'hidden'} ${animateContent ? 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]' : ''} @max-[1150px]:grid @max-[1150px]:grid-cols-[minmax(0,1fr)_auto] @max-[1150px]:items-center @max-[1150px]:gap-6`}
 		>
 			<div class="flex min-w-0 flex-col gap-3 text-ink-muted">
 				{#if hasSummary}<PlaybookText text={item.instructions?.summary ?? ''} />{/if}
 			</div>
 			<div class="hidden @max-[1150px]:block">
 				<SquareIconButton type="button" aria-label="Close playbook" onclick={onClose}>
-					<XIcon aria-hidden="true" size={22} weight="regular" />
+					<XIcon aria-hidden="true" class="size-5.5" weight="regular" />
 				</SquareIconButton>
 			</div>
 		</div>
 		{#if hasSections}
 			<div
-				class={`${animateContent ? 'clause-panel-content' : ''} flex flex-col gap-2`}
-				style:animation-delay={animateContent ? '24ms' : undefined}
+				class={`${animateContent ? 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]' : ''} flex flex-col gap-2`}
 			>
-				{#if item.instructions}
+				{#if item.instructions || item.approvalPolicy.kind === 'required'}
 					{#each instructionsFields.slice(1) as field}
-						{#if item.instructions[field.key]?.trim()}
+						{#if displayedInstructions[field.key]?.trim()}
 							<PlaybookSection value={field.key} label={field.label} bind:open>
-								<PlaybookText text={item.instructions[field.key] ?? ''} />
+								<PlaybookText text={displayedInstructions[field.key] ?? ''} />
 							</PlaybookSection>
 						{/if}
 					{/each}
@@ -112,8 +115,7 @@
 								</ConcessionRow>
 								{#if conflict}<p
 										id={`${descriptionId}-conflict`}
-										class="m-0 text-danger"
-										style:font-size="var(--workspace-panel-font-size, 14px)"
+										class="m-0 text-[14px] @min-[1150px]:text-[clamp(13px,1cqw,14px)] text-danger"
 									>
 										{conflict}
 									</p>{/if}
@@ -126,11 +128,8 @@
 	{/key}
 </PlaybookCard>
 
-<p
+<Hint
+	id={approvalHint}
 	role="status"
-	class="m-0 px-3.5 leading-[1.45] text-ink-muted @min-[1150px]:mt-3 @max-[1150px]:bg-surface @max-[1150px]:pb-[calc(12px+env(safe-area-inset-bottom))]"
-	style:font-size="var(--workspace-panel-small-font-size, 13px)"
-	class:hidden={!approvalHint}
->
-	{approvalHint}
-</p>
+	class="@min-[1150px]:mt-3 @max-[1150px]:bg-surface @max-[1150px]:pb-[calc(12px+env(safe-area-inset-bottom))]"
+/>

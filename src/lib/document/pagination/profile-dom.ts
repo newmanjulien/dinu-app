@@ -1,7 +1,6 @@
-import type { HeadingFragment, ParagraphFragment, TableFragment } from './types';
+import type { ParagraphFragment, TableFragment } from './types';
 import {
 	LAYOUT_COORDINATE_TOLERANCE as EPSILON,
-	type HeadingLayoutProfile,
 	type ParagraphLayoutProfile,
 	type ParagraphBounds,
 	type TableLayoutProfile
@@ -19,18 +18,6 @@ function margins(element: HTMLElement) {
 	};
 }
 
-export function readHeadingProfile(
-	element: HTMLElement,
-	fragment: HeadingFragment
-): HeadingLayoutProfile {
-	requireLayout(element.matches(`h${fragment.level}`), 'missing heading element');
-	const { marginBlockStart, marginBlockEnd } = margins(element);
-	return {
-		kind: 'heading',
-		outerHeight: element.getBoundingClientRect().height + marginBlockStart + marginBlockEnd
-	};
-}
-
 /** Whole placement is supported only by the production inline paragraph structure.
  * No line boxes or token boundaries are derived from this height read. */
 export function readParagraphBounds(
@@ -39,9 +26,18 @@ export function readParagraphBounds(
 ): ParagraphBounds | undefined {
 	const style = getComputedStyle(element);
 	if (
-		!element.matches('p.contract-paragraph.is-final') ||
+		!element.matches(
+			fragment.role === 'title'
+				? 'h1.contract-heading.is-final'
+				: fragment.role === 'heading'
+					? 'h2.contract-heading.is-final'
+					: 'p.contract-paragraph.is-final'
+		) ||
 		style.display !== 'block' ||
-		style.whiteSpace !== 'normal' ||
+		style.whiteSpace !== 'pre-line' ||
+		fragment.tokens.some(
+			(token) => token.lineBreak || token.lineAnchor || /[\r\n]/u.test(token.value)
+		) ||
 		style.wordBreak !== 'normal' ||
 		style.overflowWrap !== 'normal' ||
 		style.hyphens === 'auto' ||
@@ -102,7 +98,10 @@ export function readParagraphProfile(
 	element: HTMLElement,
 	fragment: ParagraphFragment
 ): ParagraphLayoutProfile {
-	requireLayout(element.matches('p'), 'missing paragraph element');
+	requireLayout(
+		element.matches(fragment.role === 'title' ? 'h1' : fragment.role === 'heading' ? 'h2' : 'p'),
+		'missing text element'
+	);
 	const style = getComputedStyle(element);
 	requireLayout(
 		[style.paddingTop, style.paddingBottom, style.borderTopWidth, style.borderBottomWidth].every(
@@ -111,6 +110,7 @@ export function readParagraphProfile(
 		'paragraph padding or borders require an explicit profile model'
 	);
 	const contentHeight = element.getBoundingClientRect().height;
+	const bounds = element.getBoundingClientRect();
 	const lineHeight = parseFloat(style.lineHeight);
 	requireLayout(Number.isFinite(lineHeight) && lineHeight > 0, 'paragraph line height');
 	const leaves = [...element.querySelectorAll<HTMLElement>('[data-contract-token]')];
@@ -120,21 +120,34 @@ export function readParagraphProfile(
 	for (let index = 0; index < leaves.length; index++) {
 		const leaf = leaves[index];
 		const text = leaf.firstChild;
+		const token = fragment.tokens[index];
 		requireLayout(
-			text?.nodeType === Node.TEXT_NODE && text.textContent === fragment.tokens[index].value,
+			text?.nodeType === Node.TEXT_NODE && text.textContent === token.value,
 			'paragraph token text differs from prepared content'
 		);
+		if (token.lineBreak) {
+			requireLayout(observed.length > 0, 'forced break has no preceding line anchor');
+			observed[observed.length - 1].endToken = index + 1;
+			continue;
+		}
 		range.selectNodeContents(text);
 		// Collapsed trailing spaces can return zero-width rects on the following line.
 		// They carry no visible geometry and stay with the preceding token/line.
-		const rects = [...range.getClientRects()].filter(
-			(rect) => rect.width > EPSILON && rect.height > 0
+		let rects = [...range.getClientRects()].filter(
+			(rect) => (token.lineAnchor || rect.width > EPSILON) && rect.height > 0
 		);
+		if (token.lineAnchor && !rects.length) rects = [leaf.getBoundingClientRect()];
 		if (!rects.length) {
 			requireLayout(!fragment.tokens[index].value.trim(), 'visible token has no line geometry');
 			if (observed.length) observed[observed.length - 1].endToken = index + 1;
 			continue;
 		}
+		requireLayout(
+			rects.every(
+				(rect) => rect.left >= bounds.left - EPSILON && rect.right <= bounds.right + EPSILON
+			),
+			`text exceeds its horizontal bounds in ${fragment.blockKey}`
+		);
 		const top = rects[0].top;
 		requireLayout(
 			rects.every((rect) => Math.abs(rect.top - top) <= EPSILON),

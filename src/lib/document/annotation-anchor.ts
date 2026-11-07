@@ -1,9 +1,8 @@
-import type { AnnotationRegistry } from './annotation-registry';
+import type { AnnotationRegistry, AnnotationSegment } from './annotation-registry';
 import {
 	isTextTarget,
 	sameSourceTarget,
 	type SourcePoint,
-	type SourceRange,
 	type SourceTarget
 } from '$lib/contract/source-model';
 import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
@@ -66,10 +65,53 @@ function pageNumber(element: HTMLElement) {
 
 /** Capture text coordinates, never the segment's ordinal or page-local row index. */
 export function annotationOccurrence(
+	registry: AnnotationRegistry,
 	annotationId: string,
 	activation: AnnotationActivation
 ): AnnotationOccurrence | null {
 	const { owner, clientX, clientY } = activation;
+	if (owner.hasAttribute('data-annotation-projected')) {
+		const hit =
+			clientX === undefined || clientY === undefined
+				? null
+				: owner.ownerDocument
+						.elementFromPoint(clientX, clientY)
+						?.closest<HTMLElement>('[data-contract-token]');
+		const first = registry.occurrence(owner)?.segments[0];
+		const coordinates = hit
+			? tokenCoordinates(hit)
+			: first
+				? {
+						point: first.source?.start,
+						visualSource: first.visualSource,
+						generated: first.generated,
+						generatedOffset: first.generatedStart
+					}
+				: undefined;
+		if (coordinates && hit && clientX !== undefined && clientY !== undefined) {
+			const caretDocument = owner.ownerDocument as Document & {
+				caretPositionFromPoint?: (
+					x: number,
+					y: number
+				) => { offsetNode: Node; offset: number } | null;
+				caretRangeFromPoint?: (x: number, y: number) => Range | null;
+			};
+			const caret = caretDocument.caretPositionFromPoint?.(clientX, clientY);
+			const range = caret ? null : caretDocument.caretRangeFromPoint?.(clientX, clientY);
+			const node = caret?.offsetNode ?? range?.startContainer;
+			if (node?.nodeType === Node.TEXT_NODE && hit.contains(node)) {
+				const offset = Math.min(
+					caret?.offset ?? range?.startOffset ?? 0,
+					Math.max(0, (node.textContent?.length ?? 0) - 1)
+				);
+				if (coordinates.visualSource)
+					coordinates.generatedOffset = (coordinates.generatedOffset ?? 0) + offset;
+				else if (coordinates.point && hit.dataset.sourceKind === 'text')
+					coordinates.point.offset += offset;
+			}
+		}
+		return coordinates ? { annotationId, ...coordinates, pageNumber: pageNumber(owner) } : null;
+	}
 	const distance = (token: HTMLElement) => {
 		if (clientX === undefined || clientY === undefined) return 0;
 		const range = owner.ownerDocument.createRange();
@@ -146,24 +188,41 @@ export function resolveAnnotationAnchor(
 	const position = unit && point ? unit.position + Math.min(point.offset, unit.length) : undefined;
 	let best: (AnnotationAnchor & { rank: number[] }) | undefined;
 	for (const owner of registry.forAnnotation(annotationId)) {
-		for (const token of owner.querySelectorAll<HTMLElement>(
-			'[data-source-start-key], [data-visual-source], [data-annotation-boundary]'
-		)) {
-			const coordinates = tokenCoordinates(token);
-			if (!coordinates) continue;
-			const source: SourceRange | undefined = coordinates.visualSource
-				? isTextTarget(coordinates.visualSource)
-					? coordinates.visualSource.range
-					: undefined
-				: coordinates.point && token.dataset.sourceEndKey
-					? {
-							start: coordinates.point,
-							end: {
-								sourceKey: token.dataset.sourceEndKey,
-								offset: Number(token.dataset.sourceEndOffset)
-							}
-						}
-					: undefined;
+		const projected = registry.occurrence(owner);
+		const segments: readonly AnnotationSegment[] =
+			projected?.segments ??
+			Array.from(
+				owner.querySelectorAll<HTMLElement>(
+					'[data-source-start-key], [data-visual-source], [data-annotation-boundary]'
+				)
+			).flatMap((token): AnnotationSegment[] => {
+				const coordinates = tokenCoordinates(token);
+				if (!coordinates) return [];
+				return [
+					{
+						source: coordinates.visualSource
+							? isTextTarget(coordinates.visualSource)
+								? coordinates.visualSource.range
+								: undefined
+							: coordinates.point && token.dataset.sourceEndKey
+								? {
+										start: coordinates.point,
+										end: {
+											sourceKey: token.dataset.sourceEndKey,
+											offset: Number(token.dataset.sourceEndOffset)
+										}
+									}
+								: undefined,
+						visualSource: coordinates.visualSource,
+						generated: coordinates.generated,
+						generatedStart: coordinates.generatedOffset,
+						generatedEnd: (coordinates.generatedOffset ?? 0) + (token.textContent?.length ?? 0)
+					}
+				];
+			});
+		for (const segment of segments) {
+			const source = segment.source,
+				coordinates = segment;
 			const start = source ? pointPosition(index, source.start) : undefined,
 				end = source ? pointPosition(index, source.end) : undefined;
 			const sourceDistance =
@@ -175,12 +234,13 @@ export function resolveAnnotationAnchor(
 				coordinates.visualSource &&
 				preference.generated === coordinates.generated &&
 				sameSourceTarget(preference.visualSource, coordinates.visualSource);
-			const offset = coordinates.generatedOffset ?? 0;
+			const offset = segment.generatedStart ?? 0,
+				generatedEnd = segment.generatedEnd ?? offset;
 			const generatedDistance = sameReplacement
 				? Math.max(
 						offset - (preference.generatedOffset ?? 0),
 						0,
-						(preference.generatedOffset ?? 0) - offset - (token.textContent?.length ?? 0)
+						(preference.generatedOffset ?? 0) - generatedEnd
 					)
 				: 0;
 			const containsSource =
@@ -191,7 +251,7 @@ export function resolveAnnotationAnchor(
 				(position < end || start === end);
 			const containsGenerated =
 				(preference?.generatedOffset ?? 0) >= offset &&
-				(preference?.generatedOffset ?? 0) < offset + (token.textContent?.length ?? 0);
+				(preference?.generatedOffset ?? 0) < generatedEnd;
 			const exact = preference?.visualSource
 				? Boolean(sameReplacement) &&
 					(isTextTarget(preference.visualSource) ? containsGenerated : true)

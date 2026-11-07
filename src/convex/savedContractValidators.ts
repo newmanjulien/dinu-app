@@ -1,10 +1,13 @@
 import { v } from 'convex/values';
-import { baselineBlock } from './sourceValidators';
-import schema from './schema';
-import { historicalItem } from './playbookValidators';
+import { baselineBlock } from '../lib/contract/source-validators';
 import { reviewCompletion, selections, storedContract } from './contractValidators';
+import { historicalItem } from './playbookValidators';
+import schema from './schema';
 
 export { selections };
+const workBlock = v.optional(
+	v.union(v.null(), v.literal('association-required'), v.literal('deal-unavailable'))
+);
 export const snapshot = v.object({
 	blockCount: v.number(),
 	itemCount: v.number(),
@@ -13,13 +16,15 @@ export const snapshot = v.object({
 });
 export const contractCard = schema
 	.doc('savedContracts')
-	.pick('_id', 'companyName', 'savedAt')
+	.pick('_id', 'buyerCompanyName', 'savedAt', 'hubspot')
 	.extend({
+		workBlock,
 		creator: v.object({ name: v.string(), avatarUrl: v.union(v.string(), v.null()) })
 	});
 export const contractState = storedContract
-	.pick('companyName', 'selectedConcessions', 'reviews', 'revision', 'reviewGeneration')
+	.pick('buyerCompanyName', 'applications', 'editRevision', 'reviewGeneration', 'hubspot')
 	.extend({
+		workBlock,
 		reviewCompletion: v.union(reviewCompletion, v.null()),
 		stateVersion: v.number(),
 		lastOperationId: v.union(v.string(), v.null())
@@ -33,7 +38,7 @@ export const contractMetadata = contractState.extend(
 export const exportRequest = v.object({
 	membershipId: v.id('memberships'),
 	id: v.id('savedContracts'),
-	expectedRevision: v.number()
+	expectedEditRevision: v.number()
 });
 export const saveResult = v.union(
 	v.object({ status: v.literal('saved'), state: contractState }),

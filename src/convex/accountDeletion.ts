@@ -1,22 +1,25 @@
-import { v, ConvexError } from 'convex/values';
+import { cancelJob } from './emailDeliveries';
+import { cancelAppointmentJobs } from './csmSetupAppointments';
+import { eraseReplacementAttempt } from './csmReplacements';
 import { paginationResultValidator } from 'convex/server';
-import { internalMutation, internalQuery, query, mutation } from './_generated/server';
+import { ConvexError, v } from 'convex/values';
 import { internal } from './_generated/api';
-import { requireProfile, membershipForProfile, liveProfile, companyDeletion } from './auth';
-import { deleteUnownedFile } from './storageOwnership';
+import type { Doc } from './_generated/dataModel';
+import type { MutationCtx, QueryCtx } from './_generated/server';
+import { internalMutation, internalQuery, mutation, query } from './_generated/server';
+import { companyDeletion, liveProfile, membershipForProfile, requireProfile } from './auth';
+import { CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
 import { confirmAccountDeletion } from './companyDeletion';
 import {
-	PREPARATION_TTL,
+	ACCOUNT_DELETION_BATCH_SIZE,
 	DELETION_ATTEMPT_MAX_LENGTH,
 	MEMBERSHIP_ELIGIBILITY_SCAN_LIMIT,
-	RECONCILIATION_PAGE_SIZE,
-	ACCOUNT_DELETION_BATCH_SIZE,
-	deletionIdentity
-} from './deletionValidators';
-import { CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
+	PREPARATION_TTL,
+	RECONCILIATION_PAGE_SIZE
+} from './deletionPolicy';
+import { deletionIdentity } from './deletionValidators';
 import { activeJob } from './emailDeliveries';
-import type { MutationCtx, QueryCtx } from './_generated/server';
-import type { Doc } from './_generated/dataModel';
+import { deleteUnownedFile } from './storageOwnership';
 
 async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'deletedUsers'>) {
 	const generation = marker.cleanupGeneration + 1;
@@ -31,8 +34,19 @@ async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'deletedUsers'>) {
 }
 
 async function ensureCleanup(ctx: MutationCtx, marker: Doc<'deletedUsers'>) {
-	if (marker.complete || marker.recoveryCompanyId) return;
-	if (!(await activeJob(ctx, marker.cleanupJobId))) await scheduleCleanup(ctx, marker);
+	if (marker.complete || (await activeJob(ctx, marker.cleanupJobId))) return;
+	if (marker.recoveryCompanyId) {
+		const receipt = await ctx.db
+			.query('csmBookingAttempts')
+			.withIndex('by_profileId', (q) => q.eq('profileId', marker.profileId))
+			.first();
+		const appointment = await ctx.db
+			.query('csmSetupAppointments')
+			.withIndex('by_profileId', (q) => q.eq('profileId', marker.profileId))
+			.first();
+		if (!receipt && !appointment) return;
+	}
+	await scheduleCleanup(ctx, marker);
 }
 
 const deletionMode = v.union(
@@ -316,6 +330,36 @@ export const clean = internalMutation({
 		// A retried or superseded cleanup job cannot continue an older chain.
 		if (!marker || marker.complete || generation !== marker.cleanupGeneration) return null;
 		const profileId = marker.profileId;
+		const appointments = await ctx.db
+			.query('csmSetupAppointments')
+			.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
+			.take(25);
+		for (const appointment of appointments) {
+			await cancelAppointmentJobs(ctx, appointment);
+			await ctx.db.delete('csmSetupAppointments', appointment._id);
+		}
+		if (appointments.length === 25) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
+		const attempts = await ctx.db
+			.query('csmBookingAttempts')
+			.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
+			.take(25);
+		for (const attempt of attempts) {
+			await eraseReplacementAttempt(ctx, attempt);
+			await cancelJob(ctx, attempt.sendJobId);
+			await cancelJob(ctx, attempt.watchdogJobId);
+			await ctx.db.delete('csmBookingAttempts', attempt._id);
+		}
+		if (attempts.length === 25) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
+		if (marker.recoveryCompanyId) {
+			await ctx.db.patch('deletedUsers', marker._id, { cleanupJobId: undefined });
+			return null;
+		}
 		const membership = await membershipForProfile(ctx, profileId);
 		const owned = await ctx.db
 			.query('company')

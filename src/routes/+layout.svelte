@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../app.css';
+	import editorialFont from '@fontsource/newsreader/files/newsreader-latin-400-normal.woff2?url';
 	import { page } from '$app/state';
 	import { describeRoute } from '$lib/auth/routes';
 	import { setPageMetadata } from '$lib/auth/page-metadata.svelte';
@@ -18,6 +19,7 @@
 </script>
 
 <svelte:head>
+	<link rel="preload" href={editorialFont} as="font" type="font/woff2" crossorigin="anonymous" />
 	<title
 		>{metadata.override?.routeId === page.route.id ? metadata.override.title : route.title}</title
 	>

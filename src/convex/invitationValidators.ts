@@ -8,6 +8,7 @@ const invitationFields = v.object({
 	tokenHash: v.string(),
 	expiresAt: v.number(),
 	expired: v.boolean(),
+	// Derived list summary; invitationDeliverySummary owns updates guarded by delivery/generation.
 	deliveryStatus: v.union(v.literal('sending'), v.literal('sent'), v.literal('failed')),
 	deliveryGeneration: v.number(),
 	deliveryStartedAt: v.optional(v.number()),

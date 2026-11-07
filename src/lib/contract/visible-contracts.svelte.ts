@@ -1,15 +1,15 @@
-import type { Action } from 'svelte/action';
-import { onMount, untrack } from 'svelte';
+import { afterStartupPaint } from '$lib/auth/startup-perf';
 import { observeHomeWarming } from '$lib/document/runtime/render-perf';
 import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
-import { getContractSnapshotCache } from './snapshot-cache';
-import { rankCards } from './browser-storage';
+import { onMount, untrack } from 'svelte';
+import type { Action } from 'svelte/action';
 import type { SavedContractCard } from './card';
-import { afterStartupPaint } from '$lib/auth/startup-perf';
+import { getContractOpenings, getContractSnapshotCache } from './snapshot-cache';
 
 /** One viewport observer and one preparation policy for both Home and search. */
 export function createVisibleContractWarming() {
 	const resources = getDocumentResources();
+	const openings = getContractOpenings();
 	const cards = new Map<Element, SavedContractCard>();
 	const visible = new Set<string>();
 	const promoted = new Set<string>();
@@ -84,7 +84,7 @@ export function createVisibleContractWarming() {
 		});
 	}
 	function publishCandidates() {
-		const ranked = rankCards(
+		const ranked = openings.rank(
 			[...cards.entries()]
 				.filter(([, card]) => visible.has(card._id))
 				.sort(([a], [b]) =>

@@ -53,7 +53,8 @@ export function* iterateIncrementalDocument(
 			if (restart < 0) restart = 0;
 			// A heading may have moved to this page only to keep with the old next line.
 			// Changed/deleted lookahead can let it move back onto the preceding page.
-			if (preceding.fragment.type === 'heading' && restart > 0) restart--;
+			if (preceding.fragment.type === 'paragraph' && preceding.fragment.keepWithNext && restart > 0)
+				restart--;
 		}
 	}
 	let start = previous?.checkpoints[restart];

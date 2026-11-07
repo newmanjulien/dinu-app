@@ -1,14 +1,14 @@
 import { v } from 'convex/values';
 import { internal } from './_generated/api';
-import { internalMutation, type MutationCtx } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
+import { internalMutation, type MutationCtx } from './_generated/server';
+import { CLEANUP_DISCOVERY_PAGE_SIZE, cleanupBudget } from './cleanup';
 import {
 	activeJob,
 	cancelDelivery,
 	providerDispatchInProgress,
 	RETIRED_DELIVERY_RECHECK
 } from './emailDeliveries';
-import { cleanupBudget, CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
 
 export type DeliveryRetirement = 'ready' | 'pending' | 'inFlight';
 
@@ -31,9 +31,9 @@ async function dispose(
 	}
 	const budget = cleanupBudget(ctx);
 	const drained = await budget.drain(
-		'emailSnapshots',
+		'emailSelectionChunks',
 		ctx.db
-			.query('emailSnapshots')
+			.query('emailSelectionChunks')
 			.withIndex('by_deliveryId_and_order', (q) => q.eq('deliveryId', delivery._id))
 	);
 	if (drained) return 'ready';

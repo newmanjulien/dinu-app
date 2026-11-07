@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { SessionController } from './session-controller.svelte';
+	import type { AccountLifecycle } from './account-lifecycle.svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
-	let { controller }: { controller: SessionController } = $props();
+	let { controller }: { controller: AccountLifecycle } = $props();
 	const saving = $derived(controller.phase === 'saving-before-logout');
 	const signingOut = $derived(controller.phase === 'signing-out');
 	const authFailure = $derived(controller.phase === 'authentication-error');
@@ -9,8 +9,9 @@
 	const show = $derived(
 		saving ||
 			signingOut ||
-			(controller.admitted && (authFailure || (waiting && controller.delayed))) ||
-			(Boolean(controller.error) && (controller.admitted || controller.phase === 'signed-out'))
+			(controller.workspaceAdmitted && (authFailure || (waiting && controller.delayed))) ||
+			(Boolean(controller.error) &&
+				(controller.workspaceAdmitted || controller.phase === 'signed-out'))
 	);
 	const title = $derived(
 		saving
@@ -32,7 +33,7 @@
 <ModalShell
 	open={show}
 	{title}
-	maxWidth={448}
+	class="max-w-md"
 	dismissible={saving || controller.phase === 'ready'}
 	showCloseButton={false}
 	closeOnBackdrop={false}

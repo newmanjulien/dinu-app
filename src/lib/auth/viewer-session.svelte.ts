@@ -1,7 +1,7 @@
-import { getContext, setContext } from 'svelte';
 import type { FunctionReturnType } from 'convex/server';
+import { getContext, setContext } from 'svelte';
 import type { api } from '../../convex/_generated/api';
-export type AccountViewer = NonNullable<FunctionReturnType<typeof api.profiles.viewer>>;
+export type AccountViewer = NonNullable<FunctionReturnType<typeof api.accounts.viewer>>;
 export type Viewer = AccountViewer & {
 	company: NonNullable<AccountViewer['company']>;
 	membership: NonNullable<AccountViewer['membership']>;
@@ -21,7 +21,7 @@ export type SessionPhase =
 	| 'signed-out';
 export type SessionEditor = {
 	readonly pending: boolean;
-	flush: () => Promise<boolean>;
+	prepareToLeave: () => Promise<boolean>;
 	retry: () => void;
 	suspend: () => void;
 	resume: () => void;
@@ -32,14 +32,14 @@ export type SessionEditor = {
 export type SessionResources = { cancelReads: () => void; clear: () => void };
 type Session = {
 	readonly closing: boolean;
-	readonly prepared: string | null | undefined;
+	readonly preparedSessionId: string | null | undefined;
 	readonly userId: string | null;
 	readonly phase: SessionPhase;
 	readonly error: string;
 	readonly authenticationError: string;
 	readonly delayed: boolean;
 	readonly blocked: boolean;
-	readonly admitted: boolean;
+	readonly workspaceAdmitted: boolean;
 	readonly transportGeneration: number;
 	registerEditor: (editor: SessionEditor) => () => void;
 	registerResources: (resources: SessionResources) => void;

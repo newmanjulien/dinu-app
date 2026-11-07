@@ -1,17 +1,22 @@
 import { child, children, val, on, type XmlNode as Node } from './xml';
 import type { ImportIssue } from '../../../contract/import/limits';
+import { CONTRACT_WORD_STYLES } from '../../../contract/format';
 export type Location = string | { id: string; label: string };
 export type Issue = (
 	location: Location,
 	message: string,
 	severity?: ImportIssue['severity']
 ) => void;
-type Format = {
+export type RunFormat = {
 	vanish?: boolean;
 	strike?: boolean;
 	dstrike?: boolean;
 	vertAlign?: string;
 	underline?: string;
+	bold?: boolean;
+	italic?: boolean;
+	smallCaps?: boolean;
+	size?: number;
 };
 
 // Compare the whole definition, including properties the importer does not use.
@@ -66,21 +71,26 @@ export function formatting(root: Node | undefined, issue: Issue) {
 			visiting.delete(id);
 		}
 	}
-	function apply(base: Format, props: Node | undefined, toggles = false): Format {
+	function apply(base: RunFormat, props: Node | undefined, toggles = false): RunFormat {
 		const result = { ...base };
 		for (const [name, key] of [
 			['vanish', 'vanish'],
 			['strike', 'strike'],
-			['dstrike', 'dstrike']
+			['dstrike', 'dstrike'],
+			['b', 'bold'],
+			['i', 'italic'],
+			['smallCaps', 'smallCaps']
 		] as const) {
 			const value = on(child(props, name));
 			if (value !== undefined) result[key] = toggles ? (value ? !result[key] : result[key]) : value;
 		}
 		if (child(props, 'vertAlign')) result.vertAlign = val(child(props, 'vertAlign'));
 		if (child(props, 'u')) result.underline = val(child(props, 'u')) ?? 'single';
+		const size = Number(val(child(props, 'sz')));
+		if (Number.isFinite(size) && size > 0 && size <= 3276) result.size = size;
 		return result;
 	}
-	function checked(format: Format, location: Location): void {
+	function checked(format: RunFormat, location: Location): void {
 		if (format.vanish) issue(location, 'Remove hidden text in Word.');
 		if (format.strike || format.dstrike)
 			issue(location, 'Remove struck-through text or accept its deletion in Word.');
@@ -150,7 +160,7 @@ export function formatting(root: Node | undefined, issue: Issue) {
 		tableCache.set(cacheKey, result);
 		return result;
 	}
-	function character(base: Format, props: Node | undefined): Format {
+	function character(base: RunFormat, props: Node | undefined): RunFormat {
 		let result = base;
 		for (const style of chain(val(child(props, 'rStyle'))))
 			result = apply(result, child(style, 'rPr'), true);
@@ -173,8 +183,41 @@ export function formatting(root: Node | undefined, issue: Issue) {
 		let base = apply({}, child(child(defaults, 'rPrDefault'), 'rPr'));
 		for (const rPr of tableProps) base = apply(base, rPr, true);
 		for (const style of styleChain) base = apply(base, child(style, 'rPr'), true);
+		const clauseStyle = styleChain
+			.map((style) => style.attrs.styleId.match(/^Contract(?:Heading)?(Clause|Section)([1-9])$/))
+			.findLast(Boolean);
+		const canonicalRole = styleChain
+			.map((style): import('../../../contract/source-model').ParagraphRole | undefined => {
+				const id = style.attrs.styleId;
+				if (id === CONTRACT_WORD_STYLES.title || /^ContractTitleH[1-3]$/u.test(id)) return 'title';
+				if (
+					id === CONTRACT_WORD_STYLES.heading ||
+					/^ContractHeading(?:Clause|Section)[1-9]$/u.test(id)
+				)
+					return 'heading';
+				if (
+					id === CONTRACT_WORD_STYLES.body ||
+					id === CONTRACT_WORD_STYLES.emptyBlock ||
+					/^Contract(?:Clause|Section)[1-9]$/u.test(id)
+				)
+					return 'body';
+				return undefined;
+			})
+			.findLast(Boolean);
 		return {
 			property,
+			canonicalRole,
+			// Exported clause styles carry legal depth independently of Word outline levels.
+			numberingDepth: clauseStyle?.[2],
+			continueNumbering: clauseStyle ? clauseStyle[1] === 'Clause' : undefined,
+			titleStyle: styleChain.some(
+				(style) =>
+					/^(?:title|subtitle)$/i.test(val(child(style, 'name')) ?? style.attrs.styleId) ||
+					style.attrs.styleId === CONTRACT_WORD_STYLES.title ||
+					[1, 2, 3].some(
+						(level) => style.attrs.styleId === `${CONTRACT_WORD_STYLES.titleHeading}${level}`
+					)
+			),
 			indent:
 				indent !== undefined &&
 				Number.isSafeInteger(Number(indent)) &&
@@ -188,7 +231,9 @@ export function formatting(root: Node | undefined, issue: Issue) {
 				.map((s) => val(child(s, 'name')) ?? s.attrs.styleId)
 				.findLast((s) => /^heading\s*[1-9]$/i.test(s)),
 			run(rPr: Node | undefined, location: Location) {
-				return checked(character(base, rPr), location);
+				const result = character(base, rPr);
+				checked(result, location);
+				return result;
 			},
 			label(rPr: Node | undefined, location: Location) {
 				return checked(character(character(base, child(props, 'rPr')), rPr), location);

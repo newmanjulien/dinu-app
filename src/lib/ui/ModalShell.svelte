@@ -1,6 +1,7 @@
 <script lang="ts">
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import type { Snippet } from 'svelte';
+	import type { ClassValue } from 'clsx';
 	import { cn } from '$lib/ui/cn';
 	import IconButton from '$lib/ui/IconButton.svelte';
 	import { createModalBehavior } from '$lib/ui/modal-behavior.svelte';
@@ -11,8 +12,7 @@
 		onClose: () => void | Promise<void>;
 		variant?: 'dialog' | 'panel';
 		position?: 'center' | 'right';
-		maxWidth?: number;
-		contentPadding?: number;
+		class?: ClassValue;
 		dismissible?: boolean;
 		showCloseButton?: boolean;
 		closeOnBackdrop?: boolean;
@@ -27,8 +27,7 @@
 		onClose,
 		variant = 'dialog',
 		position = 'center',
-		maxWidth,
-		contentPadding,
+		class: className = '',
 		dismissible = true,
 		showCloseButton = true,
 		closeOnBackdrop = true,
@@ -71,24 +70,21 @@
 			? 'p-4 backdrop:bg-canvas/70 max-[600px]:p-0'
 			: 'px-4 py-6 backdrop:bg-ink/25'
 	)}
-	style:--modal-width={`${maxWidth ?? (variant === 'panel' ? 480 : 440)}px`}
-	style:--modal-padding={contentPadding === undefined
-		? 'var(--spacing-modal)'
-		: `${contentPadding}px`}
 	oncancel={handleCancel}
 	onpointerdown={(event) => (pointerStartedOnBackdrop = event.target === event.currentTarget)}
 	onclick={handleBackdropClick}
 >
 	<div
 		class={cn(
-			'flex max-h-full min-h-0 w-full max-w-[var(--modal-width)] flex-col overflow-hidden rounded-modal border-hairline border-edge bg-surface',
+			'flex max-h-full min-h-0 w-full flex-col overflow-hidden rounded-modal border-hairline border-edge bg-surface',
 			position === 'right' ? 'ml-auto' : 'mx-auto',
 			variant === 'panel'
-				? 'h-full shadow-floating max-[600px]:max-w-none max-[600px]:rounded-none max-[600px]:border-0 max-[600px]:shadow-none'
-				: 'shadow-dialog'
+				? 'h-full max-w-[480px] shadow-floating max-[600px]:max-w-none max-[600px]:rounded-none max-[600px]:border-0 max-[600px]:shadow-none'
+				: 'max-w-[440px] shadow-dialog',
+			className
 		)}
 	>
-		<header class="flex shrink-0 items-start justify-between gap-4 p-[var(--modal-padding)]">
+		<header class="flex shrink-0 items-start justify-between gap-4 p-5">
 			<h2 id={titleId} class="min-w-0 text-[17px] leading-tight font-medium text-ink">{title}</h2>
 			{#if showCloseButton}
 				<IconButton
@@ -98,20 +94,18 @@
 					disabled={!dismissible}
 					onclick={requestClose}
 				>
-					<XIcon aria-hidden="true" size={20} weight="regular" />
+					<XIcon aria-hidden="true" class="size-5" weight="regular" />
 				</IconButton>
 			{/if}
 		</header>
 
-		<div
-			class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-[var(--modal-padding)] pb-[var(--modal-padding)]"
-		>
+		<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5">
 			{@render children?.()}
 		</div>
 
 		{#if footer}
 			<footer
-				class="flex shrink-0 items-center justify-between gap-3 border-t-[length:var(--surface-border-width)] border-line p-[var(--modal-padding)]"
+				class="flex shrink-0 items-center justify-between gap-3 border-t-[length:var(--surface-border-width)] border-line px-5 py-4.5"
 			>
 				{@render footer()}
 			</footer>

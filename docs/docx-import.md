@@ -1,18 +1,28 @@
 # DOCX baseline import
 
-Import runs on the backend from the uploaded original DOCX. It uses Word's document
-structure and numbering rules, without an LLM. Contract content is plain: the
+Contract typography and the centered opening title group follow the shared
+[contract formatting policy](contract-formatting.md).
+
+Import runs on the backend from the uploaded original DOCX. It resolves Word numbering and references, then analyzes paragraph roles from
+effective formatting, wording, and document context. Word heading styles are hints,
+not the sole source of headings. Classification is deterministic, without an LLM. Contract content is plain: the
 approved model strips all bold/italic marks from import, authoring, seed and export. The result uses the same immutable source model,
 composition, reference resolution, and Word export as existing contracts.
-Errors block publication. The upload page gives plain-English corrections and
-short text excerpts to find in Word, without displaying the contract. Routine
+Errors block template saving. The upload page gives plain-English corrections and
+short text excerpts to find in Word. Valid uploads show a contract preview with
+role correction for every nonempty paragraph and navigation to uncertain labels. Routine
 layout warnings remain in the conversion diagnostics; the page explains once
-that Dinu applies its own layout and ignores comments and footers. A valid
-file can be published after confirming that the starting contract is permanent.
+that Dinu applies its own layout and ignores comments and footers. After reviewing the title and headings, “Go to last step” accepts the contract.
+
+Tables persist only plain cell strings. Paragraph breaks become newlines, and
+recognized Word fields retain their cached display text. Cell references never
+become live references or numbering targets. Structure, hidden text, malformed
+fields, and unsupported field syntax still receive the normal import checks.
+Table text is searchable and exported, but cannot be selected for playbook edits.
 
 ## Supported content
 
-- Paragraphs, Heading 1–3, tabs, line breaks, and rectangular tables with multiple
+- Paragraphs, heading hints at Word levels 1–9, tabs, line breaks, and rectangular tables with multiple
   paragraphs per cell. Bold/italic input does not produce persisted or rendered marks.
 - Document defaults and inherited paragraph, character, and table styles. Table
   text supports whole-table, first/last column, and first/last row conditions.
@@ -37,14 +47,14 @@ file can be published after confirming that the starting contract is permanent.
 
 Fonts, spacing, colors, borders, underline, page/column breaks, and hyperlink
 behavior use Dinu's layout. Comments, comment anchors, and footers are ignored,
-including their related parts. They do not become contract text or publication
+including their related parts. They do not become contract text or template saving
 errors. Paragraph-level content controls containing only comment markers are also
 ignored in the body and headers when their only properties are `id` and `tag`
 metadata. Blank headers and validated PAGE/NUMPAGES fields are discarded;
 substantive headers must move into the body. Archive expansion bounds still
 include ignored parts.
 Related parts are located through package relationships, regardless of filenames
-or extensions. Only the main document, styles, numbering, and headers are retained
+or extensions. Only the main document, styles, numbering, headers, and the owned canonical-numbering part are retained
 for XML parsing; ignored payloads are counted while inflating and discarded.
 Consumed XML parts support UTF-8 and UTF-16 in either byte order.
 
@@ -68,7 +78,7 @@ are preserved. Authored literal words and digits remain literal, including a
 Word pattern such as `%1:2.`; only its counter changes when clauses renumber.
 Accepted fields own their complete cached display span within a typed group.
 An independently valid field remains live when another typed target in that group
-needs correction; unsupported field/range overlaps still block publication.
+needs correction; unsupported field/range overlaps still block template saving.
 Supported REF switches are `\w`, `\n`, `\h`, and
 `\* MERGEFORMAT`; `\n` is limited to root clauses. An ordinary REF without a
 number switch only supports an exact typed-label bookmark. Nested or malformed
@@ -79,10 +89,36 @@ fields, ambiguous targets, and mixed formatting within a reference are rejected.
 Inference deliberately recognizes a bounded grammar. Word's counters produce
 automatic labels, then automatic and typed candidates share one hierarchy pass.
 An independent level-zero Word list can be a child of the active typed or
-automatic section. Unnumbered headings reset the numbering inference boundary.
-Exhibit/Schedule/Appendix titles also establish a distinct reference scope;
-ordinary headings within an attachment retain its reference scope. Numbered
-headings, tables, and ordinary intervening paragraphs retain both boundaries.
+automatic section. Presentation roles never reset numbering inference or force
+a clause to the root. Exhibit/Schedule/Appendix labels establish a distinct
+reference scope and numbering boundary, regardless of formatting. Exported clause
+styles carry legal depth and insertion-continuation policy independently of
+flat Word heading styles. Changing a paragraph role does not change that policy.
+Canonical exported paragraph styles retain explicitly accepted title, heading,
+and body roles, including corrections that differ from automatic recognition.
+
+Dinu Word exports also contain a version-1 `customXml/dinu-numbering.xml` part,
+using the `urn:dinu:numbering` namespace, linked from the document and keyed by
+whole-paragraph `DinuClauseN` bookmarks. Import also accepts the former
+`customXml/oceans-numbering.xml` part, `urn:oceans-agreed:numbering` namespace,
+and `OceansClauseN` bookmarks so existing exports remain readable.
+It records each numbered paragraph's counter style, alphabetic convention,
+padding, label/reference patterns, sequence, parent, explicit restart, actual
+position, and insertion-continuation policy. The effective composition graph
+supplies this metadata, including merged aliases and inserted clauses. It is
+independent of visible text and the flat heading outline.
+
+On reimport this bounded metadata is validated against the shared numbering
+model and exact visible label prefix before that prefix is removed. It bypasses
+typed-label inference, preserving singleton roots, Roman/letter distinctions and
+literal punctuation/digits such as `%1:2.`. Attachment reference scopes remain
+independent. Missing, malformed, inconsistent or stale declarations reject with
+a request for a fresh export; they never silently become literal unnumbered text.
+Legacy numbered clause styles without complete metadata also require a fresh
+export. External Word files without canonical declarations use the unchanged
+conservative inference rules below. Word edits that remove bookmarks/metadata or
+change labels can invalidate a canonical export; saving/editing in the Word
+application still needs manual compatibility verification.
 
 - Decimal labels include `1.`, `1)`, `1.2`, and padded values such as `01.`.
   Letters and Roman numerals support parentheses, brackets, periods, and closing
@@ -110,7 +146,7 @@ headings, tables, and ordinary intervening paragraphs retain both boundaries.
 
 Typed references resolve in the current scope, with full agreement addresses
 available from attachments. Explicit qualifiers such as `of the Agreement` or
-`of Exhibit A` select that scope; duplicate or missing targets block publication.
+`of Exhibit A` select that scope; duplicate or missing targets block template saving.
 Connected groups are parsed in full before scope selection or target lookup.
 They retain parenthesized section titles, repeated Section/Clause prefixes,
 abbreviated child labels, and supported ranges. Closing prose parentheses end the group, so a following
@@ -133,7 +169,9 @@ choose an intended target for a missing clause.
 
 The pipeline is package extraction → bounded namespace-aware XML parse →
 paragraph/run/field/bookmark/table model → numbering resolution → ordered reference
-replacement → source atom emission → shared source/storage validation. Foreign
+replacement → source atom emission → document-wide paragraph analysis → shared
+source/storage validation. Effective formatting evidence survives run merging only
+inside the importer; canonical text stores roles and no inline formatting. Foreign
 XML namespaces remain distinct, with separate namespace rules for Word, package
 relationships, and content types. Each consumed part is parsed once; the raw bytes
 are then released. Paragraphs receive unique identities before formatting or
@@ -146,8 +184,7 @@ resolved table conditions are cached. Reference replacement sweeps runs and fiel
 spans in order instead of rescanning every run for every field. Typed-label
 formatting scans stop at the end of the label; signature
 text is collected only for eligible two-column borderless tables. The shared
-source index owns block-order validation. Stable source keys are assigned after
-conversion. Diagnostic retention is capped independently at 100 warnings and
+source index owns block-order validation. Stable source keys are assigned to flow atoms after conversion. Table cells store their cached display paragraphs joined with newlines, without source keys or live references. Diagnostic retention is capped independently at 100 warnings and
 500 errors; warning volume never makes an otherwise valid import fail.
 
 Numbering and reference display patterns use explicit literal and counter parts
@@ -168,34 +205,46 @@ SHA-256 file hash, canonical content fingerprint, parser version, uploader,
 filename, and diagnostics. The browser receives the prepared baseline ID and
 diagnostics; no public mutation accepts client-generated baseline blocks.
 
-The page retains the same checking, correction, confirmation, and Publish flow.
+The upload card shows a visible checking state, then replaces its upload controls
+with “Your contract is ready” and “Go to last step”. A choose-another-file action
+remains available before activation, including when a prepared upload expires.
 The request has a 30-second deadline, including token retrieval and response-body
 reading. Choosing another file or leaving the page cancels the attempt. Changed
-sessions and memberships prevent stale results from becoming publishable.
-Publication navigation belongs to the route intent and session that started it.
-A newer navigation or changed session prevents a late publication response from
-redirecting the user. The expected same-route setup unmount after publication
+sessions and memberships prevent stale results from becoming usable.
+Advancing to the last step belongs to the route intent and session that started it.
+A newer navigation or changed session prevents a late setup response from
+redirecting the user. The expected same-route setup unmount after saving
 still allows navigation to the admin page.
 
-Publication accepts the prepared ID, verifies its company, uploader, validity,
-and fingerprint, and atomically marks the baseline published, creates the first
-version, and updates the current pointer. One company has one permanent baseline;
-replacement is refused. Identical publication retries and concurrent first
-publications of the same canonical content return the committed version.
+`templates.setCompanyContract` accepts the membership and prepared baseline ID,
+verifies company, uploader, expiry, and parse integrity, then atomically marks the
+baseline active, creates the first version, and updates the current pointer.
+Activation keeps the automatically classified blocks, fingerprint, and native
+chunk accounting unchanged. One company has one permanent baseline; replacement
+is refused. Identical retries and concurrent first saves of the same prepared ID
+return the committed version. “Go to last step” saves this contract and opens
+the admin editor with “Add your first instruction” guidance. Uploading alone does
+not activate the contract. The company contract becomes available immediately;
+saving instructions updates the current template automatically. Existing contracts
+retain their captured versions.
 Identical upload retries reuse an unexpired prepared baseline with the current
-parser version before parsing or storing another copy. Parser version `docx-3`
-includes identical-style deduplication and comment-only control handling, so
-preparations from older parsers are not reused. New uploads parse in a separate
-internal Node action. Cleanup dispatch is independent of preparation success. Unpublished DOCX
+parser version before parsing or storing another copy. Preparations contain
+immutable parsed blocks and diagnostics, with no draft role overrides. Parser `docx-11`
+stores one paragraph kind with required title/heading/body roles, keeps all
+non-title headings flat, and recognizes canonical title/clause-depth/table styles.
+Empty table-gap artifacts do not become source blocks, while
+genuine empty paragraphs remain source. Preparations from older parsers are not
+reused. New uploads parse in a separate
+internal Node action. Cleanup dispatch is independent of preparation success. Prepared DOCX
 uploads expire after 24 hours, with bounded scheduled cleanup and a recurring
 recovery sweep. A daily bounded all-kind sweep removes unreferenced storage files left by an
 interrupted upload or export after a 24-hour grace, consulting all four ownership indexes. It persists its cursor and fixed cutoff for
 resumption, and advances a completed watermark to avoid rescanning retained originals.
-Published originals remain until company deletion.
+Originals for active baselines remain until company deletion.
 
-Published baseline blocks are stored once. Each template version references that
+Active baseline blocks are stored once. Each template version references that
 baseline and a complete manifest from stable rule IDs to immutable full rule
-revisions. Save and Delete still publish immediately in their existing transaction;
+revisions. Save and Delete update the template immediately in their existing transaction;
 one captured playbook, business-field validation, native document-size capacity checks, version creation, and pointer
 advancement succeed or roll back together. Unchanged rule revisions are reused.
 Historical versions retain deleted rules and their original payloads.
@@ -203,7 +252,7 @@ Historical versions retain deleted rules and their original payloads.
 Storage accepts only required baseline/revision links and canonical manifests.
 Seed imports, audits, reconciliation, and company deletion use that same model.
 See [template storage](template-storage.md) and the
-[current activation procedure](backend-redesign/phase-18-activation.md).
+[production releases](deployment.md).
 
 ## Bounds
 
@@ -229,36 +278,3 @@ parsing, before building the normalized tree. Expanded element/attribute names
 are charged before constructing normalized names, so namespace expansion consumes
 the same character budget. Shared source validation enforces
 storage array limits; source and playbook item limits leave room for Convex wrappers.
-
-## Historical verification evidence
-
-The following results describe earlier parser/development revisions, including
-old formatting and 113-block seed representations. They are preserved evidence,
-not current repeatable coverage or deployment certification. Current plain content,
-112-block seed and local checks are recorded in [17D2](backend-redesign/phase-17d2-cross-workflow.md);
-native/browser/provider acceptance remains [18](backend-redesign/phase-18-activation.md).
-
-The original `Oceans PSA Contracting Cheat Sheet 9.21.26 (2) (1).docx` imports
-248 blocks with zero errors and 67 formatting warnings (66 underline warnings
-and one layout warning). Discarding its comment-only controls leaves the imported
-blocks identical to the conversion that reported those controls as unsupported;
-the original file was unchanged. In-memory diagnostics checked identical and
-attribute-reordered styles, conflicting complete definitions, missing style IDs,
-strict numbering/package indexes, and accepted versus substantive or malformed
-comment controls. These checks did not add repository tests or exercise live upload
-and persistence.
-
-Local verification uses `npm run verify`, backend TypeScript checking, and
-`npm run seed:verify`. The existing performance suite checks saving, scheduling,
-caching, immutable version behavior, and publication rollback. Seed verification
-checks all business records, edit/save preservation, 58 effective/redline output
-states, token/fragment provenance, and server source against the independent
-historical oracle. These checks exercise canonical numbering and reference patterns.
-
-The parser enforces the documented budgets during parsing, including expanded XML
-names. Adversarial heap/memory bounds have not been remeasured after this cleanup.
-The development database was reset, the strict baseline/revision schema deployed,
-and the Oceans template reseeded with 113 blocks and 56 rules during the server split.
-Live Clerk JWT authentication, HTTP upload/cancellation, multi-admin races,
-third-party Word formats, and visual pagination remain unverified.
-No repository tests or browser harness were added.

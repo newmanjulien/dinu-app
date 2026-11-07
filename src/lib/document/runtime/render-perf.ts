@@ -1,6 +1,6 @@
-import { describeDestination } from '$lib/auth/routes';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/public';
+import { describeDestination } from '$lib/auth/routes';
 import type { DocumentDomain } from '../domain/document-domain';
 import type { LayoutProfileMetrics } from '../pagination/profiler';
 
@@ -43,7 +43,7 @@ export function countSearchWork(name: SearchWork, count = 1) {
 	counters[name] = (counters[name] ?? 0) + count;
 }
 
-/** Aggregate Admin lifecycle counters; no departed component or query references. */
+/** Aggregate Admin lifetime counters; no departed component or query references. */
 function adminQueryCounters() {
 	if (!enabled() || typeof window === 'undefined') return;
 	const target = window as typeof window & {

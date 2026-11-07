@@ -1,14 +1,30 @@
+import {
+	SelectionSurface,
+	mountSelectionPage
+} from '../../src/lib/document/selection/selection-surface';
+import { iterateSelectionDocument } from '../../src/lib/document/selection/selection-model';
+import { complete } from '../../src/lib/contract/iteration';
+import type { PreparedBlock } from '../../src/lib/document/pagination/prepare';
+import type { InlineToken } from '../../src/lib/document/pagination/types';
+import type { RenderSnapshot } from '../../src/lib/document/runtime/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSourceIndex } from '../../src/lib/contract/source-index';
-import { mapDomRange } from '../../src/lib/document/selection/dom-selection';
-import { createSelectionInteraction } from '../../src/lib/document/selection/selection-gesture';
+import { importDomSelection } from '../../src/lib/document/selection/dom-selection';
+import {
+	captureNativeSelection,
+	createSelectionInteraction,
+	type CapturedNativeSelection
+} from '../../src/lib/document/selection/selection-gesture';
 
-function setupInteraction(root: HTMLElement, onNativeComplete: (range: Range | null) => void) {
+function setupInteraction(
+	root: HTMLElement,
+	onNativeComplete: (selection: CapturedNativeSelection | null) => void
+) {
 	const interaction = createSelectionInteraction({
+		context: root,
 		onNativeStart: () => {},
 		onNativeComplete,
-		onCancel: () => {},
-		onBoundaryStart: () => null
+		onCancel: () => {}
 	});
 	interaction.setContainer(root);
 	return interaction;
@@ -18,11 +34,89 @@ function paragraphSourceIndex(text: string) {
 	return buildSourceIndex([
 		{
 			kind: 'paragraph',
+			role: 'body',
 			blockKey: 'paragraph-1',
 			order: 0,
 			content: [{ kind: 'text', sourceKey: 'text-1', text }]
 		}
 	]);
+}
+
+/** The same prepared occurrence builder and mounted adapter used by the viewer. */
+function mappedRange(
+	range: Range,
+	root: HTMLElement,
+	index: ReturnType<typeof paragraphSourceIndex>
+) {
+	const start = { node: range.startContainer, offset: range.startOffset },
+		end = { node: range.endContainer, offset: range.endOffset };
+	const contract = root.querySelector<HTMLElement>('.contract-document')!;
+	const block = contract.querySelector<HTMLElement>('.contract-block')!;
+	block.dataset.blockKey = 'paragraph-1';
+	const tokens = Array.from(
+		block.querySelectorAll<HTMLElement>('[data-source-start-key]'),
+		(span, tokenIndex): InlineToken => {
+			span.dataset.selectionTokenIndex = String(tokenIndex);
+			return {
+				value: span.textContent!,
+				sourceKind: span.dataset.sourceKind as InlineToken['sourceKind'],
+				source: {
+					start: {
+						sourceKey: span.dataset.sourceStartKey!,
+						offset: Number(span.dataset.sourceStartOffset)
+					},
+					end: {
+						sourceKey: span.dataset.sourceEndKey!,
+						offset: Number(span.dataset.sourceEndOffset)
+					}
+				}
+			};
+		}
+	);
+	const prepared: PreparedBlock = {
+		flowRole: 'body',
+		geometryFingerprint: 'fixture',
+		fragment: {
+			type: 'paragraph',
+			role: 'body',
+			blockKey: 'paragraph-1',
+			isFinal: true,
+			interval: { start: 0, end: tokens.length },
+			tokens
+		}
+	};
+	block.dataset.sourceFragmentKey = `paragraph-1:0:${tokens.length}`;
+	const page = { number: 1, placements: [{ prepared, fragment: prepared.fragment }] };
+	const selectionDocument = complete(iterateSelectionDocument(1, index, [prepared], [page]));
+	const element = document.createElement('div');
+	element.className = 'document-page';
+	element.dataset.pageNumber = '1';
+	contract.before(element);
+	element.append(contract);
+	mountSelectionPage(element, { page, document: selectionDocument });
+	const snapshot: RenderSnapshot = {
+		id: 1,
+		pages: [page],
+		selectionDocument,
+		layoutEpoch: 'fixture',
+		changedPages: [1],
+		source: { revision: 1, blocks: [], items: [], sourceIndex: index },
+		concessions: {},
+		previewChanges: [],
+		addresses: new Map()
+	};
+	const surface = new SelectionSurface(root, snapshot);
+	range.setStart(start.node, start.offset);
+	range.setEnd(end.node, end.offset);
+	const captured = captureNativeSelection(
+		range,
+		{ node: range.startContainer, offset: range.startOffset },
+		{ node: range.endContainer, offset: range.endOffset },
+		{},
+		surface
+	);
+	const value = importDomSelection(captured, surface);
+	return value?.target?.kind === 'text' ? value.target : null;
 }
 
 function setSelection(node: Text, start = 0, end = node.length) {
@@ -71,7 +165,7 @@ describe('native selection interaction', () => {
 		document.body.append(root);
 		const completed: (string | null)[] = [];
 		const interaction = setupInteraction(root, (range) =>
-			completed.push(range?.toString() ?? null)
+			completed.push(range?.range.toString() ?? null)
 		);
 
 		pointer(root, 'pointerdown');
@@ -91,7 +185,9 @@ describe('native selection interaction', () => {
 		root.append(first, second);
 		document.body.append(root);
 		const completed: string[] = [];
-		const interaction = setupInteraction(root, (range) => completed.push(range?.toString() ?? ''));
+		const interaction = setupInteraction(root, (range) =>
+			completed.push(range?.range.toString() ?? '')
+		);
 
 		pointer(root, 'pointerdown');
 		setSelection(first);
@@ -144,7 +240,7 @@ describe('native selection interaction', () => {
 		range.setEnd(text, text.length);
 		clearSelection();
 
-		const mapped = mapDomRange(range, root, paragraphSourceIndex('A visible contract clause.'));
+		const mapped = mappedRange(range, root, paragraphSourceIndex('A visible contract clause.'));
 
 		expect(mapped?.range).toEqual({
 			start: { sourceKey: 'text-1', offset: 0 },
@@ -163,7 +259,7 @@ describe('native selection interaction', () => {
 		range.setEnd(boundary, 0);
 
 		expect(range.toString()).toBe('A visible contract clause. ');
-		expect(mapDomRange(range, root, paragraphSourceIndex('A visible contract clause.'))).toBeNull();
+		expect(mappedRange(range, root, paragraphSourceIndex('A visible contract clause.'))).toBeNull();
 	});
 
 	it('maps source-backed whitespace with its source offsets', () => {
@@ -177,7 +273,7 @@ describe('native selection interaction', () => {
 		range.setStart(first, 0);
 		range.setEnd(last, last.length);
 
-		expect(mapDomRange(range, root, paragraphSourceIndex('A B'))?.range).toEqual({
+		expect(mappedRange(range, root, paragraphSourceIndex('A B'))?.range).toEqual({
 			start: { sourceKey: 'text-1', offset: 0 },
 			end: { sourceKey: 'text-1', offset: 3 }
 		});
@@ -194,6 +290,6 @@ describe('native selection interaction', () => {
 		range.setStart(first, 0);
 		range.setEnd(last, last.length);
 
-		expect(mapDomRange(range, root, paragraphSourceIndex('AB'))).toBeNull();
+		expect(mappedRange(range, root, paragraphSourceIndex('AB'))).toBeNull();
 	});
 });

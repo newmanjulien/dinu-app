@@ -1,6 +1,6 @@
 import { ConvexError } from 'convex/values';
-import type { QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
+import type { QueryCtx } from './_generated/server';
 import { assertPermission, type Permission } from './permissions';
 
 export async function verifiedIdentity(ctx: Pick<QueryCtx, 'auth'>) {
@@ -47,8 +47,7 @@ export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id
 		throw new ConvexError('Your company access has changed. Reload to continue.');
 	const company = await requireCompany(ctx, membership.companyId);
 	return {
-		...profile,
-		role: membership.role,
+		profile,
 		membership,
 		company,
 		companyId: company._id,
@@ -89,7 +88,7 @@ export async function requirePermission(
 	membershipId?: Id<'memberships'>
 ) {
 	const access = await requireMembership(ctx, membershipId);
-	assertPermission(access.role, permission, access.isOwner);
+	assertPermission(access.membership.role, permission, access.isOwner);
 	return access;
 }
 export async function liveProfile(ctx: QueryCtx, profileId?: Id<'profiles'>) {

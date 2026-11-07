@@ -167,6 +167,8 @@ export function resolveReferences(
 		siblingAddresses.set(scope, siblings);
 	}
 	for (const paragraph of paragraphs) {
+		// Table fields retain their cached display text and never become live references.
+		if (!byParagraph.has(paragraph)) continue;
 		const replacements: Replacement[] = [];
 		const fields = paragraph.fields.sort((a, b) => a.start - b.start);
 		for (const field of fields) {

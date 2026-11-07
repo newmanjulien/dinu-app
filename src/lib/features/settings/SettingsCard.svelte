@@ -1,37 +1,21 @@
 <script lang="ts">
-	import type { ClassValue } from 'clsx';
 	import type { Snippet } from 'svelte';
-	import { cn } from '$lib/ui/cn';
 
 	type Props = {
 		title: string;
 		description?: string | string[];
-		class?: ClassValue;
 		children?: Snippet;
 		media?: Snippet;
 		footer?: Snippet;
 		action?: Snippet;
 	};
 
-	let {
-		title,
-		description = [],
-		class: className = '',
-		children,
-		media,
-		footer,
-		action
-	}: Props = $props();
+	let { title, description = [], children, media, footer, action }: Props = $props();
 
 	const descriptionLines = $derived(Array.isArray(description) ? description : [description]);
 </script>
 
-<article
-	class={cn(
-		'overflow-hidden rounded-xl border-hairline border-edge bg-surface shadow-card',
-		className
-	)}
->
+<article class="overflow-hidden rounded-xl border-hairline border-edge bg-surface shadow-card">
 	<div
 		class="flex min-h-36 flex-col gap-5 px-4 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-5"
 	>

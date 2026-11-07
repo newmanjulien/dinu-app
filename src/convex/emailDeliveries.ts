@@ -1,22 +1,23 @@
 import { v, type Infer } from 'convex/values';
 import { internal } from './_generated/api';
-import { internalMutation, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
+import { internalMutation, type MutationCtx, type QueryCtx } from './_generated/server';
 import { availableCompany, liveCompanyMember } from './auth';
+import { CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
+import { selectionsFor, storeSelections } from './emailSelectionChunks';
 import {
+	emailAddress,
 	emailAttempt,
 	emailOutcome,
 	emailRecipients,
-	emailAddress,
 	emailSelection,
-	type EmailOutcome,
+	emailState,
 	type EmailEvent,
-	emailState
+	type EmailOutcome
 } from './emailValidators';
-import { storeSelections, selectionsFor } from './emailSnapshots';
+import { completeInvitationDelivery } from './invitationDeliverySummary';
 import { completedReview, decisionSelections } from './reviews';
 import schema from './schema';
-import { CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
 
 const RECOVERY_INTERVAL = 60_000;
 const DECISION_MAX_ATTEMPTS = 3;
@@ -223,7 +224,7 @@ export const prepare = internalMutation({
 			return null;
 		let selections =
 			delivery.event.kind === 'invitation' ? [] : await selectionsFor(ctx, delivery._id);
-		if (delivery.event.kind === 'decision' && !selections.length && 'reviews' in context) {
+		if (delivery.event.kind === 'decision' && !selections.length && 'applications' in context) {
 			selections = decisionSelections(context);
 			await storeSelections(ctx, delivery.companyId, delivery._id, selections);
 		}
@@ -296,16 +297,7 @@ async function recordOutcome(ctx: MutationCtx, delivery: Delivery, outcome: Emai
 				? { ...details, kind: 'uncertain', retryEligible: false }
 				: { ...details, kind: outcome.status };
 	await ctx.db.patch('emailDeliveries', delivery._id, { state });
-	if (delivery.event.kind === 'invitation') {
-		const invitation = await ctx.db.get('companyInvitations', delivery.event.invitationId);
-		if (
-			invitation?.deliveryId === delivery._id &&
-			invitation.deliveryGeneration === delivery.event.generation
-		)
-			await ctx.db.patch('companyInvitations', invitation._id, {
-				deliveryStatus: outcome.status === 'sent' ? 'sent' : 'failed'
-			});
-	}
+	await completeInvitationDelivery(ctx, delivery, outcome.status);
 	return { ...delivery, state };
 }
 export const complete = internalMutation({

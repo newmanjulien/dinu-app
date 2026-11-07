@@ -9,6 +9,9 @@ import {
 import { numberValue } from './number-token';
 
 export type Address = {
+	/** Effective graph metadata, including adapted patterns and resolved parent aliases. */
+	numbering: NonNullable<ContractBlock['numbering']>;
+	position: number;
 	address: string;
 	label: string;
 	tokens: string[];
@@ -105,6 +108,13 @@ export function* iterateNumberAddresses(
 			: itemAddress(parent, labelPattern, label);
 		positions.set(item.sequenceKey, position);
 		const resolved: Address = {
+			numbering: {
+				...item,
+				...(parent ? { parentItemKey: parent.numbering.itemKey } : {}),
+				labelPattern,
+				...(item.referencePattern ? { referencePattern: adapt(item.referencePattern) } : {})
+			},
+			position,
 			label,
 			tokens: values,
 			...address,

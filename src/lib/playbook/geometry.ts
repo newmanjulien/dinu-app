@@ -1,19 +1,20 @@
-import { PlaybookValidationError } from './validation-error';
-import { hasMeaningfulReplacement } from '../contract/replacement-content';
-import type { ContractChange, SourcePoint, SourceTarget, Trigger } from './model';
-import { isTextTarget } from '../contract/source-model';
-import type { SourceIndex, SourceContainer } from '../contract/source-index';
 import {
 	containsPoint,
 	containsRange,
+	crossesBoundary,
 	isEmptyRange,
-	localContainer,
 	rangesOverlap,
 	targetContainers,
 	targetIsEmpty,
+	targetPosition,
 	targetsOverlap,
 	validateTarget
 } from '../contract/ranges';
+import { hasMeaningfulReplacement } from '../contract/replacement-content';
+import type { ValidationSourceFacts } from '../contract/validation-source';
+import { isTextTarget } from '../contract/source-model';
+import type { ContractChange, SourceTarget, Trigger } from './model';
+import { PlaybookValidationError } from './validation-error';
 
 export class GeometryError extends PlaybookValidationError {
 	constructor(
@@ -25,38 +26,18 @@ export class GeometryError extends PlaybookValidationError {
 	}
 }
 
-/** The same intentional-empty-text definition drives discovery and validation. */
-export function emptyTriggerPoint(
-	index: SourceIndex,
-	container: SourceContainer
-): SourcePoint | undefined {
-	const stored = container.units.filter((unit) => unit.kind !== 'number');
-	if (
-		container.inTable &&
-		stored.length === 1 &&
-		stored[0].kind === 'text' &&
-		stored[0].length === 0
-	)
-		return { sourceKey: stored[0].sourceKey, offset: 0 };
-}
-
-/** Point discovery belongs to intentional empty source slots, not arbitrary carets. */
-export function validateTriggerRange(index: SourceIndex, target: SourceTarget): void {
+/** Empty text cannot own a Trigger; insertions use explicit structural boundaries. */
+export function validateTriggerRange(index: ValidationSourceFacts, target: SourceTarget): void {
 	validateTarget(index, target);
-	if (target.kind === 'boundary' || !isEmptyRange(index, target.range)) return;
-	const point = emptyTriggerPoint(index, index.containers.get(localContainer(index, target.range))!);
-	if (
-		!point ||
-		target.range.start.sourceKey !== point.sourceKey ||
-		target.range.end.sourceKey !== point.sourceKey
-	)
-		throw new GeometryError(
-			'invalid-slot',
-			'Point Triggers require an intentional empty source slot'
-		);
+	if (target.kind === 'text' && isEmptyRange(index, target.range))
+		throw new GeometryError('invalid-slot', 'Triggers require text or a structural boundary');
 }
 
-export function triggersIntersect(index: SourceIndex, a: SourceTarget, b: SourceTarget): boolean {
+export function triggersIntersect(
+	index: ValidationSourceFacts,
+	a: SourceTarget,
+	b: SourceTarget
+): boolean {
 	if (!isTextTarget(a) || !isTextTarget(b)) return targetsOverlap(index, a, b);
 	return (
 		rangesOverlap(index, a.range, b.range) ||
@@ -65,25 +46,45 @@ export function triggersIntersect(index: SourceIndex, a: SourceTarget, b: Source
 	);
 }
 
+/** A text change occupies real boundaries strictly between its endpoints. */
+export function changeCrossesBoundaryTrigger(
+	index: ValidationSourceFacts,
+	changeTarget: SourceTarget,
+	triggerTarget: SourceTarget
+): boolean {
+	return (
+		changeTarget.kind === 'text' &&
+		triggerTarget.kind === 'boundary' &&
+		crossesBoundary(
+			targetPosition(index, changeTarget),
+			targetPosition(index, changeTarget, true),
+			targetPosition(index, triggerTarget)
+		)
+	);
+}
+
 /** Throws for partial boundary crossings or ambiguous insertion ownership. */
 export function changeTriggerOwner(
-	index: SourceIndex,
+	index: ValidationSourceFacts,
 	triggers: readonly Trigger[],
 	change: ContractChange
 ): Trigger | undefined {
-	targetContainers(index, change.range);
-	const insertion = targetIsEmpty(index, change.range);
+	targetContainers(index, change.target);
+	const insertion = targetIsEmpty(index, change.target);
 	const owners = triggers.filter((trigger) => {
-		if (!isTextTarget(trigger.range) || !isTextTarget(change.range))
-			return targetsOverlap(index, trigger.range, change.range);
-		if (insertion) return containsPoint(index, trigger.range.range, change.range.range.start, true);
+		if (changeCrossesBoundaryTrigger(index, change.target, trigger.target))
+			throw new GeometryError('trigger-boundary', `Change crosses Trigger boundary: ${trigger.id}`);
+		if (!isTextTarget(trigger.target) || !isTextTarget(change.target))
+			return targetsOverlap(index, trigger.target, change.target);
+		if (insertion)
+			return containsPoint(index, trigger.target.range, change.target.range.start, true);
 		if (
-			isEmptyRange(index, trigger.range.range) &&
-			containsPoint(index, change.range.range, trigger.range.range.start, true)
+			isEmptyRange(index, trigger.target.range) &&
+			containsPoint(index, change.target.range, trigger.target.range.start, true)
 		)
 			throw new GeometryError('trigger-boundary', `Change crosses Trigger boundary: ${trigger.id}`);
-		if (!rangesOverlap(index, trigger.range.range, change.range.range)) return false;
-		if (!containsRange(index, trigger.range.range, change.range.range))
+		if (!rangesOverlap(index, trigger.target.range, change.target.range)) return false;
+		if (!containsRange(index, trigger.target.range, change.target.range))
 			throw new GeometryError('trigger-boundary', `Change crosses Trigger boundary: ${trigger.id}`);
 		return true;
 	});
@@ -101,7 +102,7 @@ export function playbookGeometryKey(item: {
 		item.trigger,
 		item.concessions.map((concession) =>
 			concession.changes.map((change) => ({
-				range: change.range,
+				range: change.target,
 				paragraphBreaks: change.replacement.filter((atom) => atom.kind === 'paragraph-break')
 					.length,
 				hasContent: hasMeaningfulReplacement(change.replacement)

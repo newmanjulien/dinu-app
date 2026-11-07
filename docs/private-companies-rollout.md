@@ -1,6 +1,6 @@
 # Private companies and rollout
 
-**Current domain model, 2026-10-30.** [Current architecture](backend-redesign/architecture.md) is the model entry point; [Phase 18](backend-redesign/phase-18-activation.md) owns all target/reset/deploy/acceptance actions. Earlier development resets do not establish that the redesigned backend is deployed.
+Current architecture: [data model](data-model.md). Release mechanics: [production releases](deployment.md).
 
 Dinu supports many private companies and one company per account. Signup verifies
 identity; it does not create or join a company. An account without membership sees
@@ -22,21 +22,18 @@ the preparation screen. Companies never share another company's live template.
 
 ## Data model and boundaries
 
-`profiles` hold Clerk identity, current email, name, personal avatar, and required
-`role: rep | admin`. The email field is trimmed and lowercased on initialization; `by_email`
-supports checking existing colleagues before issuing invitations.
-`memberships` hold `profileId` and `companyId`; personal roles persist across company changes. Every join/create transaction
-reads the unique `by_profileId` index before inserting. This makes concurrent joins
-conflict and enforces one membership per profile. Convex indexes do not themselves
-enforce uniqueness; operator writes must preserve it. `company.ownerProfileId`
-points to a live membership in that company, except during ownerless recovery.
-An owner can choose Rep, losing ordinary Admin capabilities while retaining ownership
-actions. Transfers and recovery never modify either user’s personal role.
-Admins can remove any colleague except the owner or themselves; self-removal uses
-Leave company. The backend enforces these protections.
-`settings.savePersonalRole({ role })` authenticates the caller and patches only that
-profile. It accepts no target ID and requires no Admin permission. Team and operator
-role-assignment endpoints are removed.
+`profiles` hold Clerk identity, current email, name, and personal avatar. Email is
+trimmed and lowercased on initialization; `by_email` supports invitation checks.
+`memberships` hold `profileId`, `companyId`, and the Rep/Admin role. Joining or
+creating a company reads `by_profileId` transactionally before inserting, enforcing
+one membership per profile. Indexes do not themselves enforce uniqueness.
+`company.ownerProfileId` names a profile with a live membership, except during
+ownerless recovery. Owners may choose Rep while retaining ownership actions.
+`memberships.setRole({ role })` changes the authenticated caller's current
+membership without requiring Admin permission. Accounts without membership have
+no stored role. Leaving a company does not carry its role into another membership.
+Company creators become Admin; invited members start as Rep. Admins can remove any
+colleague except the owner or themselves; self-removal uses Leave company.
 
 Live company-scoped business records require company IDs. Live blocks require `baselineId` and are indexed by baseline and order; playbook
 items and template versions use `by_companyId`,
@@ -52,12 +49,11 @@ Contract snapshots and template children are accessed through their authorized
 parent. Baseline blocks, immutable rule revisions, and version manifests also require
 company scope so cleanup can drain company data in bounded batches. Parent company checks
 happen before reading children or returning avatar
-URLs. Snapshot HTTP requests carry the cache instance's membership ID; one backend
-load validates that membership and reads the snapshot. Responses are authenticated
-and `private, no-store`.
-Every saved contract requires `templateVersionId`. The current local model removes
-per-contract snapshot tables and unused snapshot hashes; Phase 18 must clear any
-remaining physical legacy tables. Immutable version items
+URLs. Browser contract reads confirm current membership and saved metadata before
+admitting cached content; template reads use the same membership scope. Disposable
+caches are separate from pending intent journals.
+Every saved contract requires `templateVersionId`. Per-contract snapshot tables, unused snapshot hashes and legacy application
+tables have been removed. Immutable version items
 retain their original playbook identities even after live-item deletion.
 Creation receipts include membership in their operation keys so retries cannot
 create data in a different company after membership changes. Item and contract
@@ -136,12 +132,6 @@ resend, which can deliver an additional email and rotates the previous link.
 Do not log raw tokens or include invitation URLs in analytics. The invitation
 component supplies a `no-referrer` policy.
 
-## Fresh development reset
-
-Use the [current Phase 18 procedure](backend-redesign/phase-18-activation.md), with separate inventory/archive, reset/deploy/bootstrap, native/browser and Loops checkpoints. It supersedes the staged-import and older reset recipes. Confirm the exact target, preserve a storage-inclusive archive and restoration evidence, inspect removed physical tables and native jobs, and prepare the actual reset mechanism before authorization. Schema deployment does not clear old tables, jobs, files or sweep frontiers. Preserve existing Clerk accounts and pending browser intent independently.
-
-The reset removes agreed disposable application records and uploaded files, including saved contracts and later edits, while preserving independent offline archives and the approved canonical dataset. No live reset/deployment/seed run has occurred during this redesign.
-
 ## Initial company template import
 
 After the authorized backend activation, use normal verified onboarding and obtain the real company ID. Securely configure its exact development/local deployment admin key together with matching `CONVEX_DEPLOYMENT` and `PUBLIC_CONVEX_URL`, then run:
@@ -153,7 +143,7 @@ npm run db:audit -- --company-id COMPANY_ID --seed
 
 The seeder calls internal `operator:bootstrap` once with the complete canonical blocks/items. Bootstrap uses ordinary validated baseline/history writers and commits the baseline, live rules, immutable revisions, complete first version and current pointer atomically. Exact replay returns the committed state without writes; changed/incomplete content refuses without overwrite or restoration. An interrupted HTTP response does not establish rollback; inspect or repeat the exact bootstrap after resolving the outcome. There is no begin/append/finish import, committed prefix, maintenance pointer or CLI batch layout.
 
-The runner uses the native internal function HTTP protocol/public value codec and allows only its explicitly scoped bootstrap/read functions. It rejects mismatched targets, missing company/key scope and production writes. The read-only audit permits correctly configured production reads, validates the current playbook and independently compares live/published business content. `--seed` additionally compares the approved canonical dataset: **112 blocks, 56 rules/highlights, 26 concessions and 34 affected locations**. It does not certify every public authorization/storage/scheduler/native-limit path. Production bootstrap requires its own reviewed invocation and exact-target authorization; do not weaken the development seeder's guard.
+The runner uses the native internal function HTTP protocol/public value codec and allows only its explicitly scoped bootstrap/read functions. It rejects mismatched targets, missing company/key scope and production writes. The read-only audit permits correctly configured production reads, validates the current playbook and independently compares live/snapshot business content. `--seed` additionally compares the approved canonical dataset: **112 blocks, three tables, 55 items, 21 concessions and 29 changes**. It does not certify every public authorization/storage/scheduler/native-limit path. Production bootstrap requires its own reviewed invocation and exact-target authorization; do not weaken the development seeder's guard.
 
 ## Manual release checks
 
@@ -179,9 +169,9 @@ Exercise keyboard focus and mobile layouts for onboarding and team actions. Veri
 actual invitation delivery/resend and approval delivery with two distinct company
 recipients, including recipient changes while a request is queued.
 
-The existing performance suite checks saving/conflicts/retries, creation/publication,
+The existing performance suite checks saving/conflicts/retries, creation/template saving,
 scheduling, and cache invariants. Type checks and production build check integration.
 The offline seed verifier checks the original business data, its preservation through
-playbook saves and publication, rendered text, and contract compositor parity.
+playbook saves and template versions, rendered text, and contract compositor parity.
 They do not certify the live reset, Clerk/Loops configuration, browser interactions, or
 cross-company authorization scenarios above. No new tests were added for this task.

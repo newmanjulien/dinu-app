@@ -4,18 +4,22 @@ import type {
 	ReplacementInline
 } from '../../../contract/source-model';
 import { validateBaseline } from '../../../contract/validate-source';
+import type { ParagraphDecision } from '../../../contract/roles';
+import { analyzeParagraphs } from './analysis';
 import { BASELINE_MAX_BYTES, type ImportIssue } from '../../../contract/import/limits';
 import { textPrefix } from '../../../text';
 import { child, type XmlNode } from './xml';
 import type { Issue } from './format';
 import { openPackage } from './package';
 import { isCommentControl, isCommentRun, parseDocument, type Paragraph } from './document';
+import { restoreCanonicalNumbering } from './canonical-numbering';
 import { resolveNumbering } from './numbering';
 import { resolveReferences } from './references';
 
 export function importDocx(input: Uint8Array): {
 	blocks: BaselineBlock[];
 	issues: ImportIssue[];
+	decisions: ParagraphDecision[];
 } {
 	const pkg = openPackage(input);
 	const body = child(child(pkg.document, 'document'), 'body');
@@ -65,7 +69,10 @@ export function importDocx(input: Uint8Array): {
 	for (const node of [pkg.document, styles, numbering]) if (node) audit(node);
 	const parsed = parseDocument(body, child(styles, 'styles'), issue);
 	// References depend on reliable clause addresses.
-	if (resolveNumbering(parsed.blocks, child(numbering, 'numbering'), issue))
+	if (
+		restoreCanonicalNumbering(parsed, pkg.canonicalNumbering) ||
+		resolveNumbering(parsed.blocks, child(numbering, 'numbering'), issue)
+	)
 		resolveReferences(parsed.blocks, parsed.paragraphs, parsed.bookmarks, issue);
 	// Footers and comments are discarded. Headers still require body content.
 	// Check header relationships, regardless of their filename. Literal
@@ -96,44 +103,54 @@ export function importDocx(input: Uint8Array): {
 		if (!normalized.length) normalized.push({ kind: 'text', text: '' });
 		return normalized.map((atom) => ({ ...atom, sourceKey: `docx-source-${++sourceId}` }));
 	}
-	const blocks: BaselineBlock[] = parsed.blocks.map((block) => {
-		const base = {
-			blockKey: block.blockKey,
-			order: block.order,
-			...(block.numbering ? { numbering: block.numbering } : {})
-		};
-		if (block.kind === 'table')
+	const paragraphs = new Map(
+		parsed.blocks.flatMap((block) =>
+			block.kind === 'paragraph' ? [[block.blockKey, block.paragraph] as const] : []
+		)
+	);
+	const analysis = analyzeParagraphs(
+		parsed.blocks.map((block): BaselineBlock => {
+			if (block.kind === 'table')
+				return {
+					blockKey: block.blockKey,
+					order: block.order,
+					kind: 'table',
+					headerRowCount: block.headerRowCount,
+					rows: block.rows.map((row) =>
+						row.map((paragraphs) => paragraphs.map((paragraph) => paragraph.plain).join('\n'))
+					),
+					...(block.variant ? { variant: block.variant } : {})
+				};
+			const base = {
+				blockKey: block.blockKey,
+				order: block.order,
+				...(block.numbering ? { numbering: block.numbering } : {})
+			};
+			const paragraph =
+				!block.numbering && block.paragraph.number?.displayedLabel
+					? {
+							...block.paragraph,
+							content: [
+								{
+									kind: 'text' as const,
+									text: block.paragraph.number.displayedLabel + '\t'
+								},
+								...block.paragraph.content
+							]
+						}
+					: block.paragraph;
+			const paragraphContent = content([paragraph]);
 			return {
 				...base,
-				kind: 'table',
-				headerRowCount: block.headerRowCount,
-				rows: block.rows.map((row) => row.map((paragraphs) => ({ content: content(paragraphs) }))),
-				...(block.variant ? { variant: block.variant } : {})
+				kind: 'paragraph',
+				role: 'body',
+				anchor: block.blockKey,
+				content: paragraphContent
 			};
-		const paragraph =
-			!block.numbering && block.paragraph.number?.displayedLabel
-				? {
-						...block.paragraph,
-						content: [
-							{
-								kind: 'text' as const,
-								text: block.paragraph.number.displayedLabel + '\t'
-							},
-							...block.paragraph.content
-						]
-					}
-				: block.paragraph;
-		const paragraphContent = content([paragraph]);
-		return block.kind === 'heading'
-			? {
-					...base,
-					kind: 'heading',
-					anchor: block.blockKey,
-					level: block.paragraph.heading!,
-					content: paragraphContent
-				}
-			: { ...base, kind: 'paragraph', content: paragraphContent };
-	});
+		}),
+		paragraphs
+	);
+	const blocks = analysis.blocks;
 	try {
 		validateBaseline(blocks);
 	} catch (error) {
@@ -144,11 +161,9 @@ export function importDocx(input: Uint8Array): {
 	}
 	if (
 		!blocks.some((block) => {
-			const contents =
-				block.kind === 'table' ? block.rows.flat().map((cell) => cell.content) : [block.content];
-			return contents.some((content) =>
-				content.some((atom) => atom.kind === 'text' && atom.text.trim().length > 0)
-			);
+			if (block.kind === 'table')
+				return block.rows.some((row) => row.some((cell) => cell.trim().length > 0));
+			return block.content.some((atom) => atom.kind === 'text' && atom.text.trim().length > 0);
 		})
 	)
 		issue('Document', 'Add contract text to the document before uploading.');
@@ -159,7 +174,7 @@ export function importDocx(input: Uint8Array): {
 		const p = byId.get(origins.get(item)!);
 		if (p) item.context = textPrefix(p.plain, 1200);
 	}
-	return { blocks, issues };
+	return { blocks, issues, decisions: analysis.decisions };
 }
 
 function checkPagination(root: XmlNode, issue: Issue) {

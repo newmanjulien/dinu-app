@@ -286,7 +286,7 @@ export function isReverificationRequiredError(error: unknown) {
 	return getClerkErrorCode(error) === CLERK_REVERIFICATION_REQUIRED_CODE;
 }
 
-export function getClerkErrorCode(error: unknown) {
+function getClerkErrorCode(error: unknown) {
 	return getClerkErrors(error)[0]?.code ?? getClerkErrorLike(error)?.code;
 }
 

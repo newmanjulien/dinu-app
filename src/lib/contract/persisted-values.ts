@@ -1,18 +1,18 @@
+import { MAX_CONTRACT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
+import type { ApplicationChoices, AppliedConcessions } from './applications';
 import type {
 	ContractSnapshotResult,
 	ContractState,
-	SavedSelections,
 	ReadyContract,
-	ContractSnapshot
+	TemplateContent
 } from './saved';
-import { MAX_CONTRACT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
+import { MAX_APPLICATION_ID_LENGTH, MAX_SELECTED_CONCESSIONS } from './selection-limits';
 import { MAX_STORAGE_ARRAY_ENTRIES } from './storage-limits';
-import { MAX_SELECTED_CONCESSIONS, MAX_APPLICATION_LIFECYCLE_LENGTH } from './selection-limits';
 
 // Disk data is unknown even though network data is validated by Convex. These
 // checks describe the persisted domain, without interpreting a schema language
 // or importing server validators into the browser. Semantic source/geometry
-// validation stays with publication and compilation.
+// validation stays with template saving and compilation.
 function object(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -31,18 +31,40 @@ function array(
 	for (const entry of value) if (!check(entry)) return false;
 	return true;
 }
-export function validSelections(value: unknown): value is SavedSelections {
+export function validApplicationId(value: unknown): value is string {
+	return text(value) && value.trim().length > 0 && value.length <= MAX_APPLICATION_ID_LENGTH;
+}
+export function validChoices(value: unknown): value is ApplicationChoices {
 	return (
 		object(value) &&
 		Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
-		Object.entries(value).every(([id, choice]) => id.length > 0 && text(choice))
+		Object.entries(value).every(
+			([id, choice]) =>
+				id.length > 0 &&
+				object(choice) &&
+				Object.keys(choice).every((key) => key === 'concessionId' || key === 'applicationId') &&
+				text(choice.concessionId) &&
+				(choice.applicationId === undefined || validApplicationId(choice.applicationId))
+		)
 	);
 }
-export function validLifecycle(value: unknown): value is string {
-	return text(value) && value.trim().length > 0 && value.length <= MAX_APPLICATION_LIFECYCLE_LENGTH;
-}
-export function validLifecycles(value: unknown): value is Record<string, string> {
-	return validSelections(value) && Object.values(value).every(validLifecycle);
+export function validApplications(value: unknown): value is AppliedConcessions {
+	return (
+		object(value) &&
+		Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
+		Object.entries(value).every(
+			([id, application]) =>
+				id.length > 0 &&
+				object(application) &&
+				text(application.concessionId) &&
+				(application.approval === undefined ||
+					(object(application.approval) &&
+						validApplicationId(application.approval.applicationId) &&
+						(application.approval.status === 'pending' ||
+							application.approval.status === 'approved' ||
+							application.approval.status === 'rejected')))
+		)
+	);
 }
 function validCompletion(value: unknown) {
 	return (
@@ -53,28 +75,33 @@ function validCompletion(value: unknown) {
 				(value.kind === 'queued' && text(value.deliveryId))))
 	);
 }
+function validHubSpot(value: unknown) {
+	return (
+		value === undefined ||
+		(object(value) &&
+			text(value.connectionId) &&
+			text(value.accountId) &&
+			text(value.dealId) &&
+			natural(value.generation) &&
+			value.generation > 0 &&
+			(value.availability === 'available' || value.availability === 'unavailable'))
+	);
+}
 export function validContractState(value: unknown): value is ContractState {
 	return (
 		object(value) &&
-		text(value.companyName) &&
-		natural(value.revision) &&
+		text(value.buyerCompanyName) &&
+		validHubSpot(value.hubspot) &&
+		(value.workBlock === undefined ||
+			value.workBlock === null ||
+			value.workBlock === 'association-required' ||
+			value.workBlock === 'deal-unavailable') &&
+		natural(value.editRevision) &&
 		natural(value.stateVersion) &&
 		natural(value.reviewGeneration) &&
 		validCompletion(value.reviewCompletion) &&
 		(value.lastOperationId === null || text(value.lastOperationId)) &&
-		validSelections(value.selectedConcessions) &&
-		object(value.reviews) &&
-		Object.keys(value.reviews).length <= MAX_SELECTED_CONCESSIONS &&
-		Object.entries(value.reviews).every(
-			([id, review]) =>
-				id.length > 0 &&
-				object(review) &&
-				text(review.concessionId) &&
-				validLifecycle(review.lifecycle) &&
-				(review.status === 'pending' ||
-					review.status === 'approved' ||
-					review.status === 'rejected')
-		)
+		validApplications(value.applications)
 	);
 }
 type Metadata = Extract<ContractSnapshotResult, { status: 'ready' }>['contract'];
@@ -93,9 +120,6 @@ export function validContractMetadata(value: unknown, id: string): value is Meta
 
 export function readContractState(value: unknown): ContractState | undefined {
 	return validContractState(value) ? value : undefined;
-}
-export function readContractMetadata(value: unknown, id: string): Metadata | undefined {
-	return validContractMetadata(value, id) ? value : undefined;
 }
 
 function point(value: unknown) {
@@ -154,6 +178,7 @@ function numbering(value: unknown) {
 		text(value.itemKey) &&
 		text(value.sequenceKey) &&
 		(value.parentItemKey === undefined || text(value.parentItemKey)) &&
+		(value.continueSequence === undefined || value.continueSequence === false) &&
 		(value.start === undefined || finite(value.start)) &&
 		pattern(value.labelPattern) &&
 		(value.referencePattern === undefined || pattern(value.referencePattern)) &&
@@ -176,22 +201,22 @@ function block(value: unknown) {
 		(value.numbering !== undefined && !numbering(value.numbering))
 	)
 		return false;
+	if (value.kind === 'table' && (value.role !== undefined || value.anchor !== undefined))
+		return false;
 	switch (value.kind) {
-		case 'heading':
+		case 'paragraph':
 			return (
-				text(value.anchor) &&
-				(value.level === 1 || value.level === 2 || value.level === 3) &&
+				(value.role === 'title' || value.role === 'heading' || value.role === 'body') &&
+				(value.anchor === undefined || text(value.anchor)) &&
+				value.level === undefined &&
 				array(value.content, inline)
 			);
-		case 'paragraph':
-			return array(value.content, inline);
 		case 'table':
 			return (
+				value.numbering === undefined &&
 				(value.variant === undefined || value.variant === 'signature') &&
-				finite(value.headerRowCount) &&
-				array(value.rows, (row) =>
-					array(row, (cell) => object(cell) && array(cell.content, inline))
-				)
+				natural(value.headerRowCount) &&
+				array(value.rows, (row) => array(row, (cell) => typeof cell === 'string'))
 			);
 		default:
 			return false;
@@ -200,13 +225,9 @@ function block(value: unknown) {
 function instructions(value: unknown) {
 	return (
 		object(value) &&
-		[
-			'summary',
-			'howToExplainToBuyers',
-			'commonObjections',
-			'negotiation',
-			'changesNeedApproval'
-		].every((key) => value[key] === undefined || text(value[key]))
+		['summary', 'howToExplainToBuyers', 'commonObjections', 'negotiation'].every(
+			(key) => value[key] === undefined || text(value[key])
+		)
 	);
 }
 function item(value: unknown, companyId: string) {
@@ -215,10 +236,15 @@ function item(value: unknown, companyId: string) {
 		value.companyId === companyId &&
 		text(value._id) &&
 		finite(value._creationTime) &&
-		natural(value.revision) &&
+		natural(value.contentRevision) &&
 		object(value.trigger) &&
 		text(value.trigger.id) &&
-		sourceTarget(value.trigger.range) &&
+		object(value.approvalPolicy) &&
+		(value.approvalPolicy.kind === 'none' ||
+			(value.approvalPolicy.kind === 'required' &&
+				text(value.approvalPolicy.instructions) &&
+				Boolean(value.approvalPolicy.instructions.trim()))) &&
+		sourceTarget(value.trigger.target) &&
 		(value.instructions === undefined || instructions(value.instructions)) &&
 		array(
 			value.concessions,
@@ -230,7 +256,7 @@ function item(value: unknown, companyId: string) {
 				array(
 					concession.changes,
 					(change) =>
-						object(change) && sourceTarget(change.range) && array(change.replacement, replacement),
+						object(change) && sourceTarget(change.target) && array(change.replacement, replacement),
 					2
 				)
 		)
@@ -240,7 +266,7 @@ function item(value: unknown, companyId: string) {
 // Immutable content is checked once for an exact object/company pair. A disk
 // read creates a new object and must pass all checks before joining shared memory.
 const validatedTemplates = new WeakMap<object, string>();
-export function validTemplate(value: unknown, companyId: string): value is ContractSnapshot {
+export function validTemplate(value: unknown, companyId: string): value is TemplateContent {
 	if (!object(value)) return false;
 	if (validatedTemplates.get(value) === companyId) return true;
 	if (

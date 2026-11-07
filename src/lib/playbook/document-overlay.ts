@@ -3,7 +3,8 @@ import type { ContractChange, PlaybookItemRecord, SourceTarget, Trigger } from '
 export type DocumentAnnotation = {
 	id: string;
 	itemId: string;
-	range: SourceTarget;
+	target: SourceTarget;
+	pending?: boolean;
 } & (
 	| { kind: 'trigger'; triggerId: string }
 	| { kind: 'concession-effect'; concessionId: string; changeIndex: number }
@@ -11,67 +12,38 @@ export type DocumentAnnotation = {
 
 export type AnnotationMembership = DocumentAnnotation & { applied?: boolean };
 
-export const triggerAnnotationId = (itemId: string, triggerId: string) =>
-	JSON.stringify(['trigger', itemId, triggerId]);
+export const triggerAnnotationId = (renderKey: string) => JSON.stringify(['trigger', renderKey]);
 
-export function documentAnnotations(
-	record: Pick<PlaybookItemRecord, '_id' | 'trigger' | 'concessions'>
-): DocumentAnnotation[] {
+export function documentAnnotations(record: {
+	_id: string;
+	renderKey?: string;
+	trigger: Trigger;
+	concessions: { id: string; changes: { target: SourceTarget }[] }[];
+}): DocumentAnnotation[] {
 	return [
 		{
-			id: triggerAnnotationId(record._id, record.trigger.id),
+			id: triggerAnnotationId(record.renderKey ?? record._id),
 			kind: 'trigger',
 			itemId: record._id,
 			triggerId: record.trigger.id,
-			range: record.trigger.range
+			target: record.trigger.target
 		},
 		...record.concessions.flatMap((concession) =>
 			concession.changes.slice(1).map((change, i): DocumentAnnotation => ({
-				id: JSON.stringify(['concession-effect', record._id, concession.id, i + 1]),
+				id: JSON.stringify([
+					'concession-effect',
+					record.renderKey ?? record._id,
+					concession.id,
+					i + 1
+				]),
 				kind: 'concession-effect',
 				itemId: record._id,
 				concessionId: concession.id,
 				changeIndex: i + 1,
-				range: change.range
+				target: change.target
 			}))
 		)
 	];
-}
-
-export interface AnnotationSegment {
-	target: AnnotationMembership | undefined;
-	membershipKey: string;
-	membershipIds: readonly string[];
-}
-
-const segments = new WeakMap<readonly AnnotationMembership[], AnnotationSegment>();
-const EMPTY_MEMBERSHIPS: readonly AnnotationMembership[] = [];
-
-/** Rendering and geometry use the same boundaries and deterministic interaction target. */
-export function annotationSegment(
-	annotations: readonly AnnotationMembership[] = EMPTY_MEMBERSHIPS
-): AnnotationSegment {
-	const cached = segments.get(annotations);
-	if (cached) return cached;
-	const priority = (annotation: AnnotationMembership) =>
-		annotation.kind === 'trigger' ? 0 : annotation.applied ? 1 : 2;
-	const target = annotations.reduce<AnnotationMembership | undefined>(
-		(best, annotation) =>
-			!best ||
-			priority(annotation) < priority(best) ||
-			(priority(annotation) === priority(best) && annotation.id < best.id)
-				? annotation
-				: best,
-		undefined
-	);
-	const membershipIds = [...new Set(annotations.map((annotation) => annotation.id))].sort();
-	const segment = {
-		target,
-		membershipKey: JSON.stringify([target?.id, membershipIds]),
-		membershipIds
-	};
-	segments.set(annotations, segment);
-	return segment;
 }
 
 export type DocumentOverlayItem = {

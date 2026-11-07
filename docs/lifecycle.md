@@ -1,5 +1,10 @@
 # Saved contract navigation and saving
 
+Current names and ownership are documented in [the data model](data-model.md).
+Contract persistence uses one applications map, distinct local intent, and one
+outstanding request. `savePending()` initiates contract saving. Account exits use
+`prepareToLeave()`; authoring flushes only already submitted work and never submits an unsent draft.
+
 The contracts layout reads its own `ContractDestination` load data. Each keyed saved
 view captures its ID for the whole mount, including teardown. Incoming Home data
 cannot change the departing editor's identity. New-contract creation retains its
@@ -10,7 +15,7 @@ deadline covering rendering as well as data initialization. Creation registers i
 completion callback before navigation can mount the saved view, and settles it once.
 A stalled viewer offers Retry while retaining the created ID and editing session.
 
-`WorkspaceScope` owns one membership-scoped `ContractSessions` registry above the
+`WorkspaceScope` owns one membership-scoped `ContractEditors` registry above the
 header and route bodies. A contract session owns its authenticated metadata
 subscription, draft journal and `ContractPersistence`; views acquire explicit
 attachment tokens. Ordinary navigation, including Home and Back/Forward, proceeds
@@ -20,7 +25,16 @@ acknowledgement; approval requests and Word export still require confirmed state
 
 Every selection checkpoints intent synchronously, then starts the existing
 serialized, immutable operation protocol. Workspace feedback and Home card statuses
-read that same owner. Errors and conflicts remain actionable after navigation;
+read that same owner through membership-scoped `WorkspaceFeedback`. Its single
+floating bubble host lives in the workspace shell, alongside document-local
+rendering/selection feedback. Recent contract and authoring acknowledgements share
+one 2.5-second expiry scheduler; Home retains contextual Saved badges. Live pending
+work immediately suppresses stale success, with contract progress delayed 250ms
+across a continuous burst. Contract errors, conflicts, holds and storage warnings
+take precedence and remain actionable through Details, Open and eligible Retry.
+Authoring progress and retained-draft notices come from the scope-owned session and
+remain actionable after route teardown, including company-hold Settings detours.
+Completion expiry continues while suppressed. Errors and conflicts remain actionable after navigation;
 storage failures warn while intent is pending. The membership owns the unload
 warning even when Home is visible.
 
@@ -66,17 +80,46 @@ Document resources retain rendering within their existing limits. Activation giv
 each view an owned attachment for bindings, choices and cleanup. The incoming owner
 is protected before releasing the outgoing attachment or applying retention limits. An outgoing view
 cannot detach its replacement; acquisition and background cache updates do not
-reset an active view's local choices. Admin retains its explicit Save/Cancel owner.
+reset an active view's local choices.
 
-Background writes require the live workspace. Refresh recovery uses the tab's
-existing journal; tab closure does not guarantee network completion. URLs, backend
-APIs and journal format are unchanged.
+`WorkspaceScope` also owns a lightweight `AdminAuthoringSession`, above both the header
+and `/admin`. It creates its draft controller lazily and subscribes only while authoring
+is attached or submitted/recovery work remains. Detachment releases source/viewer callbacks
+and unsent local state while retaining the immutable submitted payload, operation UUID and
+expected revision. Save closes a valid editor synchronously and publishes a dashed pending
+annotation. A single outstanding operation/recovery slot permits navigation and unrelated
+drafting, while another submission waits for reconciliation or explicit recovery resolution.
+
+Authoring confirmation uses the backend's company-monotonic authoring watermark. Structure
+and detail have separate acknowledgements: a successful complete structure snapshot confirms
+membership/shape, and a successful detail snapshot confirms the revision/operation or a newer
+authoritative state. An unchanged structural generation cannot acknowledge prose. Loading
+and errors retain accepted content and the temporary confirmation bridge. Query refresh has
+its own retry action; it never resubmits an already confirmed mutation. Older transport
+callbacks cannot overwrite newer state or resurrect authoritative deletion.
+
+Transport uncertainty retains the same UUID and immutable payload for Retry confirmation.
+Definitive rejection/conflict retains the submitted draft for restore/discard through the
+workspace notice and Admin. Conflicts retain the persisted target ID and a revision/watermark
+floor, separately from the immutable retry request. Restore requires ready current structure
+and detail agreement; stale/loading/error reads cannot establish deletion. A missing result
+after a conflict must be newer than its witness, or agree with a newer certified baseline.
+Restore creates a new editing attempt against the admissible current identity/revision; replacing a newer unsent draft requires an explicit choice. Restoring and
+resubmitting uses a fresh operation and expected revision. Route leave checks apply to unsent
+drafts only. The aggregate SessionEditor and unload warning cover submitted, uncertain,
+recovery and attached unsent work; logout/company exit wait for submitted reconciliation,
+while errors offer the existing retry/discard barriers. Account closing retains its unload
+exemption. Explicit discard cannot undo a committed write.
+
+Background writes require the live workspace. Contract refresh recovery uses its existing
+tab journal. Admin recovery is retained in memory with unload protection; cross-reload/crash
+recovery is not provided. Tab closure does not guarantee network completion.
 
 ## Manual navigation checklist
 
 - Open a saved contract, click Home once, and confirm both URL and content change.
 - Change a selection and immediately click Home; reopen while saving and confirm
-  the latest local choice appears. Verify the header and Home card agree on status.
+  the latest local choice appears. Verify the floating bubble and Home card agree on status.
 - Use Back/Forward between Home and several contracts, including during saving.
 - Create a contract; if opening fails, retry and confirm the same contract opens.
 - Interrupt the connection while saving, leave, and confirm failure/recovery feedback
@@ -85,10 +128,13 @@ APIs and journal format are unchanged.
 
 # Playbook authoring and persistence
 
-`AdminWorkspace` owns one route-scoped `AuthoringController`. It owns every editing
-command, document-action decision, reconciliation, operation attempt and completion.
+The membership-scoped `AdminAuthoringSession` owns submitted transport, confirmation
+and recovery. It lazily creates an `AuthoringController` that attaches to `AdminWorkspace`
+for unsent editing commands, document-action decisions and source validation.
 Its `AuthoringContext` stores state and derives projections; it does not execute
-commands or transport. Workflow variants distinguish editing, explanation creation,
+commands or transport. Selection tokens express pending/opened requests; occurrence
+coordinates and focus stay in the route's viewer. Detail snapshots and errors follow
+logical selection/submission ownership, independently of temporary subscription release. Workflow variants distinguish editing, explanation creation,
 concession creation and staged concession addition. Components receive read-only
 drafts and call narrow controller commands. They own presentation state such as
 menus and focus. The Convex transport remains a separate adapter. Neither the app
@@ -105,8 +151,8 @@ The membership-scoped workspace retains the mounted Admin owner through a tempor
 company deletion hold and a Settings detour to cancel that hold. Its controller, draft,
 creation workflow, and immutable unresolved operation survive; document preparation and
 new reads pause, and the hidden editor cannot start another operation. Returning to
-Admin restores the same owner. Ordinary departure still requires resolving an
-operation or confirming abandonment. Membership loss, account switching, and actual
+Admin restores the same owner. Ordinary departure protects unsent drafts; submitted
+operations continue in the membership session without delaying route departure. Membership loss, account switching, and actual
 workspace teardown destroy the owner; refresh does not preserve local authoring work.
 
 ## Explicit transaction boundary
@@ -136,129 +182,99 @@ with an open editor; a blocked authoring attempt preserves the native selection 
 reports its restriction separately from source errors and operation status. Confirmation
 revalidates the source and transition before replacing a clean context.
 
-Outside clicks and Escape can dismiss a clean existing box. Dirty or unresolved
-work stays open with inline feedback. New creation requires an explicit action.
+Outside clicks and Escape can dismiss a clean existing box. Dirty unsent work
+stays open with inline feedback. New creation requires an explicit action.
 Modal dialogs block underlying dismissal, and source picking includes the document
 and selection toolbar in the interaction boundary. Internal navigation asks before
-abandoning unsaved work and blocks while a save or delete is unresolved. Browser
-unload only warns; local drafts are not durable across refresh.
+abandoning unsent work. An accepted save or delete continues through ordinary navigation.
+Browser unload only warns; local drafts and submitted recovery are not durable across refresh.
 
 ## Operation outcomes and live reconciliation
 
-Saving freezes editing and duplicate submissions. An acknowledged save or deletion
-ends the workflow and closes the editor. The workspace restores the captured
-annotation focus after the DOM updates and shows completion feedback for 2.5 seconds.
-Operation errors and recovery actions remain beside the editor footer.
+Save validates a complete local command synchronously. Acceptance closes the editor,
+restores its captured occurrence focus after the DOM tick and publishes pending annotation
+state independently of the transport promise. The membership session retains one submitted
+operation and publishes its eventual completion to shared workspace feedback. Another unsent
+draft can open while that operation continues; another submission waits for the slot to clear.
 
-An attempt identity covers transport, result handling, closure and cleanup. Restart
-invalidates that identity while preserving the frozen operation; late results cannot
-close a replacement context or clear another attempt's running promise. Context
-object identity also guards focus restoration, without a separate context UUID.
+Attempt and transport-generation identities guard result handling and cleanup. Restart
+invalidates an old attempt while preserving the exact frozen operation. Late results cannot
+close a replacement context, clear another attempt's running promise or revive discarded work.
+Route-local entry and focus-intent guards protect focus restoration.
 
-An uncertain transport outcome retains the exact frozen operation for Retry; there
-is no new operation ID or queued replacement. A definite rejection leaves the draft
-editable. Correcting its content permits a new save operation. A revision conflict
-retains local work and offers Use saved version; it never silently overwrites or
-merges another admin's edits. Missing records retain the local draft for explicit
-cancellation. Editing and ordinary departure remain blocked until an uncertain
-operation has a definite outcome. The company-hold Settings detour retains that
-operation without retrying or abandoning it. A save rejection is associated with its
-exact payload and appears once as the primary action's reason. A delete rejection
-appears in operation status and does not prevent saving valid edits.
+Uncertain transport outcomes retain the original UUID, payload and expected revision for
+Retry. A definitive rejection, conflict or missing result retains the submitted body for
+explicit restore/discard. A create replay can resolve the real persisted ID after another
+admin edits it: the session learns that ID and conflict revision/watermark without changing
+the original create request. Restore opens an admissible current version with the retained
+intended body; resubmission captures a fresh UUID and expected revision. Replacing an unsent
+draft requires an explicit choice. Discard cannot undo a write that committed.
 
-Clean drafts adopt newer live records. Conflict is derived from the highest known
-remote revision and protected local work. Canceling an addition over a clean parent
-therefore adopts the remote record; canceling over a dirty parent retains conflict.
-Updates received during an unresolved operation are retained and reconciled after
-its result.
+Detail snapshots and errors belong to the attached selection and resolved submitted target.
+Ending the last logical owner removes them immediately; retry, suspension and transport
+release retain still-owned observations. A cold selection has a unique admission token and
+pending/opened status. Only its matching request can open the editor. Authoritative missing
+consumes the request and ends its loading state, preserving a prior editor only while that
+editor remains valid. Its occurrence coordinates remain local to the viewer.
 
-Query absence proves deletion only after that query has observed at least the
-highest known revision. Opening an existing item establishes its accepted query
-revision; mutation conflict responses can advance the known record ahead of the
-query. Use saved version adopts that record immediately, even while the query lags.
-Old query absence and failures with retained data cannot turn it into a missing
-record. Once the query has caught up, subsequent absence is authoritative. A missing
-mutation result is authoritative immediately. No additional cache, timer or query
-coordinates this ordering.
+Clean drafts adopt newer live records. Protected local work retains conflict/deletion feedback.
+Canceling an addition over a clean parent adopts the remote record; canceling over a dirty
+parent retains conflict. Detail loading, errors and stale query absence never establish
+removal. Restore requires ready structure/detail agreement, the learned revision floor and
+baseline-sensitive watermark. Missing after a conflict must be observed strictly after the
+conflict witness, or agree on a newer certified baseline. Current source/geometry validation
+still applies to the restored attempt. Structure and detail acknowledge confirmation separately;
+query Retry refreshes observations without resubmitting a confirmed operation.
+
+Ordinary route departure protects unsent drafts while submitted work continues. Account exit,
+company exit and unload retain their aggregate saving/recovery barrier. A temporary company-hold
+Settings detour preserves the mounted owner while preparation and new reads pause. Membership
+loss or workspace destruction ends in-memory ownership.
 
 ## Manual authoring acceptance checklist
 
-`npm run verify` passed 20 existing lifecycle tests and 24 performance tests, followed
-by type checking with zero errors or warnings and the production build. Existing
-assertions cover persistence/replay, caching, scheduling and workspace recovery.
-They do not directly exercise the new Admin controller or these browser interactions:
+`npm run verify` runs the existing lifecycle and performance assertions, type checks and
+production build. These checks preserve the paths they exercise; they do not certify the
+admin-session race schedules or native browser behavior below. No new tests or browser
+automation are required by this implementation. Report actual check results separately.
 
-- Open an unchanged box, then click another box. Highlight unattached text; the old
-  editor stays open until Explain or Add concession is chosen.
-- Edit a box, then click another box or highlight unattached text. Verify the red
-  warning, retained draft and retained highlight. Undo to saved content and retry.
-- Move among annotations of the same dirty box without losing edits.
-- Start a new creation and verify that incidental replacement requires finishing or
-  canceling it, including before text has been entered.
-- Add a concession with unrelated parent edits. Select its second passage, use Back,
-  and cancel the addition; parent edits remain. Add merges locally; Save writes once.
-- Save with a delayed or interrupted connection. Selection remains possible, context
-  replacement stays blocked, and Retry resolves the original operation.
-- Update or delete the record elsewhere while editing or staging a concession.
-  Local work remains available beside conflict/deletion feedback.
-- Cancel a staged addition after a remote update, with both a clean and a dirty
-  parent. The clean parent adopts the update; the dirty parent remains conflicted.
-- Receive a creation conflict before its query record appears, then choose Use saved
-  version. Repeat with an existing-item conflict whose response advances the query.
-  The adopted record remains editable through old query absence or a query error;
-  disappearance after the query catches up reports deletion.
-- Reject Save, change its payload, then restore it. Its reason follows that payload.
-  Reject Delete with valid local edits; Save remains available and neither rejection
-  renders twice.
-- Interrupt transport and Retry before the old response arrives. That response cannot
-  close the retry or clear its running state. Repeat with teardown during saving.
-- Add and then remove the previewed concession; its preview disappears immediately.
-- Escape and outside clicks dismiss only a clean box. Highlighting does not dismiss
-  it. Step changes and nested Add/Cancel do not restore focus to the document.
-- A temporary company-hold Settings detour retains the context. Ordinary departure
-  confirms abandonment; account teardown prevents late results reviving the context.
+- Open an unchanged box and switch clauses; edit a box and confirm a dirty switch retains
+  the draft. Moving among annotations of the same dirty box preserves its context.
+- Start new authoring and stage a concession, including a secondary change. Verify explicit
+  Save/Cancel, nested Add/Cancel, Back and retained parent edits.
+- Save the first instructions for a new clause. The editor closes and pending annotation
+  appears immediately. Navigate away/reopen during saving and confirm the eventual body.
+  Repeat while opening an unrelated unsent draft.
+- Interrupt a create that commits. Unchanged retry can acknowledge saved replay; after an
+  intervening edit it must return conflict for the real persisted clause. Restore must use
+  admissible current identity/revision. Check subsequent deletion separately, including stale
+  missing reads, and confirm replacement-draft permission is still required.
+- Select a cold later occurrence by pointer or keyboard, then close the editor after hydration.
+  Focus must return to that occurrence. Repeat with an existing clean editor, different
+  fragments of the same annotation, a missing target and cancellation/navigation before detail.
+- Tab/Shift+Tab to a distant untouched occurrence in a long document and through repeated
+  source/generated fragments. Check Enter/Space, source/priority order, dirty geometry,
+  repagination, boundary controls, headings, pending disabled state and existing selection.
+- Cold native focus reveals the measured owner; programmatic close/post-commit focus preserves
+  scroll. With fonts/commit delaying geometry, focus/semantics persist. Later paint must not
+  steal focus or reveal after a newer keyboard, pointer, wheel or touch intent.
+- Check query errors/refresh, account/company exit and unload protection, plus the temporary
+  company-hold Settings detour. Ordinary departure confirms only unsent abandonment.
 
-No tests were added or expanded. The lifecycle harness supplies the shared Button's
-`$app/paths` dependency; its existing assertions are unchanged. The browser checks
-above remain unverified.
-
-## Review finding coverage
-
-All 20 findings are addressed, including those outside the main ownership refactor:
-
-| Finding                                                 | Implementation                                                                              |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| 1. Canceling a clean addition leaves sticky conflict    | Derive conflict; nested Cancel reconciles the clean parent.                                 |
-| 2. Undo to an absent field remains dirty                | Compare visible strings and restore the saved field representation.                         |
-| 3. Obsolete transaction entry arguments                 | Remove the transaction layer and its entry protocol.                                        |
-| 4. Delete rejection blocks Save                         | Separate delete status from payload-scoped save rejection.                                  |
-| 5. Staged validation runs twice                         | One derived addition validation feeds the action and handler.                               |
-| 6. Save rejection displays twice                        | Primary action owns save rejection; status owns delete rejection.                           |
-| 7. Dirty checks serialize full semantic content         | Compare instruction fields and ordered concession IDs.                                      |
-| 8. Unused outcomes and completion timestamp             | Keep only closed/retained outcomes and completion kind.                                     |
-| 9. Duplicate source-range comparison                    | Share `sameSourceRange` from `source-model.ts`.                                             |
-| 10. Use saved version falsely reports missing           | Require query catch-up before absence proves deletion.                                      |
-| 11. Transaction/controller completion race              | One controller owns attempt result, closure and cleanup.                                    |
-| 12. Workflow inferred from the first concession         | Explicit workflow with a separate composer.                                                 |
-| 13. Removed concession leaves a preview ID              | Clear the preview in the removal command.                                                   |
-| 14. Unused selected-Trigger getter                      | Keep selected Trigger state internal.                                                       |
-| 15. Redundant feedback clearing                         | Commands own clearing; remove duplicate field/component cleanup.                            |
-| 16. Reactive copies and retained-concession comparisons | Share frozen records and concessions; retain canonical backend validation.                  |
-| 17. Unrelated item updates rerun complete validation    | Derive capacity from count and geometry version; separate content, references and geometry. |
-| 18. Cached annotations are rebuilt                      | Read records and annotations through the domain's existing lookup.                          |
-| 19. Unused validation diagnostic object                 | Derive a reason string; keep the geometry memo's original failure.                          |
-| 20. Context UUID used only for identity                 | Use the context object; retain business and operation IDs.                                  |
+These browser and assistive-technology checks remain user-run acceptance. Existing automated
+results do not measure perceived first-Save latency, CPU/frame time, heap or live Convex limits.
 
 ## Backend contract
 
-`admin.savePlaybookItem` checks replays, missing records, and expected revisions
-before content validation. It validates source-independent item content before
-capturing the full playbook. Publication validates that capture, including source
-references, Trigger uniqueness/overlap, change boundaries, concession rules, and
-supported-size limits. Authoring, immutable revision creation, the full manifest,
-and pointer advancement commit atomically. New items start at revision 1; accepted
-updates advance the counter. Repeated operations acknowledge the existing result
-without writing again.
+`playbookItems.savePlaybookItem` checks authorization, replay, missing records and expected
+content revisions before changed-body validation. Instruction-only saves read metadata and
+one head/body. Geometry changes additionally validate against certified compact source facts
+and heads, including trigger uniqueness/overlap, boundaries, references and ownership effects.
+The head, changed revision body, receipt, ordered manifest, counters and pointer commit
+atomically. Each writer packs its completed compact head once for storage and capacity
+accounting. New items start at content revision 1; accepted updates advance it. Replays return
+the existing result without writing again. The legacy `admin` adapter explicitly projects
+its declared response shape; canonical clients also receive authoring watermark metadata.
 
 Creation receipts map an operation UUID to a database ID atomically and outlive
 items. Retrying creation cannot duplicate or resurrect a deleted item; replay after
@@ -278,10 +294,145 @@ accepting a secondary clause. Confirmed actions revalidate current source and it
 before changing a draft. Initial eligibility checks source, Trigger and persisted
 change invariants once, then checks concession-specific geometry separately.
 
-The toolbar copies native start/end nodes and offsets alongside the accepted source
-range. Changed endpoints invalidate actions; unchanged notifications, scroll and
-resize preserve acceptance. Confirmation checks endpoints again before workflow
-validation. Unsupported selection changes cannot confirm an earlier highlight.
+The complete `RenderSnapshot.selectionDocument` is the identity of a selection. Its immutable
+positions use physical page/placement/token order and UTF-16 offsets, with distinct occurrences
+for repeated table headers. Its break groups come from prepared composition and the existing
+`flowRole` collapse classification, rather than baseline paragraph emptiness or page-local gap
+inference. Construction cooperates with the renderer's existing preparation scheduler; metadata
+does not enter geometric fingerprints, layout/profile inputs, or Word output.
+
+`SelectionSurface` binds positions to exact mounted pages and prepared provenance. Ordinary
+mouse drags use one page resolver at start, movement and final release, including left/right
+page padding. Margins beside text choose a visual line and caret; margins beside a real gap
+choose that shared break. Tables choose a row/cell before a line. Existing newline anchors supply
+geometry for blank hard lines without contributing selectable glyphs. Page padding clamps to
+real endpoints; continuations and page seams create no extra breaks.
+
+The exclusive gesture owner waits for a cancelable, unconsumed `mousedown.detail === 1`;
+pointerdown remains uncanceled. Missing or unclaimable matching mousedown cancels pending
+authoring; an unresolved ordinary mouse hit cannot switch into native authoring. Multi-click,
+word dragging, reserved pointer modifiers, keyboard, pen and touch deliberately remain native.
+Native completion captures range, direction, session and surface identity together. Both input
+paths use the same full-envelope validator; unknown leading, trailing or interior body text,
+including whitespace, cannot be cropped away to obtain a source target.
+
+Displayed extent and attachment are independent. Table, generated and revision content can
+participate in either direction of a mouse drag and remain displayed/copyable when attachment
+is unavailable. Text plus a terminal break is never clipped to fit persistence. A native envelope
+that cannot be represented completely retains browser selection/copy with no attachment or
+cropped override. Finalization and confirmation validate current contributions again.
+
+Collapsed empty paragraphs retain their spacing and share the existing visible break. A new
+pure-break attachment chooses its last eligible real alias; saved targets keep every exact key.
+Only a normalized gap-only selection paints an insertion bar. A selection containing ordinary
+text is one text attachment, even across paragraphs; traversed separators still participate in
+physical selection and copy. Moving out of a gap into text clears its live bar. Text selections
+do not acquire gap bookmarks, saved structural paint or insertion ownership.
+
+Explicit boundary targets project their exact aliases into the current shared break for paint
+and navigation. Legacy text targets can use gap navigation only when they relate to those exact
+source separators or collapsed source ranges and every positive selected source-unit slice is
+covered by the related groups' collapsed ranges. Whitespace counts as a positive slice; empty
+points must belong to the collapsed source container and offsets. Numeric emptiness alone
+never creates a navigation location. Visible source/replacement bounds take priority over this
+fallback, which in turn takes priority over removed-source bounds. A selected invisible legacy
+target can have a separate location marker without becoming a boundary attachment, even when
+its collapsed whitespace still has a DOM range. Marker eligibility uses the same semantic helper
+as saved navigation, independently of DOM range count.
+
+Collapsed coverage starts from each empty output block's baseline source units and subtracts
+exact source intervals displayed in every nonempty prepared paragraph, including generated
+continuations and source-bearing redlines. Positive whitespace and atomic source lengths count;
+source-less replacement/presentation tokens contribute no coverage. Genuine empty anchors and
+deleted source with no surviving output token retain their group association. The cooperative
+snapshot pass merges intervals by original source key and emits only uncovered source slices;
+it changes no prepared fragments, spacing, occurrences or copy data.
+
+Saved structural paint filters navigation memberships to explicit boundary targets. Coincident
+menu entries retain their exact annotations and restore focus to the stable closed-menu trigger.
+Zero-area groups retain saved navigation without a new pointer surface. Ordinary spanning text
+does not join these menus merely because it crosses a gap.
+
+The toolbar stores only a selection token and resolves a fresh candidate at confirmation.
+Initial/secondary selection, workflow confirmation and target-only concession addition all
+require the active complete displayed break context. Stale/missing context is unavailable;
+there is no baseline-group fallback. Exact saved overlap/numbering semantics are unchanged.
+Explain still requires substantive source text and Concession retains its geometry checks.
+
+Attachment overlap and replacement effects use separate rules. A spanning explanation and an
+insertion instruction between its paragraphs can coexist in either creation order. A text change
+conservatively occupies every real source boundary strictly between its source endpoints, even
+if the replacement recreates the same number of paragraphs. It conflicts with a boundary change
+or Trigger at that exact source key. Ending at preceding text end or starting at following text
+start only touches the boundary; selecting between those endpoints crosses it. Text cannot cross
+the document-final boundary. A replacement generating extra paragraphs inside one source
+container does not occupy its trailing insertion boundary. Synthetic display gaps and shared
+visible aliases never define these source effects; distinct saved boundary keys remain distinct.
+
+The same crossing predicate serves shared change conflicts and Trigger/change ownership.
+Container-local indexed validation checks saved changes when a new boundary Trigger is proposed,
+as well as saved Triggers when a text change is proposed. Within coarse container candidates,
+only exact attachment intersection or a text change crossing a proposed boundary Trigger requires
+full ownership revalidation against persisted Triggers and the entire proposed overlay. Disjoint
+changes skip that lookup. Initial selection validates the Trigger
+overlay first, then the prospective concession against saved Triggers. A crossing replacement
+disables Concession while Explain remains available. Secondary selection checks the actual
+primary change first and then validates both changes with the draft Trigger. The restriction on
+authoring another explicit insertion into an instructed shared visible gap remains contextual.
+
+Fresh structural template writes audit shared geometry, and current indexed editing checks
+Trigger/change ownership. Active mixed changes use the shared conflict checker; composition
+checks authored change/change conflicts before structural expansion, rather than auditing every
+Trigger/change relation. Composition caches attachment-owner candidates by target kind for each
+items identity, keeping all overlays and effect memberships. Thus an inactive boundary instruction
+cannot prevent rendering a historical spanning text concession during annotation construction.
+Strict authoring still checks all relevant kinds; same-kind partial crossings and ambiguous owners
+retain their errors. Instructions-only versions carry prior audit proof. Saved-contract
+replay/no-op, unchanged-choice and single-item paths retain their existing fast paths. Deployment
+does not re-audit every immutable historical version; historical incidence remains unknown.
+Historical invalid combinations keep their exact saved targets and existing editable diagnostics
+and repair/exclusion behavior. No data migration or silent retargeting is performed.
+
+The focused active document owns copy only for a current fully modeled extent. Plain text and
+safe paragraph/table/revision HTML follow that same extent, retaining real whitespace and CR/LF,
+joining continuation fragments and omitting page/control text and presentation placeholders.
+A shared break emits one newline. Repeated table headers copy in physical encounter order,
+including independent partial occurrences and traversed empty cells. Other fields and native-only
+unmapped selections keep browser copy. A bounded keyboard bridge seeds directed real DOM
+endpoints once before yielding to native commands; nonprojectable structural selections use
+the nearest head-side endpoint. There is no editable mirror, fake source text or custom caret engine.
+
+Controllers bind after the complete current commit and DOM tick, independently of toolbar
+lifetime. Pending/progressive, parked and inert viewers cannot author with an old model. Escape,
+capture loss, cancellation, blur, external ownership, source/model replacement and teardown stop
+queued frames/autoscroll and invalidate actions. Geometry-only changes preserve positions and
+refresh the existing visible/adjacent-page geometry, without a second measurement cache. Only
+the exact owning toolbar is exempt from external focus clearing. The I-beam covers selectable
+page padding and gaps; controls and chrome retain their own cursors.
+
+Clearing an absent structural highlight group is a no-op, preserving valid hit geometry through
+repeated text-selection updates. Clearing a real group still removes paint, prunes geometry and
+schedules its update. Projection, content, affected pages, page replacement/removal, boundary
+rebinding and destruction retain their independent invalidation paths.
+
+The existing seven selection lifecycle assertions cover final native capture, Shift completion,
+live-selection independence, unowned text/whitespace rejection and exact owned whitespace
+offsets. The required performance suite checks the existing saving/scheduling/cache guarantees.
+No tests or coverage were added. Browser acceptance remains necessary for margin/gap origins,
+reversal, fast release, tables/repeated headers, saved aliases and focus, pure-gap shortcut and
+context-menu copy, structured clipboard output, native keyboard, autoscroll, complex-script/bidi,
+forced colors and pen/touch. Spacing, page count and Word appearance also require manual checks.
+The existing automated suites do not prove gap-bar suppression, legacy collapsed-coverage
+navigation or the full crossed/touched-boundary action matrix. These require user acceptance,
+including explanation/insertion creation in both orders, later concession addition, secondary
+changes, saved alias/legacy navigation, reversal and paragraph-preserving copy.
+
+At the 2026-11-06 user checkpoint, the user confirmed side-margin drags into wrapped
+text and paragraph gaps, reversal, gap-only copy, and reopening a saved gap annotation.
+The browser/version and copy route were not supplied. This confirms those reported
+cases, rather than the full browser matrix or both shortcut and context-menu copy.
+Other platform/native-input, saved-target, lifecycle, long-document and Word appearance
+checks above remain unverified.
 
 Creation readiness combines validation with a required secondary selection on the
 other-part step. Complete validation gates Save. Content/byte-size validation follows
@@ -295,11 +446,11 @@ strings. Revalidation does not erase transport outcomes.
 
 ## Contract concession reviews
 
-Each required concession application has a lifecycle ID, saved atomically with the
-selection. Changing, removing, or reapplying a choice creates a new application;
+Each required concession application has an `applicationId`, stored beside the concession in the
+contract applications map. Changing, removing, or reapplying a choice creates a new application;
 renaming the buyer or saving another choice preserves existing decisions. Required
 choices applied by reps start pending; choices applied by admins start approved and
-record the admin's decision. Legacy saved choices without metadata start pending.
+record the admin's decision. Stored-format conversion preserves existing application identities and decisions.
 
 Current review state lives on the saved contract. Admin decisions validate company
 access, the immutable template's approval requirement, and the current selection and
@@ -315,7 +466,8 @@ fresh operation rather than replaying its earlier receipt.
 
 Review generation is separate from selection revision and advances for changed
 saves and explicit changed decisions. Only an explicit decision that completes
-all required reviews queues an immediate summary to the creator, with the
+all required reviews enters awaiting confirmation. Explicit completion confirmation
+queues the summary to the creator, with the
 triggering reviewer's current same-company address in CC. That authenticated
 reviewer ID belongs to the delivery event, including retries. Email preparation
 and immutable byte-bounded status snapshots are separate from it. Claiming dispatch
@@ -353,3 +505,10 @@ application in source order and wraps. Navigation consumes each request by ident
 including when a workspace reopens a retained viewer. The stale-link message clears
 when another concession starts waiting. Decision history is retained without a UI and
 removed in bounded batches when the contract is deleted.
+
+Admin acceptance also needs first-instruction Save with unchanged pages/scroll/selection,
+pending-to-confirmed identity, navigation during Saving, exact-operation retry after a lost
+response, rejection/conflict draft recovery beside a newer unsent draft, query refresh errors,
+logout/company exit and unload, keyboard focus/Enter/Space, screen-reader names, selection/drag,
+repeated source occurrences, generated/removed text and structural gaps. Existing lifecycle
+tests exercise the contract registry; they do not certify these new admin flows.
