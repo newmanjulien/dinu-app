@@ -7,7 +7,7 @@
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import { ReviewAnchorProjector, type ReviewAnchor } from '$lib/document/review-anchors';
 	import type { ReviewTag, ReviewNavigation, ReviewDecision } from '$lib/contract/approval';
-	import type { SourceIndex } from '$lib/contract/source-index';
+	import type { SelectionDocument } from '$lib/document/selection/selection-model';
 	import type { PaginatedPage } from '$lib/document/pagination/types';
 	import { getDocumentViewportMetrics } from '$lib/document/document-viewport';
 	import { reviewTagExplanation } from './review-tag-copy';
@@ -17,7 +17,8 @@
 		navigation,
 		onDecision,
 		ready,
-		index,
+		visible,
+		document,
 		pages,
 		scale
 	}: {
@@ -26,7 +27,8 @@
 		navigation?: ReviewNavigation;
 		onDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
 		ready: boolean;
-		index?: SourceIndex;
+		visible: boolean;
+		document?: SelectionDocument;
 		pages: readonly PaginatedPage[];
 		scale: number;
 	} = $props();
@@ -47,17 +49,22 @@
 	);
 	$effect(() => {
 		const root = host,
-			source = index;
+			mountedDocument = document,
+			shown = visible;
 		const key = geometryKey,
 			mountedPages = pages,
 			pageScale = scale;
+		// Retry geometry after the viewer finishes preparing or becomes interactive again.
+		void ready;
 		let cancelled = false;
 		projectionPending = true;
 		void tick().then(() => {
 			if (!cancelled) {
 				anchors =
-					root && source
-						? untrack(() => projector.project(root, tags, source, mountedPages, pageScale, key))
+					root && mountedDocument && shown
+						? untrack(() =>
+								projector.project(root, tags, mountedDocument, mountedPages, pageScale, key)
+							)
 						: [];
 				projectionPending = false;
 			}
@@ -197,6 +204,7 @@
 			{#if tag.admin && openKey === anchor.key}
 				<Menu
 					open={true}
+					placement="bottom-start"
 					trigger={elements.get(anchor.key)}
 					onClose={() => {
 						openKey = null;

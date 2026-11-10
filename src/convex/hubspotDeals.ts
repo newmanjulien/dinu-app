@@ -1,9 +1,25 @@
 import { ConvexError, v } from 'convex/values';
-import { action, internalMutation, internalQuery, query, type QueryCtx } from './_generated/server';
+import {
+	action,
+	internalMutation,
+	internalQuery,
+	query,
+	type QueryCtx,
+	type MutationCtx
+} from './_generated/server';
 import { internal } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
 import { accessibleContract, requireMembership, type CompanyAccess } from './auth';
-import { connectionToken, hubspot, resolveDeal, readDeal } from './hubspotApi';
+import {
+	connectionToken,
+	hubspot,
+	resolveDeal,
+	readDeal,
+	record,
+	objectId,
+	nextCursor as decodeNextCursor,
+	HubSpotError
+} from './hubspotApi';
 import { actionKey, activity, actorOf, receipt, remember, blockLink } from './hubspotRecords';
 import { createContract, metadataOf } from './contracts';
 import { contractMetadata } from './savedContractValidators';
@@ -12,11 +28,13 @@ import { env } from './_generated/server';
 import schema from './schema';
 import { hubspotLink } from './hubspotValidators';
 import { installation, markDealUnavailable } from './contractPolicy';
+import { lifecycle } from './hubspotInstallation';
 
 const operationArgs = {
 	membershipId: v.id('memberships'),
 	operationId: v.string(),
 	dealId: v.string(),
+	expectedConnectionId: v.optional(v.id('hubspotConnections')),
 	contractId: v.optional(v.id('savedContracts')),
 	expectedGeneration: v.optional(v.union(v.number(), v.null()))
 };
@@ -28,10 +46,16 @@ const result = v.union(
 	}),
 	v.object({ status: v.literal('deleted') })
 );
-const linkOutcome = v.union(result, v.object({ status: v.literal('deal-already-linked') }));
+const linkOutcome = v.union(
+	result,
+	v.object({ status: v.literal('deal-already-linked') }),
+	v.object({ status: v.literal('installation-retired') })
+);
 const occupiedReceipt = 'hubspot:deal-already-linked:v1';
+const retiredReceipt = 'hubspot:installation-retired:v1';
 async function receiptOutcome(ctx: QueryCtx, value: string, access: CompanyAccess) {
 	if (value === occupiedReceipt) return { status: 'deal-already-linked' as const };
+	if (value === retiredReceipt) return { status: 'installation-retired' as const };
 	const id = ctx.db.normalizeId('savedContracts', value);
 	const contract = id ? accessibleContract(await ctx.db.get('savedContracts', id), access) : null;
 	return contract
@@ -39,6 +63,11 @@ async function receiptOutcome(ctx: QueryCtx, value: string, access: CompanyAcces
 		: { status: 'deleted' as const };
 }
 function publicOutcome(outcome: import('convex/values').Infer<typeof linkOutcome>) {
+	if (outcome.status === 'installation-retired')
+		throw new ConvexError({
+			code: 'hubspot-installation-retired',
+			message: 'This HubSpot installation was removed. Start a new request.'
+		});
 	if (outcome.status === 'deal-already-linked')
 		throw new ConvexError({
 			code: 'hubspot-deal-already-linked',
@@ -46,21 +75,53 @@ function publicOutcome(outcome: import('convex/values').Infer<typeof linkOutcome
 		});
 	return outcome;
 }
-function input(args: { dealId: string; contractId?: string; expectedGeneration?: number | null }) {
-	return JSON.stringify([args.dealId, args.contractId ?? null, args.expectedGeneration ?? null]);
+function input(args: {
+	dealId: string;
+	contractId?: string;
+	expectedGeneration?: number | null;
+	expectedConnectionId?: string;
+}) {
+	return JSON.stringify([
+		args.dealId,
+		args.contractId ?? null,
+		args.expectedGeneration ?? null,
+		...(args.expectedConnectionId ? [args.expectedConnectionId] : [])
+	]);
 }
-export const replay = internalQuery({
+/** Receipt read/refusal write serializes against every competing final commit. */
+async function operationOutcome(
+	ctx: MutationCtx,
+	args: import('convex/values').Infer<typeof operationValidator>,
+	access: CompanyAccess,
+	actualConnectionId?: Doc<'hubspotConnections'>['_id']
+) {
+	const key = actionKey(access, args.contractId ? 'relink' : 'create', args.operationId);
+	const inputs = input(args);
+	const prior = await receipt(ctx, key, inputs);
+	if (prior) return receiptOutcome(ctx, prior.result, access);
+	const targetId = args.expectedConnectionId ?? actualConnectionId;
+	const target = targetId ? await ctx.db.get('hubspotConnections', targetId) : null;
+	if (target && target.companyId !== access.companyId)
+		throw new ConvexError('HubSpot changed. Reload before linking a deal.');
+	if (
+		args.contractId &&
+		!accessibleContract(await ctx.db.get('savedContracts', args.contractId), access)
+	)
+		throw new ConvexError('This contract was deleted.');
+	const legacyRetired =
+		!args.expectedConnectionId && (await lifecycle(ctx, access.companyId))?.removedAt !== undefined;
+	const retired = legacyRetired || Boolean(targetId && (!target || target.status === 'retiring'));
+	if (!retired) return null;
+	await remember(ctx, access.companyId, key, inputs, retiredReceipt);
+	return { status: 'installation-retired' as const };
+}
+const operationValidator = v.object(operationArgs);
+export const prepare = internalMutation({
 	args: operationArgs,
 	returns: v.union(linkOutcome, v.null()),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		const row = await receipt(
-			ctx,
-			actionKey(access, args.contractId ? 'relink' : 'create', args.operationId),
-			input(args)
-		);
-		if (!row) return null;
-		return receiptOutcome(ctx, row.result, access);
+		return operationOutcome(ctx, args, access);
 	}
 });
 export const commit = internalMutation({
@@ -75,8 +136,10 @@ export const commit = internalMutation({
 		const access = await requireMembership(ctx, args.membershipId);
 		const key = actionKey(access, args.contractId ? 'relink' : 'create', args.operationId),
 			inputs = input(args);
-		const prior = await receipt(ctx, key, inputs);
-		if (prior) return receiptOutcome(ctx, prior.result, access);
+		const prior = await operationOutcome(ctx, args, access, args.connectionId);
+		if (prior) return prior;
+		if (args.expectedConnectionId && args.expectedConnectionId !== args.connectionId)
+			throw new ConvexError('HubSpot changed. Reload before linking a deal.');
 		const connection = await ctx.db.get('hubspotConnections', args.connectionId);
 		if (
 			!connection ||
@@ -91,11 +154,12 @@ export const commit = internalMutation({
 		if (args.contractId) {
 			if (!current) throw new ConvexError('This contract was deleted.');
 			if (current.hubspot) {
+				const sameInstallation =
+					current.hubspot.connectionId === connection._id &&
+					current.hubspot.accountId === connection.accountId;
 				if (
-					current.hubspot.availability !== 'unavailable' ||
-					current.hubspot.generation !== args.expectedGeneration ||
-					current.hubspot.connectionId !== connection._id ||
-					current.hubspot.accountId !== connection.accountId
+					(sameInstallation && current.hubspot.availability !== 'unavailable') ||
+					current.hubspot.generation !== args.expectedGeneration
 				)
 					throw new ConvexError('This HubSpot link changed. Reload before trying again.');
 			} else if (args.expectedGeneration !== null) {
@@ -107,10 +171,10 @@ export const commit = internalMutation({
 		// The range read shares the link transaction, so competing owners conflict.
 		const owners = await ctx.db
 			.query('savedContracts')
-			.withIndex('by_companyId_and_hubspot_accountId_and_hubspot_dealId', (q) =>
+			.withIndex('by_companyId_and_hubspot_connectionId_and_hubspot_dealId', (q) =>
 				q
 					.eq('companyId', access.companyId)
-					.eq('hubspot.accountId', connection.accountId)
+					.eq('hubspot.connectionId', connection._id)
 					.eq('hubspot.dealId', args.dealId)
 			)
 			.take(2);
@@ -155,20 +219,31 @@ export const link = action({
 	args: operationArgs,
 	returns: result,
 	handler: async (ctx, args): Promise<import('convex/values').Infer<typeof result>> => {
-		const previous = await ctx.runQuery(internal.hubspotDeals.replay, args);
+		const previous = await ctx.runMutation(internal.hubspotDeals.prepare, args);
 		if (previous) return publicOutcome(previous);
-		const connection = await connectionToken(
-			ctx,
-			await ctx.runQuery(internal.hubspotConnections.forMember, { membershipId: args.membershipId })
-		);
-		const deal = await resolveDeal(ctx, connection, args.dealId);
-		const outcome = await ctx.runMutation(internal.hubspotDeals.commit, {
-			...args,
-			name: deal.name,
-			connectionId: connection._id,
-			credentialGeneration: connection.generation
-		});
-		return publicOutcome(outcome);
+		try {
+			const connection = await connectionToken(
+				ctx,
+				await ctx.runQuery(internal.hubspotConnections.forMember, {
+					membershipId: args.membershipId
+				})
+			);
+			if (args.expectedConnectionId && args.expectedConnectionId !== connection._id)
+				throw new ConvexError('HubSpot changed. Reload before linking a deal.');
+			const deal = await resolveDeal(ctx, connection, args.dealId);
+			const outcome = await ctx.runMutation(internal.hubspotDeals.commit, {
+				...args,
+				name: deal.name,
+				connectionId: connection._id,
+				credentialGeneration: connection.generation
+			});
+			return publicOutcome(outcome);
+		} catch (cause) {
+			// Resolve retirement/accepted work atomically even if token/provider work failed first.
+			const final = await ctx.runMutation(internal.hubspotDeals.prepare, args);
+			if (final) return publicOutcome(final);
+			throw cause;
+		}
 	}
 });
 
@@ -218,10 +293,10 @@ export const eligibility = query({
 			ids.map(async (id) => {
 				const owners = await ctx.db
 					.query('contractDirectory')
-					.withIndex('by_companyId_and_hubspot_accountId_and_hubspot_dealId', (q) =>
+					.withIndex('by_companyId_and_hubspot_connectionId_and_hubspot_dealId', (q) =>
 						q
 							.eq('companyId', access.companyId)
-							.eq('hubspot.accountId', connection.accountId)
+							.eq('hubspot.connectionId', connection._id)
 							.eq('hubspot.dealId', id)
 					)
 					.take(2);
@@ -237,10 +312,16 @@ export const eligibility = query({
 	}
 });
 export const list = action({
-	args: { membershipId: v.id('memberships'), search: v.string() },
+	args: {
+		membershipId: v.id('memberships'),
+		search: v.string(),
+		// An empty cursor starts a full browse after the recent candidates are exhausted.
+		cursor: v.optional(v.string())
+	},
 	returns: v.object({
 		deals: v.array(v.object({ id: v.string(), name: v.string() })),
-		hasMore: v.boolean()
+		hasMore: v.boolean(),
+		nextCursor: v.union(v.string(), v.null())
 	}),
 	handler: async (
 		ctx,
@@ -248,6 +329,7 @@ export const list = action({
 	): Promise<{
 		deals: { id: string; name: string }[];
 		hasMore: boolean;
+		nextCursor: string | null;
 	}> => {
 		const connection = await connectionToken(
 			ctx,
@@ -255,41 +337,61 @@ export const list = action({
 		);
 		const search = args.search.trim().slice(0, 200);
 		const limit = search ? 3 : 12;
+		const browsing = !search && args.cursor !== undefined;
+		if (args.cursor !== undefined && (search || args.cursor.length > 200))
+			throw new ConvexError('Invalid HubSpot browse cursor.');
+		const params = new URLSearchParams({ limit: String(limit), properties: 'dealname' });
+		if (args.cursor) params.set('after', args.cursor);
 		const data = await hubspot(
 			ctx,
 			connection,
-			'/crm/v3/objects/deals/search',
-			{
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					...(search ? { query: search } : {}),
-					properties: ['dealname'],
-					sorts: [{ propertyName: 'createdate', direction: 'DESCENDING' }],
-					limit
-				})
-			},
-			true
+			browsing ? `/crm/v3/objects/deals?${params}` : '/crm/v3/objects/deals/search',
+			browsing
+				? { method: 'GET' }
+				: {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							...(search ? { query: search } : {}),
+							properties: ['dealname'],
+							sorts: [{ propertyName: 'createdate', direction: 'DESCENDING' }],
+							limit
+						})
+					},
+			!browsing
 		);
+		const page = record(data);
+		if (!Array.isArray(page.results)) throw new HubSpotError(502);
+		const deals = page.results.map((value) => {
+			const deal = record(value);
+			const id = objectId(deal.id);
+			if (deal.archived !== undefined && typeof deal.archived !== 'boolean')
+				throw new HubSpotError(502);
+			const properties = record(deal.properties);
+			if (properties.dealname != null && typeof properties.dealname !== 'string')
+				throw new HubSpotError(502);
+			return { id, name: properties.dealname, archived: deal.archived };
+		});
+		const nextCursor = decodeNextCursor(page);
+		if (browsing && nextCursor === args.cursor)
+			throw new ConvexError('HubSpot couldn’t load the next deals. Try again.');
 		const seen = new Set<string>();
 		return {
-			deals: (data.results ?? [])
+			deals: deals
 				.filter(
-					(d: { archived?: boolean; properties?: { dealname?: string } }) =>
-						!d.archived && typeof d.properties?.dealname === 'string'
+					(deal): deal is typeof deal & { name: string } =>
+						!deal.archived && typeof deal.name === 'string'
 				)
-				.filter((d: { id: string }) => {
-					const id = String(d.id);
-					if (seen.has(id)) return false;
-					seen.add(id);
+				.filter((deal) => {
+					if (seen.has(deal.id)) return false;
+					seen.add(deal.id);
 					return true;
 				})
 				.slice(0, limit)
-				.map((d: { id: string; properties: { dealname: string } }) => ({
-					id: String(d.id),
-					name: d.properties.dealname
-				})),
-			hasMore: Boolean(data.paging?.next?.after)
+				.map(({ id, name }) => ({ id, name })),
+			hasMore: nextCursor !== null,
+			// Search exhaustion cannot establish full-list exhaustion because indexing can lag.
+			nextCursor: search ? null : browsing ? nextCursor : ''
 		};
 	}
 });

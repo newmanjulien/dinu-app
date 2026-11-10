@@ -1,11 +1,12 @@
+import type { DeepReadonly } from '$lib/immutable';
 import { iterateSelectionDocument } from '../selection/selection-model';
 import { tick } from 'svelte';
-import type { CompositionRequest } from '$lib/contract/composition-artifacts';
+import type { CompositionRequest } from '$lib/document/composition-artifacts';
 import type { Priority } from './scheduler';
 import type { LayoutProfiles } from '../pagination/profile';
-import type { ContractCompositionEngine } from '$lib/contract/compose';
-import type { ResolvedBlock } from '$lib/contract/model';
-import { ContractSpacing } from '$lib/contract/format';
+import type { DocumentCompositionEngine } from '$lib/document/compose';
+import type { ResolvedBlock } from '$lib/document/model';
+import { DocumentSpacing } from '$lib/document/format';
 import { DocumentArtifacts } from './artifacts';
 import { sameSelection, type ContractChange } from '$lib/playbook/model';
 import {
@@ -27,7 +28,7 @@ import {
 	samePreviewChanges,
 	EMPTY_PREVIEW_CHANGES,
 	type ConcessionSelection,
-	type ContractRenderSource,
+	type DocumentRenderSource,
 	type RenderSnapshot,
 	type RenderFailure,
 	type RenderJobMeta
@@ -36,17 +37,17 @@ import {
 const OBSOLETE = Symbol('obsolete render');
 
 interface RenderCurrentInput {
-	source: ContractRenderSource;
+	source: DocumentRenderSource;
 	concessions: ConcessionSelection;
 	/** Caller-owned preview changes must be immutable for the request's lifetime. */
-	previewChanges?: readonly ContractChange[];
+	previewChanges?: DeepReadonly<ContractChange[]>;
 	profiler: LayoutProfiler;
 	priority?: Priority;
 	/** Initial activation can publish exact closed pages; warm updates commit atomically. */
 	progressive?: boolean;
 }
 interface RenderRequest extends RenderCurrentInput {
-	previewChanges: readonly ContractChange[];
+	previewChanges: DeepReadonly<ContractChange[]>;
 	generation: number;
 	perf?: RenderPerfSample;
 	abort: AbortController;
@@ -55,8 +56,8 @@ interface RenderRequest extends RenderCurrentInput {
 }
 
 /** Latest-request worker: compose, prepare, profile, paginate, reconcile, commit. */
-export class ContractRenderController {
-	constructor() {
+export class DocumentRenderController {
+	constructor(readonly view: import('$lib/document/model').DocumentView = 'redline') {
 		countStartupWork('rendererCreated');
 	}
 	snapshot = $state.raw<RenderSnapshot | null>(null);
@@ -75,7 +76,7 @@ export class ContractRenderController {
 		history: PaginationHistory;
 	};
 	#protectedGeometry?: { profiler: LayoutProfiler; owner: symbol };
-	#composition?: ContractCompositionEngine;
+	#composition?: DocumentCompositionEngine;
 	#artifacts?: DocumentArtifacts;
 	#ownsArtifacts = false;
 	get artifacts() {
@@ -124,7 +125,7 @@ export class ContractRenderController {
 		const job = this.pending;
 		return Boolean(
 			job &&
-			job.generation === this.#generation &&
+			(job.generation === this.#generation || (job.status === 'failed' && Boolean(this.error))) &&
 			job.layoutEpoch !== undefined &&
 			job.layoutEpoch === input.profiler.epoch &&
 			job.source === input.source &&
@@ -221,8 +222,10 @@ export class ContractRenderController {
 		this.error = null;
 	}
 	// Validation failures use the same non-destructive technical-error boundary as rendering.
-	fail(error: RenderFailure) {
+	fail(error: RenderFailure, retainPartial = false) {
+		const partial = retainPartial && this.pending?.pages.length ? this.pending : null;
 		this.cancelPending();
+		if (partial) this.pending = { ...partial, status: 'failed' };
 		this.error = error;
 	}
 	#recordCancelled(request?: RenderRequest) {
@@ -280,8 +283,9 @@ export class ContractRenderController {
 						recordPerfSample(request.perf);
 					}
 					this.pending = this.pending?.pages.length ? { ...this.pending, status: 'failed' } : null;
-					this.error = { message: 'We couldn’t update the contract.', cause };
-					console.error('Contract rendering failed.', cause);
+					this.error = { message: 'We couldn’t update the document.', cause };
+					// The failure state retains the cause; logs must not copy document data.
+					console.error('Document rendering failed.');
 				} finally {
 					request.composition?.release();
 					request.composition = undefined;
@@ -361,7 +365,7 @@ export class ContractRenderController {
 		const artifacts = this.#artifacts;
 		const composer = this.#composition!;
 		const preparation = artifacts.createPreparation();
-		const spacing = new ContractSpacing();
+		const spacing = new DocumentSpacing();
 		const resolvedBlocks: ResolvedBlock[] = [];
 		const prepared: PreparedBlock[] = [];
 		const priority = request.priority ?? (() => 'foreground');
@@ -371,7 +375,7 @@ export class ContractRenderController {
 				items: request.source.items,
 				activeConcessions: request.concessions,
 				previewChanges: request.previewChanges,
-				view: 'redline'
+				view: this.view
 			},
 			working
 		);
@@ -626,6 +630,7 @@ export class ContractRenderController {
 		}
 		const snapshot = Object.freeze({
 			id: request.generation,
+			view: this.view,
 			selectionDocument: selectionResult.value!,
 			source: request.source,
 			concessions: request.concessions,

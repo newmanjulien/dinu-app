@@ -1,11 +1,11 @@
 <script lang="ts">
 	// Only geometry/pagination is substituted. The workspace, panel, editor and selection session are real.
 	import { onMount } from 'svelte';
-	import { getContractWorkspace } from '../../src/lib/document/runtime/workspace-context';
+	import { getDocumentWorkspace } from '../../src/lib/document/runtime/workspace-context';
 	import type { ViewerBindings } from '../../src/lib/document/runtime/resources.svelte';
 	import { documentAnnotations } from '../../src/lib/playbook/document-overlay';
 	let { panelContent, onSelect }: ViewerBindings = $props();
-	const { source, viewer } = getContractWorkspace();
+	const { source, viewer } = getDocumentWorkspace();
 	onMount(() => {
 		viewer.layoutPrepared = true;
 		viewer.interactionEnabled = true;

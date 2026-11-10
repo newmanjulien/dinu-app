@@ -1,27 +1,20 @@
 <script lang="ts">
-	import Menu from '$lib/components/ui/Menu.svelte';
-	import MenuItem from '$lib/components/ui/MenuItem.svelte';
-	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
+	import LinkActivity from '$lib/buyer/LinkActivity.svelte';
+	import CopyBuyerLink from '$lib/buyer/CopyBuyerLink.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
-	import DotsThreeVerticalIcon from 'phosphor-svelte/lib/DotsThreeVerticalIcon';
 	import type { SaveStatus } from '$lib/contract/editors.svelte';
 	import type { SavedContractCard } from '$lib/contract/card';
+	import { workBlockMessage } from '$lib/contract/work-policy';
 	import type { Action } from 'svelte/action';
 	let {
 		contract,
 		status,
-		deleting = false,
-		onRename,
-		onDelete,
 		observe,
 		onWarm,
 		onCool
 	}: {
 		contract: SavedContractCard;
 		status?: SaveStatus;
-		deleting?: boolean;
-		onRename: () => void;
-		onDelete: () => void;
 		observe: Action<HTMLElement, SavedContractCard>;
 		onWarm: () => void;
 		onCool: () => void;
@@ -33,21 +26,18 @@
 				? 'deal-unavailable'
 				: null
 	);
-	let open = $state(false);
 	let hovered = false;
 	let focused = false;
-	let trigger = $state<HTMLButtonElement>();
-	const menuId = $props.id();
 	const date = $derived(
 		new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(
-			contract.savedAt
+			contract._creationTime
 		)
 	);
 </script>
 
 <article
 	use:observe={contract}
-	class="relative min-w-0 rounded-xl border-hairline border-edge bg-surface shadow-card transition-colors hover:bg-field-hover"
+	class="relative flex min-w-0 flex-col rounded-xl border-hairline border-edge bg-surface shadow-card transition-colors hover:border-control-border"
 >
 	<a
 		href={`/contracts/${contract._id}`}
@@ -68,11 +58,11 @@
 			focused = false;
 			if (!hovered) onCool();
 		}}
-		class="flex min-h-[96px] flex-col justify-between gap-1.5 rounded-xl px-3.5 py-3 pr-10.5 outline-none focus-visible:ring-1 focus-visible:ring-accent"
+		class="flex flex-1 flex-col justify-between gap-1.5 rounded-xl py-[9px] pr-[80px] pl-[11px] outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-1 focus-visible:after:ring-accent"
 		aria-label={`Open contract for ${contract.buyerCompanyName}`}
 	>
 		<h2
-			class="line-clamp-2 break-words text-[13.5px] leading-5 font-medium"
+			class="min-w-0 truncate text-[13.5px] leading-5 font-medium"
 			title={contract.buyerCompanyName}
 		>
 			{contract.buyerCompanyName}
@@ -88,54 +78,13 @@
 				Created by {contract.creator.name}
 			</p>
 		</div>
-		<p class="text-xs text-ink-muted">
-			Last edited <time datetime={new Date(contract.savedAt).toISOString()}>{date}</time>
-		</p>
 		{#if status}<p class="text-xs text-ink-muted" role="status">{status}</p>{/if}
+		<p class="text-xs text-ink-muted">
+			Created <time datetime={new Date(contract._creationTime).toISOString()}>{date}</time>
+		</p>
 	</a>
-	<div class="absolute top-2 right-1.5">
-		<SquareIconButton
-			bind:element={trigger}
-			class="size-7"
-			type="button"
-			disabled={deleting}
-			onclick={() => (open = !open)}
-			onkeydown={(event) => {
-				if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-					event.preventDefault();
-					open = true;
-				}
-			}}
-			aria-label={`Options for ${contract.buyerCompanyName}`}
-			aria-haspopup="menu"
-			aria-expanded={open}
-			aria-controls={open ? menuId : undefined}
-		>
-			<DotsThreeVerticalIcon class="size-[19px]" weight="bold" aria-hidden="true" />
-		</SquareIconButton>
+	<div class="absolute top-[9px] right-[11px] z-10 inline-flex items-center">
+		<CopyBuyerLink id={contract._id} reason={workBlock ? workBlockMessage(workBlock) : null} />
+		<LinkActivity id={contract._id} />
 	</div>
-	<Menu
-		{open}
-		{trigger}
-		id={menuId}
-		label={`Contract options for ${contract.buyerCompanyName}`}
-		onClose={() => (open = false)}
-	>
-		{#snippet children(close)}
-			<MenuItem
-				disabled={Boolean(workBlock)}
-				onclick={() => {
-					close();
-					onRename();
-				}}>Rename</MenuItem
-			>
-			<MenuItem
-				danger
-				onclick={() => {
-					close();
-					onDelete();
-				}}>Delete</MenuItem
-			>
-		{/snippet}
-	</Menu>
 </article>

@@ -1,13 +1,13 @@
 <script lang="ts">
+	import type { DeepReadonly } from '$lib/immutable';
 	import { authoringInstructions } from '$lib/playbook/model';
-	import type { PlaybookItemRecord } from '$lib/playbook/model';
-	import XIcon from 'phosphor-svelte/lib/XIcon';
-	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
+	import type { ContractItemRecord } from '$lib/playbook/model';
 	import { instructionsFields } from '$lib/playbook/instructions-fields';
 	import InlineAction from './InlineAction.svelte';
 	import ConcessionRow from './ConcessionRow.svelte';
 	import PlaybookCard from './PlaybookCard.svelte';
 	import PlaybookSection from './PlaybookSection.svelte';
+	import PlaybookSummary from './PlaybookSummary.svelte';
 	import PlaybookText from './PlaybookText.svelte';
 	import Hint from '$lib/ui/Hint.svelte';
 	import type { HintId } from '$lib/ui/hints';
@@ -21,7 +21,7 @@
 		onToggle,
 		onClose
 	}: {
-		item: PlaybookItemRecord;
+		item: DeepReadonly<ContractItemRecord>;
 		selected?: string;
 		conflicts?: Record<string, string>;
 		disabled?: boolean;
@@ -43,7 +43,6 @@
 					: 'concessionWithinAuthority'
 			: null
 	);
-	const hasSummary = $derived(Boolean(item.instructions?.summary?.trim()));
 	const hasSections = $derived(
 		Boolean(
 			item.concessions.length ||
@@ -59,18 +58,12 @@
 
 <PlaybookCard label="Instruction box">
 	{#key itemId}
-		<div
-			class={`${hasSummary ? 'block' : 'hidden'} ${animateContent ? 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]' : ''} @max-[1150px]:grid @max-[1150px]:grid-cols-[minmax(0,1fr)_auto] @max-[1150px]:items-center @max-[1150px]:gap-6`}
-		>
-			<div class="flex min-w-0 flex-col gap-3 text-ink-muted">
-				{#if hasSummary}<PlaybookText text={item.instructions?.summary ?? ''} />{/if}
-			</div>
-			<div class="hidden @max-[1150px]:block">
-				<SquareIconButton type="button" aria-label="Close playbook" onclick={onClose}>
-					<XIcon aria-hidden="true" class="size-5.5" weight="regular" />
-				</SquareIconButton>
-			</div>
-		</div>
+		<PlaybookSummary
+			text={item.instructions?.summary ?? ''}
+			closeLabel="Close instructions"
+			{onClose}
+			{animateContent}
+		/>
 		{#if hasSections}
 			<div
 				class={`${animateContent ? 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]' : ''} flex flex-col gap-2`}

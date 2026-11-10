@@ -1,9 +1,15 @@
+import { instructionAudience, templateItem } from '../lib/playbook/validators';
+import { itemAudience } from '../lib/playbook/model';
+import { containsRange } from '../lib/document/ranges';
 import { v } from 'convex/values';
-import { sourceTarget } from '../lib/contract/source-validators';
+import { sourceTarget } from '../lib/document/source-validators';
 import { PlaybookGeometryIndex } from '../lib/playbook/geometry-index';
 import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/limits';
-import type { PlaybookItem } from '../lib/playbook/model';
-import { playbookStructure, structureGeometry, type DetailRecord } from '../lib/playbook/structure';
+import type { TemplateItem } from '../lib/playbook/model';
+import {
+	playbookStructure,
+	type TemplateDetailRecord as DetailRecord
+} from '../lib/playbook/structure';
 import { equalItemStructure } from '../lib/playbook/structure-codec';
 import {
 	validateChangeReferences,
@@ -30,7 +36,7 @@ import {
 	replaceDraftItemRevision,
 	storeItemRevision
 } from './playbookItemRevisions';
-import { hydratedPlaybookItem, playbookItem, trigger } from './playbookValidators';
+import { hydratedPlaybookItem, trigger } from './playbookValidators';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { templateRejected } from './templateCapacity';
 import {
@@ -44,8 +50,12 @@ import {
 	saveChangedVersion
 } from './templates';
 
+const sourceIdentity = {
+	templateSourceId: v.union(v.id('templateSources'), v.null()),
+	templateSourceFingerprint: v.string()
+};
 const watermark = {
-	baselineFingerprint: v.string(),
+	...sourceIdentity,
 	authoringGeneration: v.number(),
 	structuralGeneration: v.number()
 };
@@ -55,6 +65,7 @@ const structureItem = v.object({
 	companyId: v.id('company'),
 	contentRevision: v.number(),
 	renderKey: v.string(),
+	audience: v.optional(v.literal('buyer')),
 	trigger,
 	concessions: v.array(
 		v.object({
@@ -70,43 +81,51 @@ const conflict = v.object({
 	item: hydratedPlaybookItem,
 	...watermark
 });
-const missing = v.object({ status: v.literal('missing') });
+const missing = v.object({ status: v.literal('missing'), ...watermark });
 async function observation(ctx: QueryCtx, company: Doc<'company'>) {
 	const pointer = await currentPointer(ctx, company._id);
-	const [baseline, version, certificate] = await Promise.all([
-		company.baselineId ? ctx.db.get('baselines', company.baselineId) : null,
+	const [templateSource, version, certificate] = await Promise.all([
+		company.templateSourceId ? ctx.db.get('templateSources', company.templateSourceId) : null,
 		pointer ? ctx.db.get('templateVersions', pointer.versionId) : null,
-		company.baselineId ? readValidationCertificate(ctx, company._id, company.baselineId) : null
+		company.templateSourceId
+			? readValidationCertificate(ctx, company._id, company.templateSourceId)
+			: null
 	]);
 	const ready = Boolean(
 		!company.authoringMigration &&
-		baseline &&
+		templateSource &&
 		version &&
-		baseline.companyId === company._id &&
+		templateSource.companyId === company._id &&
 		version.companyId === company._id &&
-		baseline._id === version.baselineId &&
-		baseline.blockCount === version.blockCount &&
+		templateSource._id === version.templateSourceId &&
+		templateSource.blockCount === version.blockCount &&
 		pointer?.authoringGeneration === version.authoringGeneration &&
 		pointer?.structuralGeneration === version.structuralGeneration &&
-		baseline.state === 'active' &&
-		validationCertified(baseline, certificate, version)
+		templateSource.state === 'active' &&
+		validationCertified(templateSource, certificate, version)
 	);
 	return {
 		pointer,
-		baseline,
+		templateSource,
 		version,
 		ready,
-		baselineFingerprint: baseline?.fingerprint ?? '',
+		templateSourceFingerprint: templateSource?.fingerprint ?? '',
 		authoringGeneration: pointer?.authoringGeneration ?? version?.authoringGeneration ?? 0,
 		structuralGeneration: pointer?.structuralGeneration ?? version?.structuralGeneration ?? 0
 	};
 }
 function observed({
-	baselineFingerprint,
+	templateSource,
+	templateSourceFingerprint,
 	authoringGeneration,
 	structuralGeneration
 }: Awaited<ReturnType<typeof observation>>) {
-	return { baselineFingerprint, authoringGeneration, structuralGeneration };
+	return {
+		templateSourceId: templateSource?._id ?? null,
+		templateSourceFingerprint,
+		authoringGeneration,
+		structuralGeneration
+	};
 }
 async function committed(ctx: QueryCtx, company: Doc<'company'>) {
 	return observed(await observation(ctx, company));
@@ -119,22 +138,22 @@ function rejection(error: unknown) {
 async function validateStructure(
 	ctx: QueryCtx,
 	captured: Awaited<ReturnType<typeof readAuthoringVersion>>,
-	item: PlaybookItem,
+	item: TemplateItem,
 	previous?: DetailRecord
 ) {
-	const { baseline, version } = captured;
+	const { templateSource, version } = captured;
 	if (
 		(version.headReadBytes ?? 0) +
 			captured.certificate.readBytes +
 			documentBytes(captured.certificate) +
 			documentBytes(version) +
-			documentBytes(baseline) +
+			documentBytes(templateSource) +
 			2_100_000 >
 		16 * 1024 * 1024
 	)
 		throw templateRejected('Template structure exceeds supported read capacity.');
 	const [contract, heads] = await Promise.all([
-		readValidationFacts(ctx, baseline, captured.certificate),
+		readValidationFacts(ctx, templateSource, captured.certificate),
 		ctx.db
 			.query('playbookItems')
 			.withIndex('by_companyId', (q) => q.eq('companyId', version.companyId))
@@ -143,20 +162,24 @@ async function validateStructure(
 	const ordered = orderedHeads(version, heads);
 	const geometry = new PlaybookGeometryIndex(contract);
 	geometry.loadCertified(
-		ordered.map((head) => [head._id, structureGeometry(headStructure(head))] as const)
+		ordered
+			.map((head) => [head._id, headStructure(head)] as const)
+			.filter(([, structure]) => itemAudience(structure) === itemAudience(item))
 	);
-	validateStructuralReplacementContent(item);
-	validateChangeReferences(contract, item);
+	if (!('audience' in item)) {
+		validateStructuralReplacementContent(item);
+		validateChangeReferences(contract, item);
+	}
 	geometry.validateTriggersReplacing(previous?._id, [item.trigger]);
-	for (const concession of item.concessions)
+	for (const concession of playbookStructure(item).concessions)
 		geometry.validateChanges(concession.changes, previous?._id, [item.trigger]);
 }
-/** All ordinary authoring uses one metadata/delta writer; no baseline prose or snapshot serialization. */
+/** All ordinary authoring uses one metadata/delta writer; no template source prose or snapshot serialization. */
 export const savePlaybookItem = mutation({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.optional(v.id('playbookItems')),
-		item: playbookItem,
+		item: templateItem,
 		expectedContentRevision: v.number(),
 		operationId: v.string()
 	},
@@ -184,7 +207,13 @@ export const savePlaybookItem = mutation({
 				.unique();
 			if (receipt) {
 				head = await ctx.db.get('playbookItems', receipt.itemId);
-				if (!head || head.companyId !== access.companyId) return { status: 'missing' as const };
+				if (!head || head.companyId !== access.companyId)
+					return { status: 'missing' as const, ...(await committed(ctx, access.company)) };
+				if (itemAudience(headStructure(head)) !== itemAudience(item))
+					return {
+						status: 'rejected' as const,
+						message: 'The instruction audience cannot change.'
+					};
 				const current = await hydrateHead(ctx, head);
 				return head.lastOperation?.id === operationId &&
 					head.lastOperation.callerId === access.profile._id
@@ -207,11 +236,15 @@ export const savePlaybookItem = mutation({
 					message:
 						'Another save already used this operation. Restore the draft to submit a new save.'
 				};
-		} else if (!head || head.companyId !== access.companyId) return { status: 'missing' as const };
+		} else if (!head || head.companyId !== access.companyId)
+			return { status: 'missing' as const, ...(await committed(ctx, access.company)) };
 		const currentRevision = head?.currentRevisionId
 			? await ctx.db.get('playbookItemRevisions', head.currentRevisionId)
 			: null;
 		const current = head ? await hydrateHead(ctx, head, currentRevision) : null;
+		if (current && itemAudience(current) !== itemAudience(item))
+			return { status: 'rejected' as const, message: 'The instruction audience cannot change.' };
+
 		if (
 			current?.lastOperation?.id === operationId &&
 			current.lastOperation.callerId === access.profile._id
@@ -223,10 +256,12 @@ export const savePlaybookItem = mutation({
 				item: current,
 				...(await committed(ctx, access.company))
 			};
-		if (!current && expectedContentRevision !== 0) return { status: 'missing' as const };
+		if (!current && expectedContentRevision !== 0)
+			return { status: 'missing' as const, ...(await committed(ctx, access.company)) };
 		try {
 			validatePlaybookItemContent(item);
-			if (current) validateConcessionUpdate(current, item);
+			if (current && !('audience' in current) && !('audience' in item))
+				validateConcessionUpdate(current, item);
 		} catch (error) {
 			return rejection(error);
 		}
@@ -313,7 +348,7 @@ export const savePlaybookItem = mutation({
 		);
 		if (!mutableVersionId || !current) {
 			const delta = await markDraftItemRevision(ctx, next.currentRevisionId!, versionId);
-			await addTemplateReadBytes(ctx, versionId, captured.baseline, delta);
+			await addTemplateReadBytes(ctx, versionId, captured.templateSource, delta);
 		}
 		return { status: 'saved' as const, item: next, ...(await committed(ctx, access.company)) };
 	}
@@ -322,13 +357,18 @@ export const deletePlaybookItem = mutation({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.id('playbookItems'),
+		audience: v.optional(instructionAudience),
 		expectedContentRevision: v.number()
 	},
 	returns: v.union(v.object({ status: v.literal('deleted'), ...watermark }), conflict),
-	handler: async (ctx, { membershipId, id, expectedContentRevision }) => {
+	handler: async (ctx, { membershipId, id, expectedContentRevision, audience = 'rep' }) => {
 		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
 		const head = await ctx.db.get('playbookItems', id);
-		if (head && head.companyId !== access.companyId) throw new Error('This item is unavailable.');
+		if (
+			head &&
+			(head.companyId !== access.companyId || itemAudience(headStructure(head)) !== audience)
+		)
+			throw new Error('This item is unavailable.');
 		if (!head) return { status: 'deleted' as const, ...(await committed(ctx, access.company)) };
 		const revision = head.currentRevisionId
 			? await ctx.db.get('playbookItemRevisions', head.currentRevisionId)
@@ -363,10 +403,13 @@ export const deletePlaybookItem = mutation({
 	}
 });
 export const currentStructure = query({
-	args: { membershipId: v.id('memberships') },
+	args: { membershipId: v.id('memberships'), audience: v.optional(instructionAudience) },
 	returns: v.object({ ...watermark, ready: v.boolean(), items: v.array(structureItem) }),
-	handler: async (ctx, { membershipId }) => {
-		const access = await requireMembership(ctx, membershipId),
+	handler: async (ctx, { membershipId, audience = 'rep' }) => {
+		const access =
+				audience === 'buyer'
+					? await requirePermission(ctx, 'manageTemplate', membershipId)
+					: await requireMembership(ctx, membershipId),
 			state = await observation(ctx, access.company);
 		if (!state.ready) return { ...observed(state), ready: false, items: [] };
 		const heads = await ctx.db
@@ -377,19 +420,75 @@ export const currentStructure = query({
 		return {
 			...observed(state),
 			ready: true,
-			items: ordered.map((head) => ({
-				_id: head._id,
-				_creationTime: head._creationTime,
-				companyId: head.companyId,
-				contentRevision: head.contentRevision,
-				renderKey: 'format' in head ? head.renderKey : head._id,
-				...headStructure(head)
-			}))
+			items: ordered
+				.filter((head) => itemAudience(headStructure(head)) === audience)
+				.map((head) => ({
+					_id: head._id,
+					_creationTime: head._creationTime,
+					companyId: head.companyId,
+					contentRevision: head.contentRevision,
+					renderKey: 'format' in head ? head.renderKey : head._id,
+					...headStructure(head)
+				}))
 		};
 	}
 });
+/** Item bodies do not depend on the global pointer, manifest or authoring generation. */
+export const content = query({
+	args: {
+		membershipId: v.id('memberships'),
+		id: v.id('playbookItems'),
+		audience: v.optional(instructionAudience)
+	},
+	returns: v.union(
+		v.object({
+			...sourceIdentity,
+			ready: v.boolean(),
+			status: v.literal('present'),
+			item: hydratedPlaybookItem
+		}),
+		v.object({ ...sourceIdentity, ready: v.boolean(), status: v.literal('missing') })
+	),
+	handler: async (ctx, { membershipId, id, audience = 'rep' }) => {
+		const access =
+			audience === 'buyer'
+				? await requirePermission(ctx, 'manageTemplate', membershipId)
+				: await requireMembership(ctx, membershipId);
+		const [source, certificate, head] = await Promise.all([
+			access.company.templateSourceId
+				? ctx.db.get('templateSources', access.company.templateSourceId)
+				: null,
+			access.company.templateSourceId
+				? readValidationCertificate(ctx, access.companyId, access.company.templateSourceId)
+				: null,
+			ctx.db.get('playbookItems', id)
+		]);
+		const scope = {
+			templateSourceId: source?._id ?? null,
+			templateSourceFingerprint: source?.fingerprint ?? '',
+			ready: Boolean(
+				!access.company.authoringMigration &&
+				source?.companyId === access.companyId &&
+				source.state === 'active' &&
+				validationCertified(source, certificate)
+			)
+		};
+		if (
+			!scope.ready ||
+			!head ||
+			head.companyId !== access.companyId ||
+			itemAudience(headStructure(head)) !== audience
+		)
+			return { ...scope, status: 'missing' as const };
+		return { ...scope, status: 'present' as const, item: await hydrateHead(ctx, head) };
+	}
+});
 export const detail = query({
-	args: { membershipId: v.id('memberships'), id: v.id('playbookItems') },
+	args: {
+		membershipId: v.id('memberships'),
+		id: v.id('playbookItems'),
+		audience: v.optional(instructionAudience)
+	},
 	returns: v.union(
 		v.object({
 			...watermark,
@@ -399,8 +498,11 @@ export const detail = query({
 		}),
 		v.object({ ...watermark, ready: v.boolean(), status: v.literal('missing') })
 	),
-	handler: async (ctx, { membershipId, id }) => {
-		const access = await requireMembership(ctx, membershipId),
+	handler: async (ctx, { membershipId, id, audience = 'rep' }) => {
+		const access =
+				audience === 'buyer'
+					? await requirePermission(ctx, 'manageTemplate', membershipId)
+					: await requireMembership(ctx, membershipId),
 			state = await observation(ctx, access.company);
 		const head = await ctx.db.get('playbookItems', id);
 		if (state.ready) {
@@ -414,7 +516,11 @@ export const detail = query({
 			)
 				throw templateRejected('The saved rule revision is missing.');
 		}
-		if (!head || head.companyId !== access.companyId)
+		if (
+			!head ||
+			head.companyId !== access.companyId ||
+			itemAudience(headStructure(head)) !== audience
+		)
 			return { ...observed(state), ready: state.ready, status: 'missing' as const };
 		return {
 			...observed(state),
@@ -425,11 +531,67 @@ export const detail = query({
 	}
 });
 export const current = query({
-	args: { membershipId: v.id('memberships') },
+	args: { membershipId: v.id('memberships'), audience: v.optional(instructionAudience) },
 	returns: v.array(hydratedPlaybookItem),
-	handler: async (ctx, { membershipId }) => {
-		const access = await requireMembership(ctx, membershipId);
-		return currentDetails(ctx, access.companyId);
+	handler: async (ctx, { membershipId, audience = 'rep' }) => {
+		const access =
+			audience === 'buyer'
+				? await requirePermission(ctx, 'manageTemplate', membershipId)
+				: await requireMembership(ctx, membershipId);
+		return (await currentDetails(ctx, access.companyId)).filter(
+			(item) => itemAudience(item) === audience
+		);
+	}
+});
+
+/** Only admins may copy saved rep wording into an independent buyer draft. */
+export const repExplanation = query({
+	args: {
+		membershipId: v.id('memberships'),
+		templateSourceFingerprint: v.string(),
+		target: sourceTarget
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			itemId: v.id('playbookItems'),
+			contentRevision: v.number(),
+			summary: v.string()
+		})
+	),
+	handler: async (ctx, { membershipId, templateSourceFingerprint, target }) => {
+		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
+		const state = await observation(ctx, access.company);
+		if (
+			!state.ready ||
+			state.templateSourceFingerprint !== templateSourceFingerprint ||
+			target.kind !== 'text'
+		)
+			return null;
+		const facts = await readValidationFacts(ctx, state.templateSource!, undefined);
+		const heads = orderedHeads(
+			state.version!,
+			await ctx.db
+				.query('playbookItems')
+				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
+				.take(MAX_PLAYBOOK_ITEMS + 1)
+		);
+		const matches = heads.filter((head) => {
+			const structure = headStructure(head);
+			return (
+				!structure.audience &&
+				structure.trigger.target.kind === 'text' &&
+				containsRange(facts.index, structure.trigger.target.range, target.range)
+			);
+		});
+		if (matches.length !== 1) return null;
+		const item = await hydrateHead(ctx, matches[0]);
+		if ('audience' in item || !item.instructions?.summary?.trim()) return null;
+		return {
+			itemId: item._id,
+			contentRevision: item.contentRevision,
+			summary: item.instructions.summary
+		};
 	}
 });
 export { list } from './legacyPlaybook';

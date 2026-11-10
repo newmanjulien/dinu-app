@@ -1,8 +1,8 @@
-import type { ValidationSourceFacts } from '../contract/validation-source';
-import type { ReplacementAtom } from '../contract/source-model';
-import { targetContainers } from '../contract/ranges';
-import { pointPosition } from '../contract/source-index';
-import { isTextTarget } from '../contract/source-model';
+import type { DeepReadonly } from '../immutable';
+import type { ValidationSourceFacts } from '../document/validation-source';
+import { targetContainers } from '../document/ranges';
+import { pointPosition } from '../document/source-index';
+import { isTextTarget } from '../document/source-model';
 import {
 	changeCrossesBoundaryTrigger,
 	changeTriggerOwner,
@@ -10,14 +10,9 @@ import {
 	triggersIntersect,
 	validateTriggerRange
 } from './geometry';
-import type { ContractChange, PlaybookItem, SourceTarget, Trigger } from './model';
-import {
-	validateChangeGeometry,
-	validateChangeReferences,
-	validatePlaybookItemContent,
-	validateStructuralReplacementContent,
-	validateTriggers
-} from './validation';
+import type { PlaybookItem, SourceTarget, Trigger } from './model';
+import { playbookStructure, type ChangeStructure, type ItemStructure } from './structure';
+import { validateChangeGeometry, validateTriggers } from './validation';
 import { PlaybookValidationError } from './validation-error';
 
 interface TriggerEntry {
@@ -27,11 +22,12 @@ interface TriggerEntry {
 }
 interface ChangeEntry {
 	itemId: string;
-	change: ContractChange;
+	change: DeepReadonly<ChangeStructure>;
 	containers: readonly string[];
 }
+type GeometryItem = DeepReadonly<ItemStructure>;
 interface ItemGeometry {
-	item: PlaybookItem;
+	item: GeometryItem;
 	triggers: TriggerEntry[];
 	changes: ChangeEntry[];
 	failures: unknown[];
@@ -50,12 +46,11 @@ export class PlaybookGeometryIndex {
 	private loadingCertified = false;
 	private containers: { key: string; start: number; end: number }[];
 	constructor(
-		readonly contract: {
+		readonly document: {
 			index: ValidationSourceFacts;
-			validateReference(ref: Extract<ReplacementAtom, { kind: 'reference' }>): void;
 		}
 	) {
-		this.containers = [...contract.index.containers.values()]
+		this.containers = [...document.index.containers.values()]
 			.map((container) => ({
 				key: container.containerKey,
 				start: container.units[0].position,
@@ -65,7 +60,7 @@ export class PlaybookGeometryIndex {
 	}
 
 	/** A certified unchanged snapshot needs buckets, not another audit of every relation. */
-	loadCertified(items: Iterable<readonly [string, PlaybookItem]>) {
+	loadCertified(items: Iterable<readonly [string, GeometryItem]>) {
 		if (this.items.size) throw new Error('Certified geometry requires an empty index');
 		this.loadingCertified = true;
 		try {
@@ -81,11 +76,11 @@ export class PlaybookGeometryIndex {
 	/** Binary-search the first possible container; include both endpoints for point ownership. */
 	private containersFor(target: SourceTarget): string[] {
 		if (!isTextTarget(target))
-			return targetContainers(this.contract.index, target).map(
+			return targetContainers(this.document.index, target).map(
 				(container) => container.containerKey
 			);
-		const start = pointPosition(this.contract.index, target.range.start);
-		const end = pointPosition(this.contract.index, target.range.end);
+		const start = pointPosition(this.document.index, target.range.start);
+		const end = pointPosition(this.document.index, target.range.end);
 		if (start > end) throw new PlaybookValidationError('Source range is reversed');
 		let low = 0,
 			high = this.containers.length;
@@ -113,11 +108,11 @@ export class PlaybookGeometryIndex {
 	}
 
 	/** Invalid imported entries retain diagnostics and remain replaceable by an editable draft. */
-	set(itemId: string, item: PlaybookItem) {
+	set(itemId: string, item: GeometryItem) {
 		const compiled: ItemGeometry = { item, triggers: [], changes: [], failures: [] };
 		const trigger = item.trigger;
 		try {
-			validateTriggerRange(this.contract.index, trigger.target);
+			validateTriggerRange(this.document.index, trigger.target);
 			compiled.triggers.push({ itemId, trigger, containers: this.containersFor(trigger.target) });
 		} catch (error) {
 			compiled.failures.push(error);
@@ -125,7 +120,7 @@ export class PlaybookGeometryIndex {
 		for (const concession of item.concessions)
 			for (const change of concession.changes) {
 				try {
-					targetContainers(this.contract.index, change.target);
+					targetContainers(this.document.index, change.target);
 					compiled.changes.push({
 						itemId,
 						change,
@@ -188,13 +183,17 @@ export class PlaybookGeometryIndex {
 
 	triggersIntersecting(range: SourceTarget, exclude?: string): Trigger[] {
 		return this.triggerCandidates(range, exclude).filter((trigger) =>
-			triggersIntersect(this.contract.index, trigger.target, range)
+			triggersIntersect(this.document.index, trigger.target, range)
 		);
 	}
 
-	private ownerForChange(change: ContractChange, exclude?: string, draft: readonly Trigger[] = []) {
+	private ownerForChange(
+		change: DeepReadonly<ChangeStructure>,
+		exclude?: string,
+		draft: readonly Trigger[] = []
+	) {
 		return changeTriggerOwner(
-			this.contract.index,
+			this.document.index,
 			[...this.triggerCandidates(change.target, exclude), ...draft],
 			change
 		);
@@ -209,7 +208,7 @@ export class PlaybookGeometryIndex {
 			// A replacement can repair a relation involving the excluded saved item.
 			this.validatePersistedGeometry(id, exclude);
 		}
-		validateTriggers(this.contract.index, triggers);
+		validateTriggers(this.document.index, triggers);
 		for (const trigger of triggers) {
 			if ([...(this.triggerIds.get(trigger.id) ?? [])].some((entry) => entry.itemId !== exclude))
 				throw new PlaybookValidationError(`Duplicate Trigger ID: ${trigger.id}`);
@@ -229,8 +228,8 @@ export class PlaybookGeometryIndex {
 			if (
 				triggers.some(
 					(trigger) =>
-						triggersIntersect(this.contract.index, trigger.target, entry.change.target) ||
-						changeCrossesBoundaryTrigger(this.contract.index, entry.change.target, trigger.target)
+						triggersIntersect(this.document.index, trigger.target, entry.change.target) ||
+						changeCrossesBoundaryTrigger(this.document.index, entry.change.target, trigger.target)
 				)
 			)
 				this.ownerForChange(entry.change, exclude, triggers);
@@ -238,7 +237,7 @@ export class PlaybookGeometryIndex {
 	}
 
 	validateChanges(
-		changes: readonly ContractChange[],
+		changes: readonly DeepReadonly<ChangeStructure>[],
 		exclude?: string,
 		draft: readonly Trigger[] = []
 	) {
@@ -247,7 +246,7 @@ export class PlaybookGeometryIndex {
 			...new Set(changes.flatMap((change) => this.triggerCandidates(change.target, exclude))),
 			...draft
 		];
-		validateChangeGeometry(this.contract.index, triggers, changes);
+		validateChangeGeometry(this.document.index, triggers, changes);
 	}
 
 	/** Invalidate only relations sharing an old/new container or a global Trigger ID. */
@@ -264,7 +263,7 @@ export class PlaybookGeometryIndex {
 	private validatePersistedGeometry(id: string, exclude?: string) {
 		const { item, failures } = this.items.get(id)!;
 		if (failures.length) throw failures[0];
-		validateTriggers(this.contract.index, [item.trigger]);
+		validateTriggers(this.document.index, [item.trigger]);
 		const trigger = item.trigger;
 		if (
 			[...(this.triggerIds.get(trigger.id) ?? [])].some(
@@ -275,7 +274,7 @@ export class PlaybookGeometryIndex {
 		const other = this.candidates(this.triggers, trigger.target, exclude).find(
 			(entry) =>
 				entry.itemId !== id &&
-				triggersIntersect(this.contract.index, entry.trigger.target, trigger.target)
+				triggersIntersect(this.document.index, entry.trigger.target, trigger.target)
 		);
 		if (other)
 			throw new PlaybookValidationError(`Overlapping Triggers: ${other.trigger.id}, ${trigger.id}`);
@@ -295,29 +294,28 @@ export class PlaybookGeometryIndex {
 		this.dirty.clear();
 	}
 
-	/** Each item's geometry is audited once, without validating its neighbors again. */
-	audit() {
+	/** Relational geometry only. Content-bearing callers separately audit real arrays. */
+	auditGeometry() {
 		this.refreshValidation();
 		for (const failure of this.failures.values()) throw failure;
-		for (const { item } of this.items.values()) {
-			validatePlaybookItemContent(item);
-			validateStructuralReplacementContent(item);
-			validateChangeReferences(this.contract, item);
-		}
 	}
 
 	/** One draft's geometry memo, excluding business copy. No persisted universe is cached. */
 	createDraftValidator() {
 		let previous = '',
 			failure: { diagnostic: unknown } | undefined;
-		return (exclude: string | undefined, item: Parameters<typeof playbookGeometryKey>[0]) => {
-			const key = JSON.stringify([this.version, exclude, playbookGeometryKey(item)]);
+		return (
+			exclude: string | undefined,
+			item: DeepReadonly<Pick<PlaybookItem, 'trigger' | 'concessions'>>
+		) => {
+			const facts = playbookStructure(item);
+			const key = JSON.stringify([this.version, exclude, playbookGeometryKey(facts)]);
 			if (key !== previous) {
 				previous = key;
 				failure = undefined;
 				try {
 					this.validateTriggersReplacing(exclude, [item.trigger]);
-					for (const concession of item.concessions)
+					for (const concession of facts.concessions)
 						this.validateChanges(concession.changes, exclude, [item.trigger]);
 				} catch (diagnostic) {
 					failure = { diagnostic };

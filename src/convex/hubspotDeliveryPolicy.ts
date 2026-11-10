@@ -48,6 +48,7 @@ export function deliveryMode(
 	facts: Awaited<ReturnType<typeof deliveryFacts>>,
 	now: number
 ) {
+	if (!facts.connection || facts.connection.status === 'retiring') return 'retired';
 	if (observationExpired(event, now) && !event.operatorObservation) return 'attention';
 	if (!event.dispatch && !facts.linkValid) return 'paused';
 	if (!facts.accountValid || facts.connection?.status !== 'connected') return 'blocked';

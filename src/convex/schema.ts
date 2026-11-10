@@ -1,7 +1,8 @@
+import { templateItem } from '../lib/playbook/validators';
 import { defineSchema, defineTable } from 'convex/server';
 import { v } from 'convex/values';
-import { baselineBlock } from '../lib/contract/source-validators';
-import { storedBaseline } from './baselineValidators';
+import { sourceBlock } from '../lib/document/source-validators';
+import { storedTemplateSource } from './templateSourceValidators';
 import { contractCleanupPhase } from './contractCleanupValidators';
 import { storedApprovalRequest, storedContract, storedDecision } from './contractValidators';
 import { companyDeletion, deletedUser } from './deletionValidators';
@@ -14,14 +15,36 @@ import {
 	hubspotEvent,
 	hubspotReceipt,
 	hubspotExport,
-	hubspotExportChunk
+	hubspotExportChunk,
+	hubspotRemoval,
+	hubspotAccountRemoval
 } from './hubspotValidators';
 import { role } from './permissions';
+import { quoteInstallation, quotePush } from './hubspotQuoteValidators';
+import { buyerLink, buyerState } from './buyerValidators';
+import { storedThread, storedMessage, storedReceipt } from './discussionValidators';
+import { contractConcession } from './contractItemValidators';
+import {
+	opening,
+	activityVisit,
+	activityQuotaKey,
+	discussionQuotaKey,
+	activityOpening,
+	activityReceipt,
+	distinctClause
+} from './buyerActivityValidators';
 import { storedCsmAttempt } from './csmBookingValidators';
 import { storedSetupAppointment } from './csmSetupValidators';
-import { playbookItem, storedPlaybookItem } from './playbookValidators';
+import { storedPlaybookItem } from './playbookValidators';
 /** Domain map: docs/data-model.md. Child company IDs support authorization and bounded cleanup. */
 export default defineSchema({
+	contractAccess: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		templateVersionId: v.id('templateVersions')
+	})
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
 	hubspotLinkBlocks: defineTable({
 		companyId: v.id('company'),
 		contractId: v.id('savedContracts'),
@@ -29,13 +52,58 @@ export default defineSchema({
 	})
 		.index('by_companyId', ['companyId'])
 		.index('by_contractId_and_generation', ['contractId', 'generation']),
-	hubspotConnections: defineTable(hubspotConnection).index('by_companyId', ['companyId']),
+	hubspotQuoteInstallations: defineTable(quoteInstallation).index('by_companyId', ['companyId']),
+	hubspotQuotePushes: defineTable(quotePush)
+		.index('by_companyId', ['companyId'])
+		.index('by_contractId', ['contractId'])
+		.index('by_contractId_and_requestedAt', ['contractId', 'requestedAt'])
+		.index('by_canonicalKey', ['canonicalKey'])
+		.index('by_destination_connectionId', ['destination.connectionId'])
+		.index('by_state_and_dueAt', ['state', 'dueAt'])
+		.index('by_fileId', ['fileId'])
+		.index('by_payloadExpiresAt', ['payloadExpiresAt'])
+		.index('by_providerFailure_expiresAt', ['providerFailure.expiresAt']),
+	hubspotConnections: defineTable(hubspotConnection)
+		.index('by_companyId', ['companyId'])
+		.index('by_accountId', ['accountId'])
+		.index('by_accountId_and_status', ['accountId', 'status']),
+	hubspotJournal: defineTable({
+		name: v.literal('lifecycle'),
+		offset: v.optional(v.string()),
+		processingOffset: v.optional(v.string()),
+		position: v.number(),
+		checkedAt: v.number(),
+		claim: v.optional(v.string()),
+		leaseUntil: v.optional(v.number()),
+		diagnostic: v.optional(v.string())
+	}).index('by_name', ['name']),
+	hubspotPortalLifecycle: defineTable({
+		accountId: v.string(),
+		installedAt: v.optional(v.number()),
+		uninstalledAt: v.optional(v.number()),
+		diagnostic: v.optional(v.string())
+	}).index('by_accountId', ['accountId']),
+	// Version survives uninstall and rejects callbacks reserved before the removal.
+	hubspotLifecycles: defineTable({
+		companyId: v.id('company'),
+		version: v.number(),
+		removedAt: v.optional(v.number()),
+		removalId: v.optional(v.id('hubspotRemovals'))
+	}).index('by_companyId', ['companyId']),
+	hubspotRemovals: defineTable(hubspotRemoval)
+		.index('by_companyId', ['companyId'])
+		.index('by_connectionId', ['connectionId'])
+		.index('by_done_and_dueAt', ['done', 'dueAt']),
+	hubspotAccountRemovals: defineTable(hubspotAccountRemoval)
+		.index('by_accountId_and_blocking', ['accountId', 'blocking'])
+		.index('by_dueAt', ['dueAt']),
 	hubspotOAuthStates: defineTable(hubspotOAuthState)
 		.index('by_hash', ['hash'])
 		.index('by_expiresAt', ['expiresAt'])
 		.index('by_companyId', ['companyId']),
 	hubspotEvents: defineTable(hubspotEvent)
 		.index('by_companyId', ['companyId'])
+		.index('by_destination_connectionId', ['destination.connectionId'])
 		.index('by_key', ['key'])
 		.index('by_status_and_dueAt', ['status', 'dueAt']),
 	hubspotReceipts: defineTable(hubspotReceipt)
@@ -51,6 +119,7 @@ export default defineSchema({
 		.index('by_receiptId_and_order', ['receiptId', 'order']),
 	hubspotExports: defineTable(hubspotExport)
 		.index('by_companyId', ['companyId'])
+		.index('by_destination_connectionId', ['destination.connectionId'])
 		.index('by_key', ['key'])
 		.index('by_fileId', ['fileId'])
 		.index('by_state_and_expiresAt', ['state', 'expiresAt']),
@@ -70,13 +139,13 @@ export default defineSchema({
 		.index('by_email', ['email'])
 		.index('by_issuer_and_clerkId', ['issuer', 'clerkId'])
 		.index('by_avatarId', ['avatarId']),
-	// A missing owner permits operator recovery; a missing baseline means setup is incomplete.
+	// A missing owner permits operator recovery; a missing templateSource means setup is incomplete.
 	company: defineTable({
 		ownerProfileId: v.optional(v.id('profiles')),
 		approvalEmail: v.optional(v.string()),
 		name: v.string(),
 		avatarId: v.optional(v.id('_storage')),
-		baselineId: v.optional(v.id('baselines')),
+		templateSourceId: v.optional(v.id('templateSources')),
 		colleaguesInvitedAt: v.optional(v.number()),
 		csmCallBookedAt: v.optional(v.number()),
 		authoringMigration: v.optional(v.boolean())
@@ -87,6 +156,8 @@ export default defineSchema({
 	memberships: defineTable({
 		profileId: v.id('profiles'),
 		companyId: v.id('company'),
+		buyerLinkCopiedAt: v.optional(v.number()),
+		setupCompletedAt: v.optional(v.number()),
 		role
 	})
 		.index('by_profileId', ['profileId'])
@@ -127,36 +198,44 @@ export default defineSchema({
 		.index('by_tokenHash', ['tokenHash']),
 
 	// Template authoring and captured history
-	baselines: defineTable(storedBaseline)
+	templateSources: defineTable(storedTemplateSource)
 		.index('by_companyId', ['companyId'])
 		.index('by_state_and_expiresAt', ['state', 'expiresAt'])
 		.index('by_originalFileId', ['originalFileId']),
-	baselineChunks: defineTable({
+	templateSourceChunks: defineTable({
 		companyId: v.id('company'),
-		baselineId: v.id('baselines'),
+		templateSourceId: v.id('templateSources'),
 		order: v.number(),
 		firstBlock: v.number(),
-		blocks: v.array(baselineBlock)
-	}).index('by_companyId_and_baselineId_and_order', ['companyId', 'baselineId', 'order']),
-	baselineAuthoring: defineTable({
+		blocks: v.array(sourceBlock)
+	}).index('by_companyId_and_templateSourceId_and_order', [
+		'companyId',
+		'templateSourceId',
+		'order'
+	]),
+	templateSourceCertificates: defineTable({
 		companyId: v.id('company'),
-		baselineId: v.id('baselines'),
+		templateSourceId: v.id('templateSources'),
 		format: v.number(),
 		fingerprint: v.string(),
 		chunkCount: v.number(),
-		chunkIds: v.array(v.id('baselineValidationChunks')),
+		chunkIds: v.array(v.id('templateSourceValidationChunks')),
 		dataBytes: v.number(),
 		readBytes: v.number()
-	}).index('by_companyId_and_baselineId', ['companyId', 'baselineId']),
-	baselineValidationChunks: defineTable({
+	}).index('by_companyId_and_templateSourceId', ['companyId', 'templateSourceId']),
+	templateSourceValidationChunks: defineTable({
 		companyId: v.id('company'),
-		baselineId: v.id('baselines'),
+		templateSourceId: v.id('templateSources'),
 		order: v.number(),
 		data: v.bytes()
-	}).index('by_companyId_and_baselineId_and_order', ['companyId', 'baselineId', 'order']),
+	}).index('by_companyId_and_templateSourceId_and_order', [
+		'companyId',
+		'templateSourceId',
+		'order'
+	]),
 	authoringMigrations: defineTable({
 		companyId: v.id('company'),
-		baselineId: v.id('baselines'),
+		templateSourceId: v.id('templateSources'),
 		fingerprint: v.string(),
 		versionId: v.id('templateVersions'),
 		generation: v.number(),
@@ -176,7 +255,7 @@ export default defineSchema({
 		itemId: v.id('playbookItems'),
 		itemCreatedAt: v.number(),
 		contentRevision: v.number(),
-		body: playbookItem,
+		body: templateItem,
 		lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') })),
 		renderKey: v.optional(v.string()),
 		// A mutable template version owns these revisions until a contract freezes it.
@@ -184,7 +263,7 @@ export default defineSchema({
 	}).index('by_companyId', ['companyId']),
 	templateVersions: defineTable({
 		companyId: v.id('company'),
-		baselineId: v.id('baselines'),
+		templateSourceId: v.id('templateSources'),
 		items: v.array(
 			v.object({ itemId: v.id('playbookItems'), revisionId: v.id('playbookItemRevisions') })
 		),
@@ -221,12 +300,141 @@ export default defineSchema({
 		.index('by_companyId_and_renderKey', ['companyId', 'renderKey'])
 		.index('by_companyId', ['companyId']),
 
+	// A permanent buyer link and its separately released publication.
+	buyerLinks: defineTable(buyerLink)
+		.index('by_token', ['token'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	buyerActivityOpenings: defineTable(activityOpening)
+		.index('by_contractId_and_openingId', ['contractId', 'openingId'])
+		.index('by_contractId_and_expiresAt', ['contractId', 'expiresAt'])
+		.index('by_contractId_and_browserId_and_acceptedAt', ['contractId', 'browserId', 'acceptedAt'])
+		.index('by_expiresAt', ['expiresAt'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	buyerActivityReceipts: defineTable(activityReceipt)
+		.index('by_contractId_and_eventId', ['contractId', 'eventId'])
+		.index('by_openingId_and_itemId', ['openingId', 'itemId'])
+		.index('by_expiresAt', ['expiresAt'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	// Historical membership rows remain admitted/drained until verified empty.
+	buyerActivityClauses: defineTable(distinctClause)
+		.index('by_openingId_and_itemId', ['openingId', 'itemId'])
+		.index('by_expiresAt', ['expiresAt'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	buyerActivityCounters: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		nextVisitorNumber: v.number()
+	})
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	discussionQuotaKeys: defineTable(discussionQuotaKey)
+		.index('by_name_and_key', ['name', 'key'])
+		.index('by_expiresAt', ['expiresAt'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	// Legacy raw history/projections are read only by explicit retirement and deletion.
+	buyerLinkOpens: defineTable(opening)
+		.index('by_companyId', ['companyId'])
+		.index('by_profileId', ['profileId'])
+		.index('by_visitorKey', ['visitorKey'])
+		.index('by_contractId_and_at', ['contractId', 'at'])
+		.index('by_contractId_and_visitorNumber_and_projected_and_at', [
+			'contractId',
+			'visitorNumber',
+			'projected',
+			'at'
+		])
+		.index('by_activityVisitId_and_clauseId', ['activityVisitId', 'clauseId'])
+		.index('by_contractId_and_visitorNumber', ['contractId', 'visitorNumber'])
+		.index('by_contractId_and_visitorKey_and_visitorNumber', [
+			'contractId',
+			'visitorKey',
+			'visitorNumber'
+		])
+		.index('by_contractId_and_openingId', ['contractId', 'openingId']),
+	buyerVisits: defineTable(activityVisit)
+		.index('by_companyId', ['companyId'])
+		.index('by_profileId', ['profileId'])
+		.index('by_contractId_and_lastAt', ['contractId', 'lastAt'])
+		.index('by_contractId_and_visitorNumber_and_startedAt', [
+			'contractId',
+			'visitorNumber',
+			'startedAt'
+		]),
+	buyerActivityQuotaKeys: defineTable(activityQuotaKey)
+		.index('by_name_and_key', ['name', 'key'])
+		.index('by_expiresAt', ['expiresAt'])
+		.index('by_companyId', ['companyId'])
+		.index('by_contractId', ['contractId']),
+	// Retired analytics: schema/deletion compatibility until removeActivityAnalytics completes.
+	buyerLinkStats: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		linkId: v.union(v.id('buyerLinks'), v.null()),
+		opens: v.number(),
+		browsers: v.number(),
+		firstOpenedAt: v.optional(v.number()),
+		lastOpenedAt: v.optional(v.number())
+	})
+		.index('by_companyId', ['companyId'])
+		.index('by_contractId_and_linkId', ['contractId', 'linkId']),
+	buyerLinkBrowsers: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		browserId: v.string(),
+		number: v.number()
+	})
+		.index('by_companyId', ['companyId'])
+		.index('by_contractId_and_browserId', ['contractId', 'browserId']),
+	contractBuyerState: defineTable(buyerState)
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+
+	proposalApplications: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		threadId: v.id('discussionThreads'),
+		revision: v.number(),
+		proposalText: v.string(),
+		prefixAtoms: v.number(),
+		itemId: v.id('contractConcessions')
+	})
+		.index('by_threadId_and_revision', ['threadId', 'revision'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	discussionThreads: defineTable(storedThread)
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	discussionMessages: defineTable(storedMessage)
+		.index('by_threadId_and_reply', ['threadId', 'reply'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	discussionReceipts: defineTable(storedReceipt)
+		.index('by_contractId_and_actorKey_and_operationId', ['contractId', 'actorKey', 'operationId'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	contractConcessions: defineTable(contractConcession)
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	publicationAcknowledgments: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		profileId: v.id('profiles')
+	})
+		.index('by_contractId_and_profileId', ['contractId', 'profileId'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+
 	// Contracts and approvals
 	savedContracts: defineTable(storedContract)
 		.index('by_companyId', ['companyId'])
-		.index('by_companyId_and_hubspot_accountId_and_hubspot_dealId', [
+		.index('by_companyId_and_hubspot_connectionId_and_hubspot_dealId', [
 			'companyId',
-			'hubspot.accountId',
+			'hubspot.connectionId',
 			'hubspot.dealId'
 		]),
 	// Derived by contractDirectory.writeDirectory; one row per contract. Browsing avoids growing application state.
@@ -237,12 +445,15 @@ export default defineSchema({
 		hubspot: v.optional(hubspotLink),
 		buyerCompanyName: v.string(),
 		savedAt: v.number(),
-		createdAt: v.number()
+		createdAt: v.number(),
+		// Retired eligibility flag; removed by removeActivityAnalytics.
+		hasBuyerLinks: v.optional(v.boolean())
 	})
 		.index('by_contractId', ['contractId'])
-		.index('by_companyId_and_hubspot_accountId_and_hubspot_dealId', [
+		.index('by_companyId_and_creatorId', ['companyId', 'creatorId'])
+		.index('by_companyId_and_hubspot_connectionId_and_hubspot_dealId', [
 			'companyId',
-			'hubspot.accountId',
+			'hubspot.connectionId',
 			'hubspot.dealId'
 		])
 		.index('by_companyId_and_savedAt_and_createdAt', ['companyId', 'savedAt', 'createdAt'])

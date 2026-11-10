@@ -14,7 +14,7 @@ import {
 	type SelectionValue
 } from './selection-surface';
 import type { SelectionCandidate } from './selection-model';
-import { sameSourceTarget } from '$lib/contract/source-model';
+import { sameSourceTarget } from '$lib/document/source-model';
 
 export const SOURCE_SELECTION = 'document-source-selection';
 export const SELECTION_GESTURE = 'document-selection-gesture';

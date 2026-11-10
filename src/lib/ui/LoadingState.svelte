@@ -10,10 +10,8 @@
 		class: className
 	}: {
 		layout?: 'screen' | 'workspace' | 'section';
-		label?: string;
-		children?: Snippet;
 		class?: string;
-	} = $props();
+	} & ({ label: string; children?: Snippet } | { label?: string; children: Snippet }) = $props();
 </script>
 
 <div

@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { playbookItem } from '../lib/playbook/validators';
+import { playbookItem, buyerInstruction } from '../lib/playbook/validators';
 export {
 	concession,
 	contractChange,
@@ -9,19 +9,27 @@ export {
 } from '../lib/playbook/validators';
 
 // Historical identity describes the original item, never the transport operation.
-export const historicalItem = playbookItem.extend({
+const historicalFields = {
 	_id: v.id('playbookItems'),
 	_creationTime: v.number(),
 	companyId: v.id('company'),
 	contentRevision: v.number()
-});
+};
+
+export const historicalRepItem = playbookItem.extend(historicalFields);
+export const historicalBuyerItem = buyerInstruction.extend(historicalFields);
+export const historicalItem = v.union(historicalRepItem, historicalBuyerItem);
 
 /** Mutable business head; replay identity is absent or complete. */
-export const hydratedPlaybookItem = historicalItem.extend({
+const detailFields = {
 	currentRevisionId: v.optional(v.id('playbookItemRevisions')),
 	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') })),
 	renderKey: v.string()
-});
+};
+export const hydratedPlaybookItem = v.union(
+	historicalRepItem.extend(detailFields),
+	historicalBuyerItem.extend(detailFields)
+);
 export const itemHeadFields = {
 	companyId: v.id('company'),
 	contentRevision: v.number(),

@@ -66,8 +66,15 @@
 		returnToLogin: () => controller.returnToLogin(),
 		reset: () => controller.reset(),
 		signOut: () => controller.signOut(),
-		exitCompany: (action, discard) => controller.exitCompany(action, discard),
+		exitCompany: (action, discard) => {
+			const userId = controller.userId;
+			return controller.exitCompany(async () => {
+				await action();
+				if (userId) resources.forEach((resource) => resource.forgetMembership?.(userId));
+			}, discard);
+		},
 		completeAccountDeletion: ({ sessionId, userId }) => {
+			resources.forEach((resource) => resource.forgetMembership?.(userId));
 			void import('$lib/contract/draft-recovery.svelte').then(({ discardUserDrafts }) =>
 				discardUserDrafts(userId)
 			);

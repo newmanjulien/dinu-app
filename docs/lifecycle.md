@@ -31,12 +31,17 @@ rendering/selection feedback. Recent contract and authoring acknowledgements sha
 one 2.5-second expiry scheduler; Home retains contextual Saved badges. Live pending
 work immediately suppresses stale success, with contract progress delayed 250ms
 across a continuous burst. Contract errors, conflicts, holds and storage warnings
-take precedence and remain actionable through Details, Open and eligible Retry.
-Authoring progress and retained-draft notices come from the scope-owned session and
-remain actionable after route teardown, including company-hold Settings detours.
-Completion expiry continues while suppressed. Errors and conflicts remain actionable after navigation;
-storage failures warn while intent is pending. The membership owns the unload
-warning even when Home is visible.
+take precedence. The save bubble shows only a short status, with no Details button,
+popover or fallback label. Contract save errors and eligible Retry, pause explanations
+and pending storage warnings appear inline on the contract page; conflict controls
+and opening/read retries remain there as well. Home card statuses identify pending
+work and link back to its contract. Authoring progress and retained-draft notices
+come from the scope-owned session; confirmation retry, refresh retry and draft
+restore/discard live on the template page. Navigation, including company-hold
+Settings detours, retains the underlying work for recovery on return.
+Completion expiry continues while suppressed; opening recovery controls cannot
+keep an expired confirmation visible. The membership owns the unload warning even
+when Home is visible.
 
 Recovery reads each valid journal once before account-level pending state is registered,
 and transfers that record and its storage status to the session.
@@ -82,8 +87,8 @@ is protected before releasing the outgoing attachment or applying retention limi
 cannot detach its replacement; acquisition and background cache updates do not
 reset an active view's local choices.
 
-`WorkspaceScope` also owns a lightweight `AdminAuthoringSession`, above both the header
-and `/admin`. It creates its draft controller lazily and subscribes only while authoring
+`WorkspaceScope` also owns a lightweight `TemplateAuthoringSession`, above both the header
+and `/template`. It creates its draft controller lazily and subscribes only while authoring
 is attached or submitted/recovery work remains. Detachment releases source/viewer callbacks
 and unsent local state while retaining the immutable submitted payload, operation UUID and
 expected revision. Save closes a valid editor synchronously and publishes a dashed pending
@@ -99,11 +104,11 @@ its own retry action; it never resubmits an already confirmed mutation. Older tr
 callbacks cannot overwrite newer state or resurrect authoritative deletion.
 
 Transport uncertainty retains the same UUID and immutable payload for Retry confirmation.
-Definitive rejection/conflict retains the submitted draft for restore/discard through the
-workspace notice and Admin. Conflicts retain the persisted target ID and a revision/watermark
+Definitive rejection/conflict retains the submitted draft for restore/discard on the
+template page. Conflicts retain the persisted target ID and a revision/watermark
 floor, separately from the immutable retry request. Restore requires ready current structure
 and detail agreement; stale/loading/error reads cannot establish deletion. A missing result
-after a conflict must be newer than its witness, or agree with a newer certified baseline.
+after a conflict must be newer than its witness, or agree with a newer certified template source.
 Restore creates a new editing attempt against the admissible current identity/revision; replacing a newer unsent draft requires an explicit choice. Restoring and
 resubmitting uses a fresh operation and expected revision. Route leave checks apply to unsent
 drafts only. The aggregate SessionEditor and unload warning cover submitted, uncertain,
@@ -128,8 +133,8 @@ recovery is not provided. Tab closure does not guarantee network completion.
 
 # Playbook authoring and persistence
 
-The membership-scoped `AdminAuthoringSession` owns submitted transport, confirmation
-and recovery. It lazily creates an `AuthoringController` that attaches to `AdminWorkspace`
+The membership-scoped `TemplateAuthoringSession` owns submitted transport, confirmation
+and recovery. It lazily creates an `AuthoringController` that attaches to `TemplateWorkspace`
 for unsent editing commands, document-action decisions and source validation.
 Its `AuthoringContext` stores state and derives projections; it does not execute
 commands or transport. Selection tokens express pending/opened requests; occurrence
@@ -140,7 +145,7 @@ drafts and call narrow controller commands. They own presentation state such as
 menus and focus. The Convex transport remains a separate adapter. Neither the app
 layout nor the rep workspace owns an authoring context.
 
-Saved baselines, Triggers and accepted concessions are frozen and shared. Only
+Saved template sources, Triggers and accepted concessions are frozen and shared. Only
 instructions and the isolated concession composer are mutable. Dirty state compares
 visible instruction strings and ordered concession IDs. Restoring a visibly empty
 field also restores its saved absent-versus-empty representation. Pristine creation
@@ -221,8 +226,8 @@ Clean drafts adopt newer live records. Protected local work retains conflict/del
 Canceling an addition over a clean parent adopts the remote record; canceling over a dirty
 parent retains conflict. Detail loading, errors and stale query absence never establish
 removal. Restore requires ready structure/detail agreement, the learned revision floor and
-baseline-sensitive watermark. Missing after a conflict must be observed strictly after the
-conflict witness, or agree on a newer certified baseline. Current source/geometry validation
+template source-sensitive watermark. Missing after a conflict must be observed strictly after the
+conflict witness, or agree on a newer certified template source. Current source/geometry validation
 still applies to the restored attempt. Structure and detail acknowledge confirmation separately;
 query Retry refreshes observations without resubmitting a confirmed operation.
 
@@ -297,7 +302,7 @@ change invariants once, then checks concession-specific geometry separately.
 The complete `RenderSnapshot.selectionDocument` is the identity of a selection. Its immutable
 positions use physical page/placement/token order and UTF-16 offsets, with distinct occurrences
 for repeated table headers. Its break groups come from prepared composition and the existing
-`flowRole` collapse classification, rather than baseline paragraph emptiness or page-local gap
+`flowRole` collapse classification, rather than template source paragraph emptiness or page-local gap
 inference. Construction cooperates with the renderer's existing preparation scheduler; metadata
 does not enter geometric fingerprints, layout/profile inputs, or Word output.
 
@@ -340,7 +345,7 @@ target can have a separate location marker without becoming a boundary attachmen
 its collapsed whitespace still has a DOM range. Marker eligibility uses the same semantic helper
 as saved navigation, independently of DOM range count.
 
-Collapsed coverage starts from each empty output block's baseline source units and subtracts
+Collapsed coverage starts from each empty output block's template source source units and subtracts
 exact source intervals displayed in every nonempty prepared paragraph, including generated
 continuations and source-bearing redlines. Positive whitespace and atomic source lengths count;
 source-less replacement/presentation tokens contribute no coverage. Genuine empty anchors and
@@ -356,7 +361,7 @@ does not join these menus merely because it crosses a gap.
 The toolbar stores only a selection token and resolves a fresh candidate at confirmation.
 Initial/secondary selection, workflow confirmation and target-only concession addition all
 require the active complete displayed break context. Stale/missing context is unavailable;
-there is no baseline-group fallback. Exact saved overlap/numbering semantics are unchanged.
+there is no template source-group fallback. Exact saved overlap/numbering semantics are unchanged.
 Explain still requires substantive source text and Concession retains its geometry checks.
 
 Attachment overlap and replacement effects use separate rules. A spanning explanation and an
@@ -512,3 +517,9 @@ response, rejection/conflict draft recovery beside a newer unsent draft, query r
 logout/company exit and unload, keyboard focus/Enter/Space, screen-reader names, selection/drag,
 repeated source occurrences, generated/removed text and structural gaps. Existing lifecycle
 tests exercise the contract registry; they do not certify these new admin flows.
+
+## Public loading and retained read ownership
+
+Public route children survive session startup. The authenticated sibling driver owns one backend-auth publisher and a replaceable transport; the admitted content scope installs the shared proxy without another auth setup. Identity/membership/company determine private ownership; a transport revision determines read freshness and never keys an editor. Same-scope account uncertainty freezes actions and retains draft/save owners; explicit replacement/revocation removes unauthorized display.
+
+Local region attempts own their deadlines, retry subscriptions and stale callbacks. Timeout can retain accepted display but cannot authorize actions or cancel submitted writes. Delivered query rejection clears sensitive region data. Saved-contract opening attempts no longer key RepWorkspace; compatible buyer opening recovery preserves its accepted host/scheduler/resource. Token replacement or unusable construction replaces the buyer resource. Keep all existing save-before-leave, immutable operation IDs and uncertainty reconciliation contracts.

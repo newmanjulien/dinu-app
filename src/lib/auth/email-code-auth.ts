@@ -204,19 +204,29 @@ function throwIfClerkError(result: ClerkMutationResult) {
 	}
 }
 
-export function getClerkErrorCode(error: unknown) {
-	const clerkErrors = (error as { errors?: { code?: string }[] })?.errors;
-	return clerkErrors?.[0]?.code ?? (error as { code?: string })?.code;
+function errorRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === 'object' && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
 }
-
-function getErrorMessage(error: unknown) {
-	const clerkErrors = (error as { errors?: { longMessage?: string; message?: string }[] })?.errors;
-	const clerkError = error as { longMessage?: string; message?: string };
+function errorString(value: unknown): string | undefined {
+	return typeof value === 'string' ? value : undefined;
+}
+function firstClerkError(root: Record<string, unknown> | undefined) {
+	return Array.isArray(root?.errors) ? errorRecord(root.errors[0]) : undefined;
+}
+export function getClerkErrorCode(error: unknown): string | undefined {
+	const root = errorRecord(error);
+	return errorString(firstClerkError(root)?.code) ?? errorString(root?.code);
+}
+function getErrorMessage(error: unknown): string {
+	const root = errorRecord(error);
+	const first = firstClerkError(root);
 	return (
-		clerkErrors?.[0]?.longMessage ??
-		clerkErrors?.[0]?.message ??
-		clerkError.longMessage ??
-		clerkError.message ??
+		errorString(first?.longMessage) ??
+		errorString(first?.message) ??
+		errorString(root?.longMessage) ??
+		errorString(root?.message) ??
 		(error instanceof Error ? error.message : 'Something went wrong.')
 	);
 }

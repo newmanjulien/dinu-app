@@ -139,7 +139,7 @@ export function legacyEmailSelection(value: unknown): Row {
 export function legacyRow(table: string, value: unknown): Row {
 	const result = { ...row(value) };
 	switch (table) {
-		case 'baselines':
+		case 'templateSources':
 			if (result.state === 'published') result.state = 'active';
 			rename(result, 'publishedAt', 'activatedAt');
 			break;

@@ -1,24 +1,59 @@
 // Offline record-by-record reconciliation. Never connects to a Convex deployment.
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'vite';
+import { convexTest } from 'convex-test';
 import {
 	readExport,
 	transformExport,
 	remapSeedSelections,
 	seedParagraphRole,
-	retiredTableRule
+	retiredTableRule,
+	present
 } from './production-seed.mjs';
-import { assertShape } from './seed-shape.mjs';
+import { assertShape, validatorJson, readFrozenStates } from './seed-shape.mjs';
 
-export const readSeed = async (name) =>
-	(await readFile(`data/convex/${name}.jsonl`, 'utf8'))
-		.trim()
-		.split('\n')
-		.filter(Boolean)
-		.map(JSON.parse);
+/**
+ * @overload
+ * @param {import('vite').ViteDevServer} server
+ * @param {'templateSourceBlocks'} name
+ * @param {string} [path]
+ * @returns {Promise<import('../src/lib/document/source-model').SourceBlock[]>}
+ */
+/**
+ * @overload
+ * @param {import('vite').ViteDevServer} server
+ * @param {'playbookItems'} name
+ * @param {string} [path]
+ * @returns {Promise<import('../src/lib/playbook/model').PlaybookItem[]>}
+ */
+/** @param {import('vite').ViteDevServer} server @param {'templateSourceBlocks'|'playbookItems'} name @param {string} [path] */
+export async function readSeed(server, name, path = `data/convex/${name}.jsonl`) {
+	const source = (await readFile(path, 'utf8')).trim();
+	if (!source) throw new Error(`${name} import records are empty.`);
+	/** @type {unknown[]} */
+	const rows = source.split('\n').map((line) => JSON.parse(line));
+	const { sourceBlock } = /** @type {typeof import('../src/lib/document/source-validators.ts')} */ (
+		await server.ssrLoadModule('/src/lib/document/source-validators.ts')
+	);
+	const { playbookItem } = /** @type {typeof import('../src/convex/playbookValidators.ts')} */ (
+		await server.ssrLoadModule('/src/convex/playbookValidators.ts')
+	);
+	rows.forEach((row, i) =>
+		assertShape(
+			row,
+			validatorJson(name === 'templateSourceBlocks' ? sourceBlock : playbookItem),
+			`${name}[${i}]`
+		)
+	);
+	// The fixed table name selects its complete persisted validator above.
+	return /** @type {import('../src/lib/document/source-model').SourceBlock[] | import('../src/lib/playbook/model').PlaybookItem[]} */ (
+		rows
+	);
+}
+/** @param {unknown} expected @param {unknown} actual @param {string} [path] @returns {{path:string;expected:unknown;actual:unknown}[]} */
 export function differences(expected, actual, path = '') {
 	if (Object.is(expected, actual)) return [];
 	if (
@@ -30,10 +65,16 @@ export function differences(expected, actual, path = '') {
 	)
 		return [{ path, expected, actual }];
 	return [...new Set([...Object.keys(expected), ...Object.keys(actual)])].flatMap((key) =>
-		differences(expected[key], actual[key], `${path}/${key}`)
+		differences(
+			/** @type {Record<string,unknown>} */ (expected)[key],
+			/** @type {Record<string,unknown>} */ (actual)[key],
+			`${path}/${key}`
+		)
 	);
 }
+/** @param {import('../src/lib/document/source-model').SourceBlock[]} blocks */
 const allContent = (blocks) => blocks.flatMap((b) => (b.kind === 'table' ? [] : b.content));
+/** @param {import('../src/lib/document/source-model').SourceBlock[]} blocks @param {import('../src/lib/playbook/model').PlaybookItem[]} items */
 export function seedCounts(blocks, items) {
 	const concessions = items.flatMap((i) => i.concessions),
 		changes = concessions.flatMap((c) => c.changes),
@@ -46,15 +87,18 @@ export function seedCounts(blocks, items) {
 		preferred: concessions.filter((c) => c.tier === 'preferred').length,
 		rare: concessions.filter((c) => c.tier === 'rare').length,
 		changes: changes.length,
-		afterNotes: concessions.filter((c) => c.after !== undefined).length,
-		detailEntries: concessions.flatMap((c) => c.detail ?? []).length,
-		markedAtoms: atoms.filter((a) => a.marks !== undefined).length,
+		afterNotes: concessions.filter((c) => 'after' in c && c.after !== undefined).length,
+		detailEntries: concessions.flatMap((c) =>
+			'detail' in c && Array.isArray(c.detail) ? c.detail : []
+		).length,
+		markedAtoms: atoms.filter((a) => 'marks' in a && a.marks !== undefined).length,
 		references: atoms.filter((a) => a.kind === 'reference').length,
 		replacementReferences: changes
 			.flatMap((c) => c.replacement)
 			.filter((a) => a.kind === 'reference').length
 	};
 }
+/** @param {import('./seed-types').LegacyExport} source */
 function sourceCounts(source) {
 	const segments = source.blocks.flatMap((b) =>
 			b.kind === 'table' ? b.rows.flat().flatMap((c) => c.content) : b.content
@@ -73,7 +117,7 @@ function sourceCounts(source) {
 		changes: cs.flatMap((c) => c.replacements).length,
 		afterNotes: cs.filter((c) => c.copy.after !== undefined).length,
 		detailEntries: cs.flatMap((c) => c.copy.detail).length,
-		markedAtoms: atoms.filter((a) => a.marks !== undefined).length,
+		markedAtoms: atoms.filter((a) => 'marks' in a && a.marks !== undefined).length,
 		references: atoms.filter((a) => a.kind === 'reference').length,
 		replacementReferences: cs
 			.flatMap((c) => c.replacements)
@@ -83,14 +127,18 @@ function sourceCounts(source) {
 }
 // Independent output oracle: apply the OLD named-provision rules directly to the
 // exported segments. It never reads new ranges, source keys, or transformExport.
+/** @param {import('./seed-types').LegacyBlock[]} blocks */
 function historicalAddresses(blocks) {
-	const positions = new Map(),
-		addresses = new Map();
+	/** @type {Map<string,number>} */
+	const positions = new Map();
+	/** @type {Map<string,{label:string;address:string}>} */
+	const addresses = new Map();
+	/** @param {string} style @param {number} position */
 	function token(style, position) {
 		if (style === 'decimal') return String(position);
 		let result = '';
 		if (style.endsWith('roman')) {
-			for (const [value, symbol] of [
+			for (const [value, symbol] of /** @type {const} */ ([
 				[1000, 'm'],
 				[900, 'cm'],
 				[500, 'd'],
@@ -104,7 +152,7 @@ function historicalAddresses(blocks) {
 				[5, 'v'],
 				[4, 'iv'],
 				[1, 'i']
-			])
+			]))
 				while (position >= value) {
 					result += symbol;
 					position -= value;
@@ -124,7 +172,7 @@ function historicalAddresses(blocks) {
 		positions.set(n.sequenceKey, position);
 		const value = token(n.style, position);
 		const label = n.style === 'decimal' ? `${value}.` : `(${value})`;
-		const parent = addresses.get(n.parentItemKey);
+		const parent = n.parentItemKey ? addresses.get(n.parentItemKey) : undefined;
 		addresses.set(n.itemKey, {
 			label,
 			address: `${parent?.address ?? ''}${parent || n.style !== 'decimal' ? `(${value})` : value}`
@@ -132,14 +180,17 @@ function historicalAddresses(blocks) {
 	}
 	return addresses;
 }
+/** @param {Extract<import('./seed-types').LegacyAtom,{kind:'reference'}>} atom @param {Map<string,{label:string;address:string}>} addresses */
 function historicalReference(atom, addresses) {
-	const start = addresses.get(atom.targetItemKey).address;
+	const start = present(addresses.get(atom.targetItemKey)).address;
 	if (!atom.endTargetItemKey) return start;
-	const end = addresses.get(atom.endTargetItemKey).address;
+	const end = present(addresses.get(atom.endTargetItemKey)).address;
 	const lastOpen = end.lastIndexOf('(');
 	return `${start}-${lastOpen >= 0 && start.slice(0, lastOpen) === end.slice(0, lastOpen) ? end.slice(lastOpen) : end}`;
 }
+/** @param {import('./seed-types').LegacyExport} source @param {Set<string>} selected */
 export function historicalEffective(source, selected) {
+	/** @type {Map<string,import('./seed-types').LegacyAtom[]>} */
 	const replacements = new Map();
 	for (const box of source.boxes)
 		for (const c of [...box.preferredConcessions, ...box.rareConcessions])
@@ -160,9 +211,10 @@ export function historicalEffective(source, selected) {
 				?.some((a) => a.kind === 'reference' || a.text.length)
 	);
 	const addresses = historicalAddresses(active);
+	/** @param {import('./seed-types').LegacySegment[]} segments */
 	const runs = (segments) =>
 		segments.flatMap((s) =>
-			(replacements.get(s.provisionKey) ?? s.content).map((a) => ({
+			((s.provisionKey ? replacements.get(s.provisionKey) : undefined) ?? s.content).map((a) => ({
 				text: a.kind === 'text' ? a.text : historicalReference(a, addresses)
 			}))
 		);
@@ -185,15 +237,18 @@ export function historicalEffective(source, selected) {
 			while (content.length && !content[0].text.trim()) content.shift();
 			if (content.length) content[0] = { ...content[0], text: content[0].text.trimStart() };
 			content = [
-				{ text: addresses.get(b.numbering.itemKey).label },
+				{ text: present(addresses.get(b.numbering.itemKey)).label },
 				...(content.length ? [{ text: ' ' }, ...content] : [])
 			];
 		}
 		return { kind: b.kind, blockKey: b.blockKey, content };
 	});
 }
+/** @param {({kind:'table';blockKey:string;rows:string[][]}|{kind:'paragraph'|'heading';blockKey:string;role?:import('../src/lib/document/source-model').ParagraphRole;content:{text:string;generated?:string}[]})[]} blocks @param {Map<string,string>} [aliases] */
 function visible(blocks, aliases = new Map()) {
+	/** @param {{text:string;generated?:string}[]} content */
 	const runs = (content) => {
+		/** @type {{text:string}[]} */
 		const merged = [];
 		for (const r of content) {
 			if (r.generated === 'empty-hit-target' || !r.text) continue;
@@ -218,8 +273,11 @@ function visible(blocks, aliases = new Map()) {
 				}
 	);
 }
+/** @param {import('../src/lib/document/model').ResolvedBlock[]} blocks */
 function acceptRedline(blocks) {
+	/** @param {import('../src/lib/document/model').ResolvedRun[]} content */
 	const runs = (content) => {
+		/** @type {import('../src/lib/document/model').ResolvedRun[]} */
 		const out = [];
 		for (const r of content) {
 			if (r.revision === 'removed') continue;
@@ -230,6 +288,7 @@ function acceptRedline(blocks) {
 	};
 	return blocks.map((b) => (b.kind === 'table' ? b : { ...b, content: runs(b.content) }));
 }
+/** @param {import('vite').ViteDevServer} server @param {import('../src/lib/document/source-model').SourceBlock[]} blocks @param {import('../src/lib/playbook/model').PlaybookItem[]} items */
 export async function reconcile(server, blocks, items) {
 	const source = await readExport(),
 		expected = transformExport(source);
@@ -237,50 +296,56 @@ export async function reconcile(server, blocks, items) {
 		...differences(expected.blocks, blocks, 'contractBlocks'),
 		...differences(expected.items, items, 'playbookItems')
 	];
-	const { baselineBlock } = await server.ssrLoadModule('/src/lib/contract/source-validators.ts');
-	const { playbookItem } = await server.ssrLoadModule('/src/convex/playbookValidators.ts');
-	blocks.forEach((b, i) => assertShape(b, baselineBlock.json, `block[${i}]`));
-	items.forEach((b, i) => assertShape(b, playbookItem.json, `item[${i}]`));
-	const { validatePlaybook } = await server.ssrLoadModule('/src/lib/playbook/audit.ts');
+	const { sourceBlock } = /** @type {typeof import('../src/lib/document/source-validators.ts')} */ (
+		await server.ssrLoadModule('/src/lib/document/source-validators.ts')
+	);
+	const { playbookItem } = /** @type {typeof import('../src/convex/playbookValidators.ts')} */ (
+		await server.ssrLoadModule('/src/convex/playbookValidators.ts')
+	);
+	blocks.forEach((b, i) => assertShape(b, validatorJson(sourceBlock), `block[${i}]`));
+	items.forEach((b, i) => assertShape(b, validatorJson(playbookItem), `item[${i}]`));
+	const { validatePlaybook } = /** @type {typeof import('../src/lib/playbook/audit.ts')} */ (
+		await server.ssrLoadModule('/src/lib/playbook/audit.ts')
+	);
 	validatePlaybook(blocks, items);
-	const { semanticPlaybookDraft, equalConcession } = await server.ssrLoadModule(
-		'/src/lib/playbook/content.ts'
+	const { semanticPlaybookDraft, equalConcession } =
+		/** @type {typeof import('../src/lib/playbook/content.ts')} */ (
+			await server.ssrLoadModule('/src/lib/playbook/content.ts')
+		);
+	const { AuthoringContext } =
+		/** @type {typeof import('../src/lib/playbook/authoring-context.svelte.ts')} */ (
+			await server.ssrLoadModule('/src/lib/playbook/authoring-context.svelte.ts')
+		);
+	const { default: schema } = /** @type {typeof import('../src/convex/schema.ts')} */ (
+		await server.ssrLoadModule('/src/convex/schema.ts')
 	);
-	const { AuthoringContext } = await server.ssrLoadModule(
-		'/src/lib/playbook/authoring-context.svelte.ts'
+	const { api, internal } = /** @type {typeof import('../src/convex/_generated/api.js')} */ (
+		await server.ssrLoadModule('/src/convex/_generated/api.js')
 	);
-	const { savePlaybookItem } = await server.ssrLoadModule('/src/convex/playbookItems.ts');
-	const { baselineIntegrity } = await server.ssrLoadModule('/src/convex/baselineStorage.ts');
-	const { businessItem, snapshotItem, itemRevision, compactHead, hydrateHead } =
-		await server.ssrLoadModule('/src/convex/playbookItemRevisions.ts');
-	const { documentBytes } = await server.ssrLoadModule('/src/convex/storageCapacity.ts');
-	const { getConvexSize } = await import('convex/values');
-	const { itemStructure } = await server.ssrLoadModule('/src/lib/playbook/structure.ts');
-	const { buildSourceIndex } = await server.ssrLoadModule('/src/lib/contract/source-index.ts');
-	const { certifyValidationFacts, VALIDATION_CODEC_VERSION } = await server.ssrLoadModule(
-		'/src/lib/contract/validation-codec.ts'
+	const { businessItem, hydrateHead } =
+		/** @type {typeof import('../src/convex/playbookItemRevisions.ts')} */ (
+			await server.ssrLoadModule('/src/convex/playbookItemRevisions.ts')
+		);
+	const modulePaths = (await readdir('src/convex'))
+		.filter((path) => path.endsWith('.ts'))
+		.map((path) => `/src/convex/${path}`);
+	modulePaths.push('/src/convex/_generated/server.js');
+	const modules = Object.fromEntries(
+		modulePaths.map((path) => [path, () => server.ssrLoadModule(path)])
 	);
-	const { render } = await server.ssrLoadModule('svelte/server');
-	const { default: RepPlaybookPanel } = await server.ssrLoadModule(
-		'/src/lib/components/playbook/RepPlaybookPanel.svelte'
+	const { render } = /** @type {typeof import('svelte/server')} */ (
+		await server.ssrLoadModule('svelte/server')
 	);
+	const { default: RepPlaybookPanel } =
+		/** @type {{default:import('svelte').Component<{item:import('../src/lib/playbook/model').PlaybookItemRecord;onToggle:(id:string)=>void;onClose:()=>void}>}} */ (
+			await server.ssrLoadModule('/src/lib/components/playbook/RepPlaybookPanel.svelte')
+		);
+	/** @param {string} text */
 	const escapeText = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;');
-	const { validateConcessionUpdate } = await server.ssrLoadModule(
-		'/src/lib/playbook/validation.ts'
-	);
-	const companyId = 'seed-company';
-	const profileId = 'seed-profile';
-	const membershipId = 'seed-membership';
-	const baselineChunk = {
-		_id: 'seed-chunk',
-		_creationTime: 0,
-		companyId,
-		baselineId: 'seed-baseline',
-		order: 0,
-		firstBlock: 0,
-		blocks
-	};
-	const integrity = baselineIntegrity(blocks);
+	const { validateConcessionUpdate } =
+		/** @type {typeof import('../src/lib/playbook/validation.ts')} */ (
+			await server.ssrLoadModule('/src/lib/playbook/validation.ts')
+		);
 	const identity = {
 		issuer: 'https://seed-verifier.invalid',
 		subject: 'seed-user',
@@ -288,73 +353,43 @@ export async function reconcile(server, blocks, items) {
 		email: 'seed@seed-verifier.invalid',
 		emailVerified: true
 	};
-	const seededItems = items.map((item, index) => ({
-		...item,
-		companyId,
-		contentRevision: 1,
-		currentRevisionId: `seed-revision-${index}`,
-		_id: `seed-item-${index}`,
-		renderKey: `seed-item-${index}`,
-		_creationTime: 0
-	}));
-	const seededHeads = seededItems.map((item) => ({
-		...compactHead(item),
-		_id: item._id,
-		_creationTime: item._creationTime
-	}));
-	const validationData = certifyValidationFacts(buildSourceIndex(blocks));
-	const validationChunk = {
-		_id: 'seed-validation-chunk',
-		_creationTime: 0,
-		companyId,
-		baselineId: 'seed-baseline',
-		order: 0,
-		data: validationData
-	};
-	const certificate = {
-		_id: 'seed-validation',
-		_creationTime: 0,
-		companyId,
-		baselineId: 'seed-baseline',
-		format: VALIDATION_CODEC_VERSION,
-		fingerprint: integrity.fingerprint,
-		chunkCount: 1,
-		chunkIds: [validationChunk._id],
-		dataBytes: validationData.byteLength,
-		readBytes: documentBytes(validationChunk)
-	};
-	const seededRevisions = seededItems.map((item) => ({
-		...itemRevision(item),
-		_id: item.currentRevisionId,
-		_creationTime: 0
-	}));
-	const seededVersion = {
-		_id: 'seed-version',
-		mutability: 'mutable',
-		_creationTime: 0,
-		companyId,
-		baselineId: 'seed-baseline',
-		updatedAt: 0,
-		authoringGeneration: 1,
-		structuralGeneration: 1,
-		validation: { format: VALIDATION_CODEC_VERSION, fingerprint: integrity.fingerprint },
-		headReadBytes: seededHeads.reduce((sum, head) => sum + documentBytes(head), 0),
-		structureResultBytes: seededItems.reduce(
-			(sum, item) => sum + getConvexSize(itemStructure(item)),
-			0
-		),
-		blockCount: blocks.length,
-		itemCount: items.length,
-		snapshotBytes: new TextEncoder().encode(
-			JSON.stringify({ blocks, items: seededItems.map(snapshotItem) })
-		).byteLength,
-		contentReadBytes:
-			documentBytes(baselineChunk) +
-			seededRevisions.reduce((sum, revision) => sum + documentBytes(revision), 0),
-		items: seededItems.map((item) => ({ itemId: item._id, revisionId: item.currentRevisionId }))
-	};
 	for (const [i, item] of items.entries()) {
-		const saved = seededItems[i];
+		// Use a real typed Convex context rather than claiming a sparse object is MutationCtx.
+		// This harness is entirely in memory and has no deployment connection.
+		const harness = convexTest(schema, modules).withIdentity(identity);
+		const { companyId, membershipId } = await harness.run(async (ctx) => {
+			const profileId = await ctx.db.insert('profiles', {
+				identity: identity.tokenIdentifier,
+				issuer: identity.issuer,
+				clerkId: identity.subject,
+				email: identity.email,
+				name: 'Seed verifier'
+			});
+			const companyId = await ctx.db.insert('company', {
+				ownerProfileId: profileId,
+				name: 'Seed company'
+			});
+			const membershipId = await ctx.db.insert('memberships', {
+				companyId,
+				profileId,
+				role: 'admin'
+			});
+			return { companyId, membershipId };
+		});
+		const setup = await harness.mutation(internal.operator.bootstrap, { companyId, blocks, items });
+		await harness.mutation(internal.authoringValidation.certify, {
+			companyId,
+			versionId: setup.versionId
+		});
+		const saved = await harness.run(async (ctx) => {
+			const heads = await ctx.db
+				.query('playbookItems')
+				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+				.collect();
+			const details = await Promise.all(heads.map((head) => hydrateHead(ctx, head)));
+			return present(details.find((detail) => detail.trigger.id === item.trigger.id));
+		});
+		assert.ok('concessions' in saved, 'Seed round-trip requires rep instructions');
 		const editing = new AuthoringContext(
 			{ ...item, instructions: item.instructions ?? {} },
 			saved,
@@ -362,96 +397,7 @@ export async function reconcile(server, blocks, items) {
 		);
 		assert.deepEqual(editing.payload, item, `Edit/save loses data: ${i}`);
 		validateConcessionUpdate(item, semanticPlaybookDraft(item));
-		// Exercise the actual existing-record mutation with an in-memory persistence
-		// adapter, including complete template saving. Convex transaction guarantees are
-		// verified separately; this adapter checks preserved business payloads.
-		let persisted = structuredClone(seededHeads[i]);
-		const tables = new Map([
-			['profiles', [{ _id: profileId, identity: identity.tokenIdentifier }]],
-			['memberships', [{ _id: membershipId, companyId, profileId, role: 'admin' }]],
-			['company', [{ _id: companyId, ownerProfileId: profileId, baselineId: 'seed-baseline' }]],
-			[
-				'currentTemplate',
-				[
-					{
-						_id: 'seed-pointer',
-						companyId,
-						versionId: 'seed-version',
-						authoringGeneration: 1,
-						structuralGeneration: 1
-					}
-				]
-			],
-			[
-				'baselines',
-				[
-					{
-						_id: 'seed-baseline',
-						companyId,
-						source: 'seed',
-						state: 'active',
-						blockCount: blocks.length,
-						issues: [],
-						...integrity,
-						bootstrapKey: 'a'.repeat(64),
-						activatedAt: 0,
-						chunkCount: 1,
-						chunkReadBytes: documentBytes(baselineChunk)
-					}
-				]
-			],
-			['baselineChunks', [baselineChunk]],
-			['baselineAuthoring', [certificate]],
-			['baselineValidationChunks', [validationChunk]],
-			['playbookItems', structuredClone(seededHeads)],
-			['playbookItemRevisions', structuredClone(seededRevisions)],
-			['templateVersions', [seededVersion]]
-		]);
-		let nextId = 0;
-		const ctx = {
-			auth: { getUserIdentity: async () => identity },
-			scheduler: { runAfter: async () => 'seed-scheduled-job' },
-			meta: {
-				getTransactionMetrics: async () => ({
-					documentsWritten: { remaining: 16000 },
-					bytesWritten: { remaining: 16 * 1024 * 1024 },
-					databaseQueries: { remaining: 4096 },
-					documentsRead: { remaining: 32000 },
-					bytesRead: { remaining: 16 * 1024 * 1024 },
-					functionsScheduled: { remaining: 1000 },
-					scheduledFunctionArgsBytes: { remaining: 16 * 1024 * 1024 }
-				})
-			},
-			db: {
-				get: async (_table, id) =>
-					id === saved._id ? persisted : tables.get(_table)?.find((row) => row._id === id),
-				query: (table) => {
-					const query = {
-						withIndex: () => query,
-						take: async (count) => (tables.get(table) ?? []).slice(0, count),
-						unique: async () => tables.get(table)?.[0] ?? null
-					};
-					return query;
-				},
-				insert: async (table, value) => {
-					const row = { ...value, _id: `template-version-${++nextId}`, _creationTime: 0 };
-					tables.set(table, [...(tables.get(table) ?? []), row]);
-					return row._id;
-				},
-				patch: async (table, id, value) =>
-					Object.assign(
-						tables.get(table).find((row) => row._id === id),
-						value
-					),
-				replace: async (table, id, value) => {
-					const rows = tables.get(table);
-					const index = rows.findIndex((row) => row._id === id);
-					rows[index] = { ...value, _id: id, _creationTime: rows[index]._creationTime ?? 0 };
-					if (table === 'playbookItems') persisted = rows[index];
-				}
-			}
-		};
-		const result = await savePlaybookItem._handler(ctx, {
+		const result = await harness.mutation(api.playbookItems.savePlaybookItem, {
 			membershipId,
 			id: saved._id,
 			item: editing.payload,
@@ -459,11 +405,10 @@ export async function reconcile(server, blocks, items) {
 			operationId: '00000000-0000-4000-8000-000000000000'
 		});
 		assert.equal(result.status, 'saved', `Mutation rejected item ${i}`);
-		assert.deepEqual(
-			businessItem(await hydrateHead(ctx, persisted)),
-			item,
-			`Mutation drops business fields: ${i}`
+		const persisted = await harness.run(async (ctx) =>
+			businessItem(await hydrateHead(ctx, present(await ctx.db.get('playbookItems', saved._id))))
 		);
+		assert.deepEqual(persisted, item, `Mutation drops business fields: ${i}`);
 		const html = render(RepPlaybookPanel, {
 			props: { item: saved, onToggle: () => {}, onClose: () => {} }
 		}).body;
@@ -497,10 +442,22 @@ export async function reconcile(server, blocks, items) {
 				'Negotiation notes must affect save identity'
 			);
 	}
-	const { composeContract } = await server.ssrLoadModule('/src/lib/contract/compose.ts');
-	const { toDocumentOverlay } = await server.ssrLoadModule('/src/lib/playbook/document-overlay.ts');
+	const { composeDocument } = /** @type {typeof import('../src/lib/document/compose.ts')} */ (
+		await server.ssrLoadModule('/src/lib/document/compose.ts')
+	);
+	const { toDocumentOverlay } =
+		/** @type {typeof import('../src/lib/playbook/document-overlay.ts')} */ (
+			await server.ssrLoadModule('/src/lib/playbook/document-overlay.ts')
+		);
 	const overlays = items.map((item, i) =>
-		toDocumentOverlay({ ...item, _id: `seed-item-${i}`, _creationTime: 0 })
+		toDocumentOverlay({
+			...item,
+			_id: /** @type {import('../src/convex/_generated/dataModel').Id<'playbookItems'>} */ (
+				`seed-item-${i}`
+			),
+			_creationTime: 0,
+			contentRevision: 1
+		})
 	);
 	// Only the approved hidden-placeholder -> virtual-gap identity changes. All other
 	// block identities, placement, wording and numbering remain exact oracle checks.
@@ -510,25 +467,26 @@ export async function reconcile(server, blocks, items) {
 	const insertionId = items[insertionIndex].concessions[0].id;
 	const insertedKey = `insert:${JSON.stringify([{ itemId: `seed-item-${insertionIndex}`, concessionId: insertionId, changeIndex: 0 }, 0])}`;
 	const aliases = new Map([[insertedKey, 'paragraph-mutual-indemnification']]);
-	const scenarios = [{ name: 'baseline', selected: {} }];
+	/** @type {{name:string;selected:Record<string,string>}[]} */
+	const scenarios = [{ name: 'templateSource', selected: {} }];
 	items.forEach((item, i) =>
 		item.concessions.forEach((c) =>
 			scenarios.push({ name: c.id, selected: { [`seed-item-${i}`]: c.id } })
 		)
 	);
-	const frozen = JSON.parse(await readFile('data/reference/compositor.json', 'utf8'));
+	const frozen = await readFrozenStates();
 	for (const state of frozen)
 		if (Object.keys(state.selected).length > 1 && !scenarios.some((s) => s.name === state.name))
 			scenarios.push({ name: state.name, selected: remapSeedSelections(items, state.selected) });
 	for (const { name, selected } of scenarios) {
 		const old = historicalEffective(source, new Set(Object.values(selected)));
-		const effective = composeContract({
+		const effective = composeDocument({
 			blocks,
 			items: overlays,
 			activeConcessions: selected,
 			view: 'effective'
 		});
-		const redline = composeContract({
+		const redline = composeDocument({
 			blocks,
 			items: overlays,
 			activeConcessions: selected,
@@ -549,7 +507,7 @@ export async function reconcile(server, blocks, items) {
 	}
 	const oldCounts = sourceCounts(source),
 		newCounts = seedCounts(blocks, items),
-		retired = source.boxes.find((box) => box.clauseKey === retiredTableRule);
+		retired = present(source.boxes.find((box) => box.clauseKey === retiredTableRule));
 	mismatches.push(
 		...differences(
 			{
@@ -639,7 +597,7 @@ export async function reconcile(server, blocks, items) {
 				before: 1,
 				after: 3,
 				reason:
-					'Continuous selections retain two unchanged baseline references as structured replacement atoms.'
+					'Continuous selections retain two unchanged templateSource references as structured replacement atoms.'
 			},
 			{
 				field: 'detailEntries',
@@ -679,7 +637,7 @@ export async function reconcile(server, blocks, items) {
 		notes: [
 			'Convex document IDs and creation times are retained in source evidence but regenerated by seed import.',
 			'No deleted records exist. Bold/italic marks are deliberately omitted with user approval; all business wording and structure remain checked.',
-			'Paragraph insertion uses virtual baseline boundaries; no hidden placeholder or optional paragraph remains.',
+			'Paragraph insertion uses virtual templateSource boundaries; no hidden placeholder or optional paragraph remains.',
 			'All data/convex files are derived from the cleaned export; existing seed wording is never an input.'
 		]
 	};
@@ -690,8 +648,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 	try {
 		const report = await reconcile(
 			server,
-			await readSeed('contractBlocks'),
-			await readSeed('playbookItems')
+			await readSeed(server, 'templateSourceBlocks'),
+			await readSeed(server, 'playbookItems')
 		);
 		await writeFile('data/migration/reconciliation.json', JSON.stringify(report, null, 2) + '\n');
 		console.log(

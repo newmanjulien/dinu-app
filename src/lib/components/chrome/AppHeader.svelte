@@ -7,9 +7,12 @@
 	import Menu from '$lib/components/ui/Menu.svelte';
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import { goto } from '$app/navigation';
+	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	const viewer = useViewer();
 	const session = useViewerSession();
 	let menuOpen = $state(false);
+	let templateMenuOpen = $state(false);
+	let templateTrigger = $state<HTMLButtonElement>();
 	let trigger = $state<HTMLButtonElement>();
 	let element: HTMLElement;
 
@@ -27,9 +30,14 @@
 		};
 	});
 	const navItems = [
-		{ label: 'Home', href: '/' },
-		{ label: 'Admin', href: '/admin' }
+		{ label: 'Contracts', href: '/contracts', adminOnly: false },
+		{ label: 'Template', href: '/template', adminOnly: true },
+		{ label: 'Integrations', href: '/integrations', adminOnly: true },
+		{ label: 'Guides', href: '/guides', adminOnly: false }
 	];
+	const visibleNavItems = $derived(
+		navItems.filter((item) => !item.adminOnly || viewer().membership.role === 'admin')
+	);
 </script>
 
 <header
@@ -41,25 +49,55 @@
 		class="flex h-[calc(var(--app-nav-height)-var(--surface-border-width))] w-full items-stretch px-[3px] sm:px-[7px] md:px-[13px]"
 	>
 		<nav class="flex h-full shrink-0 items-stretch" aria-label="Primary navigation">
-			{#each navItems as item (item.href)}
-				{@const disabled = item.href === '/admin' && viewer().membership.role === 'rep'}
-				{@const active = !disabled && describeRoute(page.route.id).navigation === item.href}
-				<a
-					class="relative mr-0.5 flex items-center px-1.5 pt-0.5 text-[13px] leading-none transition-colors sm:mr-3"
-					class:text-ink={active}
-					class:text-ink-muted={!active}
-					class:opacity-40={disabled}
-					class:cursor-not-allowed={disabled}
-					role={disabled ? 'link' : undefined}
-					aria-disabled={disabled || undefined}
-					aria-current={active ? 'page' : undefined}
-					tabindex={disabled ? -1 : undefined}
-					href={disabled ? undefined : item.href}
-				>
-					{item.label}
-					{#if active}<span class="absolute inset-x-0 bottom-0 h-0.5 bg-ink" aria-hidden="true"
-						></span>{/if}
-				</a>
+			{#each visibleNavItems as item (item.href)}
+				{@const active = describeRoute(page.route.id).navigation === item.href}
+				<div class="relative mr-[1.5px] flex items-stretch sm:mr-[11px]">
+					<a
+						class="relative flex items-center px-[5.5px] pt-0.5 text-[13px] leading-none transition-colors"
+						class:text-ink={active}
+						class:text-ink-muted={!active}
+						aria-current={active ? 'page' : undefined}
+						href={item.href}
+					>
+						{item.label}
+						{#if active}<span
+								class="absolute inset-x-px bottom-0 h-[1.8px] bg-ink"
+								aria-hidden="true"
+							></span>{/if}
+					</a>
+					{#if item.href === '/template'}
+						<button
+							type="button"
+							bind:this={templateTrigger}
+							class="flex w-5 items-center justify-center text-ink-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+							aria-label="Choose template audience"
+							aria-haspopup="menu"
+							aria-expanded={templateMenuOpen}
+							aria-controls="template-audience-menu"
+							onclick={() => (templateMenuOpen = !templateMenuOpen)}
+						>
+							<CaretDownIcon class="size-3" aria-hidden="true" />
+						</button>
+						<Menu
+							open={templateMenuOpen}
+							trigger={templateTrigger}
+							onClose={() => (templateMenuOpen = false)}
+							id="template-audience-menu"
+							label="Template audience"
+						>
+							{#snippet children(close)}
+								{#each [{ label: 'Rep', href: '/template' }, { label: 'Buyers', href: '/template/buyers' }] as destination}
+									<MenuItem
+										onclick={() => {
+											close();
+											void goto(destination.href);
+										}}>{destination.label}</MenuItem
+									>
+								{/each}
+							{/snippet}
+						</Menu>
+					{/if}
+				</div>
 			{/each}
 		</nav>
 		<div class="my-auto ml-auto flex min-w-0 items-center gap-1.5 sm:gap-3">

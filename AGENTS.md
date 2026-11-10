@@ -32,6 +32,21 @@ when evaluating a change. focus on the target outcome, not the migration cost. l
 - Keep shared theme tokens, animation keyframes, and computed document or floating
   layout geometry where they serve a functional purpose.
 
+### Buyer link copy confirmation
+
+- Preserve the UI approved in conversation `01a1b72d-7332-7be0-9db9-2b9b74217b03`:
+  “Latest link copied” in the shared `StatusBubble` used for “Changes saved”,
+  centered in the workspace status area, raised 8px to clear Home's search bar,
+  and dismissed 2.5 seconds after the latest successful copy.
+- `BuyerLinkController` reports successful clipboard writes through its required
+  `onCopied` callback. Wire it to `BuyerLinkCopyFeedback.show`; render the single
+  `CopyConfirmation` host in `WorkspaceShell`. This covers Home cards, the contract
+  bar, its options/create-link actions, and Past links without per-button state.
+- Keep this path intact when refactoring cards, menus, or workspace chrome. If the
+  bubble disappears, repair the controller-to-host path. Do not replace it with a
+  button-anchored tooltip or a modal. Keep the workspace status visible above the
+  Past links dialog. The manual-copy fallback is only for clipboard failure.
+
 ## Context management
 
 - Read relevant file sections and targeted search results. Avoid dumping

@@ -1,5 +1,7 @@
-import type { CompiledContract } from '../contract/compiled-contract';
-import { immutable } from '../immutable';
+import { authoredItem } from './authoring-item';
+import type { InstructionAudience } from './model';
+import type { CompiledDocument } from '../document/compiled-document';
+import { immutable, type DeepReadonly } from '../immutable';
 import { equalConcession, semanticInstructions, semanticPlaybookDraft } from './content';
 import { type PlaybookDraft, type ReadonlyDraft } from './draft';
 import { GeometryError } from './geometry';
@@ -8,7 +10,7 @@ import type { AuthoringInstructions, Concession, PlaybookItemRecord } from './mo
 import { authoringInstructionKeys, authoringInstructions } from './model';
 import { geometrySelectionIssue, selectionIssueMessage } from './source-picking';
 import {
-	MAX_CONTRACT_BLOCKS,
+	MAX_DOCUMENT_BLOCKS,
 	MAX_PLAYBOOK_ITEMS,
 	PlaybookValidationError,
 	validateChangeReferences,
@@ -17,7 +19,7 @@ import {
 } from './validation';
 
 type Composition = {
-	baseline: Concession;
+	originalConcession: DeepReadonly<Concession>;
 	concession: Concession;
 	step: 'concession' | 'other-part';
 	affectsOtherParts: boolean;
@@ -42,11 +44,11 @@ function validationReason(check: () => void): string {
 
 /** State and projections only. The controller owns every mutation and lifecycle decision. */
 export class AuthoringContext {
-	confirmed = $state.raw<PlaybookItemRecord | null>(null);
-	remote = $state.raw<PlaybookItemRecord | null>(null);
+	confirmed = $state.raw<DeepReadonly<PlaybookItemRecord> | null>(null);
+	remote = $state.raw<DeepReadonly<PlaybookItemRecord> | null>(null);
 	instructions: AuthoringInstructions = $state({});
-	trigger = $state.raw<PlaybookDraft['trigger']>()!;
-	concessions = $state.raw<Concession[]>([]);
+	trigger = $state.raw<DeepReadonly<PlaybookDraft['trigger']>>()!;
+	concessions = $state.raw<DeepReadonly<Concession[]>>([]);
 	workflow: Workflow = $state({ kind: 'editing' });
 	operation = $state.raw<OperationState>({ kind: 'editing' });
 	selectedAnnotationId = $state<string | null>(null);
@@ -54,13 +56,18 @@ export class AuthoringContext {
 	// Absence only proves deletion after the query has observed the highest known contentRevision.
 	queryRevision = 0;
 	queryPresent: boolean | null = null;
-	contract = $state.raw<CompiledContract | null>(null);
+	document = $state.raw<CompiledDocument | null>(null);
 	geometry = $state.raw<PlaybookGeometryIndex | null>(null);
 	geometryVersion = $state(0);
 	itemCount = $state(0);
 	validateGeometry: ReturnType<PlaybookGeometryIndex['createDraftValidator']> | null = null;
 
-	constructor(draft: PlaybookDraft, confirmed: PlaybookItemRecord | null, workflow: Workflow) {
+	constructor(
+		draft: DeepReadonly<PlaybookDraft>,
+		confirmed: DeepReadonly<PlaybookItemRecord> | null,
+		workflow: Workflow,
+		private audience: InstructionAudience = 'rep'
+	) {
 		this.confirmed = this.remote = confirmed ? immutable(confirmed) : null;
 		// An existing editor opens from the domain's previously accepted query record.
 		this.queryRevision = confirmed?.contentRevision ?? 0;
@@ -98,7 +105,7 @@ export class AuthoringContext {
 	);
 	private compositionDirty = $derived(
 		this.workflow.kind === 'creating-concession' || this.workflow.kind === 'adding-concession'
-			? !equalConcession(this.workflow.concession, this.workflow.baseline) ||
+			? !equalConcession(this.workflow.concession, this.workflow.originalConcession) ||
 					this.workflow.affectsOtherParts
 			: false
 	);
@@ -133,7 +140,7 @@ export class AuthoringContext {
 		this.composer ? validationReason(() => validateConcessions([this.composer!])) : ''
 	);
 	private contentReason = $derived(
-		validationReason(() => validatePlaybookItemContent(this.payload))
+		validationReason(() => validatePlaybookItemContent(authoredItem(this.payload, this.audience)))
 	);
 	private referencesReason = $derived(this.references(this.concessions));
 	private composerReferencesReason = $derived(
@@ -168,9 +175,9 @@ export class AuthoringContext {
 			this.composerReferencesReason
 	);
 	private capacity() {
-		if (!this.contract || !this.geometry) return 'Wait for the contract source';
-		if (this.contract.blocks.length > MAX_CONTRACT_BLOCKS)
-			return 'Contract exceeds the supported source or Playbook size';
+		if (!this.document || !this.geometry) return 'Wait for the template source';
+		if (this.document.blocks.length > MAX_DOCUMENT_BLOCKS)
+			return 'Template exceeds the supported source or instructions size';
 		void this.geometryVersion;
 		return this.itemCount -
 			(this.confirmed && this.geometry.items.has(this.confirmed._id) ? 1 : 0) >=
@@ -178,17 +185,17 @@ export class AuthoringContext {
 			? 'Playbook exceeds supported size'
 			: '';
 	}
-	private references(concessions: Concession[]) {
-		return this.contract
+	private references(concessions: DeepReadonly<Concession[]>) {
+		return this.document
 			? validationReason(() =>
-					validateChangeReferences(this.contract!, {
+					validateChangeReferences(this.document!, {
 						concessions
 					})
 				)
-			: 'Wait for the contract source';
+			: 'Wait for the template source';
 	}
-	private checkGeometry(concessions: Concession[]) {
-		if (!this.validateGeometry || !this.geometry) return 'Wait for the contract source';
+	private checkGeometry(concessions: DeepReadonly<Concession[]>) {
+		if (!this.validateGeometry || !this.geometry) return 'Wait for the template source';
 		void this.geometryVersion;
 		return validationReason(() =>
 			this.validateGeometry!(this.confirmed?._id, {

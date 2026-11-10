@@ -1,3 +1,4 @@
+import { quoteRunningUntil } from './hubspotQuoteValidators';
 import { v } from 'convex/values';
 import type { MutationCtx } from './_generated/server';
 import { internalMutation } from './_generated/server';
@@ -6,9 +7,44 @@ import { cleanupBudget } from './cleanup';
 import { deleteUnownedFile } from './storageOwnership';
 import { pool } from './hubspotDelivery';
 import type { WorkId } from '@convex-dev/workpool';
+import { detachProvider } from './hubspotUninstall';
 
 export async function retireCompanyHubSpot(ctx: MutationCtx, companyId: Id<'company'>) {
 	const budget = cleanupBudget(ctx);
+	if (
+		!(await budget.drain(
+			'hubspotQuotePushes',
+			ctx.db
+				.query('hubspotQuotePushes')
+				.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+			{
+				beforeDelete: async (row) => {
+					if (row.workId) await pool.cancel(ctx, row.workId as WorkId);
+					return quoteRunningUntil(row) <= Date.now();
+				},
+				afterDelete: async (row) => {
+					if (row.fileId) await deleteUnownedFile(ctx, row.fileId);
+				}
+			}
+		))
+	)
+		return false;
+	// Serialize tenant erasure with provider authorization before deleting credentials/history.
+	if (
+		!(await budget.drain(
+			'hubspotRemovals',
+			ctx.db
+				.query('hubspotRemovals')
+				.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+			{
+				beforeDelete: async (row) => {
+					await detachProvider(ctx, row);
+					return true;
+				}
+			}
+		))
+	)
+		return false;
 	// Removing credentials first fences every subsequent provider request. In-progress requests have a fixed timeout.
 	if (
 		!(await budget.drain(
@@ -46,10 +82,12 @@ export async function retireCompanyHubSpot(ctx: MutationCtx, companyId: Id<'comp
 	)
 		return false;
 	for (const table of [
+		'hubspotQuoteInstallations',
 		'hubspotLinkBlocks',
 		'hubspotExportChunks',
 		'hubspotReceiptChunks',
 		'hubspotReceipts',
+		'hubspotLifecycles',
 		'hubspotOAuthStates'
 	] as const) {
 		if (

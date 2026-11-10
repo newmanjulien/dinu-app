@@ -29,7 +29,11 @@ export type SessionEditor = {
 	discard: () => void;
 	restartTransport: () => void;
 };
-export type SessionResources = { cancelReads: () => void; clear: () => void };
+export type SessionResources = {
+	cancelReads: () => void;
+	clear: () => void;
+	forgetMembership?: (userId: string) => void;
+};
 type Session = {
 	readonly closing: boolean;
 	readonly preparedSessionId: string | null | undefined;

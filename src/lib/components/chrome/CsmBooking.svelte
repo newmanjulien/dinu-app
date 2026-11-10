@@ -33,8 +33,14 @@
 	let {
 		owner,
 		initial,
-		onBooked
-	}: { owner: CsmOwner; initial: CalendarSelection; onBooked: () => void } = $props();
+		onBooked,
+		description = 'Choose a time that works for you.'
+	}: {
+		owner: CsmOwner;
+		initial: CalendarSelection;
+		onBooked: () => void;
+		description?: string;
+	} = $props();
 	const preload = useCsmPreload();
 	const client = useConvexClient(),
 		viewer = useViewer();
@@ -521,8 +527,8 @@
 <section aria-labelledby={id + '-heading'} class="booking mt-8 @container">
 	<div class="flex items-center justify-between gap-3">
 		<div>
-			<h3 id={id + '-heading'} class="text-[15px] font-medium">Book a video call</h3>
-			<p class="mt-1 text-[13px] text-ink-muted">Choose a time that works for you.</p>
+			<h3 id={id + '-heading'} class="text-[15px] font-medium">Schedule a call with Julien</h3>
+			<p class="mt-1 text-[13px] text-ink-muted">{description}</p>
 		</div>
 		{#if calendar?.duration}<span
 				class="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-muted"
@@ -578,7 +584,7 @@
 		</div>
 	{:else if !replacement || !sharedLoaded || shared?.state === 'ready'}
 		<div
-			class="mt-5 grid grid-cols-1 rounded-lg border-hairline border-line @min-[520px]:grid-cols-[minmax(0,1fr)_208px]"
+			class="mt-5 grid grid-cols-1 rounded-xl border-hairline border-line @min-[520px]:grid-cols-[minmax(0,1fr)_208px]"
 			aria-busy={loading || !bootLoaded}
 		>
 			<div class="min-w-0 px-4 py-3 @max-[290px]:px-2">

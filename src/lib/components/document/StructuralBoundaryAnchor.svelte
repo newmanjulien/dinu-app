@@ -1,7 +1,9 @@
 <script lang="ts">
+	import { getAnnotationLabel } from '$lib/document/annotation-label';
+	const annotationLabel = getAnnotationLabel();
 	import { getAnnotationRegistry } from '$lib/document/annotation-registry';
 	import type { AnnotationActivation } from '$lib/document/annotation-anchor';
-	import type { StructuralBoundary } from '$lib/contract/source-index';
+	import type { StructuralBoundary } from '$lib/document/source-index';
 	import type { AnnotationMembership } from '$lib/playbook/document-overlay';
 	import { protectedInteraction } from '$lib/components/ui/interactions';
 	import { BookmarkSimple } from 'phosphor-svelte';
@@ -57,8 +59,8 @@
 		use:register={[annotation.id]}
 		data-page-number={pageNumber}
 		class={`${inline ? 'relative shrink-0' : 'absolute top-0 -left-8'} z-1 grid size-6 cursor-pointer place-items-center rounded-button-sm border bg-surface p-0 hover:border-accent hover:text-accent hover:outline-none focus-visible:border-accent focus-visible:text-accent focus-visible:outline-none aria-disabled:cursor-default ${selected ? 'border-accent text-accent outline-none' : 'border-edge text-success'}`}
-		aria-label="Open saved instructions"
-		title="Saved instructions"
+		aria-label={`Open ${annotationLabel}`}
+		title={annotationLabel}
 		aria-disabled={!interactive || !canOpenPlaybookItems || Boolean(annotation.pending)}
 		onclick={(event) => {
 			event.stopPropagation();

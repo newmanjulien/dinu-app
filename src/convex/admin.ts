@@ -1,3 +1,4 @@
+import { isRepItem } from '../lib/playbook/model';
 /** Temporary v1 authoring API. New callers use playbookItems. */
 import { v, type Infer } from 'convex/values';
 import { legacyPlaybook as convertItem } from '../lib/contract/legacy-values';
@@ -27,8 +28,10 @@ export const savePlaybookItem = mutation({
 			item: convertItem(item) as PlaybookItem,
 			expectedContentRevision: expectedRevision
 		});
-		if (result.status === 'saved' || result.status === 'conflict')
+		if (result.status === 'saved' || result.status === 'conflict') {
+			if (!isRepItem(result.item)) throw new Error('This instruction is unavailable.');
 			return { status: result.status, item: legacyItemView(result.item) };
+		}
 		return result;
 	}
 });
@@ -45,8 +48,10 @@ export const deletePlaybookItem = mutation({
 			...args,
 			expectedContentRevision: expectedRevision
 		});
-		return result.status === 'conflict'
-			? { status: result.status, item: legacyItemView(result.item) }
-			: { status: result.status };
+		if (result.status === 'conflict') {
+			if (!isRepItem(result.item)) throw new Error('This instruction is unavailable.');
+			return { status: result.status, item: legacyItemView(result.item) };
+		}
+		return { status: result.status };
 	}
 });

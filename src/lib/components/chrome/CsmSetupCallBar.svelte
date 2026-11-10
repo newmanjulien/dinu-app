@@ -128,13 +128,13 @@
 	>
 		<p class="min-w-0 flex-1 basis-[400px]" role="status" aria-live="polite" aria-atomic="true">
 			{#if displayState === 'scheduled'}
-				You booked a call with our team so we can help get your contract set up. Your call is on <time
+				You booked a call with our team so we can help set up your template. Your call is on <time
 					datetime={notice.start}>{label}</time
 				>.
 			{:else if displayState === 'cancelled'}
-				Your setup call was cancelled. Please reschedule so we can help get your contract set up.
+				Your setup call was cancelled. Please reschedule so we can help set up your template.
 			{:else}
-				We’re checking the latest details for your contract setup call.
+				We’re checking the latest details for your template setup call.
 			{/if}
 		</p>
 		{#if displayState === 'cancelled'}

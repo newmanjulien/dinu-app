@@ -3,28 +3,28 @@
 	import { type Snippet } from 'svelte';
 	import { useViewer } from './viewer-session.svelte';
 	import { getWorkspaceRuntime } from './workspace-context.svelte';
-	import BaselineSetup from '$lib/components/template/BaselineSetup.svelte';
+	import TemplateSetup from '$lib/components/template/TemplateSetup.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import WorkspaceSkeleton from './WorkspaceSkeleton.svelte';
 	let {
 		children,
-		requiresBaseline = false,
+		requiresTemplate = false,
 		requiresDocument = true
-	}: { children?: Snippet; requiresBaseline?: boolean; requiresDocument?: boolean } = $props();
+	}: { children?: Snippet; requiresTemplate?: boolean; requiresDocument?: boolean } = $props();
 	const runtime = getWorkspaceRuntime();
 	const viewer = useViewer();
-	const baselinePending = $derived(requiresBaseline && !viewer().templateReady);
+	const templatePending = $derived(requiresTemplate && !viewer().templateReady);
 	let mounted = $state(false);
 	$effect(() => {
-		if ((!requiresDocument || runtime.hostReady) && !runtime.paused && !baselinePending)
+		if ((!requiresDocument || runtime.hostReady) && !runtime.paused && !templatePending)
 			mounted = true;
 	});
 </script>
 
-{#if baselinePending}
+{#if templatePending}
 	{#if !runtime.paused}
 		<WorkspacePresentationReporter outcome="success" />
-		<BaselineSetup getNavigationIntent={() => runtime.navigationIntent} />
+		<TemplateSetup getNavigationIntent={() => runtime.navigationIntent} />
 	{/if}
 {:else if mounted}
 	<div hidden={runtime.paused} inert={runtime.paused}>{@render children?.()}</div>

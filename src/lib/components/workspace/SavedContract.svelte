@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isRepItem } from '$lib/playbook/model';
 	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { concessionSelections } from '$lib/contract/applications';
@@ -32,7 +33,7 @@
 	const reviewGutter = $derived(
 		editor.snapshot &&
 			selectedReviewApplications(
-				editor.snapshot.items,
+				editor.snapshot.items.filter(isRepItem),
 				editor.persistence?.choices ??
 					(editor.metadata ? concessionSelections(editor.metadata.applications) : {})
 			).length
@@ -133,17 +134,28 @@
 	}
 </script>
 
-{#if opening && !openingError && !editor.error && !editor.viewError && !editor.initializing && editor.snapshot && editor.metadata && editor.persistence}
-	{#key opening.token}
-		{@const token = opening.token}
+{#if editor.snapshot && editor.metadata && editor.persistence}
+	<div hidden={Boolean(editor.error)} inert={!interactionAdmitted || account.blocked}>
 		<RepWorkspace
 			snapshot={editor.snapshot}
+			openingRevision={opening?.token}
 			{editor}
 			{interactionAdmitted}
-			onVisible={() => visible(token)}
-			onFailure={() => failure(token)}
+			onVisible={() => {
+				if (opening) visible(opening.token);
+			}}
+			onFailure={() => {
+				if (opening) failure(opening.token);
+			}}
 		/>
-	{/key}
+	</div>
+	{#if openingError || editor.error || editor.viewError}<p
+			role="alert"
+			class="p-4 text-center text-sm"
+		>
+			We couldn’t refresh this contract. <button class="underline" onclick={retry}>Try again</button
+			>
+		</p>{/if}
 {:else if openingError || editor.error || editor.viewError || editor.metadata === null}
 	<WorkspacePresentationReporter
 		active={interactionAdmitted && !runtime.paused}
@@ -158,7 +170,7 @@
 			<p role="alert">We couldn’t load this contract.</p>
 			<Button variant="secondary" class="mt-4" onclick={retry}>Try again</Button>
 		{/if}
-		<a href="/" class="mt-6 block underline">Back to Home</a>
+		<a href="/contracts" class="mt-6 block underline">Back to Contracts</a>
 	</main>
 {:else}<WorkspacePresentationReporter
 		active={interactionAdmitted && !runtime.paused}

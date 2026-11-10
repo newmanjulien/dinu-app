@@ -201,21 +201,13 @@ queries. Convex validates the initial token, refreshes before expiry, and forces
 a fresh token on rejection. Explicit recovery also bypasses Clerk's token cache.
 Check this option when upgrading Convex.
 
-Login and destination startup share a centered, neutral loading wheel. Recovery
-text and controls appear for failed or delayed startup. Account and membership
-readiness still determine whether Home or company setup appears. Home's header
-and controls do not wait for the first contract-list response; that list owns its
-loading and error states, including a 15-second read deadline. Company setup
-appears without waiting for invitations, and invitations update within the chosen
-screen rather than switching it.
+Login retains its server-rendered email form. Workspace destinations show their public route skeleton before account or membership discovery; the lazy authenticated driver publishes into a stable application account context instead of reparenting route children. Private controls and data require admission and a shared authenticated client. Same-session transport recovery retains editors and drafts while actions freeze; confirmed scope replacement removes old private data.
 
-In development, or with `PUBLIC_CONTRACT_PERF=1`, `window.__accountStartup`
-records code submission, auth acceptance, navigation, backend authentication,
-account readiness, admission (`usable`), and the first dashboard result paint.
-Compare timestamps within the same `attemptId` to separate verification,
-navigation, connection, account preparation, and list loading. These markers
-support browser measurements; the existing automated performance suite does
-not measure real email-code login latency or visual continuity.
+Home's account and first-page assistance stream independently with separate five-second budgets and verified user/session plus profile/membership/company witnesses. Live results take precedence. Neither stream blocks HTML or hydration or initializes profiles. Advisory setup hints are a separate optional region admitted after primary content readiness. Invitation previews also stream: initial HTML contains the public invitation frame, and accepted preview supplies the invited company/email and Continue.
+
+Regions distinguish first loading, retained refresh, authoritative empty/unavailable and failure. Imports and local reads have bounded attempts and local retries; read timeout never means a submitted write was cancelled. Delivered query rejection withdraws sensitive display conservatively; local timeouts can retain accepted same-scope data.
+
+In development, or with `PUBLIC_DOCUMENT_PERF=1`, `window.__accountStartup` records verification/navigation, backend authentication, account readiness, admission (`usable`), public placeholder mount, Home mount and the dashboard paint opportunity. `usable` remains an account-admission compatibility marker, not proof of destination interactivity. Compare events within one attempt. Animation frames represent paint opportunities, not measured physical paint or production login latency.
 
 A root session controller persists across entry and workspace routes and
 coordinates connection, account readiness, logout, and account loss. The lazy
@@ -303,8 +295,9 @@ deletion modal. It does not wait for a redundant sign-out request or Convex clea
 Protected routes also redirect when Clerk finishes loading without a session.
 
 The verified webhook records an issuer-qualified deletion marker and queues
-cleanup. That marker immediately denies the deleted identity. Cleanup removes its
-membership, personal avatar, and profile. Account-only cleanup retains the company, contracts,
+cleanup. That marker immediately denies the deleted identity. Cleanup normally removes its
+membership, personal avatar, and profile; unresolved sole-owner recovery retains
+these records until ownership is resolved. Account-only cleanup retains the company, contracts,
 snapshots, approval records, and receipts. Former creators display as former
 colleagues without disclosing their profile. Company contracts remain accessible
 to current colleagues and queued approvals retain their company recipient.
@@ -315,8 +308,10 @@ cleanup order, recovery, and reset procedure.
 
 External owner deletion transfers ownership to the oldest live remaining membership
 using bounded pagination, without role preference or changing the successor’s role. If no successor
-exists, the company becomes ownerless and requires internal operator recovery;
-there is no public company claim flow. Details are in the company runbook.
+exists, cleanup records `recoveryCompanyId` and retains the deleted owner's profile,
+membership and ownership anchor until internal operator recovery assigns a live
+replacement. See the canonical [retention and ownership policy](company-deletion.md#retention-and-ownership)
+for recovery eligibility and shared file ownership checks; there is no public company claim flow.
 
 Every 15 minutes reconciliation first discovers local unfinished work independently
 of Clerk credentials, then checks registered profiles and dispatched company requests.
@@ -336,7 +331,7 @@ keep completed deletion markers permanently.
 
 ## Verification before rollout
 
-`npm run verify` runs the existing performance suite, Svelte/type checks, and
+`npm run verify` runs SSR/hydration, lifecycle, performance and HubSpot checks, Svelte/type checks, bundle-boundary assertions and
 production build. Existing fixtures carry authenticated identities. Their saving,
 conflict, retry, creation, immutable publication, scheduling, and cache assertions
 remain in place; no new test suite was added.
@@ -356,7 +351,7 @@ Convex operations and the snapshot HTTP endpoint are rejected.
 On disposable development data, verify atomic company bootstrap failure/retry;
 there is no staged seed import to resume.
 Delete an owner externally, redeliver signed webhooks, and simulate a missed webhook
-through reconciliation. Check live successor selection and ownerless recovery.
+through reconciliation. Check live successor selection and deleted-owner recovery.
 Compare scoped counts, snapshot links, historical creator IDs and selections.
 Confirm failed or incomplete Clerk lookups never start deletion, and an uncertain
 client deletion result preserves dispatched consent. Exercise the deletion races
@@ -378,3 +373,11 @@ settings, team confirmations, and modals. Verify actual invitation and approval
 Loops delivery, including distinct recipients for two companies and a recipient
 change while an approval is queued. These remain manual rollout gates; no new
 browser or backend test suite was added.
+
+## Optional buyer-opening classification
+
+Set `CLERK_JWT_KEY` on the SvelteKit server to the matching Clerk application's PEM JWT public key (Clerk Dashboard → API keys → Show JWT public key). It may contain real newlines or literal `\n` separators. This public verification material is server configuration; it is not a replacement for `CLERK_SECRET_KEY` or the publishable key. Refresh it when rotating the application's signing key. Development uses the key published by the configured Clerk development instance; use the matching production key when configuring production.
+
+Buyer discussions use the normal SDK request/cookie/session checks with `authorizedParties` restricted to the current origin, a local `jwtKey`, and telemetry disabled. Missing/stale keys and handshake-bearing requests immediately fall back to unknown. No sign-in or redirect is required. Under one 1.5-second request-owned deadline, a verified session ID can request the `convex` JWT template from `POST https://api.clerk.com/v1/sessions/{sessionId}/tokens/convex`, using the installed SDK's Backend API contract (`Clerk-API-Version: 2026-05-12`). The direct request supports abort through response-body consumption; incoming cancellation and expiry abort that transport and prevent a late verification from starting issuance. Keep this adapter/version aligned with the installed Clerk backend package. Local cryptographic verification is not preemptible, but an abandoned result cannot start provider work. Anonymous recording remains available if any optional step fails.
+
+Analytics performs no Clerk classification or token issuance. Buyer discussion actions use interaction-gated session refresh and an original-author guard while preserving drafts. See [cookies and activity](cookies-and-activity.md).

@@ -1,4 +1,5 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
+import { getFunctionName } from 'convex/server';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import Harness from './CsmHarness.svelte';
 import { csmState } from './csm-state.svelte';
@@ -7,6 +8,9 @@ import type { Availability } from '../../src/lib/components/chrome/csm-availabil
 
 const context = vi.hoisted(() => ({ client: undefined as unknown, getToken: vi.fn() }));
 vi.mock('convex-svelte', () => ({ useConvexClient: () => context.client }));
+vi.mock('$lib/hubspot-deals.svelte', () => ({
+	useHubSpotDeals: () => ({ connection: { data: undefined, error: undefined, isLoading: true } })
+}));
 vi.mock('svelte-clerk', () => ({
 	useClerkContext: () => ({ session: { getToken: context.getToken } })
 }));
@@ -54,7 +58,8 @@ async function imports() {
 	// Let Vite resolve actual dynamic Svelte modules; assertions use events/counts, not latency.
 	await vi.waitFor(() => {
 		flushSync();
-		if (document.querySelector('dialog')) expect(document.querySelector('.booking')).not.toBeNull();
+		if (document.querySelector('dialog[open]'))
+			expect(document.querySelector('.booking')).not.toBeNull();
 		else expect(document.querySelector('.widget-action')).not.toBeNull();
 	});
 	await settle();
@@ -70,7 +75,7 @@ async function paint() {
 }
 function route(path: string) {
 	page.url = new URL(path, 'https://test.local');
-	page.route.id = path === '/' ? '/(workspace)' : '/(workspace)' + path;
+	page.route.id = '/(workspace)' + path;
 	page.state = {};
 }
 function button(label: string) {
@@ -87,11 +92,9 @@ function attach(state = csmState()) {
 function receipt(value: unknown) {
 	observations.filter((o) => !o.released).forEach((o) => o.row(value));
 }
-async function open(mode: 'setup' | 'support' = 'setup') {
+async function open() {
 	await imports();
-	const label =
-		mode === 'setup' ? "We'll take care of it — delegate" : "We're here to help — get support";
-	button(label).click();
+	document.querySelector<HTMLButtonElement>('.widget-action[aria-haspopup=dialog]')!.click();
 	await imports();
 }
 async function close() {
@@ -102,7 +105,7 @@ function unresolved(state = 'unknown', error: string | null = null) {
 	return {
 		id: 'attempt',
 		operationId: 'synthetic-operation',
-		mode: 'setup',
+		mode: 'support',
 		state,
 		requestedStart: start,
 		start,
@@ -139,7 +142,10 @@ beforeEach(() => {
 	context.client = {
 		action,
 		mutation,
+		connectionState: () => ({ isWebSocketConnected: false }),
+		subscribeToConnectionState: () => () => {},
 		onUpdate: vi.fn((_query, args, row, error) => {
+			if (getFunctionName(_query) !== 'csmBookings:attempt') return () => {};
 			const o = { args, row, error, released: false };
 			observations.push(o);
 			return () => {
@@ -149,7 +155,7 @@ beforeEach(() => {
 	};
 	context.getToken.mockResolvedValue('synthetic-token');
 	localStorage.clear();
-	route('/admin');
+	route('/template');
 	navigating.to = null;
 	setNavigate(async (path) => {
 		route(path);
@@ -160,7 +166,7 @@ afterEach(async () => {
 	document.body.innerHTML = '';
 	vi.useRealTimers();
 });
-it('warms setup only after primary paint, before a baseline, once per route visit despite revisions/failure', async () => {
+it('warms upload support only after primary paint, before a templateSource, once per route visit despite revisions/failure', async () => {
 	const state = csmState();
 	state.viewer.templateReady = false;
 	action.mockRejectedValue(new Error('optional failure'));
@@ -172,12 +178,13 @@ it('warms setup only after primary paint, before a baseline, once per route visi
 	state.revision++;
 	await paint();
 	expect(action).toHaveBeenCalledTimes(1);
-	route('/');
+	route('/contracts');
 	await paint();
-	route('/admin');
+	route('/template');
 	await paint();
 	expect(action).toHaveBeenCalledTimes(2);
-	expect(document.querySelector('.widget-action')).toBeNull();
+	await imports();
+	expect(document.querySelector('.widget-action')).not.toBeNull();
 });
 it.each(['support', 'rep', 'unsafe'] as const)('does not automatically warm %s', async (kind) => {
 	const state = csmState();
@@ -221,12 +228,12 @@ it('paints warmed times before receipt but blocks controls and submission until 
 	expect(document.querySelector('.slot-button')).toBeNull();
 });
 it.each(['setup', 'support'] as const)(
-	'explicit %s expansion warms before open, preserves focus, and retries expired data',
+	'support expansion with legacy %s state warms before open, preserves focus, and retries expired data',
 	async (mode) => {
 		const state = csmState();
 		state.viewer.company.csmCallBooked = mode === 'support';
-		// No automatic setup route warming on the home route; setup widget appears on admin afterward.
-		localStorage.setItem('dinu:csm-widget-dismissed', 'true');
+		// Ordinary template visits stay idle; expansion starts the same support calendar before or after a legacy setup booking.
+		localStorage.setItem(`dinu:csm-widget-dismissed:${state.viewer.membership.id}`, 'true');
 		attach(state);
 		await paint();
 		await imports();
@@ -234,11 +241,11 @@ it.each(['setup', 'support'] as const)(
 		const pending = deferred<Availability>();
 		action.mockReturnValue(pending.promise);
 		const before = action.mock.calls.length;
-		button(mode === 'setup' ? 'Expand delegation widget' : 'Expand support widget').click();
+		button('Expand support widget').click();
 		await settle();
 		expect(action).toHaveBeenCalledTimes(before + 1);
 		expect(document.activeElement?.getAttribute('aria-haspopup')).toBe('dialog');
-		await open(mode);
+		await open();
 		expect(action).toHaveBeenCalledTimes(before + 1);
 		pending.resolve(ready);
 		await settle();
@@ -252,19 +259,19 @@ it('restored expanded support stays idle until opening and unresolved receipt su
 	await paint();
 	await imports();
 	expect(action).not.toHaveBeenCalled();
-	await open('support');
+	await open();
 	expect(action).toHaveBeenCalledTimes(1);
 	receipt({ ...unresolved(), mode: 'support' });
 	await settle();
 	await close();
-	await open('support');
+	await open();
 	expect(action).toHaveBeenCalledTimes(1);
 	receipt({ ...unresolved('failed', 'conflict'), mode: 'support' });
 	await settle();
 	expect(action).toHaveBeenCalledTimes(2);
 });
-it.each(['/admin', '/contracts/new'])(
-	'uploads on %s dispatch first and share times through Continue→navigation→open',
+it.each(['/template', '/contracts/new'])(
+	'uploads on %s dispatch first and warm support only on supported routes through Continue→navigation→open',
 	async (path) => {
 		route(path);
 		const state = csmState();
@@ -292,19 +299,22 @@ it.each(['/admin', '/contracts/new'])(
 		Object.defineProperty(input, 'files', { configurable: true, value: [file] });
 		input.dispatchEvent(new Event('change', { bubbles: true }));
 		await settle();
-		expect(order).toEqual(['upload', 'calendar']);
-		upload.resolve(new Response(JSON.stringify({ preparedBaselineId: 'baseline', issues: [] })));
+		expect(order).toEqual(path === '/template' ? ['upload', 'calendar'] : ['upload']);
+		upload.resolve(
+			new Response(JSON.stringify({ preparedTemplateSourceId: 'templateSource', issues: [] }))
+		);
 		await settle();
 		button('Go to last step').click();
 		await settle();
 		expect(mutation).toHaveBeenCalledTimes(1);
-		expect(page.url.pathname).toBe('/admin');
+		expect(page.url.pathname).toBe('/template');
 		state.viewer.templateReady = true;
 		state.form = false;
 		await paint();
 		calendar.resolve(ready);
 		await imports();
-		// Continue's onboarding handoff may already have opened the modal in production.
+		// Upload completion never proactively opens the support modal.
+		expect(document.querySelector('dialog[open]')).toBeNull();
 		await open();
 		expect(order).toEqual(['upload', 'calendar']);
 	}
@@ -312,7 +322,9 @@ it.each(['/admin', '/contracts/new'])(
 it('replaces the cache on transport change and ignores prior late work', async () => {
 	const old = deferred<Availability>();
 	action.mockReturnValue(old.promise);
-	const state = attach();
+	const state = csmState();
+	state.viewer.templateReady = false;
+	attach(state);
 	await paint();
 	expect(action).toHaveBeenCalledTimes(1);
 	state.session.transportGeneration++;
@@ -325,16 +337,21 @@ it('replaces the cache on transport change and ignores prior late work', async (
 	expect(document.querySelector('.slot-button')).not.toBeNull();
 });
 it('calendar failures never fail uploads and repeated file uploads have one speculative refresh per owner', async () => {
-	route('/contracts/new');
+	route('/template');
 	const state = csmState();
 	state.form = true;
 	state.viewer.templateReady = false;
 	attach(state);
 	await paint();
+	vi.setSystemTime(now + 120_001);
+	action.mockClear();
 	action.mockRejectedValue(new Error('optional calendar error'));
 	vi.stubGlobal(
 		'fetch',
-		vi.fn(async () => new Response(JSON.stringify({ preparedBaselineId: 'baseline', issues: [] })))
+		vi.fn(
+			async () =>
+				new Response(JSON.stringify({ preparedTemplateSourceId: 'templateSource', issues: [] }))
+		)
 	);
 	const upload = async () => {
 		const input = document.querySelector<HTMLInputElement>('input[type=file]')!;
@@ -355,10 +372,10 @@ it('calendar failures never fail uploads and repeated file uploads have one spec
 	button('Go to last step').click();
 	await settle();
 	expect(mutation).toHaveBeenCalledTimes(1);
-	expect(page.url.pathname).toBe('/admin');
+	expect(page.url.pathname).toBe('/template');
 	expect(action).toHaveBeenCalledTimes(2);
 });
-it('submission invalidates before waiting; booked receipt still completes after the company promotes to support', async () => {
+it('submission invalidates before waiting; support receipt still completes when legacy setup booking state changes', async () => {
 	const state = attach();
 	await paint();
 	await open();
@@ -388,7 +405,7 @@ it('submission invalidates before waiting; booked receipt still completes after 
 	state.viewer.company.csmCallBooked = true;
 	receipt({ ...unresolved('booked'), operationId: args.operationId });
 	await settle();
-	expect(document.querySelector('dialog')!.textContent).toContain('Your call is booked');
+	expect(document.querySelector('dialog[open]')!.textContent).toContain('Your call is booked');
 	commit.resolve({ attemptId: 'attempt', operationId: args.operationId });
 	await settle();
 	await close();

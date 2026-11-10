@@ -1,3 +1,8 @@
+import { isRepItem, type TemplateItem } from '../../src/lib/playbook/model';
+function repItem<T extends TemplateItem>(item: T) {
+	if (!isRepItem(item)) throw new Error('Expected rep instructions');
+	return item;
+}
 // @vitest-environment edge-runtime
 import { convexTest } from 'convex-test';
 import { describe, expect, it } from 'vitest';
@@ -105,7 +110,7 @@ async function prepareApproval(
 		versionId: event.templateVersionId
 	});
 	const selectionDetails = delivery.selections.map((selection) => {
-		const item = snapshot.items.find((item) => item._id === selection.itemId)!;
+		const item = repItem(snapshot.items.find((item) => item._id === selection.itemId)!);
 		return {
 			description: item.concessions.find((c) => c.id === selection.concessionId)!.description,
 			requiresApproval: item.approvalPolicy.kind === 'required',
@@ -162,7 +167,7 @@ describe('immutable template creation', () => {
 				versionId: state.templateVersionId
 			})
 		};
-		expect(loaded?.snapshot.items[0].approvalPolicy).toEqual({
+		expect(loaded && repItem(loaded.snapshot.items[0]).approvalPolicy).toEqual({
 			kind: 'required',
 			instructions: 'Ask first.'
 		});
@@ -258,8 +263,9 @@ describe('immutable template creation', () => {
 			await t.run(({ db }) => db.query('playbookItemCreationReceipts').collect())
 		).toHaveLength(0);
 		expect(
-			(await t.run(async (ctx) => hydrateHead(ctx, (await ctx.db.get('playbookItems', itemId))!)))
-				.approvalPolicy
+			repItem(
+				await t.run(async (ctx) => hydrateHead(ctx, (await ctx.db.get('playbookItems', itemId))!))
+			).approvalPolicy
 		).toEqual({
 			kind: 'required',
 			instructions: 'Ask first.'
@@ -268,7 +274,13 @@ describe('immutable template creation', () => {
 	it('creates with contract, receipt and template-freeze writes, one directory write and no template-content reads or compilation', async () => {
 		const { t, companyId, membershipId } = await fixture();
 		await finishTemplate(t, companyId);
-		const counts = { writes: 0, directoryWrites: 0, content: 0 };
+		const counts = {
+			writes: 0,
+			directoryWrites: 0,
+			publicationWrites: 0,
+			accessWrites: 0,
+			content: 0
+		};
 		await t.run((ctx) => {
 			const db = new Proxy(ctx.db, {
 				get(target, key) {
@@ -276,10 +288,17 @@ describe('immutable template creation', () => {
 					if (typeof value !== 'function') return value;
 					return (...args: unknown[]) => {
 						if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
-							if (args[0] === 'contractDirectory') counts.directoryWrites++;
+							if (args[0] === 'contractBuyerState') counts.publicationWrites++;
+							else if (args[0] === 'contractAccess') counts.accessWrites++;
+							else if (args[0] === 'contractDirectory') counts.directoryWrites++;
 							else counts.writes++;
 						}
-						if (key === 'query' && /Blocks|Items|baselineChunks/.test(String(args[0])))
+						if (
+							(key === 'get' || key === 'query') &&
+							(args[0] === 'playbookItemRevisions' ||
+								args[0] === 'templateSourceChunks' ||
+								(key === 'query' && /Blocks|Items/.test(String(args[0]))))
+						)
 							counts.content++;
 						return value.apply(target, args);
 					};
@@ -298,7 +317,48 @@ describe('immutable template creation', () => {
 				}
 			)._handler({ ...ctx, db }, { membershipId, buyerCompanyName: 'Buyer', operationId });
 		});
-		expect(counts).toEqual({ writes: 3, directoryWrites: 1, content: 0 });
+		expect(counts).toEqual({
+			writes: 3,
+			directoryWrites: 1,
+			publicationWrites: 1,
+			accessWrites: 1,
+			content: 0
+		});
+	});
+	it('refuses first-link creation when saving advances beyond the flushed revision', async () => {
+		const { t, membershipId, itemId } = await fixture();
+		const created = await t.mutation(api.contracts.create, {
+			membershipId,
+			buyerCompanyName: 'Buyer',
+			operationId
+		});
+		if (created.status !== 'created') throw new Error('creation failed');
+		const choice = { concessionId: 'preferred', applicationId: 'newer-application' };
+		const saved = await t.mutation(api.contracts.saveChoices, {
+			membershipId,
+			id: created.id,
+			choices: { [itemId]: choice },
+			expectedEditRevision: created.contract.editRevision,
+			operationId: 'newer-save',
+			commands: [
+				{
+					id: 'newer-save-command',
+					itemId,
+					choice,
+					occurredAt: 123
+				}
+			]
+		});
+		expect(saved.status).toBe('saved');
+		await expect(
+			t.mutation(internal.buyerLinks.capture, {
+				membershipId,
+				id: created.id,
+				preparation: { kind: 'flushed', expectedEditRevision: created.contract.editRevision },
+				token: '0'.repeat(39)
+			})
+		).rejects.toThrow('This contract changed. Refresh and try again.');
+		expect(await t.query(api.buyerLinks.latest, { membershipId, id: created.id })).toBeNull();
 	});
 	it('captures approval statuses against shared versions; blocks company holds', async () => {
 		const { t, itemId, profileId, companyId, membershipId } = await fixture();
@@ -432,8 +492,9 @@ describe('immutable template creation', () => {
 		).resolves.toMatchObject({ status: 'rejected' });
 		expect((await t.query(api.templates.current, { membershipId }))?.versionId).toBe(first);
 		expect(
-			(await t.run(async (ctx) => hydrateHead(ctx, (await ctx.db.get('playbookItems', itemId))!)))
-				.trigger
+			repItem(
+				await t.run(async (ctx) => hydrateHead(ctx, (await ctx.db.get('playbookItems', itemId))!))
+			).trigger
 		).toEqual(item.trigger);
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(1);
 	});
@@ -458,8 +519,10 @@ describe('immutable template creation', () => {
 			);
 		const current = await t.query(api.templates.current, { membershipId });
 		expect(
-			(await t.query(api.templates.content, { membershipId, versionId: current!.versionId }))
-				.items[0].approvalPolicy
+			repItem(
+				(await t.query(api.templates.content, { membershipId, versionId: current!.versionId }))
+					.items[0]
+			).approvalPolicy
 		).toEqual({ kind: 'required', instructions: 'Newest' });
 		const versions = await t.run(({ db }) => db.query('templateVersions').collect());
 		await expect(finishTemplate(t, companyId)).rejects.toThrow(

@@ -39,7 +39,7 @@
 	aria-label={ariaLabel}
 	aria-describedby={ariaDescribedBy}
 	class={cn(
-		'size-8 gap-0 rounded-button-md p-0 text-[length:inherit] font-[number:inherit]',
+		'size-[31px] gap-0 rounded-button-md p-0 text-[length:inherit] font-[number:inherit]',
 		className
 	)}
 >

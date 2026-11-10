@@ -1,3 +1,4 @@
+import { contractItemId } from '../lib/contract/item-identity';
 import { v } from 'convex/values';
 import {
 	appliedConcessions,
@@ -8,7 +9,7 @@ import {
 
 import { hubspotLink } from './hubspotValidators';
 
-export const selections = v.record(v.id('playbookItems'), v.string());
+export const selections = v.record(contractItemId, v.string());
 export { reviewDecision, reviewStatus } from '../lib/contract/applications';
 export const reviewCompletion = v.union(
 	v.object({
@@ -38,7 +39,7 @@ export const storedContract = v.object({
 export const storedDecision = v.object({
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	itemId: v.id('playbookItems'),
+	itemId: contractItemId,
 	concessionId: v.string(),
 	applicationId: v.string(),
 	adminId: v.id('profiles'),
@@ -53,7 +54,7 @@ export const storedDecision = v.object({
 // The item identity is resolved within this contract's immutable snapshot, even
 // when the corresponding live playbook item has been deleted.
 export const approvalSelection = v.object({
-	itemId: v.id('playbookItems'),
+	itemId: contractItemId,
 	concessionPosition: v.number(),
 	approval: v.optional(approvalState)
 });

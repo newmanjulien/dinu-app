@@ -5,13 +5,13 @@
 		recognizeReplacementContent,
 		type RecognizedReference
 	} from '$lib/contract/reference-recognition';
-	import type { ReferenceCatalog } from '$lib/contract/reference-catalog';
-	import type { ReplacementAtom } from '$lib/contract/source-model';
-	import { referenceText } from '$lib/contract/numbering';
+	import type { ReferenceCatalog } from '$lib/document/reference-catalog';
+	import type { ReplacementAtom } from '$lib/document/source-model';
+	import { referenceText } from '$lib/document/numbering';
 	import {
 		sameReplacementAtoms,
 		type ReplacementAtomValue
-	} from '$lib/contract/replacement-content';
+	} from '$lib/document/replacement-content';
 	import type { DeepReadonly } from '../../immutable';
 	import {
 		clearReplacementReferenceHighlights,

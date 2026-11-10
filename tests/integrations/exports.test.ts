@@ -82,7 +82,7 @@ describe('download acknowledgments and file lifetime', () => {
 			download = await acknowledge(f, attempt);
 		const fetcher = vi.fn(async (input: string) => {
 			const p = new URL(input).pathname;
-			if (p === '/files/v3/files') return json({ id: 'uploaded', access: 'PRIVATE' });
+			if (p === '/files/v3/files') return json({ id: '301', access: 'PRIVATE' });
 			if (p === '/crm/v3/objects/notes') throw new TypeError('Note response lost');
 			return json({ id: '101', properties: { dealname: 'Original' } });
 		});
@@ -91,23 +91,23 @@ describe('download acknowledgments and file lifetime', () => {
 		expect(await f.t.run(({ db }) => db.get('hubspotEvents', download._id))).toMatchObject({
 			status: 'uncertain',
 			dispatch: 'note',
-			fileId: 'uploaded'
+			fileId: '301'
 		});
 		const stored = (await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)))!;
-		expect(stored.remoteFileId).toBe('uploaded');
+		expect(stored.remoteFileId).toBe('301');
 		expect(stored.attachmentUntil).toBeUndefined();
 		expect(stored.expiresAt).toBe(NOW + HOUR + 15 * 60_000);
 		vi.setSystemTime(stored.expiresAt - 1);
-		await f.t.mutation(internal.hubspotExports.expire, {});
+		await f.t.mutation(internal.hubspotExports.expire, { state: 'ready' });
 		expect(await f.t.run(async ({ storage }) => Boolean(await storage.get(attempt.fileId!)))).toBe(
 			true
 		);
 		vi.setSystemTime(stored.expiresAt);
-		await f.t.mutation(internal.hubspotExports.expire, {});
+		await f.t.mutation(internal.hubspotExports.expire, { state: 'ready' });
 		expect(await f.t.run(({ storage }) => storage.get(attempt.fileId!))).toBeNull();
 		expect(await f.t.run(({ db }) => db.get('hubspotExports', attempt._id))).toMatchObject({
 			state: 'expired',
-			remoteFileId: 'uploaded',
+			remoteFileId: '301',
 			sha256: attempt.sha256
 		});
 		expect(await f.t.run(({ db }) => db.query('hubspotExportChunks').collect())).toHaveLength(1);
@@ -116,7 +116,7 @@ describe('download acknowledgments and file lifetime', () => {
 		const f = await fixture(),
 			attempt = await readyExport(f);
 		vi.setSystemTime(NOW + HOUR + 15 * 60_000);
-		await f.t.mutation(internal.hubspotExports.expire, {});
+		await f.t.mutation(internal.hubspotExports.expire, { state: 'ready' });
 		const download = await acknowledge(f, attempt, NOW + 2000);
 		expect(download).toMatchObject({ occurredAt: NOW + 2000, kind: 'downloaded' });
 		expect(JSON.parse(download.detail).attachmentAvailable).toBe(false);
@@ -194,39 +194,39 @@ describe('private File reconciliation', () => {
 				dispatchedAt: NOW
 			})
 		);
-		const candidates = [
-			'public',
-			'wrong-name',
-			'too-long',
-			'wrong-hash',
-			'another-hash',
-			'correct'
-		];
+		const candidates = {
+			public: '401',
+			wrongName: '402',
+			tooLong: '403',
+			wrongHash: '404',
+			anotherHash: '405',
+			correct: '406'
+		};
 		let note: { properties: { hs_attachment_ids: string } } | undefined;
 		const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
 			const url = new URL(input),
 				id = url.pathname.split('/').at(-1)!;
 			if (url.pathname === '/files/v3/files/search')
-				return json({ results: candidates.map((id) => ({ id })) });
+				return json({ results: Object.values(candidates).map((id) => ({ id })) });
 			if (id === 'signed-url')
 				return json({ url: `https://private.example/${url.pathname.split('/').at(-2)}` });
 			if (url.hostname === 'private.example')
 				return new Response(
-					id === 'too-long'
+					id === candidates.tooLong
 						? new Uint8Array(bytes.length + 1)
-						: ['wrong-hash', 'another-hash'].includes(id)
+						: [candidates.wrongHash, candidates.anotherHash].includes(id)
 							? new Uint8Array(bytes.length)
 							: bytes
 				);
 			if (url.pathname.startsWith('/files/v3/files/'))
 				return json({
 					id,
-					name: id === 'wrong-name' ? 'another.docx' : `dinu-${download._id}.docx`,
-					access: id === 'public' ? 'PUBLIC_INDEXABLE' : 'PRIVATE'
+					name: id === candidates.wrongName ? 'another.docx' : `dinu-${download._id}.docx`,
+					access: id === candidates.public ? 'PUBLIC_INDEXABLE' : 'PRIVATE'
 				});
 			if (url.pathname === '/crm/v3/objects/notes') {
 				note = JSON.parse(String(init?.body));
-				return json({ id: 'note' });
+				return json({ id: '201' });
 			}
 			return json({ id: '101', properties: { dealname: 'Original' } });
 		});
@@ -244,10 +244,10 @@ describe('private File reconciliation', () => {
 		vi.setSystemTime(NOW + 60_000);
 		fetcher.mockClear();
 		await send(f, download._id);
-		expect(note).toMatchObject({ properties: { hs_attachment_ids: 'correct' } });
+		expect(note).toMatchObject({ properties: { hs_attachment_ids: candidates.correct } });
 		expect(await f.t.run(({ db }) => db.get('hubspotEvents', download._id))).toMatchObject({
 			status: 'sent',
-			fileId: 'correct'
+			fileId: candidates.correct
 		});
 		expect(
 			fetcher.mock.calls.some(

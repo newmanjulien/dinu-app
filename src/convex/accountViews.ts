@@ -32,8 +32,7 @@ export const accountView = v.object({
 	),
 	needsInitialization: v.boolean(),
 	templateReady: v.boolean(),
-	instructionsReady: v.boolean(),
-	colleaguesInvited: v.boolean()
+	instructionsReady: v.boolean()
 });
 export const viewerResult = v.union(v.null(), accountView);
 

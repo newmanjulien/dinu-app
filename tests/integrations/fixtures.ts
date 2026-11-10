@@ -129,7 +129,18 @@ export async function event(f: Fixture) {
 	return (await events(f))[0];
 }
 export async function enqueue(f: Fixture, id?: Id<'hubspotEvents'>) {
-	await f.t.mutation(internal.hubspotDelivery.pump, {});
+	const before = await f.t.run(({ db }) =>
+		id ? db.get('hubspotEvents', id) : db.query('hubspotEvents').first()
+	);
+	if (
+		!before ||
+		(before.status !== 'pending' &&
+			before.status !== 'uncertain' &&
+			before.status !== 'working' &&
+			before.status !== 'blocked')
+	)
+		throw new Error('Event was not queued');
+	await f.t.mutation(internal.hubspotDelivery.pump, { status: before.status });
 	const row = await f.t.run(({ db }) =>
 		id ? db.get('hubspotEvents', id) : db.query('hubspotEvents').first()
 	);

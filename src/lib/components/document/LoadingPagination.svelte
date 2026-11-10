@@ -3,7 +3,7 @@
 	import { describeRoute } from '$lib/auth/routes';
 	import DocumentSkeleton from './DocumentSkeleton.svelte';
 	let {
-		label = 'Laying out contract pages',
+		label = 'Laying out document pages',
 		reviewGutter = 0
 	}: {
 		label?: string;
@@ -12,7 +12,7 @@
 </script>
 
 <DocumentSkeleton
-	admin={describeRoute(page.route.id).document === 'admin'}
+	template={describeRoute(page.route.id).document === 'template'}
 	{label}
 	{reviewGutter}
 />

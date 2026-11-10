@@ -1,3 +1,4 @@
+import { publishContract, requirePublicationAcknowledgment } from './contractPublication';
 import { ConvexError } from 'convex/values';
 import type { MutationCtx } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
@@ -6,15 +7,15 @@ import { scopedOperation } from './auth';
 import { activity, actionKey, actorOf, receipt, remember, operation } from './hubspotRecords';
 import { choicesOf, concessionSelections, sameApplications } from '../lib/contract/applications';
 import type { ActivityCommand } from '../lib/contract/activity-commands';
-import { projectCommands } from '../lib/contract/activity-commands';
-import { CompiledContract } from '../lib/contract/compiled-contract';
+import { projectCommands, MAX_SAVE_COMMANDS } from '../lib/contract/activity-commands';
+import { CompiledDocument } from '../lib/document/compiled-document';
 import { createChangeConflictChecker } from '../lib/playbook/conflicts';
 import { activeConflicts, conflictsForConcession } from '../lib/playbook/selection-conflicts';
 import { toDocumentOverlay } from '../lib/playbook/document-overlay';
 import { reviewsForSelections, recordDecision } from './reviews';
-import { snapshotReader } from './templates';
+import { contractReader } from './contractReader';
 import { writeDirectory } from './contractDirectory';
-import { MAX_SELECTED_CONCESSIONS } from '../lib/contract/selection-limits';
+import { MAX_SELECTED_CONCESSIONS } from '../lib/document/selection-limits';
 import { stateOf } from './contracts';
 import { requireContractWork } from './contractPolicy';
 
@@ -27,7 +28,8 @@ export async function saveCommands(
 		choices: ReturnType<typeof choicesOf>;
 		expectedEditRevision: number;
 		operationId: string;
-	}
+	},
+	prepared?: Awaited<ReturnType<typeof contractReader>>
 ) {
 	const key = actionKey(access, 'save', args.operationId),
 		inputs = JSON.stringify([contract._id, args.expectedEditRevision, args.commands, args.choices]);
@@ -41,12 +43,16 @@ export async function saveCommands(
 		return { status: 'saved' as const, state: stateOf(contract) };
 	}
 	await requireContractWork(ctx, contract);
-	if (args.commands.length > 25 || new TextEncoder().encode(inputs).length > 750 * 1024)
+	if (
+		args.commands.length > MAX_SAVE_COMMANDS ||
+		new TextEncoder().encode(inputs).length > 750 * 1024
+	)
 		throw new ConvexError('Too many pending contract changes.');
-	const reader = await snapshotReader(ctx, contract);
+	const reader = prepared ?? (await contractReader(ctx, contract));
+	if (reader.contractId !== contract._id) throw new Error('Invalid contract preparation.');
 	let applications = contract.applications;
 	const ids = new Set<string>();
-	let compiled: CompiledContract | undefined;
+	let compiled: CompiledDocument | undefined;
 	let conflicts: ReturnType<typeof createChangeConflictChecker> | undefined;
 	let geometryValid = false;
 	for (const command of args.commands) {
@@ -79,15 +85,12 @@ export async function saveCommands(
 				items.length > 1 &&
 				applications[command.itemId]?.concessionId !== command.choice.concessionId
 			) {
-				compiled ??= new CompiledContract(await reader.blocks());
+				compiled ??= await reader.compiled();
 				conflicts ??= createChangeConflictChecker(compiled.index);
 				const overlays = items.map(toDocumentOverlay);
-				const unchanged =
-					applications[command.itemId]?.concessionId === command.choice.concessionId;
 				const invalid = !geometryValid
-					? activeConflicts(compiled.index, overlays, selections, conflicts).length
-					: !unchanged &&
-						conflictsForConcession(
+					? activeConflicts(compiled.index, overlays, selections).length
+					: conflictsForConcession(
 							compiled.index,
 							overlays,
 							selections,
@@ -100,6 +103,8 @@ export async function saveCommands(
 			geometryValid = true;
 		}
 
+		if (result.autoApprovedItemIds.length)
+			await requirePublicationAcknowledgment(ctx, contract, access.profile._id);
 		applications = result.applications;
 		await remember(ctx, access.companyId, interactionKey, interactionInputs, args.operationId);
 		if (command.choice) {
@@ -141,18 +146,107 @@ export async function saveCommands(
 	}
 	if (!sameApplications(choicesOf(applications), args.choices))
 		throw new ConvexError('Pending changes do not match the contract selection.');
+	await remember(ctx, access.companyId, key, inputs, 'saved');
+	return commitApplications(
+		ctx,
+		access,
+		contract,
+		applications,
+		args.operationId,
+		reader,
+		compiled
+	);
+}
+
+async function commitApplications(
+	ctx: MutationCtx,
+	access: CompanyAccess,
+	contract: Doc<'savedContracts'>,
+	applications: Doc<'savedContracts'>['applications'],
+	operationId: string,
+	reader: Awaited<ReturnType<typeof contractReader>>,
+	compiled?: CompiledDocument
+) {
 	const changes = {
 		applications,
 		editRevision: contract.editRevision + 1,
 		reviewGeneration: contract.reviewGeneration + 1,
 		stateVersion: contract.stateVersion + 1,
 		reviewCompletion: undefined,
-		lastOperation: { id: args.operationId, callerId: access.profile._id },
+		lastOperation: { id: operationId, callerId: access.profile._id },
 		savedAt: Date.now()
 	};
 	await ctx.db.patch('savedContracts', contract._id, changes);
-	await remember(ctx, access.companyId, key, inputs, 'saved');
 	const next = { ...contract, ...changes };
 	await writeDirectory(ctx, next);
+	await publishContract(ctx, next, reader, compiled);
 	return { status: 'saved' as const, state: stateOf(next) };
+}
+
+/** Trusted server-normalized replacement; the ordinary editor transport retains its batch cap. */
+export async function saveReplacement(
+	ctx: MutationCtx,
+	access: CompanyAccess,
+	contract: Doc<'savedContracts'>,
+	choices: ReturnType<typeof choicesOf>,
+	itemId: import('../lib/contract/item-identity').ContractItemId,
+	operationId: string,
+	reader: Awaited<ReturnType<typeof contractReader>>
+) {
+	await requireContractWork(ctx, contract);
+	operation(operationId);
+	if (reader.contractId !== contract._id || Object.keys(choices).length > MAX_SELECTED_CONCESSIONS)
+		throw new ConvexError('Too many selected concessions.');
+	const selections = concessionSelections(choices);
+	const items = await reader.selectedItems(selections);
+	const compiled = await reader.compiled();
+	if (activeConflicts(compiled.index, items.map(toDocumentOverlay), selections).length)
+		throw new ConvexError('Remove conflicting concessions before saving.');
+	const result = reviewsForSelections(
+		items,
+		choices,
+		contract.applications,
+		access.membership.role
+	);
+	if (result.autoApprovedItemIds.length)
+		await requirePublicationAcknowledgment(ctx, contract, access.profile._id);
+	const item = items.find((item) => item._id === itemId)!;
+	const concession = item.concessions.find((c) => c.id === choices[itemId].concessionId)!;
+	await activity(
+		ctx,
+		contract,
+		actorOf(access.profile),
+		actionKey(access, 'proposal-application', operationId),
+		'applied',
+		JSON.stringify({
+			itemId,
+			contentRevision: item.contentRevision,
+			concessionId: concession.id,
+			description: concession.description,
+			applicationId: choices[itemId].applicationId
+		}),
+		Date.now()
+	);
+	for (const id of result.autoApprovedItemIds) {
+		const applied = result.applications[id];
+		await recordDecision(ctx, contract, access.profile, {
+			itemId: id,
+			concessionId: applied.concessionId,
+			applicationId: applied.approval!.applicationId,
+			operationId: scopedOperation(access, JSON.stringify(['proposal', operationId, id])),
+			previousStatus: 'pending',
+			status: 'approved',
+			decidedAt: Date.now(),
+			changed: true
+		});
+	}
+	return commitApplications(
+		ctx,
+		access,
+		contract,
+		result.applications,
+		operationId,
+		reader,
+		compiled
+	);
 }

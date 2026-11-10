@@ -1,3 +1,5 @@
+import { isRepItem } from '$lib/playbook/model';
+import type { TemplateContent } from '../template/model';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import type { SessionEditor } from '$lib/auth/viewer-session.svelte';
 import type { ConvexClient } from 'convex/browser';
@@ -8,7 +10,6 @@ import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
 import { DraftJournal, discoverContractDrafts, type DraftRecovery } from './draft-recovery.svelte';
 import { ContractPersistence } from './persistence.svelte';
-import type { TemplateContent } from './saved';
 import { saveError } from './saved';
 import type { getContractSnapshotCache } from './snapshot-cache';
 
@@ -50,6 +51,7 @@ export class ContractEditor {
 	attachments = $state(0);
 	private attached = new Set<symbol>();
 	private flushing = $state(0);
+	private linkReservations = 0;
 	private flushLifetime = new AbortController();
 	private recovered = $state(false);
 	private work: Promise<boolean> | undefined;
@@ -128,6 +130,19 @@ export class ContractEditor {
 	}
 	get heldForFlush() {
 		return this.flushing > 0;
+	}
+	get heldForLink() {
+		return this.linkReservations > 0;
+	}
+	holdForLink() {
+		this.linkReservations++;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.linkReservations--;
+			this.retain();
+		};
 	}
 	get inFlight() {
 		return Boolean(this.persistence?.inFlight);
@@ -273,7 +288,7 @@ export class ContractEditor {
 							this.fail('This contract’s template changed. Open it again to reload.');
 							return;
 						}
-						this.persistence?.accept(state);
+						this.persistence?.acceptLive(state);
 						this.resume();
 					}
 				},
@@ -326,6 +341,7 @@ export class ContractEditor {
 					this.recovery,
 					new Set(
 						snapshot.items
+							.filter(isRepItem)
 							.filter((item) => item.approvalPolicy.kind === 'required')
 							.map((item) => item._id)
 					)
@@ -333,7 +349,7 @@ export class ContractEditor {
 				this.recovery = null;
 			}
 			this.persistence.freeze(this.owner.frozen);
-			this.persistence.accept(latest);
+			this.persistence.acceptLive(latest);
 			this.recovered = false;
 			this.validated = true;
 			this.owner.options.cache.seedConfirmed({
@@ -447,7 +463,7 @@ export class ContractEditor {
 			this.initializing = false;
 			attempt.abort();
 		}
-		if (this.inFlight || this.deleting || this.flushing) return;
+		if (this.inFlight || this.deleting || this.flushing || this.heldForLink) return;
 		if (!this.pending) {
 			// Destroying a clean abandoned editor aborts its initial read as well.
 			this.owner.releaseClean(this);
@@ -545,6 +561,28 @@ export class ContractEditors {
 		if (this.accessAvailable) void editor.initialize();
 		return { editor, release };
 	}
+	/** Inspect local intent without starting template or viewer acquisition. */
+	reserveForLink(id: string) {
+		const editor = this.reserve(id);
+		const owner = this;
+		return {
+			editor,
+			release: editor.holdForLink(),
+			get needsSave() {
+				return Boolean(
+					!owner.alive ||
+					!owner.accessAvailable ||
+					editor.isDeleted ||
+					editor.deleting ||
+					editor.pending ||
+					editor.inFlight ||
+					editor.heldForFlush ||
+					editor.error ||
+					editor.persistence?.error
+				);
+			}
+		};
+	}
 	get pending() {
 		return this.entries.some((entry) => !entry.isDeleted && (entry.pending || entry.inFlight));
 	}
@@ -565,6 +603,7 @@ export class ContractEditors {
 			editor.pending ||
 			editor.inFlight ||
 			editor.heldForFlush ||
+			editor.heldForLink ||
 			editor.deleting
 		)
 			return;
@@ -611,8 +650,7 @@ export class ContractEditors {
 		}
 	}
 	private interrupt() {
-		for (const unsubscribe of this.renameSubscriptions) unsubscribe();
-		this.renameSubscriptions.clear();
+		for (const release of this.renameSubscriptions) release();
 		for (const entry of this.entries) entry.interrupt();
 	}
 	retry(id?: string) {
@@ -696,7 +734,10 @@ export class ContractEditors {
 				// and an editing editor always checks fresh state on opening.
 			}
 		);
-		this.renameSubscriptions.add(unsubscribe);
+		const release = () => {
+			if (this.renameSubscriptions.delete(release)) unsubscribe();
+		};
+		this.renameSubscriptions.add(release);
 		try {
 			await this.options.client.mutation(api.contracts.rename, {
 				membershipId: this.options.membershipId,
@@ -713,16 +754,14 @@ export class ContractEditors {
 				// An optional query failure must not turn a committed rename into an error.
 			}
 		} finally {
-			this.renameSubscriptions.delete(unsubscribe);
-			unsubscribe();
+			release();
 		}
 	}
 	destroy() {
 		this.alive = false;
 		this.accessAvailable = false;
 		this.unregister?.();
-		for (const unsubscribe of this.renameSubscriptions) unsubscribe();
-		this.renameSubscriptions.clear();
+		for (const release of this.renameSubscriptions) release();
 		for (const entry of this.entries) entry.destroy();
 		this.byId.clear();
 		this.queue.clear();

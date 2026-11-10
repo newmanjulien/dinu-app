@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, type Snippet } from 'svelte';
+	import type { Placement } from '@floating-ui/dom';
 	import { cn } from '$lib/ui/cn';
 	import FloatingSurface from './FloatingSurface.svelte';
 	import type { CloseReason } from './interactions';
@@ -7,6 +8,7 @@
 		text,
 		label = text,
 		trigger,
+		placement = 'bottom-start',
 		standalone = true,
 		enabled = true,
 		leaveDelay = 140,
@@ -17,6 +19,7 @@
 		text: string;
 		label?: string;
 		trigger?: HTMLElement;
+		placement?: Placement;
 		standalone?: boolean;
 		enabled?: boolean;
 		leaveDelay?: number;
@@ -26,8 +29,8 @@
 	} = $props();
 	const componentId = $props.id();
 	const tooltipId = `${componentId}-tooltip`;
-	let infoButton = $state<HTMLButtonElement>();
-	let surface = $state<HTMLDivElement>();
+	let infoButton = $state<HTMLButtonElement | null>();
+	let surface = $state<HTMLDivElement | null>();
 	let hovered = false;
 	let focused = false;
 	let tapped = false;
@@ -122,11 +125,12 @@
 	{/if}
 	<FloatingSurface
 		open={enabled && open}
-		trigger={trigger ?? infoButton}
+		trigger={trigger ?? infoButton ?? undefined}
 		onClose={close}
 		id={tooltipId}
 		role="tooltip"
 		kind="tooltip"
+		{placement}
 		referenceClipping="close"
 		maxWidth={288}
 		bind:element={surface}

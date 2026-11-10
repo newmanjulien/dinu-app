@@ -8,7 +8,10 @@ import { ACCOUNT_DELETION_BATCH_SIZE, CLERK_USER_BATCH_SIZE } from './deletionPo
 
 async function existingUsers(userIds: string[]) {
 	try {
-		const users = await createClerkClient({ secretKey: env.CLERK_SECRET_KEY }).users.getUserList({
+		const users = await createClerkClient({
+			secretKey: env.CLERK_SECRET_KEY,
+			telemetry: { disabled: true }
+		}).users.getUserList({
 			userId: userIds,
 			limit: userIds.length
 		});

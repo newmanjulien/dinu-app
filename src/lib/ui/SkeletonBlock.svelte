@@ -1,9 +1,16 @@
 <script lang="ts">
 	import { cn } from './cn';
-	let { class: className = '' }: { class?: string } = $props();
+	import type { Snippet } from 'svelte';
+	let { class: className = '', children }: { class?: string; children?: Snippet } = $props();
 </script>
 
 <div
 	aria-hidden="true"
-	class={cn('h-[15px] animate-pulse rounded bg-fill-subtle/70 motion-reduce:animate-none', className)}
-></div>
+	class={cn(
+		'animate-pulse rounded bg-fill-subtle/70 motion-reduce:animate-none',
+		!children && 'h-[15px]',
+		className
+	)}
+>
+	{#if children}<span class="invisible">{@render children()}</span>{/if}
+</div>

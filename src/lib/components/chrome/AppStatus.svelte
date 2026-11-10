@@ -48,16 +48,16 @@
 {#if feedback?.urgent}{@render status(feedback)}{/if}
 {#if renderError}
 	{@render status({
-		message: `${renderError.message} Showing the last successfully rendered contract.`,
+		message: `${renderError.message} Showing the last successfully rendered document.`,
 		urgent: true,
 		actions: onRetryRender ? [{ label: 'Retry', run: onRetryRender }] : undefined
 	})}
 {/if}
 {#if sourceStale}
 	{@render status({
-		message: 'The latest source updates are unavailable. Your current contract is kept.'
+		message: 'The latest source updates are unavailable. Your current document is still displayed.'
 	})}
 {/if}
 {@render saveFeedback?.()}
 {#if feedback && !feedback.urgent}{@render status(feedback)}{/if}
-{#if updating}{@render status({ message: 'Updating contract…' })}{/if}
+{#if updating}{@render status({ message: 'Updating document…' })}{/if}

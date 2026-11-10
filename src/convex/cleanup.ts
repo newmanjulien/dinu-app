@@ -1,3 +1,4 @@
+import { requireTerminologyReady } from './terminologyMaintenance';
 import type { MutationCtx } from './_generated/server';
 import type { Doc, TableNames } from './_generated/dataModel';
 
@@ -5,6 +6,7 @@ export const CLEANUP_DISCOVERY_PAGE_SIZE = 10;
 
 /** One transaction budget, including nested children and job cancellation. */
 export function cleanupBudget(ctx: MutationCtx) {
+	requireTerminologyReady();
 	let count = 0;
 	async function exhausted() {
 		const metrics = await ctx.meta.getTransactionMetrics();

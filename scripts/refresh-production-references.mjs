@@ -1,6 +1,7 @@
 // Deliberate local-only fixture refresh, gated by exact source reconciliation AND
 // independent old provision-rule output checks. Never called by seed:verify.
 import assert from 'node:assert/strict';
+import { readFrozenStates } from './seed-shape.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createServer } from 'vite';
@@ -12,16 +13,28 @@ if (process.argv.length > 2 && !paragraphRoles)
 	throw new Error('Usage: node scripts/refresh-production-references.mjs [--paragraph-roles]');
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 try {
-	const blocks = await readSeed('contractBlocks'),
-		items = await readSeed('playbookItems');
+	const blocks = await readSeed(server, 'templateSourceBlocks'),
+		items = await readSeed(server, 'playbookItems');
 	const report = await reconcile(server, blocks, items);
 	assert.equal(report.mismatches.length, 0, 'Refusing to freeze unexplained migration output');
-	const { composeContract } = await server.ssrLoadModule('/src/lib/contract/compose.ts');
-	const { toDocumentOverlay } = await server.ssrLoadModule('/src/lib/playbook/document-overlay.ts');
-	const overlays = items.map((item, i) =>
-		toDocumentOverlay({ ...item, _id: `seed-item-${i}`, _creationTime: 0 })
+	const { composeDocument } = /** @type {typeof import('../src/lib/document/compose.ts')} */ (
+		await server.ssrLoadModule('/src/lib/document/compose.ts')
 	);
-	const previous = JSON.parse(await readFile('data/reference/compositor.json', 'utf8'));
+	const { toDocumentOverlay } =
+		/** @type {typeof import('../src/lib/playbook/document-overlay.ts')} */ (
+			await server.ssrLoadModule('/src/lib/playbook/document-overlay.ts')
+		);
+	const overlays = items.map((item, i) =>
+		toDocumentOverlay({
+			...item,
+			_id: /** @type {import('../src/convex/_generated/dataModel').Id<'playbookItems'>} */ (
+				`seed-item-${i}`
+			),
+			_creationTime: 0,
+			contentRevision: 1
+		})
+	);
+	const previous = await readFrozenStates();
 	const states = previous.flatMap((state) => {
 		const selected = remapSeedSelections(items, state.selected);
 		if (Object.keys(state.selected).length && !Object.keys(selected).length) return [];
@@ -34,10 +47,11 @@ try {
 					states.some((s) => s.name === c.id && s.view === view && typeof s.sha256 === 'string'),
 					`Missing trusted reference: ${c.id} (${view}); refusing a provenance-only refresh`
 				);
+	/** @param {unknown} value */
 	const hash = (value) =>
 		createHash('sha256').update(JSON.stringify(value, sortedKeys)).digest('hex');
 	for (const state of states) {
-		const rendered = composeContract({
+		const rendered = composeDocument({
 			blocks,
 			items: overlays,
 			view: state.view,
@@ -69,6 +83,7 @@ try {
 }
 
 /** The prior seed used anchors only on heading blocks; all source/provenance stays checked. */
+/** @param {import('../src/lib/document/model').ResolvedBlock[]} blocks @returns {import('./seed-types').PriorResolvedBlock[]} */
 function priorRepresentation(blocks) {
 	const oldHeadingKeys = new Set(
 		blocks.filter((block) => block.kind !== 'table' && block.anchor).map((block) => block.blockKey)

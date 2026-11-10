@@ -1,7 +1,8 @@
 <script lang="ts">
+	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { setViewer, useViewerSession, type Viewer } from './viewer-session.svelte';
 	import { onMount, onDestroy, untrack, type Snippet } from 'svelte';
-	import { useConvexClient, useQuery } from 'convex-svelte';
+	import { useConvexClient } from 'convex-svelte';
 	import { api } from '../../convex/_generated/api';
 	import { HubSpotDeals, setHubSpotDeals } from '$lib/hubspot-deals.svelte';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
@@ -12,14 +13,14 @@
 	} from '$lib/components/chrome/workspace-feedback.svelte';
 	import { beforeNavigate } from '$app/navigation';
 	import {
-		AdminAuthoringSession,
-		setAdminAuthoringSession
-	} from '$lib/playbook/admin-authoring-session.svelte';
+		TemplateAuthoringSession,
+		setTemplateAuthoringSession
+	} from '$lib/playbook/template-authoring-session.svelte';
 	let { viewer, children }: { viewer: Viewer; children: Snippet } = $props();
 	setViewer(() => viewer);
 	const account = useViewerSession();
 	const client = useConvexClient();
-	const hubspotConnection = useQuery(api.hubspotConnections.status, () =>
+	const hubspotConnection = useReadQuery(api.hubspotConnections.status, () =>
 		account.workspaceAdmitted &&
 		!account.blocked &&
 		!account.closing &&
@@ -72,10 +73,10 @@
 				})
 		)
 	);
-	const authoring = setAdminAuthoringSession(
+	const authoring = setTemplateAuthoringSession(
 		untrack(
 			() =>
-				new AdminAuthoringSession({
+				new TemplateAuthoringSession({
 					client,
 					membershipId: viewer.membership.id,
 					companyId: viewer.company.id,
@@ -83,15 +84,30 @@
 				})
 		)
 	);
+	const buyerAuthoring = setTemplateAuthoringSession(
+		untrack(
+			() =>
+				new TemplateAuthoringSession({
+					client,
+					membershipId: viewer.membership.id,
+					companyId: viewer.company.id,
+					audience: 'buyer',
+					registerEditor: account.registerEditor
+				})
+		),
+		'buyer'
+	);
 	const authoringFeedback = feedback.registerAuthoring();
 	onMount(() => {
 		sessions.start();
 		authoring.start();
+		buyerAuthoring.start();
 	});
 	onDestroy(() => {
 		hubspot.destroy();
 		authoringFeedback.release();
 		authoring.destroy();
+		buyerAuthoring.destroy();
 		feedback.destroy();
 		sessions.destroy();
 	});
@@ -102,18 +118,29 @@
 		untrack(() => {
 			sessions.configure(available, frozen, generation);
 			authoring.configure(available, frozen, generation);
+			buyerAuthoring.configure(available, frozen, generation);
 		});
 	});
+	let latestAuthoringCompletion = $state.raw<TemplateAuthoringSession['completion']>(null);
 	$effect(() => {
 		const completion = authoring.completion;
-		const pending = authoring.pending;
+		if (completion) untrack(() => (latestAuthoringCompletion = completion));
+	});
+	$effect(() => {
+		const completion = buyerAuthoring.completion;
+		if (completion) untrack(() => (latestAuthoringCompletion = completion));
+	});
+	$effect(() => {
+		const completion = latestAuthoringCompletion;
+		const pending = authoring.pending || buyerAuthoring.pending;
 		untrack(() => authoringFeedback.update(completion, pending));
 	});
 	beforeNavigate((navigation) => {
 		if (account.blocked && !account.closing && !navigation.willUnload) navigation.cancel();
 	});
 	function warnBeforeUnload(event: BeforeUnloadEvent) {
-		if ((!sessions.pending && !authoring.pending) || account.closing) return;
+		if ((!sessions.pending && !authoring.pending && !buyerAuthoring.pending) || account.closing)
+			return;
 		event.preventDefault();
 		event.returnValue = '';
 	}

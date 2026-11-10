@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { useAccountContext } from './account-context.svelte';
 	import { browser } from '$app/environment';
 	import { env } from '$env/dynamic/public';
 	import { ConvexClient } from 'convex/browser';
@@ -12,6 +13,7 @@
 	import { onDestroy, setContext, untrack, type Snippet } from 'svelte';
 	let { children }: { children: Snippet } = $props();
 	const clerk = useClerkContext();
+	const publication = useAccountContext()!;
 	const owner = useViewerSession();
 	const sessionId = untrack(() => clerk.auth.sessionId ?? clerk.session?.id);
 	const transport = new ConvexConnection(
@@ -30,6 +32,12 @@
 	const initialGeneration = untrack(() => owner.transportGeneration);
 	let generation = initialGeneration;
 	setConvexClientContext(transport.client);
+	publication.account = undefined;
+	publication.rejected = false;
+	publication.loading = true;
+	publication.authenticated = false;
+	publication.client = transport.client;
+	publication.identity = sessionId;
 	setContext(_authContextKey, {
 		get isLoading() {
 			return owner.transportGeneration !== generation || loading;
@@ -125,7 +133,11 @@
 	$effect(() => {
 		const isLoading = owner.transportGeneration !== generation || loading;
 		const accepted = owner.transportGeneration === generation && authenticated;
-		untrack(() => owner.reportAuth(isLoading, accepted));
+		untrack(() => {
+			publication.loading = isLoading;
+			publication.authenticated = accepted;
+			owner.reportAuth(isLoading, accepted);
+		});
 	});
 	onDestroy(() => {
 		attempt++;
@@ -135,4 +147,4 @@
 	});
 </script>
 
-{#if configured}{@render children()}{/if}
+{@render children()}

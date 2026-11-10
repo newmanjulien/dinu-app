@@ -1,3 +1,6 @@
+import { assertStorageCapacity } from './storageCapacity';
+import { publishContract } from './contractPublication';
+import { templateContent } from './templateValidators';
 import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
 import { applicationChoices, sameApplications, choicesOf } from '../lib/contract/applications';
@@ -6,7 +9,12 @@ import { mutation, query, type MutationCtx } from './_generated/server';
 import { accessibleContract, requireMembership, scopedOperation, type CompanyAccess } from './auth';
 import { ensureContractCleanup } from './contractCleanup';
 import { readDirectory, removeDirectoryEntry, writeDirectory } from './contractDirectory';
-import { contractCard, contractMetadata, saveResult } from './savedContractValidators';
+import {
+	contractCard,
+	contractMetadata,
+	liveContractMetadata,
+	saveResult
+} from './savedContractValidators';
 import { activityCommand } from '../lib/contract/activity-commands';
 import { saveCommands } from './contractSaving';
 import { contractWorkBlock, installation, requireContractWork } from './contractPolicy';
@@ -65,7 +73,7 @@ export const browse = query({
 export const state = query({
 	// Like full reads, route IDs may be malformed or refer to deleted contracts.
 	args: { membershipId: v.id('memberships'), id: v.string() },
-	returns: v.union(contractMetadata, v.null()),
+	returns: v.union(liveContractMetadata, v.null()),
 	handler: async (ctx, { id, membershipId }) => {
 		const access = await requireMembership(ctx, membershipId);
 		const contractId = ctx.db.normalizeId('savedContracts', id);
@@ -191,6 +199,7 @@ export const rename = mutation({
 			stateVersion: contract.stateVersion + 1
 		});
 		await writeDirectory(ctx, { ...contract, buyerCompanyName: name, savedAt });
+		await publishContract(ctx, { ...contract, buyerCompanyName: name, savedAt });
 		return null;
 	}
 });
@@ -209,6 +218,11 @@ export const remove = mutation({
 			.unique();
 		if (request) await ctx.db.delete('approvalRequests', request._id);
 		await removeDirectoryEntry(ctx, id);
+		const authority = await ctx.db
+			.query('contractAccess')
+			.withIndex('by_contractId', (q) => q.eq('contractId', id))
+			.unique();
+		if (authority) await ctx.db.delete('contractAccess', authority._id);
 		await ctx.db.delete('savedContracts', id);
 		return null;
 	}
@@ -226,7 +240,8 @@ export async function createContract(
 		? await ctx.db.get('templateVersions', pointer.versionId)
 		: null;
 	if (!version || version.companyId !== access.companyId)
-		throw new ConvexError('The baseline contract is not available.');
+		throw new ConvexError('The contract template is not available.');
+	await assertStorageCapacity(ctx, { documents: 5, bytes: 20_000 });
 	const id = await ctx.db.insert('savedContracts', {
 		companyId: access.companyId,
 		buyerCompanyName: name,
@@ -239,9 +254,15 @@ export async function createContract(
 		templateVersionId: version._id,
 		hubspot
 	});
+	await ctx.db.insert('contractAccess', {
+		companyId: access.companyId,
+		contractId: id,
+		templateVersionId: version._id
+	});
 	if (version.mutability === 'mutable')
 		await ctx.db.patch('templateVersions', version._id, { mutability: 'frozen' as const });
 	const contract = (await ctx.db.get('savedContracts', id))!;
 	await writeDirectory(ctx, contract);
+	await publishContract(ctx, contract);
 	return contract;
 }

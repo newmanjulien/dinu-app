@@ -9,11 +9,16 @@ export const POST: RequestHandler = async ({ locals, request, url, cookies }) =>
 	if (!token) return new Response('Sign in required.', { status: 401 });
 	if (!env.PUBLIC_CONVEX_URL)
 		return new Response('Missing backend configuration.', { status: 503 });
+	const purpose = url.searchParams.get('purpose') === 'quotes' ? 'quotes' : 'base';
+	const destination = purpose === 'quotes' ? 'hubspot-quote' : 'hubspot';
 	const client = new ConvexHttpClient(env.PUBLIC_CONVEX_URL);
 	client.setAuth(token);
 	try {
-		const result = await client.action(api.hubspotOAuth.start, {});
-		cookies.set('hubspot_install', result.state, {
+		const result = await client.action(
+			api.hubspotOAuth.start,
+			purpose === 'quotes' ? { purpose } : {}
+		);
+		cookies.set(purpose === 'quotes' ? 'hubspot_quotes_install' : 'hubspot_install', result.state, {
 			path: '/api/hubspot/callback',
 			httpOnly: true,
 			secure: url.protocol === 'https:',
@@ -28,7 +33,7 @@ export const POST: RequestHandler = async ({ locals, request, url, cookies }) =>
 		return new Response(null, {
 			status: 303,
 			headers: {
-				location: '/integrations/hubspot?installation=failed',
+				location: `/integrations/${destination}?installation=failed`,
 				'cache-control': 'no-store'
 			}
 		});

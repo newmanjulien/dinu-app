@@ -1,16 +1,11 @@
 import { ConvexError } from 'convex/values';
-import type { Doc, Id } from './_generated/dataModel';
+import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import { workBlockMessage, type ContractWorkBlock } from '../lib/contract/work-policy';
 import { blockLink } from './hubspotRecords';
 import { writeDirectory } from './contractDirectory';
-
-export function installation(ctx: QueryCtx, companyId: Id<'company'>) {
-	return ctx.db
-		.query('hubspotConnections')
-		.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-		.unique();
-}
+import { installation } from './hubspotInstallation';
+export { installation } from './hubspotInstallation';
 
 export async function contractWorkBlock(
 	ctx: QueryCtx,
@@ -34,8 +29,10 @@ export async function requireContractWork(
 	ctx: QueryCtx,
 	contract: Pick<Doc<'savedContracts'>, 'companyId' | 'hubspot'>
 ) {
-	const block = await contractWorkBlock(ctx, contract);
+	const connection = await installation(ctx, contract.companyId);
+	const block = blockForConnection(connection, contract.hubspot);
 	if (block) throw new ConvexError({ code: block, message: workBlockMessage(block) });
+	return connection;
 }
 
 /** Callers fence provider evidence before marking the current matching destination. */

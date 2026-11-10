@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onDestroy, type Snippet } from 'svelte';
+	import type { Placement } from '@floating-ui/dom';
 	import FloatingSurface from './FloatingSurface.svelte';
 	import type { CloseReason } from './interactions';
 	let {
 		open,
 		trigger,
+		placement = 'bottom-end',
 		onClose,
 		id,
 		label,
@@ -12,12 +14,13 @@
 	}: {
 		open: boolean;
 		trigger?: HTMLElement;
+		placement?: Placement;
 		onClose: (reason: CloseReason) => void;
 		id: string;
 		label: string;
 		children: Snippet<[() => void]>;
 	} = $props();
-	let element = $state<HTMLDivElement>();
+	let element = $state<HTMLDivElement | null>();
 	let tabTimer: ReturnType<typeof setTimeout> | undefined;
 	onDestroy(() => clearTimeout(tabTimer));
 	function items() {
@@ -64,6 +67,7 @@
 <FloatingSurface
 	{open}
 	{trigger}
+	{placement}
 	onClose={close}
 	{id}
 	role="menu"

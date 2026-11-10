@@ -25,12 +25,15 @@
 	<svelte:element
 		this={fragment.role === 'title' ? 'h1' : fragment.role === 'heading' ? 'h2' : 'p'}
 		id={profileMode || fragment.interval?.start ? undefined : fragment.anchor}
-		class="contract-block scroll-mt-[calc(var(--app-header-height)+var(--document-viewport-gap))] focus:outline-none"
-		class:contract-heading={fragment.role !== 'body'}
-		class:contract-paragraph={fragment.role === 'body'}
+		class="document-block scroll-mt-[calc(var(--app-header-height)+var(--document-viewport-gap))] focus:outline-none"
+		class:document-heading={fragment.role !== 'body'}
+		class:document-paragraph={fragment.role === 'body'}
 		class:is-title={fragment.role === 'title'}
 		class:is-final={fragment.isFinal}
 		data-block-key={fragment.blockKey}
+		data-discussion-removed={fragment.type === 'paragraph' && fragment.discussionRemoved
+			? ''
+			: undefined}
 		data-selection-collapsed={collapsed ? '' : undefined}
 		data-source-fragment-key={fragmentKey(fragment)}
 		style:--document-block-margin-before={`${fragment.interval?.start ? 0 : (fragment.gapBefore ?? 0)}px`}
@@ -42,7 +45,7 @@
 	</svelte:element>
 {:else}
 	<table
-		class="contract-block contract-table"
+		class="document-block document-table"
 		class:is-final={fragment.isFinal}
 		class:signature-table={fragment.variant === 'signature'}
 		data-block-key={fragment.blockKey}

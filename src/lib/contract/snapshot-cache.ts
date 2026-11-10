@@ -1,3 +1,4 @@
+import type { TemplateContent } from '../template/model';
 import { browser } from '$app/environment';
 import { preloadCode } from '$app/navigation';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
@@ -14,8 +15,7 @@ import {
 	olderContractState,
 	type ContractSnapshotResult,
 	type ContractState,
-	type ReadyContract,
-	type TemplateContent
+	type ReadyContract
 } from './saved';
 import type { SnapshotEntry, SnapshotMetadata } from './snapshot-storage';
 import {

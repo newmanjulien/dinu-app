@@ -1,28 +1,30 @@
-import type { ContractBlock } from '$lib/contract/model';
-import type { Address } from '$lib/contract/numbering';
-import type { SourceIndex } from '$lib/contract/source-index';
-import { sameSourceTarget } from '$lib/contract/source-model';
+import type { DeepReadonly } from '$lib/immutable';
+import type { SourceBlock } from '$lib/document/model';
+import type { Address } from '$lib/document/numbering';
+import type { SourceIndex } from '$lib/document/source-index';
+import { sameSourceTarget } from '$lib/document/source-model';
 import type { DocumentOverlayItem } from '$lib/playbook/document-overlay';
 import type { ConcessionSelection, ContractChange } from '$lib/playbook/model';
 import type { PaginatedPage } from '../pagination/types';
 
 export type { ConcessionSelection } from '$lib/playbook/model';
-export const EMPTY_PREVIEW_CHANGES: readonly ContractChange[] = Object.freeze([]);
-export interface ContractRenderSource {
+export const EMPTY_PREVIEW_CHANGES: DeepReadonly<ContractChange[]> = Object.freeze([]);
+export interface DocumentRenderSource {
 	readonly revision: number;
-	readonly blocks: readonly ContractBlock[];
+	readonly blocks: readonly SourceBlock[];
 	readonly items: readonly DocumentOverlayItem[];
 	readonly sourceIndex: SourceIndex;
 	readonly artifacts?: import('./artifacts').DocumentArtifacts;
 }
 export interface RenderSnapshot {
+	readonly view: import('$lib/document/model').DocumentView;
 	readonly selectionDocument: import('../selection/selection-model').SelectionDocument;
 	readonly id: number;
 	readonly layoutEpoch: string;
 	readonly changedPages: readonly number[];
-	readonly source: ContractRenderSource;
+	readonly source: DocumentRenderSource;
 	readonly concessions: ConcessionSelection;
-	readonly previewChanges: readonly ContractChange[];
+	readonly previewChanges: DeepReadonly<ContractChange[]>;
 	readonly addresses: ReadonlyMap<string, Address>;
 	readonly pages: readonly PaginatedPage[];
 }
@@ -37,18 +39,19 @@ export interface RenderFailure {
 export interface RenderJobMeta {
 	generation: number;
 	sourceRevision: number;
-	readonly source: ContractRenderSource;
+	readonly source: DocumentRenderSource;
 	readonly concessions: ConcessionSelection;
-	readonly previewChanges: readonly ContractChange[];
+	readonly previewChanges: DeepReadonly<ContractChange[]>;
 	readonly layoutEpoch: string | undefined;
 	readonly pages: readonly PaginatedPage[];
 	readonly progressive: boolean;
 	readonly status: 'running' | 'failed';
 }
 export function samePreviewChanges(
-	a: readonly ContractChange[],
-	b: readonly ContractChange[]
+	a: DeepReadonly<ContractChange[]>,
+	b: DeepReadonly<ContractChange[]>
 ): boolean {
+	if (a === b) return true;
 	return (
 		a.length === b.length &&
 		a.every(

@@ -1,6 +1,6 @@
-import { canonicalNumberPattern } from '../contract/number-pattern';
-import { sameReplacementAtom } from '../contract/replacement-content';
-import { sameSourceTarget, textTarget } from '../contract/source-model';
+import { canonicalNumberPattern } from '../document/number-pattern';
+import { sameReplacementAtom } from '../document/replacement-content';
+import { sameSourceTarget, textTarget } from '../document/source-model';
 import type { DeepReadonly } from '../immutable';
 import type {
 	AuthoringInstructions,
@@ -64,7 +64,7 @@ export function semanticConcession({
 }
 
 /** Compare ordered business content without allocating normalized copies. */
-export function equalConcession(a: Concession, b: Concession): boolean {
+export function equalConcession(a: DeepReadonly<Concession>, b: DeepReadonly<Concession>): boolean {
 	return (
 		a === b ||
 		(a.id === b.id &&

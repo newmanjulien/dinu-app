@@ -1,11 +1,12 @@
 <script lang="ts">
+	import TextArea from '$lib/ui/TextArea.svelte';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import Popover from '$lib/components/ui/Popover.svelte';
 	import type { DeepReadonly } from '../../immutable';
 	import type { Concession } from '$lib/playbook/model';
-	import type { ReplacementAtom } from '$lib/contract/source-model';
-	import type { ReferenceCatalog } from '$lib/contract/reference-catalog';
+	import type { ReplacementAtom } from '$lib/document/source-model';
+	import type { ReferenceCatalog } from '$lib/document/reference-catalog';
 	import ReplacementEditor from './ReplacementEditor.svelte';
 	let {
 		concession,
@@ -49,12 +50,12 @@
 		{paragraphs}
 		onChange={onReplacement}
 	/>
-	<textarea
-		class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted block min-h-28 resize-y py-2 leading-[1.45]"
+	<TextArea
 		aria-label="Concession description"
 		required
 		placeholder="Explain the concession in plain English so reps understand the change they're making"
-		bind:value={() => concession.description, onDescription}></textarea>
+		bind:value={() => concession.description, onDescription}
+	/>
 	<div>
 		<button
 			bind:this={optionsButton}
@@ -98,7 +99,7 @@
 				class="rounded-button-sm px-3 py-2 hover:bg-surface-hover"
 			/>
 			<Checkbox
-				label="This concession affects another part of the contract"
+				label="This concession affects another part of the template"
 				checked={affectsOtherParts}
 				onCheckedChange={onAffectedPart}
 				class="rounded-button-sm px-3 py-2 hover:bg-surface-hover"

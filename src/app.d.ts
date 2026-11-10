@@ -9,7 +9,7 @@ declare global {
 			startup?: Promise<import('$lib/auth/startup-data').StartupData | null> | null;
 		}
 		interface PageState {
-			showDelegationOnboarding?: boolean;
+			supportWelcomeMembershipId?: string;
 		}
 	}
 }

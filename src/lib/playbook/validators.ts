@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { replacementAtom, sourceTarget } from '../contract/source-validators';
+import { replacementAtom, sourceTarget } from '../document/source-validators';
 
 // Persisted Playbook business data only.
 export const instructions = v.object({
@@ -30,3 +30,11 @@ export const playbookItem = v.object({
 	instructions: v.optional(instructions),
 	concessions: v.array(concession)
 });
+
+export const instructionAudience = v.union(v.literal('rep'), v.literal('buyer'));
+export const buyerInstruction = v.object({
+	audience: v.literal('buyer'),
+	trigger,
+	explanation: v.string()
+});
+export const templateItem = v.union(playbookItem, buyerInstruction);

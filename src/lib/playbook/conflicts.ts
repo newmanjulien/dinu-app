@@ -1,7 +1,6 @@
-import { crossesBoundary, targetContainers, targetPosition } from '../contract/ranges';
-import type { ValidationSourceFacts } from '../contract/validation-source';
-import { isTextTarget } from '../contract/source-model';
-import type { ContractChange } from './model';
+import { crossesBoundary, targetContainers, targetPosition } from '../document/ranges';
+import type { ValidationSourceFacts } from '../document/validation-source';
+import type { SourceTarget } from './model';
 
 export type ChangeFootprint =
 	| {
@@ -13,10 +12,10 @@ export type ChangeFootprint =
 
 export function changeFootprint(
 	index: ValidationSourceFacts,
-	change: ContractChange
+	change: { readonly target: SourceTarget }
 ): ChangeFootprint {
 	targetContainers(index, change.target);
-	if (!isTextTarget(change.target))
+	if (change.target.kind !== 'text')
 		return {
 			kind: 'boundary',
 			afterBlockKey: change.target.afterBlockKey,
@@ -50,8 +49,8 @@ function footprintsConflict(x: ChangeFootprint, y: ChangeFootprint): boolean {
 
 export function changesConflict(
 	index: ValidationSourceFacts,
-	a: ContractChange,
-	b: ContractChange
+	a: { readonly target: SourceTarget },
+	b: { readonly target: SourceTarget }
 ): boolean {
 	return footprintsConflict(changeFootprint(index, a), changeFootprint(index, b));
 }
@@ -60,8 +59,8 @@ export function changesConflict(
  * Keeping it local also accepts in-place draft edits on the next validation call.
  */
 export function createChangeConflictChecker(index: ValidationSourceFacts) {
-	const footprints = new WeakMap<ContractChange, ChangeFootprint>();
-	const footprint = (change: ContractChange) => {
+	const footprints = new WeakMap<{ readonly target: SourceTarget }, ChangeFootprint>();
+	const footprint = (change: { readonly target: SourceTarget }) => {
 		let value = footprints.get(change);
 		if (!value) {
 			value = changeFootprint(index, change);
@@ -69,5 +68,94 @@ export function createChangeConflictChecker(index: ValidationSourceFacts) {
 		}
 		return value;
 	};
-	return (a: ContractChange, b: ContractChange) => footprintsConflict(footprint(a), footprint(b));
+	return (a: { readonly target: SourceTarget }, b: { readonly target: SourceTarget }) =>
+		footprintsConflict(footprint(a), footprint(b));
+}
+
+/** Cooperative ordered preparation keeps composition cancellable even during sorting. */
+function* sortFootprints<T extends { position: number; order: number }>(
+	entries: T[]
+): Generator<undefined, T[]> {
+	let source = entries,
+		destination = new Array<T>(entries.length);
+	for (let width = 1; width < entries.length; width *= 2) {
+		for (let offset = 0; offset < entries.length; offset += width * 2) {
+			const middle = Math.min(offset + width, entries.length),
+				end = Math.min(offset + width * 2, entries.length);
+			let left = offset,
+				right = middle;
+			for (let out = offset; out < end; out++) {
+				const a = source[left],
+					b = source[right];
+				const takeLeft =
+					left < middle &&
+					(right >= end ||
+						a.position < b.position ||
+						(a.position === b.position && a.order < b.order));
+				destination[out] = source[takeLeft ? left++ : right++];
+				yield undefined;
+			}
+		}
+		[source, destination] = [destination, source];
+	}
+	return source;
+}
+
+/** Only coordinate candidates reach the canonical predicate. Returns membership, never pairs.
+ * Groups exclude changes belonging to the same selected item; composition omits them.
+ */
+export function* iterateChangeConflicts(
+	index: ValidationSourceFacts,
+	changes: readonly { readonly target: SourceTarget }[],
+	options: {
+		groups?: readonly string[];
+		firstOnly?: boolean;
+		onConflict?: (a: number, b: number) => void;
+	} = {}
+): Generator<undefined, Set<number>> {
+	type Entry = { footprint: ChangeFootprint; position: number; order: number };
+	const entries: Entry[] = [];
+	for (const [order, change] of changes.entries()) {
+		const footprint = changeFootprint(index, change);
+		entries.push({
+			footprint,
+			position: footprint.kind === 'text' ? footprint.start : footprint.position,
+			order
+		});
+		yield undefined;
+	}
+	const ordered = yield* sortFootprints(entries);
+	const active = new Set<Entry>();
+	const boundaries = new Map<string, Entry[]>();
+	const conflicting = new Set<number>();
+	function record(a: Entry, b: Entry) {
+		if (options.groups && options.groups[a.order] === options.groups[b.order]) return false;
+		if (!footprintsConflict(a.footprint, b.footprint)) return false;
+		options.onConflict?.(a.order, b.order);
+		conflicting.add(a.order);
+		conflicting.add(b.order);
+		return true;
+	}
+	for (const entry of ordered) {
+		for (const other of active) {
+			// Keep touching intervals until the exact predicate distinguishes insertions.
+			if (other.footprint.kind === 'text' && other.footprint.end < entry.position)
+				active.delete(other);
+			else if (record(other, entry) && options.firstOnly) return conflicting;
+			yield undefined;
+		}
+		if (entry.footprint.kind === 'text') active.add(entry);
+		else {
+			const key = entry.footprint.afterBlockKey;
+			const previous = boundaries.get(key) ?? [];
+			for (const other of previous) {
+				if (record(other, entry) && options.firstOnly) return conflicting;
+				yield undefined;
+			}
+			previous.push(entry);
+			boundaries.set(key, previous);
+		}
+		yield undefined;
+	}
+	return conflicting;
 }

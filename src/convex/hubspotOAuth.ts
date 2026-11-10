@@ -5,24 +5,45 @@ import { requireMembership } from './auth';
 import { sha256 } from './hubspotRecords';
 import { tokenExchange } from './hubspotApi';
 import { hubspotConnection } from './hubspotValidators';
+import { portalLifecycle, requireInstallAllowed } from './hubspotInstallation';
+import { quoteInstallationFor } from './hubspotQuotesInstallation';
+import { oauthPurpose, quoteScopes, hasQuoteScopes } from './hubspotQuoteValidators';
 
 export const reserve = internalMutation({
-	args: { hash: v.string() },
+	args: { hash: v.string(), purpose: v.optional(oauthPurpose) },
 	returns: v.null(),
-	handler: async (ctx, { hash }) => {
+	handler: async (ctx, { hash, purpose = 'base' }) => {
 		const access = await requireMembership(ctx);
 		if (access.membership.role !== 'admin')
 			throw new ConvexError('Only admins can install HubSpot.');
+		const state = await requireInstallAllowed(ctx, access.companyId);
 		const connection = await ctx.db
 			.query('hubspotConnections')
 			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
 			.unique();
+		const quotes = await quoteInstallationFor(ctx, access.companyId);
+		if (
+			purpose === 'quotes' &&
+			(!connection || connection.status !== 'connected' || env.HUBSPOT_QUOTES_ENABLED !== 'true')
+		)
+			throw new ConvexError(
+				'Connect the normal HubSpot integration before installing HubSpot Quotes.'
+			);
 		await ctx.db.insert('hubspotOAuthStates', {
 			hash,
+			purpose,
+			...(purpose === 'quotes' && connection
+				? {
+						quoteEpoch: quotes?.epoch ?? 0,
+						expectedConnectionId: connection._id,
+						expectedAccountId: connection.accountId
+					}
+				: {}),
 			companyId: access.companyId,
 			membershipId: access.membershipId,
 			profileId: access.profile._id,
 			generation: connection?.generation ?? 0,
+			lifecycleVersion: state?.version ?? 0,
 			expiresAt: Date.now() + 10 * 60_000,
 			claimed: false
 		});
@@ -30,9 +51,9 @@ export const reserve = internalMutation({
 	}
 });
 export const start = action({
-	args: {},
+	args: { purpose: v.optional(oauthPurpose) },
 	returns: v.object({ url: v.string(), state: v.string() }),
-	handler: async (ctx): Promise<{ url: string; state: string }> => {
+	handler: async (ctx, { purpose = 'base' }): Promise<{ url: string; state: string }> => {
 		if (
 			!env.HUBSPOT_CLIENT_ID ||
 			!env.HUBSPOT_CLIENT_SECRET ||
@@ -42,21 +63,21 @@ export const start = action({
 		)
 			throw new ConvexError('HubSpot installation is not configured yet.');
 		const state = crypto.randomUUID() + crypto.randomUUID();
-		await ctx.runMutation(internal.hubspotOAuth.reserve, { hash: await sha256(state) });
+		await ctx.runMutation(internal.hubspotOAuth.reserve, { hash: await sha256(state), purpose });
 		const url = new URL('https://app.hubspot.com/oauth/authorize');
 		url.search = new URLSearchParams({
 			client_id: env.HUBSPOT_CLIENT_ID,
 			redirect_uri: env.HUBSPOT_REDIRECT_URI,
-			scope: env.HUBSPOT_SCOPES,
+			scope: [env.HUBSPOT_SCOPES, ...(purpose === 'quotes' ? quoteScopes : [])].join(' '),
 			state
 		}).toString();
 		return { url: url.toString(), state };
 	}
 });
 export const claim = internalMutation({
-	args: { hash: v.string() },
+	args: { hash: v.string(), purpose: v.optional(oauthPurpose) },
 	returns: v.id('hubspotOAuthStates'),
-	handler: async (ctx, { hash }) => {
+	handler: async (ctx, { hash, purpose = 'base' }) => {
 		const access = await requireMembership(ctx);
 		const state = await ctx.db
 			.query('hubspotOAuthStates')
@@ -64,6 +85,7 @@ export const claim = internalMutation({
 			.unique();
 		if (
 			!state ||
+			(state.purpose ?? 'base') !== purpose ||
 			state.claimed ||
 			state.expiresAt < Date.now() ||
 			state.membershipId !== access.membershipId ||
@@ -71,6 +93,9 @@ export const claim = internalMutation({
 			state.companyId !== access.companyId ||
 			access.membership.role !== 'admin'
 		)
+			throw new ConvexError('Installation expired. Start again.');
+		const current = await requireInstallAllowed(ctx, access.companyId);
+		if ((state.lifecycleVersion ?? 0) !== (current?.version ?? 0))
 			throw new ConvexError('Installation expired. Start again.');
 		await ctx.db.patch('hubspotOAuthStates', state._id, { claimed: true });
 		return state._id;
@@ -83,7 +108,7 @@ export const commit = internalMutation({
 		scopes: v.array(v.string()),
 		tokens: hubspotConnection.pick('accessToken', 'refreshToken', 'expiresAt')
 	},
-	returns: v.null(),
+	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx);
 		const state = await ctx.db.get('hubspotOAuthStates', args.stateId);
@@ -92,18 +117,36 @@ export const commit = internalMutation({
 			!state.claimed ||
 			state.expiresAt < Date.now() ||
 			state.membershipId !== access.membershipId ||
+			state.profileId !== access.profile._id ||
 			state.companyId !== access.companyId ||
 			access.membership.role !== 'admin'
 		)
 			throw new ConvexError('Installation expired. Start again.');
+		const current = await requireInstallAllowed(ctx, access.companyId, args.accountId);
+		const portal = await portalLifecycle(ctx, args.accountId);
+		if (portal?.uninstalledAt && portal.uninstalledAt >= state._creationTime)
+			throw new ConvexError('HubSpot was uninstalled while connecting. Start a new installation.');
 		const existing = await ctx.db
 			.query('hubspotConnections')
 			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
 			.unique();
 		if ((existing?.generation ?? 0) !== state.generation)
 			throw new ConvexError('Another installation finished first. Reload to see its status.');
+		if ((state.lifecycleVersion ?? 0) !== (current?.version ?? 0))
+			throw new ConvexError('Installation expired. Start again.');
 		if (existing && existing.accountId !== args.accountId)
 			throw new ConvexError('Reconnect using the original HubSpot account.');
+		const quotes = await quoteInstallationFor(ctx, access.companyId);
+		if (
+			state.purpose === 'quotes' &&
+			(!existing ||
+				existing._id !== state.expectedConnectionId ||
+				existing.status !== 'connected' ||
+				args.accountId !== state.expectedAccountId ||
+				(quotes?.epoch ?? 0) !== state.quoteEpoch ||
+				env.HUBSPOT_QUOTES_ENABLED !== 'true')
+		)
+			throw new ConvexError('HubSpot Quotes installation expired. Start again.');
 		const value = {
 			companyId: access.companyId,
 			accountId: args.accountId,
@@ -111,23 +154,47 @@ export const commit = internalMutation({
 			...args.tokens,
 			generation: state.generation + 1,
 			installerId: access.profile._id,
+			// Credential/cache freshness; immutable installation identity begins at _creationTime.
 			installedAt: Date.now(),
 			status: 'connected' as const
 		};
+		if (existing?.status === 'retiring') throw new ConvexError('HubSpot is being uninstalled.');
+		const connectionId = existing?._id ?? (await ctx.db.insert('hubspotConnections', value));
 		if (existing) await ctx.db.replace('hubspotConnections', existing._id, value);
-		else await ctx.db.insert('hubspotConnections', value);
+		const quoteGranted = hasQuoteScopes(args.scopes);
+		if (state.purpose === 'quotes' && quoteGranted) {
+			const quoteValue = {
+				companyId: access.companyId,
+				connectionId,
+				accountId: args.accountId,
+				enabled: true,
+				epoch: (quotes?.epoch ?? 0) + 1,
+				installedAt: Date.now(),
+				installerId: access.profile._id
+			};
+			if (quotes) await ctx.db.replace('hubspotQuoteInstallations', quotes._id, quoteValue);
+			else await ctx.db.insert('hubspotQuoteInstallations', quoteValue);
+		}
+		// Invalidates other pending callbacks, including generation-zero first installs.
+		if (current)
+			await ctx.db.patch('hubspotLifecycles', current._id, {
+				version: current.version + 1,
+				removalId: undefined
+			});
+		else await ctx.db.insert('hubspotLifecycles', { companyId: access.companyId, version: 1 });
 		await ctx.db.delete('hubspotOAuthStates', state._id);
-		return null;
+		return state.purpose !== 'quotes' || quoteGranted;
 	}
 });
 export const finish = action({
-	args: { state: v.string(), code: v.string() },
-	returns: v.null(),
-	handler: async (ctx, args) => {
+	args: { state: v.string(), code: v.string(), purpose: v.optional(oauthPurpose) },
+	returns: v.boolean(),
+	handler: async (ctx, args): Promise<boolean> => {
 		if (args.state.length > 200 || args.code.length > 4096)
 			throw new ConvexError('Invalid installation response.');
 		const stateId = await ctx.runMutation(internal.hubspotOAuth.claim, {
-			hash: await sha256(args.state)
+			hash: await sha256(args.state),
+			purpose: args.purpose ?? 'base'
 		});
 		const tokens = await tokenExchange({
 			grant_type: 'authorization_code',
@@ -141,22 +208,28 @@ export const finish = action({
 		);
 		if (!response.ok)
 			throw new ConvexError('HubSpot could not verify this installation. Start again.');
-		const info = await response.json();
+		const raw: unknown = await response.json();
+		if (!raw || typeof raw !== 'object')
+			throw new ConvexError('HubSpot returned an invalid installation.');
+		const info = raw as Record<string, unknown>;
 		if (
-			!info.hub_id ||
+			!/^\d+$/.test(String(info.hub_id)) ||
 			!Array.isArray(info.scopes) ||
 			!info.scopes.every((x: unknown) => typeof x === 'string')
 		)
 			throw new ConvexError('HubSpot returned an invalid installation.');
-		const required = (env.HUBSPOT_SCOPES ?? '').split(/\s+/).filter(Boolean);
-		if (required.some((s) => !info.scopes.includes(s)))
+		const scopes = info.scopes as string[];
+		const required = [
+			...(env.HUBSPOT_SCOPES ?? '').split(/\s+/).filter(Boolean),
+			...(args.purpose === 'quotes' ? quoteScopes : [])
+		];
+		if (required.some((s) => !scopes.includes(s)))
 			throw new ConvexError('The installation is missing required permissions.');
-		await ctx.runMutation(internal.hubspotOAuth.commit, {
+		return ctx.runMutation(internal.hubspotOAuth.commit, {
 			stateId,
 			accountId: String(info.hub_id),
-			scopes: info.scopes,
+			scopes: info.scopes as string[],
 			tokens
 		});
-		return null;
 	}
 });

@@ -7,7 +7,7 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { bookingMode, providerBooking } from './csmBookingValidators';
-import { readTextBody } from './uploadHttp';
+import { readTextBody } from '../lib/http-body';
 
 export const EVENT_ID = 2928313;
 export const HOST = 'juliennewman';
@@ -244,10 +244,18 @@ export async function configuration(ctx: ActionCtx) {
 		return null;
 	// Only derive a UI navigation bound for a known calendar-day window. Cal remains authoritative.
 	const window = event.bookingWindow;
-	const lastDate =
-		object(window) && window.type === 'calendarDays' && typeof window.value === 'number'
-			? new Date(Date.now() + (window.value + 1) * 86_400_000).toISOString().slice(0, 10)
-			: null;
+	let lastDate: string | null = null;
+	if (
+		object(window) &&
+		window.type === 'calendarDays' &&
+		typeof window.value === 'number' &&
+		Number.isFinite(window.value)
+	) {
+		const milliseconds = Date.now() + (window.value + 1) * 86_400_000;
+		const date = new Date(milliseconds);
+		if (Number.isFinite(milliseconds) && Number.isFinite(date.getTime()))
+			lastDate = date.toISOString().slice(0, 10);
+	}
 	return {
 		duration: event.lengthInMinutes,
 		lastDate,

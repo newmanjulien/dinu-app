@@ -2,6 +2,7 @@ import { env as privateEnv } from '$env/dynamic/private';
 import { env } from '$env/dynamic/public';
 import { withClerkHandler } from 'svelte-clerk/server';
 import { redirect, type Handle } from '@sveltejs/kit';
+import { isBuyerPath } from '$lib/buyer/urls';
 
 const callbackParameters = [
 	'__clerk_handshake',
@@ -15,6 +16,13 @@ const callbackParameters = [
 	'__session'
 ];
 export const handle: Handle = async ({ event, resolve }) => {
+	if (isBuyerPath(event.url.pathname) || event.url.pathname.startsWith('/api/buyer/')) {
+		const response = await resolve(event);
+		response.headers.set('Cache-Control', 'private, no-store');
+		response.headers.set('Referrer-Policy', 'no-referrer');
+		response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+		return response;
+	}
 	if (!env.PUBLIC_CLERK_PUBLISHABLE_KEY || !privateEnv.CLERK_SECRET_KEY) return resolve(event);
 	const callback = callbackParameters.some((name) => event.url.searchParams.has(name));
 	if (!callback && ['/login', '/join'].includes(event.url.pathname)) {
@@ -29,7 +37,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	if (
 		!callback &&
 		!hasAuthArtifacts &&
-		event.url.pathname === '/' &&
+		['/', '/contracts'].includes(event.url.pathname) &&
 		event.request.method === 'GET' &&
 		event.request.headers.get('sec-fetch-dest') === 'document'
 	)

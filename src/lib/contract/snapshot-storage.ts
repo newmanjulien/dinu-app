@@ -1,10 +1,10 @@
+import type { TemplateContent } from '../template/model';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import type { CacheScope } from './browser-storage';
 import { validContractMetadata, validTemplate } from './persisted-values';
-import { olderContractState, type ContractSnapshotResult, type TemplateContent } from './saved';
+import { olderContractState, type ReadyContract } from './saved';
 export { validSnapshot, validTemplate } from './persisted-values';
 
-export type ReadyContract = Extract<ContractSnapshotResult, { status: 'ready' }>;
 export const SNAPSHOT_ENTRIES = 24;
 export const SNAPSHOT_BYTES = 32 * 1024 * 1024;
 export type SnapshotSize = { bytes: number; immutableBytes: number };

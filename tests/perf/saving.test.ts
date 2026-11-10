@@ -1,3 +1,4 @@
+import { publishContract } from '../../src/convex/contractPublication';
 // @vitest-environment edge-runtime
 import { convexTest } from 'convex-test';
 import { convexToJson, jsonToConvex } from 'convex/values';
@@ -5,16 +6,19 @@ import type { FunctionArgs, FunctionReturnType } from 'convex/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../src/convex/_generated/api';
 import type { MutationCtx } from '../../src/convex/_generated/server';
-import { baselineIntegrity, writeBaselineChunks } from '../../src/convex/baselineStorage';
+import {
+	templateSourceIntegrity,
+	writeTemplateSourceChunks
+} from '../../src/convex/templateSourceStorage';
 import { writeDirectory } from '../../src/convex/contractDirectory';
 import { saveChoices } from '../../src/convex/contracts';
 import { storeItemRevision } from '../../src/convex/playbookItemRevisions';
 import schema from '../../src/convex/schema';
-import { CompiledContract } from '../../src/lib/contract/compiled-contract';
+import { CompiledDocument } from '../../src/lib/document/compiled-document';
 import { block, choicesFor, commandsFor, identity, initializeViewer, item } from './fixtures';
 
 // Spy at the real compiler boundary, retaining its implementation.
-vi.mock('../../src/lib/contract/compiled-contract', { spy: true });
+vi.mock('../../src/lib/document/compiled-document', { spy: true });
 const modules = import.meta.glob('../../src/convex/**/*.*s');
 
 async function fixture(selected = false) {
@@ -22,11 +26,11 @@ async function fixture(selected = false) {
 	const { profileId, companyId, membershipId } = await t.run(initializeViewer);
 	const ids = await t.run(async (ctx) => {
 		const { db } = ctx;
-		const baselineId = await db.insert('baselines', {
+		const templateSourceId = await db.insert('templateSources', {
 			companyId,
 			state: 'active',
 			source: 'seed',
-			...baselineIntegrity([block]),
+			...templateSourceIntegrity([block]),
 			issues: [],
 			blockCount: 1,
 			bootstrapKey: 'a'.repeat(64),
@@ -35,11 +39,11 @@ async function fixture(selected = false) {
 			chunkReadBytes: 0
 		});
 		await db.patch(
-			'baselines',
-			baselineId,
-			await writeBaselineChunks(ctx, { companyId, baselineId, blocks: [block] })
+			'templateSources',
+			templateSourceId,
+			await writeTemplateSourceChunks(ctx, { companyId, templateSourceId, blocks: [block] })
 		);
-		await db.patch('company', companyId, { baselineId });
+		await db.patch('company', companyId, { templateSourceId });
 		const first = await db.insert('playbookItems', { ...item, companyId, contentRevision: 1 });
 		const second = await db.insert('playbookItems', { ...item, companyId, contentRevision: 1 });
 		const foreign = await db.insert('playbookItems', { ...item, companyId, contentRevision: 1 });
@@ -59,7 +63,7 @@ async function fixture(selected = false) {
 			snapshotBytes: 0,
 			contentReadBytes: 0,
 			items: references,
-			baselineId
+			templateSourceId
 		});
 		const id = await db.insert('savedContracts', {
 			stateVersion: 1,
@@ -73,7 +77,9 @@ async function fixture(selected = false) {
 			lastOperation: { id: 'previous-operation', callerId: profileId },
 			applications: selected ? choicesFor(choices) : {}
 		});
-		await writeDirectory(ctx, (await db.get('savedContracts', id))!);
+		const contract = (await db.get('savedContracts', id))!;
+		await writeDirectory(ctx, contract);
+		await publishContract(ctx, contract);
 		return { id, first, second, foreign, choices };
 	});
 	return { t, membershipId, ...ids };
@@ -95,7 +101,8 @@ function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs
 		snapshotBlocks: 0,
 		writes: 0,
 		receiptWrites: 0,
-		directoryWrites: 0
+		directoryWrites: 0,
+		publicationWrites: 0
 	};
 	const result = t.run((ctx) => {
 		// Delegate every operation to convex-test; only count this handler's DB calls.
@@ -103,7 +110,7 @@ function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs
 			get(target, key, receiver) {
 				if (key === 'query')
 					return (table: Parameters<MutationCtx['db']['query']>[0]) => {
-						if (table === 'baselineChunks') counts.snapshotBlocks++;
+						if (table === 'templateSourceChunks') counts.snapshotBlocks++;
 						return target.query(table);
 					};
 				const value = Reflect.get(target, key, receiver);
@@ -111,7 +118,8 @@ function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs
 				return (...values: unknown[]) => {
 					if (key === 'get' && values[0] === 'playbookItemRevisions') counts.snapshotItems++;
 					if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
-						if (values[0] === 'contractDirectory') counts.directoryWrites++;
+						if (values[0] === 'contractBuyerState') counts.publicationWrites++;
+						else if (values[0] === 'contractDirectory') counts.directoryWrites++;
 						else if (values[0] === 'hubspotReceipts' || values[0] === 'hubspotReceiptChunks')
 							counts.receiptWrites++;
 						else counts.writes++;
@@ -162,9 +170,10 @@ describe('saving work', () => {
 			snapshotBlocks: 0,
 			writes: 0,
 			receiptWrites: 0,
-			directoryWrites: 0
+			directoryWrites: 0,
+			publicationWrites: 0
 		});
-		expect(CompiledContract).not.toHaveBeenCalled();
+		expect(CompiledDocument).not.toHaveBeenCalled();
 		// Public call and retry preserve the whole persisted document, including savedAt.
 		expect(await t.mutation(api.contracts.saveChoices, args)).toEqual(await result);
 		expect(await t.run(({ db }) => db.get('savedContracts', id))).toEqual(before);
@@ -181,7 +190,7 @@ describe('saving work', () => {
 	});
 
 	it.each([0, 1])(
-		'changed %i-selection saves skip baseline reads and compilation',
+		'changed %i-selection saves skip templateSource reads and compilation',
 		async (size) => {
 			const { t, id, first, choices, membershipId } = await fixture(size === 0);
 			const selectedConcessions = size ? { [first]: 'preferred' } : {};
@@ -210,9 +219,10 @@ describe('saving work', () => {
 				snapshotBlocks: 0,
 				writes: 1,
 				receiptWrites: size === 0 ? 3 : 2,
-				directoryWrites: 1
+				directoryWrites: 1,
+				publicationWrites: 1
 			});
-			expect(CompiledContract).not.toHaveBeenCalled();
+			expect(CompiledDocument).not.toHaveBeenCalled();
 			const stored = await t.run(({ db }) => db.get('savedContracts', id));
 			expect(stored).toMatchObject({
 				applications: choicesFor(selectedConcessions),
@@ -223,7 +233,7 @@ describe('saving work', () => {
 		}
 	);
 
-	it('observes baseline reads and real compilation for a changed two-selection save', async () => {
+	it('observes templateSource reads and real compilation for a changed two-selection save', async () => {
 		const { t, id, choices, membershipId } = await fixture();
 		const { result, counts } = observeSave(t, {
 			membershipId,
@@ -239,9 +249,10 @@ describe('saving work', () => {
 			snapshotBlocks: 1,
 			writes: 1,
 			receiptWrites: 3,
-			directoryWrites: 1
+			directoryWrites: 1,
+			publicationWrites: 1
 		});
-		expect(CompiledContract).toHaveBeenCalledTimes(1);
+		expect(CompiledDocument).toHaveBeenCalledTimes(1);
 	});
 
 	it('public saves reject foreign items and invalid concessions without changing state', async () => {
@@ -259,7 +270,7 @@ describe('saving work', () => {
 				})
 			).rejects.toThrow('A selected concession does not belong to this contract.');
 		}
-		expect(CompiledContract).not.toHaveBeenCalled();
+		expect(CompiledDocument).not.toHaveBeenCalled();
 		expect(await t.run(({ db }) => db.get('savedContracts', id))).toEqual(before);
 	});
 
@@ -282,7 +293,8 @@ describe('saving work', () => {
 			snapshotBlocks: 0,
 			writes: 0,
 			receiptWrites: 0,
-			directoryWrites: 0
+			directoryWrites: 0,
+			publicationWrites: 0
 		});
 		expect(await t.mutation(api.contracts.saveChoices, args)).toEqual(saved);
 		expect(

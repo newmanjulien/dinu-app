@@ -204,9 +204,9 @@ export function positionFloating(surface: HTMLElement, options: FloatingOptions)
 						if (disposed || token !== revision) return;
 						surface.style.maxWidth = `${Math.max(0, Math.min(availableWidth, options.maxWidth ?? Infinity))}px`;
 						surface.style.maxHeight = `${Math.max(0, availableHeight)}px`;
-						surface.style.width = options.matchWidth
-							? `${Math.min(rects.reference.width, availableWidth)}px`
-							: 'max-content';
+						if (options.matchWidth)
+							surface.style.width = `${Math.min(rects.reference.width, availableWidth)}px`;
+						else surface.style.removeProperty('width');
 					}
 				}),
 				...(options.referenceClipping !== 'ignore' ? [hide({ strategy: 'referenceHidden' })] : [])
@@ -239,19 +239,23 @@ export function positionFloating(surface: HTMLElement, options: FloatingOptions)
 		});
 	}
 	let initialized = false;
-	const release = autoUpdate(anchor, surface, () => {
-		// Floating UI invokes this once on setup. Position a new surface before the next paint;
-		// subsequent layout work remains frame-coalesced.
-		if (!initialized) {
-			initialized = true;
-			void update();
+	const release = autoUpdate(
+		anchor,
+		surface,
+		() => {
+			// Floating UI invokes this once on setup. Position a new surface before the next paint;
+			// subsequent layout work remains frame-coalesced.
+			if (!initialized) {
+				initialized = true;
+				void update();
+			} else scheduleUpdate();
+		},
+		{
+			animationFrame: false,
+			// A selection reference moves through its subscription, not its document-sized context.
+			layoutShift: anchor instanceof HTMLElement
 		}
-		else scheduleUpdate();
-	}, {
-		animationFrame: false,
-		// A selection reference moves through its subscription, not its document-sized context.
-		layoutShift: anchor instanceof HTMLElement
-	});
+	);
 	const releaseAnchor =
 		anchor instanceof HTMLElement ? undefined : anchor.subscribe?.(scheduleUpdate);
 	const releaseRemoval = context

@@ -1,3 +1,4 @@
+import type { DeepReadonly } from '../immutable';
 import {
 	containsPoint,
 	containsRange,
@@ -9,11 +10,11 @@ import {
 	targetPosition,
 	targetsOverlap,
 	validateTarget
-} from '../contract/ranges';
-import { hasMeaningfulReplacement } from '../contract/replacement-content';
-import type { ValidationSourceFacts } from '../contract/validation-source';
-import { isTextTarget } from '../contract/source-model';
-import type { ContractChange, SourceTarget, Trigger } from './model';
+} from '../document/ranges';
+import type { ValidationSourceFacts } from '../document/validation-source';
+import { isTextTarget } from '../document/source-model';
+import type { SourceTarget, Trigger } from './model';
+import type { ItemStructure } from './structure';
 import { PlaybookValidationError } from './validation-error';
 
 export class GeometryError extends PlaybookValidationError {
@@ -67,7 +68,7 @@ export function changeCrossesBoundaryTrigger(
 export function changeTriggerOwner(
 	index: ValidationSourceFacts,
 	triggers: readonly Trigger[],
-	change: ContractChange
+	change: { readonly target: SourceTarget }
 ): Trigger | undefined {
 	targetContainers(index, change.target);
 	const insertion = targetIsEmpty(index, change.target);
@@ -94,19 +95,6 @@ export function changeTriggerOwner(
 }
 
 /** Wording only affects geometry through gap insertion; IDs belong to Triggers. */
-export function playbookGeometryKey(item: {
-	trigger: Trigger;
-	concessions: readonly { changes: readonly ContractChange[] }[];
-}): string {
-	return JSON.stringify([
-		item.trigger,
-		item.concessions.map((concession) =>
-			concession.changes.map((change) => ({
-				range: change.target,
-				paragraphBreaks: change.replacement.filter((atom) => atom.kind === 'paragraph-break')
-					.length,
-				hasContent: hasMeaningfulReplacement(change.replacement)
-			}))
-		)
-	]);
+export function playbookGeometryKey(item: DeepReadonly<ItemStructure>): string {
+	return JSON.stringify([item.trigger, item.concessions.map((concession) => concession.changes)]);
 }

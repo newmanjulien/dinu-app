@@ -1,18 +1,18 @@
-# DOCX baseline import
+# DOCX template source import
 
-Contract typography and the centered opening title group follow the shared
-[contract formatting policy](contract-formatting.md).
+Document typography and the centered opening title group follow the shared
+[document formatting policy](document-formatting.md).
 
 Import runs on the backend from the uploaded original DOCX. It resolves Word numbering and references, then analyzes paragraph roles from
 effective formatting, wording, and document context. Word heading styles are hints,
-not the sole source of headings. Classification is deterministic, without an LLM. Contract content is plain: the
+not the sole source of headings. Classification is deterministic, without an LLM. Document content is plain: the
 approved model strips all bold/italic marks from import, authoring, seed and export. The result uses the same immutable source model,
 composition, reference resolution, and Word export as existing contracts.
 Errors block template saving. The upload page gives plain-English corrections and
-short text excerpts to find in Word. Valid uploads show a contract preview with
+short text excerpts to find in Word. Valid uploads show a template preview with
 role correction for every nonempty paragraph and navigation to uncertain labels. Routine
 layout warnings remain in the conversion diagnostics; the page explains once
-that Dinu applies its own layout and ignores comments and footers. After reviewing the title and headings, “Go to last step” accepts the contract.
+that Dinu applies its own layout and ignores comments and footers. After reviewing the title and headings, “Go to last step” activates the template.
 
 Tables persist only plain cell strings. Paragraph breaks become newlines, and
 recognized Word fields retain their cached display text. Cell references never
@@ -196,17 +196,17 @@ lettering. The offline seed generator emits the same canonical format, preservin
 its sequential z, aa, ab labels.
 
 The existing upload page sends the original DOCX to the authenticated Convex HTTP
-endpoint `POST /baseline`, with a company membership and filename. The backend
-checks admin access and that the company has no permanent baseline, bounds the
+endpoint `POST /templates/upload`, with a company membership and filename. The backend
+checks admin access and that the company has no permanent template source, bounds the
 request body, and runs the parser. Error diagnostics return without persisting
 an upload. A document with no meaningful contract text also requires correction.
-A successful check stores a prepared baseline and its blocks, the original file,
+A successful check stores a prepared template source and its blocks, the original file,
 SHA-256 file hash, canonical content fingerprint, parser version, uploader,
-filename, and diagnostics. The browser receives the prepared baseline ID and
-diagnostics; no public mutation accepts client-generated baseline blocks.
+filename, and diagnostics. The browser receives the prepared template source ID and
+diagnostics; no public mutation accepts client-generated template source blocks.
 
 The upload card shows a visible checking state, then replaces its upload controls
-with “Your contract is ready” and “Go to last step”. A choose-another-file action
+with “Your template is ready” and “Go to last step”. A choose-another-file action
 remains available before activation, including when a prepared upload expires.
 The request has a 30-second deadline, including token retrieval and response-body
 reading. Choosing another file or leaving the page cancels the attempt. Changed
@@ -214,20 +214,20 @@ sessions and memberships prevent stale results from becoming usable.
 Advancing to the last step belongs to the route intent and session that started it.
 A newer navigation or changed session prevents a late setup response from
 redirecting the user. The expected same-route setup unmount after saving
-still allows navigation to the admin page.
+still allows navigation to the template page.
 
-`templates.setCompanyContract` accepts the membership and prepared baseline ID,
+`templates.activate` accepts the membership and prepared template source ID,
 verifies company, uploader, expiry, and parse integrity, then atomically marks the
-baseline active, creates the first version, and updates the current pointer.
+template source active, creates the first version, and updates the current pointer.
 Activation keeps the automatically classified blocks, fingerprint, and native
-chunk accounting unchanged. One company has one permanent baseline; replacement
+chunk accounting unchanged. One company has one permanent template source; replacement
 is refused. Identical retries and concurrent first saves of the same prepared ID
-return the committed version. “Go to last step” saves this contract and opens
-the admin editor with “Add your first instruction” guidance. Uploading alone does
-not activate the contract. The company contract becomes available immediately;
+return the committed version. “Go to last step” activates this template and opens
+the template editor with “Add your first instruction” guidance. Uploading alone does
+not activate the template. The company template becomes available immediately;
 saving instructions updates the current template automatically. Existing contracts
 retain their captured versions.
-Identical upload retries reuse an unexpired prepared baseline with the current
+Identical upload retries reuse an unexpired prepared template source with the current
 parser version before parsing or storing another copy. Preparations contain
 immutable parsed blocks and diagnostics, with no draft role overrides. Parser `docx-11`
 stores one paragraph kind with required title/heading/body roles, keeps all
@@ -238,18 +238,19 @@ reused. New uploads parse in a separate
 internal Node action. Cleanup dispatch is independent of preparation success. Prepared DOCX
 uploads expire after 24 hours, with bounded scheduled cleanup and a recurring
 recovery sweep. A daily bounded all-kind sweep removes unreferenced storage files left by an
-interrupted upload or export after a 24-hour grace, consulting all four ownership indexes. It persists its cursor and fixed cutoff for
+interrupted upload or export after a 24-hour grace, using the shared transactional
+[file ownership policy](company-deletion.md#retention-and-ownership). It persists its cursor and fixed cutoff for
 resumption, and advances a completed watermark to avoid rescanning retained originals.
-Originals for active baselines remain until company deletion.
+Originals for active template sources remain until company deletion.
 
-Active baseline blocks are stored once. Each template version references that
-baseline and a complete manifest from stable rule IDs to immutable full rule
+Active template source blocks are stored once. Each template version references that
+template source and a complete manifest from stable rule IDs to immutable full rule
 revisions. Save and Delete update the template immediately in their existing transaction;
 one captured playbook, business-field validation, native document-size capacity checks, version creation, and pointer
 advancement succeed or roll back together. Unchanged rule revisions are reused.
 Historical versions retain deleted rules and their original payloads.
 
-Storage accepts only required baseline/revision links and canonical manifests.
+Storage accepts only required template source/revision links and canonical manifests.
 Seed imports, audits, reconciliation, and company deletion use that same model.
 See [template storage](template-storage.md) and the
 [production releases](deployment.md).
@@ -263,7 +264,7 @@ See [template storage](template-storage.md) and the
 | Aggregate retained XML across parsed parts        | 8 MiB                        |
 | Parsed XML nodes / depth / attributes per element | 100,000 / 100 / 100          |
 | Parsed XML characters across consumed parts       | 2 million                    |
-| Imported blocks / serialized baseline             | 400 / 512 KiB                |
+| Imported blocks / serialized template source             | 400 / 512 KiB                |
 | Paragraphs / text segments / text characters      | 20,000 / 100,000 / 1 million |
 | Characters per paragraph                          | 512,000                      |
 | Fields / instruction characters                   | 10,000 / 4,096               |

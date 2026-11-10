@@ -1,3 +1,4 @@
+import { isRepItem } from '../lib/playbook/model';
 import { v, type Infer } from 'convex/values';
 import { api } from './_generated/api';
 import { query } from './_generated/server';
@@ -8,5 +9,7 @@ export const list = query({
 	args: { membershipId: v.id('memberships') },
 	returns: v.array(legacyStoredItem),
 	handler: async (ctx, args): Promise<Infer<typeof legacyStoredItem>[]> =>
-		(await ctx.runQuery(api.playbookItems.current, args)).map((item) => legacyItemView(item))
+		(await ctx.runQuery(api.playbookItems.current, args))
+			.filter(isRepItem)
+			.map((item) => legacyItemView(item))
 });

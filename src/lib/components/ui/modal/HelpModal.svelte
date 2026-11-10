@@ -1,9 +1,10 @@
 <script lang="ts">
+	const helpScope = useHelpPreferenceScope();
 	import { onMount } from 'svelte';
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import { helpContent, type HelpVariant } from './help-content';
-	import { isHelpHidden, setHelpHidden } from './help-storage';
+	import { isHelpHidden, setHelpHidden, useHelpPreferenceScope } from './help-storage';
 
 	let {
 		variant,
@@ -15,12 +16,12 @@
 	let hideHelp = $state(false);
 
 	onMount(() => {
-		if (variant === 'rep') hideHelp = isHelpHidden();
+		if (variant === 'rep' || variant === 'buyer') hideHelp = isHelpHidden(variant, helpScope());
 	});
 
 	function handleHideHelpChange(checked: boolean) {
 		hideHelp = checked;
-		setHelpHidden(checked);
+		if (variant === 'rep' || variant === 'buyer') setHelpHidden(checked, variant, helpScope());
 	}
 </script>
 
@@ -64,7 +65,7 @@
 					{/each}
 				</ol>
 
-				{#if variant === 'rep'}
+				{#if variant === 'rep' || variant === 'buyer'}
 					<Checkbox
 						label="Don't show this again"
 						checked={hideHelp}

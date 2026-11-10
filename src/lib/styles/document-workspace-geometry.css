@@ -26,7 +26,7 @@
 	);
 }
 
-/* Match the side-panel container queries in ContractWorkspaceLayout. */
+/* Match the side-panel container queries in DocumentWorkspaceLayout. */
 @container (min-width: 1150px) {
 	.document-workspace-geometry {
 		--reserved-width: var(--side-panel-reserved-width);

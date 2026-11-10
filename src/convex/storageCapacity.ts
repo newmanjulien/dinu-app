@@ -1,5 +1,5 @@
 import { getDocumentSize, type Value } from 'convex/values';
-import { MAX_STORAGE_DOCUMENT_BYTES } from '../lib/contract/storage-limits';
+import { MAX_STORAGE_DOCUMENT_BYTES } from '../lib/document/storage-limits';
 import type { MutationCtx } from './_generated/server';
 import { templateRejected } from './templateCapacity';
 const RESERVE_BYTES = 65_536;

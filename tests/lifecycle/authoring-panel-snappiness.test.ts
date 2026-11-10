@@ -1,7 +1,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import Harness from './AuthoringSnappinessHarness.svelte';
-import { AdminAuthoringSession } from '../../src/lib/playbook/admin-authoring-session.svelte';
+import { TemplateAuthoringSession } from '../../src/lib/playbook/template-authoring-session.svelte';
 import { csmState } from './csm-state.svelte';
 import {
 	companyId,
@@ -12,19 +12,19 @@ import {
 } from './snappiness-fixtures';
 
 const context = vi.hoisted(() => ({
-	baseline: {} as { data?: unknown },
+	templateSource: {} as { data?: unknown },
 	client: undefined as unknown
 }));
 vi.mock('convex-svelte', () => ({
-	useQuery: () => context.baseline,
+	useQuery: () => context.templateSource,
 	useConvexClient: () => context.client
 }));
 vi.mock(
-	'$lib/components/document/ContractViewer.svelte',
+	'$lib/components/document/DocumentViewer.svelte',
 	() => import('./AuthoringSnappinessViewer.svelte')
 );
 vi.mock('$lib/components/workspace/WorkspaceChrome.svelte', () => import('./CsmChrome.svelte'));
-let component: ReturnType<typeof mount> | undefined, session: AdminAuthoringSession;
+let component: ReturnType<typeof mount> | undefined, session: TemplateAuthoringSession;
 beforeEach(() => {
 	vi.stubGlobal('matchMedia', () => ({
 		matches: true,
@@ -46,10 +46,13 @@ async function fixture() {
 	const data = documentFixture(),
 		network = controlledClient();
 	context.client = network.client;
-	context.baseline = {
-		data: { blocks: data.blocks, baselineFingerprint: data.structure.baselineFingerprint }
+	context.templateSource = {
+		data: {
+			blocks: data.blocks,
+			templateSourceFingerprint: data.structure.templateSourceFingerprint
+		}
 	};
-	session = new AdminAuthoringSession({
+	session = new TemplateAuthoringSession({
 		client: network.client,
 		membershipId,
 		companyId,
@@ -68,13 +71,13 @@ async function fixture() {
 
 it('shows the anchored cold panel on the next update without loading copy, and stays closed after cancellation', async () => {
 	const f = await fixture();
-	const main = document.querySelector('main[aria-label="Contract authoring"]');
+	const main = document.querySelector('main[aria-label="Template editor"]');
 	button('Open item-0').click();
 	flushSync();
 	expect(
 		document.querySelector('[aria-label="Instruction box editor"] [aria-busy="true"]')
 	).not.toBeNull();
-	expect(document.querySelector('main[aria-label="Contract authoring"]')).toBe(main);
+	expect(document.querySelector('main[aria-label="Template editor"]')).toBe(main);
 	expect(document.body.textContent).not.toMatch(/loading (?:these )?instructions/i);
 	expect(session.controller.entry).toBeNull();
 	button('Close').click();

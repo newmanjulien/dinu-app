@@ -1,23 +1,31 @@
+import { isRepItem } from '$lib/playbook/model';
+import type { DeepReadonly } from '$lib/immutable';
 import type {
 	AnnotationAdmission,
 	AuthoringSelectionRequest
 } from '$lib/playbook/authoring-selection';
 import { concessionSelections } from '$lib/contract/applications';
 import type { ReviewDecision, ReviewNavigation, ReviewTag } from '$lib/contract/approval';
-import type { ContractSnapshotResult } from '$lib/contract/saved';
+import type { ReadyContract } from '$lib/contract/saved';
 import { getContractOpenings } from '$lib/contract/snapshot-cache';
 import type { ContractChange, SourceTarget } from '$lib/playbook/model';
 import { sameSelection } from '$lib/playbook/model';
 import type { Snippet } from 'svelte';
 import { getContext, setContext, untrack } from 'svelte';
-import type { ContractLayoutProfiles } from './layout-context.svelte';
+import type { DocumentLayoutProfiles } from './layout-context.svelte';
 import { recordColdStart } from './render-perf';
-import type { ContractSourceInput } from './source.svelte';
+import type { DocumentSourceInput } from './source.svelte';
 import { type ConcessionSelection } from './types';
-import type { ContractWorkspace } from './workspace-context';
-import type { createContractWorkspace } from './workspace-factory';
+import type { DocumentWorkspace } from './workspace-context';
+import type { createDocumentWorkspace } from './workspace-factory';
+
+const isTemplateResource = (id: string) => id === 'template' || id === 'template:buyer';
 
 export interface ViewerBindings {
+	instructionAudience?: 'rep' | 'buyer';
+	onRetry?: () => void;
+	failure?: { message: string };
+	discussions?: import('$lib/discussions/session.svelte').DiscussionSession;
 	onPresentation?: (
 		outcome: import('$lib/auth/workspace-presentation.svelte').PresentationOutcome
 	) => void;
@@ -39,7 +47,7 @@ export interface ViewerBindings {
 	selectedAnnotationId?: string | null;
 	selectionRequest?: AuthoringSelectionRequest | null;
 	selectedRanges?: readonly SourceTarget[];
-	previewChanges?: readonly ContractChange[];
+	previewChanges?: DeepReadonly<ContractChange[]>;
 	/** The selected clause's stable source target; click position is intentionally not retained here. */
 	panelTarget?: SourceTarget;
 	picking?: boolean;
@@ -62,10 +70,9 @@ export interface DocumentAttachment {
 function sameOrder<T>(a: readonly T[], b: readonly T[]) {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
-export type ReadyContract = Extract<ContractSnapshotResult, { status: 'ready' }>;
 export class DocumentResource {
 	readonly owner = Symbol('document-resource');
-	readonly workspace: ContractWorkspace;
+	readonly workspace: DocumentWorkspace;
 	bindings = $state.raw<ViewerBindings>();
 	target = $state<HTMLElement>();
 	active = $state(false);
@@ -84,8 +91,8 @@ export class DocumentResource {
 	id = $state('');
 	constructor(
 		id: string,
-		input: ContractSourceInput,
-		createWorkspace: typeof createContractWorkspace
+		input: DocumentSourceInput,
+		createWorkspace: typeof createDocumentWorkspace
 	) {
 		this.id = id;
 		this.workspace = createWorkspace(input);
@@ -121,13 +128,13 @@ export class DocumentResources {
 	#destroyed = false;
 	#attachments = new Map<DocumentResource, DocumentAttachment>();
 	#release: () => void;
-	#getCreateWorkspace: () => typeof createContractWorkspace | undefined;
+	#getCreateWorkspace: () => typeof createDocumentWorkspace | undefined;
 	get preparationCandidates() {
 		return this.#candidates;
 	}
 	constructor(
-		readonly profiles: ContractLayoutProfiles,
-		getCreateWorkspace: () => typeof createContractWorkspace | undefined
+		readonly profiles: DocumentLayoutProfiles,
+		getCreateWorkspace: () => typeof createDocumentWorkspace | undefined
 	) {
 		this.#getCreateWorkspace = getCreateWorkspace;
 		this.#release = $effect.root(() => {
@@ -195,7 +202,7 @@ export class DocumentResources {
 								state.opening ||
 								state.draftOwned ||
 								(backgroundEnabled &&
-									state.entry.id !== 'admin' &&
+									!isTemplateResource(state.entry.id) &&
 									(state.prepared || (!foregroundBusy && state.entry.id === nextId))));
 					}
 					this.#canConstruct =
@@ -240,12 +247,12 @@ export class DocumentResources {
 			});
 		});
 	}
-	acquire(id: string, input: ContractSourceInput): DocumentResource {
+	acquire(id: string, input: DocumentSourceInput): DocumentResource {
 		if (this.#pending.some((data) => data.id === id))
 			this.#pending = this.#pending.filter((data) => data.id !== id);
 		let entry = this.entries.find((entry) => entry.id === id);
 		if (!entry) {
-			if (id !== 'admin') this.#makeRoom(id);
+			if (!isTemplateResource(id)) this.#makeRoom(id);
 			const createWorkspace = this.#getCreateWorkspace();
 			if (!createWorkspace) throw new Error('Document workspace is not loaded.');
 			entry = new DocumentResource(id, input, createWorkspace);
@@ -254,7 +261,7 @@ export class DocumentResources {
 		entry.lastUsed = ++this.#clock;
 		return entry;
 	}
-	createDraft(input: ContractSourceInput) {
+	createDraft(input: DocumentSourceInput) {
 		const entry = this.acquire(`draft:${++this.#clock}`, input);
 		entry.draftOwned = true;
 		entry.allowed = true;
@@ -267,8 +274,9 @@ export class DocumentResources {
 		const existing = this.entries.find((current) => current !== entry && current.id === data.id);
 		if (existing) this.evict(existing.id);
 		entry.workspace.accept({
+			kind: 'records',
 			blocks: { data: data.snapshot.blocks },
-			items: { data: data.snapshot.items }
+			items: { data: data.snapshot.items.filter(isRepItem) }
 		});
 		entry.id = data.id;
 		entry.confirmedChoices = concessionSelections(data.contract.applications);
@@ -283,8 +291,9 @@ export class DocumentResources {
 	}
 	acquireContract(data: ReadyContract) {
 		const entry = this.acquire(data.id, {
+			kind: 'records',
 			blocks: { data: data.snapshot.blocks },
-			items: { data: data.snapshot.items }
+			items: { data: data.snapshot.items.filter(isRepItem) }
 		});
 		entry.confirmedChoices = concessionSelections(data.contract.applications);
 		if (!entry.active) this.update(entry, entry.confirmedChoices);
@@ -371,13 +380,13 @@ export class DocumentResources {
 	}
 	private deactivate(entry: DocumentResource) {
 		entry.active = false;
-		if (entry.id === 'admin') entry.allowed = false;
+		if (isTemplateResource(entry.id)) entry.allowed = false;
 		entry.bindings = undefined;
 		entry.target = undefined;
 		entry.workspace.viewer.interactionEnabled = false;
 		entry.workspace.viewer.pagesVisible = false;
 		if (this.active === entry) this.active = undefined;
-		this.update(entry, entry.id === 'admin' ? {} : entry.confirmedChoices);
+		this.update(entry, isTemplateResource(entry.id) ? {} : entry.confirmedChoices);
 		this.#trim();
 	}
 	candidates(ranked: readonly string[], budget = this.#preparationBudget) {
@@ -389,7 +398,7 @@ export class DocumentResources {
 		const reserved = this.entries
 			.filter(
 				(entry) =>
-					entry.id !== 'admin' &&
+					!isTemplateResource(entry.id) &&
 					(entry.active || entry.opening || entry.draftOwned || entry.id === recent)
 			)
 			.map((entry) => entry.id);
@@ -400,10 +409,10 @@ export class DocumentResources {
 		const pending = this.#pending.filter((data) => ids.includes(data.id));
 		if (!sameOrder(this.#pending, pending)) this.#pending = pending;
 		for (const id of this.#failed)
-			if (id !== 'admin' && !ranked.includes(id)) this.#failed.delete(id);
+			if (!isTemplateResource(id) && !ranked.includes(id)) this.#failed.delete(id);
 		for (const entry of this.entries)
 			if (
-				entry.id !== 'admin' &&
+				!isTemplateResource(entry.id) &&
 				!entry.active &&
 				!entry.opening &&
 				!entry.draftOwned &&
@@ -470,7 +479,7 @@ export class DocumentResources {
 			.sort((a, b) => rank(b) - rank(a) || a.lastUsed - b.lastUsed);
 	}
 	#makeRoom(id: string) {
-		const saved = this.entries.filter((entry) => entry.id !== 'admin');
+		const saved = this.entries.filter((entry) => !isTemplateResource(entry.id));
 		if (saved.length < 4) return;
 		const victim = this.#removable(saved).find((entry) => entry.id !== id);
 		if (victim) {
@@ -482,7 +491,7 @@ export class DocumentResources {
 	}
 	#trim() {
 		let evicted = false;
-		const saved = this.entries.filter((entry) => entry.id !== 'admin');
+		const saved = this.entries.filter((entry) => !isTemplateResource(entry.id));
 		const removable = this.#removable(saved);
 		let count = saved.length;
 		let pages = removable.reduce(

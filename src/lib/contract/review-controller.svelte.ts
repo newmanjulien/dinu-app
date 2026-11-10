@@ -1,3 +1,8 @@
+import {
+	publicationConfirmationRequired,
+	type PublicationWarning
+} from './publication-warning.svelte';
+import type { ContractItemId } from './item-identity';
 import { ConvexError } from 'convex/values';
 import type { ConvexClient } from 'convex/browser';
 import { api } from '../../convex/_generated/api';
@@ -28,6 +33,7 @@ type Options = {
 	canRequest: () => boolean;
 	preflight?: () => Promise<void>;
 	tags: () => readonly ReviewTag[];
+	publicationWarning?: PublicationWarning;
 };
 
 /** Owns review operations and reconciliation. View focus/navigation consumes navigation. */
@@ -62,7 +68,7 @@ export class ContractReviewController {
 	}
 	private settled(itemId: string, attempt: DecisionAttempt, changesStatus = true) {
 		const state = this.options.persistence.confirmed;
-		const application = state.applications[itemId as Id<'playbookItems'>];
+		const application = state.applications[itemId as ContractItemId];
 		return (
 			application?.concessionId !== attempt.concessionId ||
 			application.approval?.applicationId !== attempt.applicationId ||
@@ -89,7 +95,32 @@ export class ContractReviewController {
 		)
 			this.decisionError = null;
 	}
-	async decide(tag: ReviewTag, status: ReviewDecision) {
+	async decide(tag: ReviewTag, status: ReviewDecision, confirmed = false) {
+		if (
+			status === 'approved' &&
+			tag.status !== status &&
+			!confirmed &&
+			this.options.publicationWarning
+		) {
+			try {
+				await this.options.publicationWarning.run('Continue and approve', () =>
+					this.decide(tag, status, true)
+				);
+			} catch (error) {
+				this.decisionError = {
+					itemId: tag.itemId,
+					attempt: {
+						operationId: '',
+						concessionId: tag.concessionId,
+						applicationId: tag.applicationId,
+						status
+					},
+					changesStatus: true,
+					message: saveError(error, 'We couldn’t save this decision.')
+				};
+			}
+			return;
+		}
 		const current = this.options
 			.tags()
 			.find(
@@ -121,7 +152,7 @@ export class ContractReviewController {
 			await this.options.client.mutation(api.contractApprovals.decide, {
 				membershipId: this.options.membershipId,
 				id: this.options.contractId,
-				itemId: tag.itemId as Id<'playbookItems'>,
+				itemId: tag.itemId as ContractItemId,
 				concessionId: tag.concessionId,
 				applicationId: tag.applicationId,
 				status,
@@ -133,6 +164,12 @@ export class ContractReviewController {
 			if (this.options.persistence.confirmed.reviewCompletion?.kind !== 'awaitingConfirmation')
 				this.navigation = { afterItemId: tag.itemId };
 		} catch (error) {
+			if (publicationConfirmationRequired(error) && this.options.publicationWarning) {
+				this.options.publicationWarning.request('Continue and approve', () =>
+					this.decide(tag, status, true)
+				);
+				return;
+			}
 			if (this.active && !this.settled(tag.itemId, attempt, changesStatus))
 				this.decisionError = {
 					itemId: tag.itemId,

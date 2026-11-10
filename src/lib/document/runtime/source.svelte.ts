@@ -1,36 +1,59 @@
+import type { ContractItemId } from '$lib/contract/item-identity';
+import type { DeepReadonly } from '$lib/immutable';
 import { measureStartupWork, recordColdStart, recordDomainWork } from './render-perf';
-import type { ContractBlock } from '$lib/contract/model';
-import type { CompiledContract } from '$lib/contract/compiled-contract';
-import type { PlaybookItemRecord } from '$lib/playbook/model';
+import type { SourceBlock } from '$lib/document/model';
+import type { CompiledDocument } from '$lib/document/compiled-document';
+import type { ContractItemRecord } from '$lib/playbook/model';
 import type { PlaybookGeometryIndex } from '$lib/playbook/geometry-index';
 import { DocumentDomain } from '../domain/document-domain';
-import type { ContractRenderSource, SourceIssue } from './types';
+import type { DocumentRenderSource, SourceIssue } from './types';
 import type { StructureSnapshot, StructureItem } from '$lib/playbook/structure';
 import type { ConcessionSelection } from '$lib/playbook/model';
-import type { DocumentOverlayItem } from '$lib/playbook/document-overlay';
+import type { DocumentAnnotationItem, DocumentOverlayItem } from '$lib/playbook/document-overlay';
 import { DocumentArtifacts } from './artifacts';
 
 type QueryValue<T> = { data?: T; error?: unknown };
-export interface ContractSourceInput {
-	blocks: QueryValue<ContractBlock[]>;
-	items: QueryValue<PlaybookItemRecord[]>;
-	structure?: QueryValue<StructureSnapshot>;
-	details?: readonly PlaybookItemRecord[];
-	pendingRenderKey?: string;
-}
+type CommonSourceInput = { blocks: QueryValue<SourceBlock[]>; contract?: boolean };
+export type DocumentSourceInput = CommonSourceInput &
+	(
+		| {
+				kind: 'records';
+				items: QueryValue<DeepReadonly<ContractItemRecord[]>>;
+				structure?: never;
+				details?: never;
+				pendingRenderKey?: never;
+				overlays?: never;
+		  }
+		| {
+				kind: 'structure';
+				structure: QueryValue<StructureSnapshot>;
+				details?: DeepReadonly<ContractItemRecord[]>;
+				pendingRenderKey?: string;
+				items?: never;
+				overlays?: never;
+		  }
+		| {
+				kind: 'overlays';
+				overlays: readonly DocumentOverlayItem[];
+				items?: never;
+				structure?: never;
+				details?: never;
+				pendingRenderKey?: never;
+		  }
+	);
 
 /** Workspace-owned source semantics. Query failures retain accepted data. */
-export class ContractSourceController {
+export class DocumentSourceController {
 	itemsCurrent = $state(false);
 	compactStructure = $state(false);
-	items = $state.raw<readonly PlaybookItemRecord[] | null>(null);
-	structuralItems = $state.raw<readonly StructureItem[] | null>(null);
-	annotations = $state.raw<readonly DocumentOverlayItem[]>([]);
+	items = $state.raw<DeepReadonly<ContractItemRecord[]> | null>(null);
+	structuralItems = $state.raw<DeepReadonly<StructureItem<ContractItemId>[]> | null>(null);
+	annotations = $state.raw<readonly DocumentAnnotationItem[]>([]);
 	contentOverlays = $state.raw<readonly DocumentOverlayItem[]>([]);
-	compiled = $state.raw<CompiledContract | null>(null);
+	compiled = $state.raw<CompiledDocument | null>(null);
 	geometry = $state.raw<PlaybookGeometryIndex | null>(null);
 	geometryVersion = $state(0);
-	renderSource = $state.raw<ContractRenderSource | null>(null);
+	renderSource = $state.raw<DocumentRenderSource | null>(null);
 	issue = $state.raw<SourceIssue | null>(null);
 	private selection: ConcessionSelection = {};
 	private contentKey = '';
@@ -59,7 +82,7 @@ export class ContractSourceController {
 			this.artifacts?.destroy();
 			this.artifacts = undefined;
 		}
-		const source: ContractRenderSource = Object.freeze({
+		const source: DocumentRenderSource = Object.freeze({
 			revision: (this.renderSource?.revision ?? 0) + 1,
 			blocks: this.compiled.blocks,
 			items,
@@ -77,7 +100,7 @@ export class ContractSourceController {
 		return this.domain.lookup(id);
 	}
 
-	accept(input: ContractSourceInput) {
+	accept(input: DocumentSourceInput) {
 		const startedAt = performance.now();
 		try {
 			measureStartupWork('sourceAccept', () => this.#accept(input));
@@ -87,18 +110,33 @@ export class ContractSourceController {
 		}
 	}
 
-	#accept(input: ContractSourceInput) {
-		this.compactStructure = Boolean(input.structure);
+	#accept(input: DocumentSourceInput) {
+		this.compactStructure = input.kind === 'structure';
 		let blocksFailed = Boolean(input.blocks.error),
-			itemsFailed = Boolean(input.structure ? input.structure.error : input.items.error);
+			itemsFailed = Boolean(
+				input.kind === 'structure'
+					? input.structure.error
+					: input.kind === 'records'
+						? input.items.error
+						: false
+			);
 		if (input.blocks.data && !blocksFailed) {
 			try {
-				this.domain.acceptBlocks(input.blocks.data);
+				this.domain.acceptBlocks(
+					input.blocks.data,
+					input.kind === 'overlays' ? 'defer-to-overlays' : 'empty'
+				);
 			} catch {
 				blocksFailed = true;
 			}
 		}
-		if (input.structure?.data && !itemsFailed) {
+		if (input.kind === 'overlays') {
+			try {
+				this.domain.acceptOverlays(input.overlays, input.contract);
+			} catch {
+				itemsFailed = true;
+			}
+		} else if (input.kind === 'structure' && input.structure.data && !itemsFailed) {
 			try {
 				if (input.structure.data.ready)
 					this.domain.acceptStructure(input.structure.data.items, input.pendingRenderKey, true);
@@ -106,17 +144,23 @@ export class ContractSourceController {
 			} catch {
 				itemsFailed = true;
 			}
-		} else if (!input.structure && input.items.data && !itemsFailed) {
+		} else if (input.kind === 'records' && input.items.data && !itemsFailed) {
 			try {
-				this.domain.acceptItems(input.items.data);
+				this.domain.acceptItems(input.items.data, input.contract);
 			} catch {
 				itemsFailed = true;
 			}
 		}
 		this.itemsCurrent =
-			Boolean(input.structure ? input.structure.data?.ready : input.items.data) && !itemsFailed;
+			Boolean(
+				input.kind === 'overlays'
+					? true
+					: input.kind === 'structure'
+						? input.structure.data?.ready
+						: input.items.data
+			) && !itemsFailed;
 		this.issue = blocksFailed || itemsFailed ? { blocksFailed, itemsFailed } : null;
-		this.compiled = this.domain.contract;
+		this.compiled = this.domain.document;
 		this.geometry = this.domain.geometry;
 		this.geometryVersion = this.geometry?.version ?? 0;
 		this.items = this.domain.records;

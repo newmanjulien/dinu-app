@@ -1,9 +1,11 @@
 // Pure, deterministic conversion of the cleaned Convex export. No network or DB writes.
 import assert from 'node:assert/strict';
+import { legacyBlock, legacyBox } from './seed-types.ts';
+import { assertShape, validatorJson } from './seed-shape.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { normalizeParagraphBlocks } from '../src/lib/contract/paragraph-migration.ts';
-import { identifyTitle } from '../src/lib/contract/title.ts';
+import { normalizeParagraphBlocks } from '../src/lib/document/paragraph-migration.ts';
+import { identifyTitle } from '../src/lib/document/title.ts';
 
 export const sourceDirectory = 'data/migration/source';
 export const retiredTableRule = 'monthly-fee-discount';
@@ -23,6 +25,7 @@ const reviewedHeadings = new Set([
 	'paragraph-security-definitions',
 	'paragraph-exhibit-services-heading'
 ]);
+/** @param {{kind:string;blockKey:string;role?:import('../src/lib/document/source-model').ParagraphRole}} block @returns {import('../src/lib/document/source-model').ParagraphRole} */
 export function seedParagraphRole(block) {
 	if (block.role) return block.role;
 	if (['heading-oceans-xyz-llc', 'heading-contract-section-1'].includes(block.blockKey))
@@ -31,12 +34,14 @@ export function seedParagraphRole(block) {
 }
 
 /** Fixture item IDs follow seed order; preserve scenarios by concession identity. */
+/** @param {{concessions:{id:string}[]}[]} items @param {Record<string,string>} selected */
 export function remapSeedSelections(items, selected) {
 	const owners = new Map(
 		items.flatMap((item, i) =>
 			item.concessions.map((concession) => [concession.id, `seed-item-${i}`])
 		)
 	);
+	/** @type {Record<string,string>} */
 	const result = {};
 	for (const concessionId of Object.values(selected)) {
 		if (retiredTableConcessions.has(concessionId)) continue;
@@ -47,13 +52,20 @@ export function remapSeedSelections(items, selected) {
 	}
 	return result;
 }
+/** @returns {Promise<import('./seed-types').LegacyExport>} */
 export async function readExport(directory = sourceDirectory) {
+	/** @param {string} table @returns {Promise<unknown[]>} */
 	const rows = async (table) =>
 		(await readFile(`${directory}/${table}/documents.jsonl`, 'utf8'))
 			.split('\n')
 			.filter(Boolean)
-			.map(JSON.parse);
-	const tables = await rows('_tables');
+			.map((line) => JSON.parse(line));
+	const tables = (await rows('_tables')).map((value) => {
+		assert.ok(
+			value && typeof value === 'object' && 'name' in value && typeof value.name === 'string'
+		);
+		return { ...value, name: value.name };
+	});
 	assert.deepEqual(tables.map((t) => t.name).sort(), [
 		'clauseBoxes',
 		'contractBlocks',
@@ -63,15 +75,32 @@ export async function readExport(directory = sourceDirectory) {
 		['contractBlocks', 'clauseBoxes', 'deletedClauseBoxes'].map(rows)
 	);
 	assert.equal(deleted.length, 0, 'Nonempty deletion history needs an explicit migration policy');
-	return { tables, blocks, boxes, deleted };
+	blocks.forEach((value) => assertShape(value, validatorJson(legacyBlock)));
+	boxes.forEach((value) => assertShape(value, validatorJson(legacyBox)));
+	// These two arrays have passed their complete archived validators above.
+	return {
+		tables,
+		blocks: /** @type {import('./seed-types').LegacyBlock[]} */ (blocks),
+		boxes: /** @type {import('./seed-types').LegacyBox[]} */ (boxes),
+		deleted
+	};
 }
+/** @param {object} value @param {string[]} allowed @param {string} label */
 function fields(value, allowed, label) {
 	for (const key of Object.keys(value))
 		assert.ok(allowed.includes(key), `Unmapped ${label}.${key}`);
 }
+/** @param {import('./seed-types').WorkingAtom} atom */
 const length = (atom) => (atom.kind === 'text' ? atom.text.length : 1);
 
+/** @template T @param {T | null | undefined} value @returns {T} */
+export function present(value) {
+	assert.ok(value != null, 'Missing required seed value');
+	return value;
+}
+
 // These groupings are authoring choices, not a second runtime edit model.
+/** @type {Record<string, number[][]>} */
 const authoredLocations = {
 	'attorneys-fees-mutual': [[0, 1, 2, 3]],
 	'attorneys-fees-mutual-prevailing-party': [[0, 1, 2, 3, 4, 5]],
@@ -90,10 +119,14 @@ const authoredLocations = {
 };
 
 /** Rebuild each continuous selection from archived wording and its exact edits. */
+/** @param {import('./seed-types').WorkingBlock[]} blocks @param {import('./seed-types').WorkingTrigger[]} triggers @param {import('./seed-types').WorkingChange[]} changes @param {number[][]} groups */
 function consolidateLocations(blocks, triggers, changes, groups) {
-	const positions = new Map(),
-		slices = [],
-		containers = new Map();
+	/** @type {Map<string,number>} */
+	const positions = new Map();
+	/** @type {{position:number;length:number;atom:import('./seed-types').WorkingAtom}[]} */
+	const slices = [];
+	/** @type {Map<string,import('../src/lib/document/source-model').SourceRange>} */
+	const containers = new Map();
 	let position = 0;
 	for (const block of blocks) {
 		if (block.kind === 'table') continue;
@@ -102,7 +135,10 @@ function consolidateLocations(blocks, triggers, changes, groups) {
 		for (const content of contents) {
 			const range = {
 				start: { sourceKey: content[0].sourceKey, offset: 0 },
-				end: { sourceKey: content.at(-1).sourceKey, offset: length(content.at(-1)) }
+				end: {
+					sourceKey: present(content.at(-1)).sourceKey,
+					offset: length(present(content.at(-1)))
+				}
 			};
 			for (const { sourceKey, ...atom } of content) {
 				containers.set(sourceKey, range);
@@ -114,23 +150,27 @@ function consolidateLocations(blocks, triggers, changes, groups) {
 		}
 		slices.push({ position: position - 0.5, length: 0, atom: { kind: 'paragraph-break' } });
 	}
+	/** @param {import('../src/lib/document/source-model').SourcePoint} point */
 	const at = (point) => {
 		assert.ok(positions.has(point.sourceKey), `Missing source ${point.sourceKey}`);
-		return positions.get(point.sourceKey) + point.offset;
+		return present(positions.get(point.sourceKey)) + point.offset;
 	};
+	/** @param {number} start @param {number} end @returns {import('./seed-types').WorkingAtom[]} */
 	const between = (start, end) =>
-		slices.flatMap((s) => {
-			if (s.atom.kind === 'paragraph-break')
-				return start < s.position && s.position < end ? [s.atom] : [];
-			const from = Math.max(start, s.position),
-				to = Math.min(end, s.position + s.length);
-			if (from >= to) return [];
-			if (s.atom.kind === 'reference') {
-				assert.equal(to - from, 1, 'References must remain indivisible');
-				return [s.atom];
+		slices.flatMap(
+			/** @returns {import('./seed-types').WorkingAtom[]} */ (s) => {
+				if (s.atom.kind === 'paragraph-break')
+					return start < s.position && s.position < end ? [s.atom] : [];
+				const from = Math.max(start, s.position),
+					to = Math.min(end, s.position + s.length);
+				if (from >= to) return [];
+				if (s.atom.kind === 'reference') {
+					assert.equal(to - from, 1, 'References must remain indivisible');
+					return [s.atom];
+				}
+				return [{ kind: 'text', text: s.atom.text.slice(from - s.position, to - s.position) }];
 			}
-			return [{ kind: 'text', text: s.atom.text.slice(from - s.position, to - s.position) }];
-		});
+		);
 	assert.deepEqual(
 		groups.flat().sort((a, b) => a - b),
 		changes.map((_, i) => i),
@@ -141,12 +181,12 @@ function consolidateLocations(blocks, triggers, changes, groups) {
 			.map((i) => changes[i])
 			.sort((a, b) => at(a.range.start) - at(b.range.start));
 		const range = {
-			start: containers.get(selected[0].range.start.sourceKey).start,
-			end: containers.get(selected.at(-1).range.end.sourceKey).end
+			start: present(containers.get(selected[0].range.start.sourceKey)).start,
+			end: present(containers.get(present(selected.at(-1)).range.end.sourceKey)).end
 		};
 		const owners = triggers.filter(
 			(trigger) =>
-				at(trigger.range.start) <= at(selected.at(-1).range.end) &&
+				at(trigger.range.start) <= at(present(selected.at(-1)).range.end) &&
 				at(selected[0].range.start) <= at(trigger.range.end)
 		);
 		if (owners.length) {
@@ -167,6 +207,7 @@ function consolidateLocations(blocks, triggers, changes, groups) {
 	});
 }
 
+/** @param {import('./seed-types').WorkingBlock[]} blocks @param {import('./seed-types').WorkingItem[]} items @param {import('./seed-types').Manifest} manifest */
 function normalizeAuthoring(blocks, items, manifest) {
 	for (const [i, item] of items.entries()) {
 		const clauseKey = manifest.items[i].clauseKey;
@@ -193,7 +234,7 @@ function normalizeAuthoring(blocks, items, manifest) {
 				});
 			}
 			assert.ok(concession.changes.length <= 2, `Too many locations: ${concession.id}`);
-			if (concession.detail.length) {
+			if (concession.detail?.length) {
 				assert.equal(concession.id, 'replacement-commercially-viable');
 				concession.description += ' ' + concession.detail.join(' ');
 			}
@@ -225,26 +266,23 @@ function normalizeAuthoring(blocks, items, manifest) {
 	const placeholder = blocks[hidden];
 	assert.equal(placeholder.blockKey, 'paragraph-mutual-indemnification');
 	assert.equal(blocks.filter((b) => b.optional).length, 1);
-	const range = { kind: 'boundary', afterBlockKey: blocks[hidden - 1].blockKey };
+	const range = {
+		kind: /** @type {const} */ ('boundary'),
+		afterBlockKey: blocks[hidden - 1].blockKey
+	};
 	const insertion =
 		items[manifest.items.findIndex((m) => m.clauseKey === 'mutual-indemnification-insertion')];
-	insertion.triggers[0].range = range;
-	insertion.concessions[0].changes[0].range = range;
-	manifest.blocks.find((b) => b.blockKey === placeholder.blockKey).virtualInsertion = range;
+	insertion.triggers[0].target = range;
+	insertion.concessions[0].changes[0].target = range;
+	present(manifest.blocks.find((b) => b.blockKey === placeholder.blockKey)).virtualInsertion =
+		range;
 	blocks.splice(hidden, 1);
-	for (const item of items) {
-		assert.equal(item.triggers.length, 1);
-		item.trigger = item.triggers[0];
-		delete item.triggers;
-		if (item.trigger.range !== range)
-			item.trigger.range = { kind: 'text', range: item.trigger.range };
-		for (const concession of item.concessions)
-			for (const change of concession.changes)
-				if (change.range !== range) change.range = { kind: 'text', range: change.range };
-	}
+	for (const item of items) assert.equal(item.triggers.length, 1);
 }
 // Canonical metadata for this exported source. Counters remain dynamic after concessions.
+/** @param {import('./seed-types').WorkingBlock[]} blocks @param {import('./seed-types').WorkingItem[]} items */
 function canonicalMetadata(blocks, items) {
+	/** @type {Map<string,{depth:number;pattern:import('../src/lib/document/number-pattern').NumberPattern;parent?:string}>} */
 	const addresses = new Map();
 	for (const block of blocks) {
 		const numbering = block.numbering;
@@ -265,9 +303,11 @@ function canonicalMetadata(blocks, items) {
 			parent: numbering.parentItemKey
 		});
 	}
+	/** @param {import('./seed-types').WorkingAtom} legacy @returns {import('../src/lib/document/source-model').ReplacementAtom} */
 	function canonicalAtom(legacy) {
 		// Contract content is always regular text; archived formatting is deliberately discarded.
-		const { marks: _marks, ...atom } = legacy;
+		const { marks: _marks, ...atom } =
+			/** @type {import('./seed-types').WorkingAtom & {marks?:unknown}} */ (legacy);
 		if (atom.kind !== 'reference') return atom;
 		const first = addresses.get(atom.targetItemKey);
 		const last = atom.endTargetItemKey ? addresses.get(atom.endTargetItemKey) : undefined;
@@ -279,12 +319,18 @@ function canonicalMetadata(blocks, items) {
 		return { ...atom, display: { start: first.pattern, ...(end ? { end, separator: '-' } : {}) } };
 	}
 	for (const block of blocks)
-		if (block.kind !== 'table') block.content = block.content.map(canonicalAtom);
+		if (block.kind !== 'table')
+			block.content = block.content.map((atom) => {
+				const canonical = canonicalAtom(atom);
+				assert.ok(canonical.kind !== 'paragraph-break');
+				return { ...canonical, sourceKey: atom.sourceKey };
+			});
 	for (const item of items)
 		for (const concession of item.concessions)
 			for (const change of concession.changes)
 				change.replacement = change.replacement.map(canonicalAtom);
 }
+/** @param {import('./seed-types').LegacyExport} source */
 export function transformExport(source) {
 	const retired = source.boxes.filter((box) => box.clauseKey === retiredTableRule);
 	assert.equal(retired.length, 1, 'The table-based discount rule must be explicitly retired');
@@ -296,9 +342,12 @@ export function transformExport(source) {
 		),
 		retiredTableConcessions
 	);
-	const occurrences = new Map(),
-		provisions = new Map(),
-		manifest = { blocks: [], items: [], provisions: [] };
+	/** @type {Map<string,{clauseKey:string;container:string;lastSegment:number;range:import('../src/lib/document/source-model').SourceRange}>} */
+	const occurrences = new Map();
+	/** @type {Map<string,import('../src/lib/document/source-model').SourceRange>} */
+	const provisions = new Map();
+	/** @type {import('./seed-types').Manifest} */
+	const manifest = { blocks: [], items: [], provisions: [] };
 	const blocks = [...source.blocks]
 		.sort((a, b) => a.order - b.order)
 		.map((old) => {
@@ -320,8 +369,9 @@ export function transformExport(source) {
 				],
 				'block'
 			);
-			const { _id, _creationTime, numbering, content, rows, ...base } = old;
-			const block = { ...base };
+			const { _id, _creationTime, numbering, ...base } = old;
+			/** @type {import('./seed-types').WorkingBlock} */
+			const block = { ...base, content: [], rows: [] };
 			if (numbering) {
 				fields(
 					numbering,
@@ -331,18 +381,21 @@ export function transformExport(source) {
 				const { activationProvisionKey, ...rest } = numbering;
 				block.numbering = rest;
 				if (activationProvisionKey) {
-					assert.equal(old.kind, 'paragraph');
-					assert.equal(content.length, 1);
-					assert.equal(content[0].provisionKey, activationProvisionKey);
-					assert.equal(content[0].content.length, 0);
+					assert.ok(old.kind === 'paragraph');
+					assert.equal(old.content.length, 1);
+					assert.equal(old.content[0].provisionKey, activationProvisionKey);
+					assert.equal(old.content[0].content.length, 0);
 					block.optional = true;
 				}
 			}
+			/** @param {import('./seed-types').LegacySegment[]} segments @param {string} container */
 			function flatten(segments, container) {
 				return segments.flatMap((segment, si) => {
 					fields(segment, ['content', 'clauseKey', 'occurrenceKey', 'provisionKey'], 'segment');
 					const atoms = (
-						segment.content.length ? segment.content : [{ kind: 'text', text: '' }]
+						segment.content.length
+							? segment.content
+							: [{ kind: /** @type {const} */ ('text'), text: '', marks: undefined }]
 					).map((atom, ai) => {
 						fields(atom, ['kind', 'text', 'marks', 'targetItemKey', 'endTargetItemKey'], 'atom');
 						if (atom.marks) fields(atom.marks, ['bold', 'italic'], 'marks');
@@ -350,7 +403,10 @@ export function transformExport(source) {
 					});
 					const range = {
 						start: { sourceKey: atoms[0].sourceKey, offset: 0 },
-						end: { sourceKey: atoms.at(-1).sourceKey, offset: length(atoms.at(-1)) }
+						end: {
+							sourceKey: present(atoms.at(-1)).sourceKey,
+							offset: length(present(atoms.at(-1)))
+						}
 					};
 					if (segment.provisionKey) {
 						assert.ok(!provisions.has(segment.provisionKey), 'Duplicate provision');
@@ -387,7 +443,7 @@ export function transformExport(source) {
 				});
 			}
 			if (old.kind === 'table')
-				block.rows = rows.map((row) =>
+				block.rows = old.rows.map((row) =>
 					row.map((cell) => {
 						fields(cell, ['content'], 'cell');
 						return cell.content
@@ -405,7 +461,7 @@ export function transformExport(source) {
 								return segment.content
 									.map((atom) => {
 										fields(atom, ['kind', 'text', 'marks'], 'static table atom');
-										assert.equal(atom.kind, 'text');
+										assert.ok(atom.kind === 'text');
 										if (atom.marks) fields(atom.marks, ['bold', 'italic'], 'marks');
 										return atom.text;
 									})
@@ -414,11 +470,12 @@ export function transformExport(source) {
 							.join('');
 					})
 				);
-			else block.content = flatten(content, old.blockKey);
+			else block.content = flatten(old.content, old.blockKey);
 			manifest.blocks.push({ oldId: _id, blockKey: old.blockKey });
 			return block;
 		});
-	const items = [...source.boxes]
+	/** @type {import('./seed-types').WorkingItem[]} */
+	const workingItems = [...source.boxes]
 		.filter((box) => box.clauseKey !== retiredTableRule)
 		.sort((a, b) => a.clauseKey.localeCompare(b.clauseKey, 'en'))
 		.map((old) => {
@@ -443,13 +500,16 @@ export function transformExport(source) {
 				.map(([id, o]) => ({ id, range: o.range }));
 			assert.ok(triggers.length, `No trigger for ${old.clauseKey}`);
 			const instructions = Object.fromEntries(
-				['summary', 'howToExplainToBuyers', 'commonObjections', 'negotiation'].map((key) => [
-					key,
-					old[key]
-				])
+				/** @type {const} */ ([
+					'summary',
+					'howToExplainToBuyers',
+					'commonObjections',
+					'negotiation'
+				]).map((key) => [key, old[key]])
 			);
-			instructions.changesNeedApproval = old.changesNeedEscalation;
-			const concessions = ['preferred', 'rare'].flatMap((tier) =>
+			if (old.changesNeedEscalation !== undefined)
+				instructions.changesNeedApproval = old.changesNeedEscalation;
+			const concessions = /** @type {const} */ (['preferred', 'rare']).flatMap((tier) =>
 				old[`${tier}Concessions`].map((c) => {
 					fields(c, ['concessionKey', 'copy', 'replacements'], 'concession');
 					fields(c.copy, ['before', 'detail', 'after'], 'copy');
@@ -473,7 +533,10 @@ export function transformExport(source) {
 								);
 								if (a.marks) fields(a.marks, ['bold', 'italic'], 'marks');
 							}
-							return { range: provisions.get(r.targetProvisionKey), replacement: r.content };
+							return {
+								range: present(provisions.get(r.targetProvisionKey)),
+								replacement: r.content
+							};
 						})
 					};
 				})
@@ -495,36 +558,39 @@ export function transformExport(source) {
 			source.boxes.some((b) => b.clauseKey === o.clauseKey),
 			`Orphan clause ${o.clauseKey}`
 		);
-	canonicalMetadata(blocks, items);
-	normalizeAuthoring(blocks, items, manifest);
-	for (const item of items) {
-		const guidance = item.instructions.changesNeedApproval;
-		item.approvalPolicy = guidance?.trim()
-			? { kind: 'required', instructions: guidance }
-			: { kind: 'none' };
-		delete item.instructions.changesNeedApproval;
-		item.trigger.target = item.trigger.range;
-		delete item.trigger.range;
-		for (const concession of item.concessions)
-			for (const change of concession.changes) {
-				change.target = change.range;
-				delete change.range;
-			}
-	}
+	canonicalMetadata(blocks, workingItems);
+	normalizeAuthoring(blocks, workingItems, manifest);
+	/** @type {import('../src/lib/playbook/model').PlaybookItem[]} */
+	const items = workingItems.map((item) => {
+		const { changesNeedApproval: guidance, ...instructions } = item.instructions;
+		const trigger = item.triggers[0];
+		return {
+			instructions,
+			approvalPolicy: guidance?.trim()
+				? { kind: 'required', instructions: guidance }
+				: { kind: 'none' },
+			trigger: { id: trigger.id, target: trigger.target ?? { kind: 'text', range: trigger.range } },
+			concessions: item.concessions.map((concession) => ({
+				id: concession.id,
+				tier: concession.tier,
+				description: concession.description,
+				changes: concession.changes.map((change) => ({
+					target: change.target ?? { kind: 'text', range: change.range },
+					replacement: change.replacement.map(modernAtom)
+				}))
+			}))
+		};
+	});
 	// Reviewed standalone labels in the retained production source. Keep its source IDs.
-	const paragraphs = normalizeParagraphBlocks(
-		blocks.map((block) =>
-			block.kind === 'table' ? block : { ...block, role: seedParagraphRole(block) }
-		)
-	);
+	const paragraphs = normalizeParagraphBlocks(blocks.map(modernBlock));
 	return { blocks: identifyTitle(paragraphs), items, manifest };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const { blocks, items, manifest } = transformExport(await readExport(process.argv[2]));
-	for (const [table, rows] of [
-		['contractBlocks', blocks],
+	for (const [table, rows] of /** @type {const} */ ([
+		['templateSourceBlocks', blocks],
 		['playbookItems', items]
-	])
+	]))
 		await writeFile(
 			`data/convex/${table}.jsonl`,
 			rows.map((r) => JSON.stringify(r)).join('\n') + '\n'
@@ -533,4 +599,53 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 	console.log(
 		`Restored ${blocks.length} blocks, ${items.length} items, ${items.length} triggers, ${items.flatMap((i) => i.concessions).length} concessions from export.`
 	);
+}
+
+/** The conversion guards establish modern fields before exposing modern output.
+ * @param {import('./seed-types').WorkingAtom} atom
+ * @returns {import('../src/lib/document/source-model').ReplacementAtom}
+ */
+function modernAtom(atom) {
+	if (atom.kind === 'text') return { kind: 'text', text: atom.text };
+	if (atom.kind === 'paragraph-break') return { kind: 'paragraph-break' };
+	assert.ok('display' in atom && atom.display, 'Reference display was not canonicalized');
+	return {
+		kind: 'reference',
+		targetItemKey: atom.targetItemKey,
+		...(atom.endTargetItemKey === undefined ? {} : { endTargetItemKey: atom.endTargetItemKey }),
+		display: atom.display
+	};
+}
+/** @param {import('./seed-types').WorkingBlock} block @returns {import('../src/lib/document/paragraph-migration').PriorBlock} */
+function modernBlock(block) {
+	const { blockKey, order } = block;
+	if (block.kind === 'table') {
+		assert.ok(typeof block.headerRowCount === 'number');
+		return {
+			kind: 'table',
+			blockKey,
+			order,
+			rows: block.rows,
+			headerRowCount: block.headerRowCount,
+			...(block.variant ? { variant: block.variant } : {})
+		};
+	}
+	const numbering = block.numbering;
+	if (numbering) assert.ok(numbering.labelPattern, 'Numbering was not canonicalized');
+	return {
+		kind: block.kind,
+		blockKey,
+		order,
+		role: seedParagraphRole(block),
+		...(block.anchor === undefined ? {} : { anchor: block.anchor }),
+		...(block.level === undefined ? {} : { level: block.level }),
+		...(numbering
+			? { numbering: { ...numbering, labelPattern: present(numbering.labelPattern) } }
+			: {}),
+		content: block.content.map((atom) => {
+			const modern = modernAtom(atom);
+			assert.ok(modern.kind !== 'paragraph-break');
+			return { ...modern, sourceKey: atom.sourceKey };
+		})
+	};
 }

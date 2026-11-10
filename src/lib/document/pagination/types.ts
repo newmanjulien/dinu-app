@@ -1,5 +1,5 @@
-import type { ResolvedRun } from '$lib/contract/model';
-import type { StructuralBoundary } from '$lib/contract/source-index';
+import type { ResolvedRun } from '$lib/document/model';
+import type { StructuralBoundary } from '$lib/document/source-index';
 import type { AnnotationMembership } from '$lib/playbook/document-overlay';
 import type { PreparedBlock } from './prepare';
 
@@ -24,7 +24,8 @@ interface FragmentSpacing {
 }
 
 export interface ParagraphFragment extends FragmentSpacing {
-	readonly role: import('$lib/contract/source-model').ParagraphRole;
+	readonly discussionRemoved?: true;
+	readonly role: import('$lib/document/source-model').ParagraphRole;
 	readonly anchor?: string;
 	readonly keepWithNext?: boolean;
 	readonly interval?: FragmentInterval;

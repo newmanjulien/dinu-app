@@ -10,8 +10,7 @@ the edge runtime through `convex-test`, and scheduling/cache/startup tests in No
 controlled browser callbacks and fake IndexedDB. Fixtures are synthetic; no browser
 harness, backend, seed data, or elapsed-time thresholds are required.
 
-Run `npm run verify` to run the lifecycle suite, performance suite, type checks and
-production build. `npm run test:lifecycle` uses compiled Svelte components and
+Run `npm run verify` for SSR, lifecycle, performance, HubSpot, type checks, production build and emitted loading-dependency boundaries. `npm run test:lifecycle` first runs server compilation and generates pending HTML fixtures, then uses browser-compiled Svelte components and
 controllers in jsdom with controlled transport responses and a lightweight viewer.
 It checks route teardown, background writes and rapid reopening, early metadata
 acknowledgement, journal and approval identity, recovery deadlines/concurrency,
@@ -84,7 +83,7 @@ upload limits, and the browser download helper remain outside that directory.
 
 | Group      | Automated guarantees                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one-selection saves skip baseline reads and compilation, validate membership, and advance state. Replays succeed; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. A changed two-selection save confirms the read/compiler observers execute real code. |
+| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one-selection saves skip template source reads and compilation, validate membership, and advance state. Replays succeed; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. A changed two-selection save confirms the read/compiler observers execute real code. |
 | Scheduling | Foreground dispatches before queued background work. Aborted queued callbacks never run. Destroy rejects queued work and cancels dispatch.                                                                                                                                                                                                                                                                                                                       |
 | Caching    | Compact metadata and an immutable template load once through Convex; the snapshot reopens from memory without another request, then from IndexedDB after memory release without downloading. Confirmed state updates survive reopening without rewriting the immutable snapshot store.                                                                                                                                                                           |
 | Creation   | Creation writes the contract and receipt, freezes a mutable version on first capture, and adds one compact directory write without template-content reads or compilation (four writes on first capture, three when already frozen). Existing checks cover template save replay, rollback, immutable versions, import races, creation retries, and saved-version reads.                                                                                           |
@@ -115,7 +114,7 @@ These checks do not certify server Word generation, approval/export readiness in
 browser, simultaneous version consumers, or browser download behavior.
 
 Admin authoring now uses compact certified structure, revision-authoritative details, atomic
-changed-body/version deltas and baseline-lived rendering artifacts. Save publishes pending
+changed-body/version deltas and template source-lived rendering artifacts. Save publishes pending
 annotation state immediately and closes the editor; workspace ownership retains submitted work
 through navigation. Snappiness checks now exercise opening/preloading, immediate Save feedback
 and annotation-only rendering independence, alongside the existing replay, rollback, history,
@@ -126,3 +125,24 @@ rehearsal and user browser acceptance remain outstanding; no latency improvement
 `npm run seed:verify` additionally preserves the existing 48 frozen compositor/provenance
 states and all 55 production-seed reconciliation checks, with only the intentional annotation-ID
 representation adapter documented in `docs/rendering-snappiness.md`.
+
+Buyer implementation changes retain the existing saving/scheduling/caching guarantees;
+run `npm run test:perf`, Convex TypeScript checks and the production build. The existing
+suite does not establish public-token authorization/replacement races, effective-view edge cases, or
+failure-response privacy.
+Clipboard, modal/focus behavior, responsive bar/sheet/widget geometry and DOCX appearance
+remain manual acceptance checks. No new tests or browser automation were added.
+
+Buyer history keeps every loaded native cursor interval subscribed under explicit
+row/byte budgets and resolves required/recommended splits before advancing. Frozen
+document payload observers stop after their first result; lightweight live access
+gates remain. Existing suites do not exercise live history splits, authorization
+recovery or observer cancellation, and query-cost savings remain unmeasured.
+
+## Loading regression guarantees
+
+`test:loading:ssr` renders pending Home/settings/team/integration/document, entry and buyer frames without authentication or private serialization. Lifecycle checks hydrate the exact produced workspace HTML, then exercise the real account driver, auth context, private admission and region subscription with Clerk/backend stages unresolved. They check public node retention, form retention, no pre-auth private reads, local read timeout/retry and confirmed access withdrawal. The external Clerk/Convex service boundary is controlled; actual account/admission components run.
+
+Recovery checks cover shared hung deal-request eviction and late-result fencing, snapshot acquisition cancellation/deadline, retained history plus access rejection, buyer resource/scheduler retention, and clipboard callback/latest-success dismissal. Existing Home, editor, creation, CSM and save/cache/scheduling assertions remain required. Startup server-load checks prove independently settling account/cards and bounded streamed invitation preview; backend tests verify assistance scope and setup-hint authorization.
+
+The production build emits module metadata; `verify:loading-bundles` checks static closures for public frames, mounted Home and the buyer contract entry, while requiring demanded document modules to exist. Small download helpers and persistence owners are allowed. These guarantees establish DOM/state/order/ownership and dependency boundaries, not physical paint, layout, native focus/dialog stacking, clipboard activation, screen-reader delivery, deployed streaming buffering or production speed. User browser acceptance covers those behaviors; no browser automation is added.

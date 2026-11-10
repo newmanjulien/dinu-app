@@ -27,7 +27,7 @@ export const hubspotConnection = v.object({
 	scopes: v.array(v.string()),
 	installerId: v.id('profiles'),
 	installedAt: v.number(),
-	status: v.union(v.literal('connected'), v.literal('reconnect')),
+	status: v.union(v.literal('connected'), v.literal('reconnect'), v.literal('retiring')),
 	refreshClaim: v.optional(v.string()),
 	refreshUntil: v.optional(v.number())
 });
@@ -36,7 +36,12 @@ export const hubspotOAuthState = v.object({
 	membershipId: v.id('memberships'),
 	profileId: v.id('profiles'),
 	hash: v.string(),
+	purpose: v.optional(v.union(v.literal('base'), v.literal('quotes'))),
+	quoteEpoch: v.optional(v.number()),
+	expectedConnectionId: v.optional(v.id('hubspotConnections')),
+	expectedAccountId: v.optional(v.string()),
 	generation: v.number(),
+	lifecycleVersion: v.optional(v.number()),
 	expiresAt: v.number(),
 	claimed: v.boolean()
 });
@@ -58,6 +63,7 @@ export const hubspotEvent = v.object({
 		v.literal('paused'),
 		v.literal('uncertain'),
 		v.literal('attention'),
+		v.literal('retired'),
 		v.literal('sent')
 	),
 	dueAt: v.number(),
@@ -86,6 +92,48 @@ export const hubspotEvent = v.object({
 	diagnostic: v.optional(v.string()),
 	workId: v.optional(v.string()),
 	execution: v.optional(v.string())
+});
+
+export const hubspotRemovalOutcome = v.union(
+	v.literal('pending'),
+	v.literal('dispatched'),
+	v.literal('confirmed'),
+	v.literal('shared'),
+	v.literal('attention'),
+	v.literal('unknown')
+);
+export const hubspotRemoval = v.object({
+	companyId: v.id('company'),
+	connectionId: v.id('hubspotConnections'),
+	accountId: v.string(),
+	actorId: v.optional(v.id('profiles')),
+	source: v.union(v.literal('workspace'), v.literal('hubspot')),
+	createdAt: v.number(),
+	providerId: v.id('hubspotAccountRemovals'),
+	done: v.boolean(),
+	dueAt: v.number(),
+	phase: v.union(
+		v.literal('quotes'),
+		v.literal('events'),
+		v.literal('exports'),
+		v.literal('provider')
+	),
+	cursor: v.union(v.string(), v.null()),
+	finishedAt: v.optional(v.number())
+});
+// External destructive authority outlives tenant history. Never store credentials or tenant content.
+export const hubspotAccountRemoval = v.object({
+	accountId: v.string(),
+	removalId: v.optional(v.id('hubspotRemovals')),
+	createdAt: v.number(),
+	provider: hubspotRemovalOutcome,
+	blocking: v.boolean(),
+	detached: v.boolean(),
+	dueAt: v.optional(v.number()),
+	dispatchedAt: v.optional(v.number()),
+	deleteStartedAt: v.optional(v.number()),
+	settledAt: v.optional(v.number()),
+	diagnostic: v.optional(v.string())
 });
 export const hubspotReceipt = v.object({
 	companyId: v.id('company'),

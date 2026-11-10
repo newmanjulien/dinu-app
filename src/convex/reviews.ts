@@ -1,25 +1,26 @@
+import type { ContractItemId } from '../lib/contract/item-identity';
 import { ConvexError, type Infer } from 'convex/values';
 import {
 	reviewEntries,
 	type ApplicationChoices,
 	type AppliedConcessions
 } from '../lib/contract/applications';
-import { MAX_APPLICATION_ID_LENGTH } from '../lib/contract/selection-limits';
-import type { Doc, Id } from './_generated/dataModel';
+import { MAX_APPLICATION_ID_LENGTH } from '../lib/document/selection-limits';
+import type { Doc } from './_generated/dataModel';
 import type { MutationCtx } from './_generated/server';
 import type { storedDecision } from './contractValidators';
 import type { Role } from './permissions';
-import type { historicalItem } from './playbookValidators';
+import type { contractItem } from './contractItemValidators';
 
 /** Each selected concession owns its current review application, independent of audit history. */
 export function reviewsForSelections(
-	items: Infer<typeof historicalItem>[],
+	items: Infer<typeof contractItem>[],
 	choices: ApplicationChoices,
 	previous: AppliedConcessions,
 	reviewerRole: Role
 ) {
 	const applications: AppliedConcessions = {};
-	const autoApprovedItemIds: Id<'playbookItems'>[] = [];
+	const autoApprovedItemIds: ContractItemId[] = [];
 	for (const item of items) {
 		const choice = choices[item._id];
 		if (item.approvalPolicy.kind === 'none') {
@@ -76,7 +77,7 @@ export function decisionSelections(contract: Pick<Doc<'savedContracts'>, 'applic
 	return reviewEntries(contract.applications)
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([id, review]) => ({
-			itemId: id as Id<'playbookItems'>,
+			itemId: id as ContractItemId,
 			concessionId: review.concessionId,
 			approval: { applicationId: review.applicationId, status: review.status }
 		}));

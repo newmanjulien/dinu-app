@@ -1,4 +1,4 @@
-import { type SourceIndex } from '$lib/contract/source-index';
+import { type SourceIndex } from '$lib/document/source-index';
 
 export function boundaryEndpoints(index: SourceIndex, key: string) {
 	const boundary = index.structuralBoundaries.get(key);

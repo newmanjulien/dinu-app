@@ -23,7 +23,7 @@
 		readTableProfile
 	} from '$lib/document/pagination/profile-dom';
 	import BlockFragment from './BlockFragment.svelte';
-	import { CONTRACT_STYLE } from '$lib/contract/format';
+	import { DOCUMENT_STYLE } from '$lib/document/format';
 
 	let { surface = $bindable() }: { surface?: LayoutProfileSurface } = $props();
 	let element: HTMLDivElement;
@@ -62,6 +62,7 @@
 			epoch = undefined;
 			surface = undefined;
 		}
+		// Keep this synchronous: pagination may request exact geometry before the measured DOM is cleared.
 		function profile<T>(
 			prepared: PreparedBlock,
 			expectedEpoch: string,
@@ -158,12 +159,12 @@
 </script>
 
 <div
-	class="contract-document pointer-events-none invisible fixed top-0 left-[-100000px] flex h-auto w-(--contract-content-width) flex-col"
+	class="document-content pointer-events-none invisible fixed top-0 left-[-100000px] flex h-auto w-(--document-content-width) flex-col"
 	aria-hidden="true"
 	inert
 	bind:this={element}
-	style={CONTRACT_STYLE}
-	style:--contract-content-width={`${PAGE_FORMAT.contentWidth}px`}
+	style={DOCUMENT_STYLE}
+	style:--document-content-width={`${PAGE_FORMAT.contentWidth}px`}
 >
 	{#if fragment}
 		<BlockFragment {fragment} profileMode />

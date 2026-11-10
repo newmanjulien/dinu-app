@@ -1,6 +1,8 @@
-import { structuralBoundary, validateTarget } from '../contract/ranges';
-import type { SourceIndex } from '../contract/source-index';
+import type { DeepReadonly } from '../immutable';
+import { structuralBoundary, validateTarget } from '../document/ranges';
+import type { SourceIndex } from '../document/source-index';
 import { changesConflict } from './conflicts';
+import { changeStructure } from './structure';
 import type { PlaybookDraft } from './draft';
 import { GeometryError, triggersIntersect } from './geometry';
 import type { PlaybookGeometryIndex } from './geometry-index';
@@ -35,9 +37,9 @@ export function selectionIssueMessage(issue: SelectionIssue): string {
 		case 'cross-container':
 			return 'Select a continuous passage of adjacent paragraphs.';
 		case 'unmappable':
-			return 'This selection can’t be attached to the current contract. Select contract text only.';
+			return 'This selection can’t be attached to the current template. Select template text only.';
 		case 'unavailable':
-			return 'Wait for the current contract';
+			return 'Wait for the current template';
 		case 'unexpected':
 			return "Couldn't validate this selection. Please try again.";
 	}
@@ -115,10 +117,10 @@ function hasBreakInstructions(
 export function evaluateSecondarySelection(
 	index: SourceIndex,
 	range: SourceTarget,
-	draft: PlaybookDraft,
+	draft: DeepReadonly<PlaybookDraft>,
 	geometry: PlaybookGeometryIndex,
 	context: BreakPolicyContext,
-	concession: Concession | undefined = draft.concessions[0]
+	concession: DeepReadonly<Concession> | undefined = draft.concessions[0]
 ): SelectionEligibility {
 	return evaluate(() => {
 		if (context.index !== index) return { allowed: false, issue: { kind: 'unavailable' } };
@@ -147,7 +149,11 @@ export function evaluateSecondarySelection(
 		)
 			return { allowed: false, issue: { kind: 'instructions-overlap' } };
 		geometry.validateTriggersReplacing(draft.persistedId, [draft.trigger]);
-		geometry.validateChanges([concession.changes[0], proposed], draft.persistedId, [draft.trigger]);
+		geometry.validateChanges(
+			[concession.changes[0], proposed].map(changeStructure),
+			draft.persistedId,
+			[draft.trigger]
+		);
 		return {
 			allowed: true,
 			actions: selectionActions({
@@ -161,7 +167,7 @@ export function evaluateSecondarySelection(
 export function evaluateConcessionAddition(
 	index: SourceIndex,
 	range: SourceTarget,
-	draft: PlaybookDraft,
+	draft: DeepReadonly<PlaybookDraft>,
 	geometry: PlaybookGeometryIndex,
 	context: BreakPolicyContext
 ): SelectionEligibility {
@@ -172,9 +178,11 @@ export function evaluateConcessionAddition(
 		if (hasBreakInstructions(context, range, geometry, draft.persistedId))
 			return { allowed: false, issue: { kind: 'instructions-overlap' } };
 		geometry.validateTriggersReplacing(draft.persistedId, [draft.trigger]);
-		geometry.validateChanges([{ target: range, replacement: [] }], draft.persistedId, [
-			draft.trigger
-		]);
+		geometry.validateChanges(
+			[{ target: range, paragraphBreaks: 0, meaningful: false }],
+			draft.persistedId,
+			[draft.trigger]
+		);
 		return {
 			allowed: true,
 			actions: selectionActions({
@@ -207,7 +215,11 @@ export function evaluateInitialSelection(
 		geometry.validateTriggersReplacing(undefined, [trigger]);
 		const disabled: Partial<Record<AuthoringMode, string>> = {};
 		try {
-			geometry.validateChanges([{ target: range, replacement: [] }], undefined, [trigger]);
+			geometry.validateChanges(
+				[{ target: range, paragraphBreaks: 0, meaningful: false }],
+				undefined,
+				[trigger]
+			);
 		} catch (diagnostic) {
 			if (boundary) return { allowed: false, issue: failureIssue(diagnostic) };
 			disabled.concession = selectionIssueMessage(failureIssue(diagnostic));

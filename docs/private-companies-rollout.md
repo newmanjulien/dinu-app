@@ -16,7 +16,7 @@ New profiles default to Rep. Invitations preserve the user’s chosen personal r
 access is preserved; this change does not introduce an authoring capability policy.
 
 Creating a company makes account setup ready immediately. Template readiness is
-separate: a new company has no baseline until an admin uploads a DOCX or an operator
+separate: a new company has no template source until an admin uploads a DOCX or an operator
 completes its initial seed import. Team and Settings work while contract creation and authoring show
 the preparation screen. Companies never share another company's live template.
 
@@ -27,15 +27,15 @@ trimmed and lowercased on initialization; `by_email` supports invitation checks.
 `memberships` hold `profileId`, `companyId`, and the Rep/Admin role. Joining or
 creating a company reads `by_profileId` transactionally before inserting, enforcing
 one membership per profile. Indexes do not themselves enforce uniqueness.
-`company.ownerProfileId` names a profile with a live membership, except during
-ownerless recovery. Owners may choose Rep while retaining ownership actions.
+`company.ownerProfileId` names a profile with a live membership, except while
+deleted-owner recovery retains the prior profile and membership anchor. Owners may choose Rep while retaining ownership actions.
 `memberships.setRole({ role })` changes the authenticated caller's current
 membership without requiring Admin permission. Accounts without membership have
 no stored role. Leaving a company does not carry its role into another membership.
 Company creators become Admin; invited members start as Rep. Admins can remove any
 colleague except the owner or themselves; self-removal uses Leave company.
 
-Live company-scoped business records require company IDs. Live blocks require `baselineId` and are indexed by baseline and order; playbook
+Live company-scoped business records require company IDs. Live blocks require `templateSourceId` and are indexed by template source and order; playbook
 items and template versions use `by_companyId`,
 current template pointers use one indexed row per company, and contracts list/search
 by company. Approval requests carry both the contract's company and the recipient
@@ -46,7 +46,7 @@ Public company operations require the caller's stable `membershipId`, resolve it
 from authenticated identity, and compare it with the current membership before
 accessing records. An old membership cannot operate in a newly joined company.
 Contract snapshots and template children are accessed through their authorized
-parent. Baseline blocks, immutable rule revisions, and version manifests also require
+parent. Source blocks, immutable rule revisions, and version manifests also require
 company scope so cleanup can drain company data in bounded batches. Parent company checks
 happen before reading children or returning avatar
 URLs. Browser contract reads confirm current membership and saved metadata before
@@ -74,17 +74,20 @@ Contracts, immutable snapshots, receipts, and approval history belong to the
 company and survive a colleague leaving or deleting only their account. Creator IDs
 retain historical attribution. A creator who no longer has a live membership in
 that company is displayed as a former colleague without exposing their profile.
-Signed deletion markers immediately block the deleted identity. Cleanup removes
-its membership, profile, and personal avatar, preserving company business data.
+Signed deletion markers immediately block the deleted identity. Cleanup normally removes
+its membership, profile, and personal avatar, preserving company business data;
+sole-owner recovery retains those records until ownership is resolved.
 The last live member can explicitly consent to deleting both account and company;
 company cleanup starts only after Clerk deletion is confirmed. Preparation,
 dispatch and cleanup details are in [company deletion](company-deletion.md).
 
 External Clerk deletion of an owner selects the oldest live remaining membership,
 paging through at most 25 candidates per transaction. It updates ownership without
-role preference or promotion. If no successor exists, the company becomes ownerless.
-An operator can recover it through internal `companies:recoverOwner` with a verified
-live membership in that exact company. This is not a public ownership-claim flow.
+role preference or promotion. If no successor exists, `recoveryCompanyId` holds cleanup
+while retaining the deleted owner's profile, membership and ownership anchor until
+internal operator recovery assigns a live replacement. See the canonical
+[retention and ownership policy](company-deletion.md#retention-and-ownership) for
+recovery eligibility and shared file ownership checks.
 
 ## Invitations
 
@@ -141,7 +144,7 @@ npm run convex:seed -- --company-id COMPANY_ID
 npm run db:audit -- --company-id COMPANY_ID --seed
 ```
 
-The seeder calls internal `operator:bootstrap` once with the complete canonical blocks/items. Bootstrap uses ordinary validated baseline/history writers and commits the baseline, live rules, immutable revisions, complete first version and current pointer atomically. Exact replay returns the committed state without writes; changed/incomplete content refuses without overwrite or restoration. An interrupted HTTP response does not establish rollback; inspect or repeat the exact bootstrap after resolving the outcome. There is no begin/append/finish import, committed prefix, maintenance pointer or CLI batch layout.
+The seeder calls internal `operator:bootstrap` once with the complete canonical blocks/items. Bootstrap uses ordinary validated template source/history writers and commits the template source, live rules, immutable revisions, complete first version and current pointer atomically. Exact replay returns the committed state without writes; changed/incomplete content refuses without overwrite or restoration. An interrupted HTTP response does not establish rollback; inspect or repeat the exact bootstrap after resolving the outcome. There is no begin/append/finish import, committed prefix, maintenance pointer or CLI batch layout.
 
 The runner uses the native internal function HTTP protocol/public value codec and allows only its explicitly scoped bootstrap/read functions. It rejects mismatched targets, missing company/key scope and production writes. The read-only audit permits correctly configured production reads, validates the current playbook and independently compares live/snapshot business content. `--seed` additionally compares the approved canonical dataset: **112 blocks, three tables, 55 items, 21 concessions and 29 changes**. It does not certify every public authorization/storage/scheduler/native-limit path. Production bootstrap requires its own reviewed invocation and exact-target authorization; do not weaken the development seeder's guard.
 
@@ -161,7 +164,7 @@ Select Admin as a Rep and verify immediate UI and backend access; switch back an
 verify denial. Confirm users cannot set another profile’s role. Check owner-to-Rep,
 role-preserving ownership transfer, owner/self removal protections, owner deletion
 with and without live colleagues, external deletion, successor paging, and internal
-ownerless recovery. Repeat the exact atomic bootstrap after a lost response and confirm readback and no-write replay.
+deleted-owner recovery. Repeat the exact atomic bootstrap after a lost response and confirm readback and no-write replay.
 
 Check authentication retry, logout save/cancel/discard, leaving with pending saves,
 refresh recovery, and joining a different company without restoring old drafts.

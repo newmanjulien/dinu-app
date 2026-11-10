@@ -25,6 +25,7 @@ interface Slice {
 
 /** Shared CPU/DOM slices. Priority is read at dispatch, so navigation promotes queued work. */
 export class DocumentScheduler {
+	constructor(private admitted: (priority: RenderPriority) => boolean = () => true) {}
 	#queue: Slice[] = [];
 	#nextOrder = 0;
 	#scheduled?: { mode: DispatchMode; cancel: () => void };
@@ -113,7 +114,12 @@ export class DocumentScheduler {
 		}
 		if (this.#scheduled) return;
 		this.#sort();
-		const mode = this.#mode(this.#queue[0]);
+		const next = this.#queue.find((slice) => this.admitted(slice.priority()));
+		if (!next) {
+			this.#finishWindow();
+			return;
+		}
+		const mode = this.#mode(next);
 		if (mode === 'idle' && document.hidden) {
 			this.#finishWindow();
 			return;
@@ -156,7 +162,9 @@ export class DocumentScheduler {
 	}
 	#dispatch(mode: DispatchMode) {
 		this.#sort();
-		const slice = this.#queue[0];
+		// Admission can change between scheduling and dispatch (for example, a Details edit).
+		const index = this.#queue.findIndex((slice) => this.admitted(slice.priority()));
+		const slice = this.#queue[index];
 		if (!slice || this.#mode(slice) !== mode || (mode === 'idle' && document.hidden)) {
 			this.#schedule();
 			return;
@@ -180,7 +188,7 @@ export class DocumentScheduler {
 			}
 		}
 		const windowSample = this.#window;
-		this.#queue.shift();
+		this.#queue.splice(index, 1);
 		if (slice.metrics) {
 			const waited = started - slice.queuedAt;
 			slice.metrics.schedulerWaitMs += waited;

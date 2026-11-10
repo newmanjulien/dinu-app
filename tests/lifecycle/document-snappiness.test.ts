@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { env } from '../perf/browser-inputs';
 import { DocumentResources } from '../../src/lib/document/runtime/resources.svelte';
-import { createContractWorkspace } from '../../src/lib/document/runtime/workspace-factory';
+import { createDocumentWorkspace } from '../../src/lib/document/runtime/workspace-factory';
 import { prewarmSavedConcessions } from '../../src/lib/document/runtime/prewarm';
 import { ContractPersistence } from '../../src/lib/contract/persistence.svelte';
 import { deferred, documentFixture, readyContract, settle } from './snappiness-fixtures';
@@ -15,7 +15,7 @@ import {
 const cleanups: (() => void)[] = [];
 beforeEach(() => {
 	vi.useFakeTimers();
-	Object.assign(env, { PUBLIC_CONTRACT_PERF: '1' });
+	Object.assign(env, { PUBLIC_DOCUMENT_PERF: '1' });
 	vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
 		setTimeout(() => callback(performance.now()), 16)
 	);
@@ -23,14 +23,14 @@ beforeEach(() => {
 });
 afterEach(() => {
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
-	Reflect.deleteProperty(env, 'PUBLIC_CONTRACT_PERF');
+	Reflect.deleteProperty(env, 'PUBLIC_DOCUMENT_PERF');
 	vi.useRealTimers();
 });
 
 it('reopening a retained contract reuses its source, renderer, prepared pages and profiling work', async () => {
 	const data = documentFixture(20),
 		layout = layoutFixture();
-	const factory = vi.fn(createContractWorkspace);
+	const factory = vi.fn(createDocumentWorkspace);
 	const resources = new DocumentResources(layout.profiles, () => factory);
 	cleanups.push(() => {
 		resources.destroy();
@@ -63,7 +63,7 @@ it('reopening a retained contract reuses its source, renderer, prepared pages an
 		})
 	).toBe(true);
 	expect(layout.measure).toHaveBeenCalledTimes(measures);
-	expect(reopened.workspace.source.domain.metrics.compiledContractBuilds).toBe(1);
+	expect(reopened.workspace.source.domain.metrics.compiledDocumentBuilds).toBe(1);
 });
 
 it('a concession updates local intent and rendered wording without waiting for its save, reusing prewarmed geometry', async () => {

@@ -1,9 +1,11 @@
+import { isRepItem } from '../lib/playbook/model';
+import type { historicalRepItem } from './playbookValidators';
 import { ConvexError, v, getConvexSize, type Infer } from 'convex/values';
-import { MAX_SELECTED_CONCESSIONS } from '../lib/contract/selection-limits';
-import type { BaselineBlock } from '../lib/contract/source-model';
+import { MAX_SELECTED_CONCESSIONS } from '../lib/document/selection-limits';
+import type { SourceBlock } from '../lib/document/source-model';
 import { validatePlaybook } from '../lib/playbook/audit';
 import {
-	MAX_CONTRACT_BLOCKS,
+	MAX_DOCUMENT_BLOCKS,
 	MAX_PLAYBOOK_ITEMS,
 	PlaybookValidationError
 } from '../lib/playbook/validation';
@@ -12,11 +14,11 @@ import { internal } from './_generated/api';
 import { mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import { requireMembership, requirePermission } from './auth';
 import {
-	baselineBlocks,
-	BaselineFingerprintError,
-	readBaseline,
+	templateSourceBlocks,
+	TemplateSourceFingerprintError,
+	readTemplateSource,
 	canonicalFingerprint
-} from './baselineStorage';
+} from './templateSourceStorage';
 import { selections } from './contractValidators';
 import {
 	businessItem,
@@ -27,10 +29,13 @@ import {
 	snapshotItem,
 	type HistoricalItem
 } from './playbookItemRevisions';
-import { snapshot } from './savedContractValidators';
-import { itemStructure, type DetailRecord } from '../lib/playbook/structure';
+import { templateContent } from './templateValidators';
+import {
+	itemStructure,
+	type TemplateDetailRecord as DetailRecord
+} from '../lib/playbook/structure';
 import { validationCertified, readValidationCertificate } from './authoringValidation';
-import { VALIDATION_CODEC_VERSION } from '../lib/contract/validation-codec';
+import { VALIDATION_CODEC_VERSION } from '../lib/document/validation-codec';
 
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { MAX_SNAPSHOT_BYTES, templateRejected } from './templateCapacity';
@@ -42,8 +47,8 @@ export function currentPointer(ctx: QueryCtx, companyId: Id<'company'>) {
 }
 export type LiveSnapshot = {
 	pointer: Doc<'currentTemplate'> | null;
-	baseline: Doc<'baselines'>;
-	blocks: BaselineBlock[];
+	templateSource: Doc<'templateSources'>;
+	blocks: SourceBlock[];
 	items: DetailRecord[];
 	normalized?: boolean;
 };
@@ -55,10 +60,10 @@ export async function readLiveSnapshot(
 ): Promise<LiveSnapshot> {
 	const pointer = knownPointer === undefined ? await currentPointer(ctx, companyId) : knownPointer;
 	const company = knownCompany ?? (await ctx.db.get('company', companyId));
-	if (!pointer || pointer.companyId !== companyId || !company?.baselineId)
-		throw templateRejected('The baseline contract is not available.');
+	if (!pointer || pointer.companyId !== companyId || !company?.templateSourceId)
+		throw templateRejected('The template is not available.');
 	const [source, items, version] = await Promise.all([
-		readBaseline(ctx, company.baselineId, companyId),
+		readTemplateSource(ctx, company.templateSourceId, companyId),
 		ctx.db
 			.query('playbookItems')
 			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
@@ -66,15 +71,19 @@ export async function readLiveSnapshot(
 		ctx.db.get('templateVersions', pointer.versionId)
 	]);
 	const records = source.blocks;
-	if (!records.length) throw templateRejected('The baseline contract is not available.');
-	if (records.length > MAX_CONTRACT_BLOCKS || items.length > MAX_PLAYBOOK_ITEMS)
-		throw templateRejected('Contract exceeds supported size.');
-	if (!version || version.companyId !== companyId || version.baselineId !== source.baseline._id)
+	if (!records.length) throw templateRejected('The template is not available.');
+	if (records.length > MAX_DOCUMENT_BLOCKS || items.length > MAX_PLAYBOOK_ITEMS)
+		throw templateRejected('Template exceeds supported size.');
+	if (
+		!version ||
+		version.companyId !== companyId ||
+		version.templateSourceId !== source.templateSource._id
+	)
 		throw templateRejected('The template version is missing.');
 	const ordered = orderedHeads(version, items, false);
 	return {
 		pointer,
-		baseline: source.baseline,
+		templateSource: source.templateSource,
 		blocks: records,
 		items: await Promise.all(ordered.map((item) => hydrateHead(ctx, item))),
 		normalized: items.every((item) => 'format' in item)
@@ -82,21 +91,21 @@ export async function readLiveSnapshot(
 }
 
 async function snapshotCapacity(ctx: MutationCtx, captured: LiveSnapshot) {
-	const { blocks, items, baseline } = captured;
+	const { blocks, items, templateSource } = captured;
 	const historical = items.map(snapshotItem);
 	const snapshotBytes = new TextEncoder().encode(
 		JSON.stringify({ blocks, items: historical })
 	).byteLength;
 	if (
 		!blocks.length ||
-		blocks.length > MAX_CONTRACT_BLOCKS ||
+		blocks.length > MAX_DOCUMENT_BLOCKS ||
 		items.length > MAX_PLAYBOOK_ITEMS ||
 		snapshotBytes > MAX_SNAPSHOT_BYTES
 	)
-		throw templateRejected('Contract snapshot exceeds supported size.');
+		throw templateRejected('Template snapshot exceeds supported size.');
 	if (items.some((item) => !item.currentRevisionId))
 		throw templateRejected('The saved rule revision is missing.');
-	let contentReadBytes = baseline.chunkReadBytes;
+	let contentReadBytes = templateSource.chunkReadBytes;
 	// Initial/bulk saves have no prior proof. Count every actual stored wrapper.
 	for (let offset = 0; offset < items.length; offset += 64) {
 		const batch = items.slice(offset, offset + 64);
@@ -131,12 +140,8 @@ export async function saveTemplateVersion(
 	captured: LiveSnapshot,
 	knownCompany?: Doc<'company'>
 ): Promise<Id<'templateVersions'>> {
-	if (knownCompany?.authoringMigration)
-		throw templateRejected(
-			'Template authoring is temporarily unavailable while its data is upgraded.'
-		);
 	const pointer = captured.pointer;
-	const baselineId = captured.baseline._id;
+	const templateSourceId = captured.templateSource._id;
 	const company = knownCompany ?? (await ctx.db.get('company', companyId));
 	if (company?.authoringMigration)
 		throw templateRejected(
@@ -146,11 +151,11 @@ export async function saveTemplateVersion(
 		!company ||
 		company._id !== companyId ||
 		(pointer !== null && pointer.companyId !== companyId) ||
-		captured.baseline.companyId !== companyId ||
-		captured.baseline.state !== 'active' ||
-		(company.baselineId !== undefined && company.baselineId !== baselineId)
+		captured.templateSource.companyId !== companyId ||
+		captured.templateSource.state !== 'active' ||
+		(company.templateSourceId !== undefined && company.templateSourceId !== templateSourceId)
 	)
-		throw templateRejected('The baseline contract is not available.');
+		throw templateRejected('The template is not available.');
 	if (captured.items.length && !captured.normalized)
 		throw templateRejected('The template needs authoring migration.');
 	const capacity = await snapshotCapacity(ctx, captured);
@@ -171,7 +176,7 @@ export async function saveTemplateVersion(
 		blockCount: captured.blocks.length,
 		itemCount: captured.items.length,
 		...capacity,
-		validation: { format: 0, fingerprint: captured.baseline.fingerprint },
+		validation: { format: 0, fingerprint: captured.templateSource.fingerprint },
 		structureResultBytes: captured.items.reduce(
 			(sum, item) => sum + getConvexSize(itemStructure(item)),
 			0
@@ -182,20 +187,20 @@ export async function saveTemplateVersion(
 				documentBytes({ ...compactHead(item), _id: item._id, _creationTime: item._creationTime }),
 			0
 		),
-		baselineId,
+		templateSourceId,
 		items: captured.items.map((item) => ({
 			itemId: item._id,
 			revisionId: item.currentRevisionId!
 		}))
 	};
-	const versionId = await writeTemplateVersion(ctx, pointer, captured.baseline, version);
+	const versionId = await writeTemplateVersion(ctx, pointer, captured.templateSource, version);
 	await ctx.scheduler.runAfter(0, internal.authoringValidation.certify, { companyId, versionId });
-	if (!company.baselineId) {
+	if (!company.templateSourceId) {
 		await assertStorageCapacity(ctx, {
 			documents: 1,
-			bytes: documentBytes({ ...company, baselineId })
+			bytes: documentBytes({ ...company, templateSourceId })
 		});
-		await ctx.db.patch('company', companyId, { baselineId });
+		await ctx.db.patch('company', companyId, { templateSourceId });
 	}
 	return versionId;
 }
@@ -203,7 +208,10 @@ export async function saveTemplateVersion(
 type TemplateVersionContent = Omit<Doc<'templateVersions'>, '_id' | '_creationTime' | 'mutability'>;
 
 /** Complete native read/result envelope, independent of the mutation's remaining write budget. */
-export function templateReadCapacity(version: TemplateVersionContent, baseline: Doc<'baselines'>) {
+export function templateReadCapacity(
+	version: TemplateVersionContent,
+	templateSource: Doc<'templateSources'>
+) {
 	const versionBytes = documentBytes(version);
 	if (
 		!Number.isSafeInteger(version.snapshotBytes) ||
@@ -211,12 +219,13 @@ export function templateReadCapacity(version: TemplateVersionContent, baseline: 
 		version.snapshotBytes > MAX_SNAPSHOT_BYTES ||
 		!Number.isSafeInteger(version.contentReadBytes) ||
 		version.contentReadBytes < 0 ||
-		version.contentReadBytes + versionBytes + documentBytes(baseline) + 65_536 > 16 * 1024 * 1024 ||
+		version.contentReadBytes + versionBytes + documentBytes(templateSource) + 65_536 >
+			16 * 1024 * 1024 ||
 		// Revisions use individual gets; all chunks use one indexed query.
 		version.itemCount + 3 + 64 > 4096 ||
-		version.itemCount + baseline.chunkCount + 2 + 64 > 32_000
+		version.itemCount + templateSource.chunkCount + 2 + 64 > 32_000
 	)
-		throw templateRejected('Contract snapshot exceeds supported read capacity.');
+		throw templateRejected('Template snapshot exceeds supported read capacity.');
 	// Revision/chunk wrappers exceed the historical projection's native size. The
 	// 64 KiB reserve also covers the result's four fields and parent/access reads.
 	return versionBytes;
@@ -225,8 +234,8 @@ export function templateReadCapacity(version: TemplateVersionContent, baseline: 
 /** Compact facts + all live heads + metadata, with room for changed head/body reads. */
 export function authoringReadCapacity(
 	version: TemplateVersionContent,
-	baseline: Doc<'baselines'>,
-	certificate: Doc<'baselineAuthoring'> | null
+	templateSource: Doc<'templateSources'>,
+	certificate: Doc<'templateSourceCertificates'> | null
 ) {
 	if (!certificate) return;
 	if (
@@ -234,12 +243,13 @@ export function authoringReadCapacity(
 		version.headReadBytes! < 0 ||
 		!Number.isSafeInteger(version.structureResultBytes) ||
 		version.structureResultBytes! < 0 ||
+		// The fixed source identity and readiness/watermark envelope fit this reserve.
 		version.structureResultBytes! + 65_536 > 16 * 1024 * 1024 ||
 		version.headReadBytes! +
 			certificate.readBytes +
 			documentBytes(certificate) +
 			documentBytes(version) +
-			documentBytes(baseline) +
+			documentBytes(templateSource) +
 			2_100_000 >
 			16 * 1024 * 1024 ||
 		certificate.chunkCount + version.itemCount + 96 > 32_000
@@ -250,16 +260,17 @@ export function authoringReadCapacity(
 export async function writeTemplateVersion(
 	ctx: MutationCtx,
 	pointer: Doc<'currentTemplate'> | null,
-	baseline: Doc<'baselines'>,
+	templateSource: Doc<'templateSources'>,
 	version: TemplateVersionContent,
 	structuralChanged = true,
-	knownCertificate?: Doc<'baselineAuthoring'>
+	knownCertificate?: Doc<'templateSourceCertificates'>
 ) {
 	const certificate =
-		knownCertificate ?? (await readValidationCertificate(ctx, baseline.companyId, baseline._id));
+		knownCertificate ??
+		(await readValidationCertificate(ctx, templateSource.companyId, templateSource._id));
 	const current = pointer ? await ctx.db.get('templateVersions', pointer.versionId) : null;
 	if (pointer && (!current || current.companyId !== version.companyId))
-		throw templateRejected('The baseline contract is not available.');
+		throw templateRejected('The template is not available.');
 	const authoringGeneration =
 		(pointer?.authoringGeneration ?? current?.authoringGeneration ?? 0) + 1;
 	const structuralGeneration =
@@ -275,8 +286,10 @@ export async function writeTemplateVersion(
 		...version,
 		authoringGeneration,
 		structuralGeneration,
-		...(validationCertified(baseline, certificate)
-			? { validation: { format: VALIDATION_CODEC_VERSION, fingerprint: baseline.fingerprint } }
+		...(validationCertified(templateSource, certificate)
+			? {
+					validation: { format: VALIDATION_CODEC_VERSION, fingerprint: templateSource.fingerprint }
+				}
 			: {}),
 		mutability: 'mutable' as const
 	};
@@ -286,8 +299,8 @@ export async function writeTemplateVersion(
 		authoringGeneration,
 		structuralGeneration
 	};
-	authoringReadCapacity(stored, baseline, certificate);
-	const bytes = templateReadCapacity(stored, baseline);
+	authoringReadCapacity(stored, templateSource, certificate);
+	const bytes = templateReadCapacity(stored, templateSource);
 	await assertStorageCapacity(ctx, { documents: 1, bytes });
 	// Mutable versions have no captured contracts. First capture freezes them;
 	// replacing a mutable version preserves its ID and current pointer.
@@ -309,20 +322,20 @@ export async function writeTemplateVersion(
 export async function addTemplateReadBytes(
 	ctx: MutationCtx,
 	versionId: Id<'templateVersions'>,
-	baseline: Doc<'baselines'>,
+	templateSource: Doc<'templateSources'>,
 	delta: number
 ) {
 	if (delta === 0) return;
 	const version = await ctx.db.get('templateVersions', versionId);
 	if (
 		!version ||
-		version.companyId !== baseline.companyId ||
-		version.baselineId !== baseline._id ||
+		version.companyId !== templateSource.companyId ||
+		version.templateSourceId !== templateSource._id ||
 		version.mutability !== 'mutable'
 	)
-		throw templateRejected('The baseline contract is not available.');
+		throw templateRejected('The template is not available.');
 	const contentReadBytes = version.contentReadBytes + delta;
-	const bytes = templateReadCapacity({ ...version, contentReadBytes }, baseline);
+	const bytes = templateReadCapacity({ ...version, contentReadBytes }, templateSource);
 	await assertStorageCapacity(ctx, { documents: 1, bytes });
 	await ctx.db.patch('templateVersions', versionId, { contentReadBytes });
 }
@@ -331,7 +344,7 @@ export function isMutableTemplateVersion(version: Doc<'templateVersions'> | null
 	return Boolean(version?.mutability === 'mutable');
 }
 
-/** Audited metadata, independent of baseline prose and unrelated instruction bodies. */
+/** Audited metadata, independent of template source prose and unrelated instruction bodies. */
 export async function readAuthoringVersion(
 	ctx: QueryCtx,
 	company: Doc<'company'>,
@@ -342,27 +355,27 @@ export async function readAuthoringVersion(
 			'Template authoring is temporarily unavailable while its data is upgraded.'
 		);
 	const pointer = await currentPointer(ctx, company._id);
-	if (!pointer || !company.baselineId)
-		throw templateRejected('The baseline contract is not available.');
-	const [version, baseline, certificate] = await Promise.all([
+	if (!pointer || !company.templateSourceId)
+		throw templateRejected('The template is not available.');
+	const [version, templateSource, certificate] = await Promise.all([
 		ctx.db.get('templateVersions', pointer.versionId),
-		ctx.db.get('baselines', company.baselineId),
-		readValidationCertificate(ctx, company._id, company.baselineId)
+		ctx.db.get('templateSources', company.templateSourceId),
+		readValidationCertificate(ctx, company._id, company.templateSourceId)
 	]);
 	if (
 		!version ||
 		version.companyId !== company._id ||
-		version.baselineId !== company.baselineId ||
-		!baseline ||
-		baseline.companyId !== company._id ||
-		baseline.state !== 'active' ||
-		baseline.blockCount !== version.blockCount
+		version.templateSourceId !== company.templateSourceId ||
+		!templateSource ||
+		templateSource.companyId !== company._id ||
+		templateSource.state !== 'active' ||
+		templateSource.blockCount !== version.blockCount
 	)
-		throw templateRejected('The baseline contract is not available.');
+		throw templateRejected('The template is not available.');
 	if (
 		pointer.authoringGeneration !== version.authoringGeneration ||
 		pointer.structuralGeneration !== version.structuralGeneration ||
-		!validationCertified(baseline, certificate, version)
+		!validationCertified(templateSource, certificate, version)
 	)
 		throw templateRejected('The template needs authoring certification.');
 	const references = versionReferences(version);
@@ -372,7 +385,7 @@ export async function readAuthoringVersion(
 			references.get(current._id)?.revisionId !== current.currentRevisionId)
 	)
 		throw templateRejected('The saved rule revision is missing.');
-	return { pointer, version, baseline, certificate: certificate! };
+	return { pointer, version, templateSource, certificate: certificate! };
 }
 /** The ordered unchanged manifest remains certified; only the changed body contributes a delta. */
 export async function saveChangedVersion(
@@ -384,7 +397,7 @@ export async function saveChangedVersion(
 	structuralChanged: boolean,
 	headBytes: { previous: number; next: number }
 ) {
-	const { pointer, version, baseline } = captured;
+	const { pointer, version, templateSource } = captured;
 	const id = previous?._id ?? next?._id;
 	const references = versionReferences(version);
 	if (
@@ -417,10 +430,10 @@ export async function saveChangedVersion(
 	return writeTemplateVersion(
 		ctx,
 		pointer,
-		baseline,
+		templateSource,
 		{
 			companyId: version.companyId,
-			baselineId: version.baselineId,
+			templateSourceId: version.templateSourceId,
 			updatedAt: Date.now(),
 			blockCount: version.blockCount,
 			itemCount: items.length,
@@ -445,15 +458,15 @@ export async function currentDetails(ctx: QueryCtx, companyId: Id<'company'>) {
 	if (!version || version.companyId !== companyId)
 		throw new ConvexError('This template version is unavailable.');
 	versionReferences(version);
-	const baseline = await ctx.db.get('baselines', version.baselineId);
+	const templateSource = await ctx.db.get('templateSources', version.templateSourceId);
 	if (
-		!baseline ||
-		baseline.companyId !== companyId ||
-		version.contentReadBytes < baseline.chunkReadBytes ||
+		!templateSource ||
+		templateSource.companyId !== companyId ||
+		version.contentReadBytes < templateSource.chunkReadBytes ||
 		version.contentReadBytes -
-			baseline.chunkReadBytes +
+			templateSource.chunkReadBytes +
 			documentBytes(version) +
-			documentBytes(baseline) +
+			documentBytes(templateSource) +
 			version.itemCount * 128 +
 			65_536 >
 			16 * 1024 * 1024 ||
@@ -498,7 +511,7 @@ export const current = query({
 });
 export const content = query({
 	args: { membershipId: v.id('memberships'), versionId: v.id('templateVersions') },
-	returns: snapshot,
+	returns: templateContent,
 	handler: async (ctx, { versionId, membershipId }) => {
 		const { companyId } = await requireMembership(ctx, membershipId);
 		return readVersion(ctx, versionId, companyId);
@@ -521,7 +534,7 @@ export async function versionReader(
 	if (!storedVersion || storedVersion.companyId !== companyId)
 		throw new ConvexError('This template version is unavailable.');
 	const version = storedVersion;
-	const { blockCount, itemCount, baselineId } = version;
+	const { blockCount, itemCount, templateSourceId } = version;
 	const references = versionReferences(version);
 	const resolved = new Map<Id<'playbookItems'>, Promise<HistoricalItem>>();
 	function resolve(reference: VersionReference) {
@@ -543,11 +556,12 @@ export async function versionReader(
 		return items;
 	}
 	async function blocks() {
-		const result = await baselineBlocks(ctx, baselineId, companyId);
+		const result = await templateSourceBlocks(ctx, templateSourceId, companyId);
 		if (result.length !== blockCount) throw new ConvexError('This template version is incomplete.');
 		return result;
 	}
 	return {
+		readBytes: version.contentReadBytes + documentBytes(version),
 		blocks,
 		item,
 		readItems,
@@ -558,14 +572,18 @@ export async function versionReader(
 			const selectedIds = Object.keys(selectedConcessions) as Id<'playbookItems'>[];
 			if (selectedIds.length > MAX_SELECTED_CONCESSIONS)
 				throw new ConvexError('Too many selected concessions.');
-			const items: HistoricalItem[] = [];
+			const items: Infer<typeof historicalRepItem>[] = [];
 			// Read only selected bodies. Every lookup uses the one transaction-local map.
 			for (let offset = 0; offset < selectedIds.length; offset += 64) {
 				const selected = selectedIds.slice(offset, offset + 64);
 				const rows = await Promise.all(selected.map(item));
 				for (let index = 0; index < rows.length; index++) {
 					const saved = rows[index];
-					if (!saved?.concessions.some((c) => c.id === selectedConcessions[selected[index]]))
+					if (
+						!saved ||
+						!isRepItem(saved) ||
+						!saved.concessions.some((c) => c.id === selectedConcessions[selected[index]])
+					)
 						throw new ConvexError(unavailableMessage);
 					items.push(saved);
 				}
@@ -579,38 +597,42 @@ export async function versionReader(
 	};
 }
 
-/** One permanent baseline; prepared conversion cannot establish company state. */
-export const setCompanyContract = mutation({
+/** One permanent templateSource; prepared conversion cannot establish company state. */
+export const activate = mutation({
 	args: {
 		membershipId: v.id('memberships'),
-		preparedBaselineId: v.id('baselines')
+		preparedTemplateSourceId: v.id('templateSources')
 	},
 	returns: v.id('templateVersions'),
-	handler: async (ctx, { membershipId, preparedBaselineId }) => {
+	handler: async (ctx, { membershipId, preparedTemplateSourceId }) => {
 		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
-		const baseline = await ctx.db.get('baselines', preparedBaselineId);
+		const templateSource = await ctx.db.get('templateSources', preparedTemplateSourceId);
 		if (
-			!baseline ||
-			baseline.companyId !== access.companyId ||
-			baseline.source !== 'docx' ||
-			baseline.uploaderId !== access.profile._id ||
-			baseline.state === 'deleting'
+			!templateSource ||
+			templateSource.companyId !== access.companyId ||
+			templateSource.source !== 'docx' ||
+			templateSource.uploaderId !== access.profile._id ||
+			templateSource.state === 'deleting'
 		)
 			throw templateRejected('This upload is unavailable. Select the DOCX again.');
-		if (baseline.issues.some((issue) => issue.severity === 'error'))
+		if (templateSource.issues.some((issue) => issue.severity === 'error'))
 			throw templateRejected('Resolve the document conversion errors before saving.');
 		const pointer = await currentPointer(ctx, access.companyId);
-		const currentBaseline = access.company.baselineId
-			? await ctx.db.get('baselines', access.company.baselineId)
+		const currentTemplateSource = access.company.templateSourceId
+			? await ctx.db.get('templateSources', access.company.templateSourceId)
 			: null;
 		if (
 			pointer &&
-			currentBaseline?.state === 'active' &&
-			currentBaseline._id === baseline._id &&
-			baseline.state === 'active'
+			currentTemplateSource?.state === 'active' &&
+			currentTemplateSource._id === templateSource._id &&
+			templateSource.state === 'active'
 		)
 			return pointer.versionId;
-		if (baseline.state !== 'prepared' || !baseline.expiresAt || baseline.expiresAt <= Date.now())
+		if (
+			templateSource.state !== 'prepared' ||
+			!templateSource.expiresAt ||
+			templateSource.expiresAt <= Date.now()
+		)
 			throw templateRejected('This upload has expired. Select the DOCX again.');
 		const [items, versions] = await Promise.all([
 			ctx.db
@@ -622,34 +644,39 @@ export const setCompanyContract = mutation({
 				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
 				.take(1)
 		]);
-		if (access.company.baselineId || pointer || items.length || versions.length)
+		if (access.company.templateSourceId || pointer || items.length || versions.length)
 			throw templateRejected(
-				'This company already has a baseline or an import in progress. Its baseline cannot be replaced.'
+				'This company already has a template source or an import in progress. Its template source cannot be replaced.'
 			);
-		let blocks: BaselineBlock[];
+		let blocks: SourceBlock[];
 		try {
-			const parsed = await readBaseline(ctx, preparedBaselineId, access.companyId, baseline);
+			const parsed = await readTemplateSource(
+				ctx,
+				preparedTemplateSourceId,
+				access.companyId,
+				templateSource
+			);
 			blocks = parsed.blocks;
 		} catch (error) {
-			if (error instanceof BaselineFingerprintError)
+			if (error instanceof TemplateSourceFingerprintError)
 				throw templateRejected('The prepared document failed validation. Select the DOCX again.');
 			throw error;
 		}
-		const { expiresAt, ...source } = baseline;
-		const active: Doc<'baselines'> = {
+		const { expiresAt, ...source } = templateSource;
+		const active: Doc<'templateSources'> = {
 			...source,
 			state: 'active',
 			activatedAt: Date.now()
 		};
 		await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(active) });
 		const { _id, _creationTime, ...stored } = active;
-		await ctx.db.replace('baselines', preparedBaselineId, stored);
+		await ctx.db.replace('templateSources', preparedTemplateSourceId, stored);
 		return saveTemplateVersion(
 			ctx,
 			access.companyId,
 			{
 				pointer: null,
-				baseline: active,
+				templateSource: active,
 				blocks,
 				items: []
 			},
@@ -665,7 +692,7 @@ export function versionReferences(version: Doc<'templateVersions'>) {
 	if (
 		!Number.isSafeInteger(blockCount) ||
 		blockCount < 1 ||
-		blockCount > MAX_CONTRACT_BLOCKS ||
+		blockCount > MAX_DOCUMENT_BLOCKS ||
 		!Number.isSafeInteger(itemCount) ||
 		itemCount < 0 ||
 		itemCount > MAX_PLAYBOOK_ITEMS ||

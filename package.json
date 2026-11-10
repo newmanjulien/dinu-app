@@ -16,10 +16,10 @@
 		"build": "node scripts/clean-vercel-output.mjs && npm run check && vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync",
-		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && npm run check:tools",
 		"test:perf": "vitest run --config vitest.config.ts",
 		"test:snappiness": "vitest run --config vitest.lifecycle.config.ts snappiness.test.ts",
-		"verify": "npm run test:lifecycle && npm run test:perf && npm run test:hubspot && npm run build",
+		"verify": "npm run test:lifecycle && npm run test:perf && npm run test:hubspot && npm run build && npm run verify:loading-bundles",
 		"test:hubspot": "vitest run --config vitest.hubspot.config.ts",
 		"seed:restore-export": "node scripts/production-seed.mjs",
 		"seed:reconcile": "node scripts/reconcile-production-seed.mjs",
@@ -29,7 +29,10 @@
 		"email:setup": "node scripts/setup-loops.mjs",
 		"format": "prettier --write src scripts",
 		"format:check": "prettier --check src scripts",
-		"test:lifecycle": "vitest run --config vitest.lifecycle.config.ts"
+		"test:lifecycle": "npm run test:loading:ssr && vitest run --config vitest.lifecycle.config.ts",
+		"test:loading:ssr": "vitest run --config vitest.loading-ssr.config.ts",
+		"verify:loading-bundles": "node scripts/verify-loading-bundles.mjs",
+		"check:tools": "tsc --project tsconfig.tools.json --noEmit --incremental false"
 	},
 	"dependencies": {
 		"@clerk/backend": "^3.23.0",

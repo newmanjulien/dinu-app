@@ -2,7 +2,7 @@
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { page } from '$app/state';
 	import { localReturn } from '$lib/auth/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { useConvexClient, usePaginatedQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
@@ -28,24 +28,58 @@
 		const timer = setInterval(() => (now = Math.floor(Date.now() / 60_000) * 60_000), 60_000);
 		return () => clearInterval(timer);
 	});
+	let colleaguesRetry = $state(0),
+		invitationsRetry = $state(0);
+	let colleaguesTimedOut = $state(false),
+		invitationsTimedOut = $state(false);
 	const colleagues = usePaginatedQuery(
 		api.profiles.colleagues,
-		{ membershipId },
+		() => {
+			void colleaguesRetry;
+			return { membershipId };
+		},
 		{ initialNumItems: 50 }
 	);
 	const invitations = usePaginatedQuery(
 		api.companyInvitations.list,
-		() => (canManage ? { membershipId } : 'skip'),
+		() => {
+			void invitationsRetry;
+			return canManage ? { membershipId } : 'skip';
+		},
 		{ initialNumItems: 50 }
 	);
+	$effect(() => {
+		void colleaguesRetry;
+		void session.transportGeneration;
+		const pending = colleagues.status === 'LoadingFirstPage' || colleagues.status === 'LoadingMore';
+		untrack(() => (colleaguesTimedOut = false));
+		if (!pending) return;
+		const timer = setTimeout(() => (colleaguesTimedOut = true), 15_000);
+		return () => clearTimeout(timer);
+	});
+	$effect(() => {
+		void invitationsRetry;
+		void session.transportGeneration;
+		const pending =
+			canManage &&
+			(invitations.status === 'LoadingFirstPage' || invitations.status === 'LoadingMore');
+		untrack(() => (invitationsTimedOut = false));
+		if (!pending) return;
+		const timer = setTimeout(() => (invitationsTimedOut = true), 15_000);
+		return () => clearTimeout(timer);
+	});
 	const colleaguesLoading = $derived(
-		colleagues.status === 'LoadingFirstPage' && !colleagues.results.length && !colleagues.error
+		colleagues.status === 'LoadingFirstPage' &&
+			!colleagues.results.length &&
+			!colleagues.error &&
+			!colleaguesTimedOut
 	);
 	const invitationsLoading = $derived(
 		canManage &&
 			invitations.status === 'LoadingFirstPage' &&
 			!invitations.results.length &&
-			!invitations.error
+			!invitations.error &&
+			!invitationsTimedOut
 	);
 	let modalOpen = $state(false);
 	let emailInput = $state('');
@@ -136,7 +170,9 @@
 			: 'success'}
 />
 
-<main class="min-h-[calc(100dvh-var(--app-header-height))] bg-surface px-6 py-8">
+<main
+	class="min-h-[calc(100dvh-var(--app-header-height))] bg-surface px-4 pt-8 pb-8 sm:px-6 md:px-8 md:pt-10"
+>
 	{#if colleaguesLoading || invitationsLoading}
 		<span role="status" class="sr-only"
 			>{colleaguesLoading && invitationsLoading
@@ -147,12 +183,13 @@
 		>
 	{/if}
 	<div class="mx-auto max-w-4xl space-y-8">
+		<h1 class="text-lg font-medium">Manage team</h1>
 		{#if invitationReturn}<a href={invitationReturn} class="text-sm underline"
 				>Return to invitation</a
 			>{/if}
 		<div class="flex items-center justify-between gap-4">
 			<div>
-				<h1 class="text-sm font-medium">{viewer().company.name}</h1>
+				<h2 class="text-sm font-medium">{viewer().company.name}</h2>
 				<p class="mt-2 text-sm text-ink-muted">
 					Your company is private. Colleagues join by invitation.
 				</p>
@@ -173,8 +210,8 @@
 				<ul
 					class="divide-y-[length:var(--surface-border-width)] divide-line rounded-xl border-hairline border-edge bg-surface shadow-card"
 				>
-					{#each colleagues.results as person (person.membershipId)}
-						<li class="flex flex-wrap items-center gap-3 p-4">
+					{#each colleagues.error ? [] : colleagues.results as person (person.membershipId)}
+						<li class="flex flex-wrap items-center gap-3 p-3.5">
 							<Avatar
 								name={person.name || person.email}
 								avatarUrl={person.avatarUrl}
@@ -226,8 +263,10 @@
 					{/each}
 				</ul>
 			{/if}
-			{#if colleagues.error}<p role="alert" class="mt-3 text-sm text-danger">
-					Unable to load colleagues. Reload to try again.
+			{#if colleagues.error || colleaguesTimedOut}<p role="alert" class="mt-3 text-sm text-danger">
+					Unable to load colleagues. <button class="underline" onclick={() => colleaguesRetry++}
+						>Try again</button
+					>
 				</p>{/if}
 			{#if colleagues.status === 'CanLoadMore'}<Button
 					variant="ghost"
@@ -243,8 +282,8 @@
 					<ul
 						class="divide-y-[length:var(--surface-border-width)] divide-line rounded-xl border-hairline border-edge bg-surface shadow-card"
 					>
-						{#each invitations.results as invitation (invitation.id)}
-							<li class="flex flex-wrap items-center gap-3 p-4">
+						{#each invitations.error ? [] : invitations.results as invitation (invitation.id)}
+							<li class="flex flex-wrap items-center gap-3 p-3.5">
 								<div class="flex-1">
 									<p class="text-sm">{invitation.email}</p>
 									<p class="text-xs text-ink-muted">
@@ -283,14 +322,19 @@
 								>
 							</li>
 						{:else}{#if !invitations.error && invitations.status === 'Exhausted'}<li
-									class="p-4 text-sm text-ink-muted"
+									class="p-3.5 text-[13px] text-ink-muted"
 								>
 									No pending invitations.
 								</li>{/if}{/each}
 					</ul>
 				{/if}
-				{#if invitations.error}<p role="alert" class="mt-3 text-sm text-danger">
-						Unable to load invitations. Reload to try again.
+				{#if invitations.error || invitationsTimedOut}<p
+						role="alert"
+						class="mt-3 text-sm text-danger"
+					>
+						Unable to load invitations. <button class="underline" onclick={() => invitationsRetry++}
+							>Try again</button
+						>
 					</p>{/if}
 				{#if invitations.status === 'CanLoadMore'}<Button
 						variant="ghost"

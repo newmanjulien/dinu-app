@@ -1,24 +1,24 @@
 import { getContext, setContext } from 'svelte';
-import type { ContractRenderController } from './renderer.svelte';
-import type { ContractSourceController, ContractSourceInput } from './source.svelte';
-import type { ContractViewerState } from './viewer.svelte';
+import type { DocumentRenderController } from './renderer.svelte';
+import type { DocumentSourceController, DocumentSourceInput } from './source.svelte';
+import type { DocumentViewerState } from './viewer.svelte';
 
-const WORKSPACE = Symbol('contract-workspace');
+const WORKSPACE = Symbol('document-workspace');
 
 /** The retained viewer needs only this small context shape, never workspace construction code. */
-export interface ContractWorkspace {
-	readonly source: ContractSourceController;
-	readonly renderer: ContractRenderController;
-	readonly viewer: ContractViewerState;
-	accept: (input: ContractSourceInput) => void;
+export interface DocumentWorkspace {
+	readonly source: DocumentSourceController;
+	readonly renderer: DocumentRenderController;
+	readonly viewer: DocumentViewerState;
+	accept: (input: DocumentSourceInput) => void;
 }
 
-export function setContractWorkspace(workspace: ContractWorkspace) {
+export function setDocumentWorkspace(workspace: DocumentWorkspace) {
 	return setContext(WORKSPACE, workspace);
 }
 
-export function getContractWorkspace(): ContractWorkspace {
-	const workspace = getContext<ContractWorkspace>(WORKSPACE);
-	if (!workspace) throw new Error('Contract workspace context is required.');
+export function getDocumentWorkspace(): DocumentWorkspace {
+	const workspace = getContext<DocumentWorkspace>(WORKSPACE);
+	if (!workspace) throw new Error('Document workspace context is required.');
 	return workspace;
 }

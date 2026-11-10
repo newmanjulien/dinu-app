@@ -10,7 +10,7 @@ remaining browser acceptance limits.
 
 ## Composition and preparation
 
-The workspace source controller owns a baseline-scoped artifact store shared with rendering and concession warming.
+The workspace source controller owns a template source-scoped artifact store shared with rendering and concession warming.
 Composition engines keep their own source index, Trigger lookup, numbering metadata,
 dependencies and cursors. Completed container content and resolved blocks are interned
 using complete content/provenance versions; preparation engines share weak caches of
@@ -21,7 +21,7 @@ The store owns a reference-counted dependency graph, with request-local working 
 released on completion, failure or cancellation. Foreground working references survive
 pagination until the complete snapshot promotes its current artifacts. Composer fields
 hold no independent container, generated-content or resolved-output caches. Replacing the
-baseline or destroying the workspace source releases the store; layout epochs and content
+template source or destroying the workspace source releases the store; layout epochs and content
 source changes borrow it without clearing completed artifacts. Cancelled work can
 contribute completed optional artifacts without publishing a snapshot.
 
@@ -49,8 +49,8 @@ generated offsets and annotations follow the rules in
 ## Annotation updates
 
 `DocumentDomain` accepts compact structure separately from hydrated selected details.
-`/admin` subscribes to `currentStructure` and keeps a bounded live instruction-detail pool.
-It starts warming as soon as the baseline matches ready structure, independently of renderer
+`/template` subscribes to `currentStructure` and keeps a bounded live instruction-detail pool.
+It starts warming as soon as the template source matches ready structure, independently of renderer
 readiness: all fitting instructions, with 64 optional entries, eight first responses in flight
 and a 4 MiB encoded retained-body budget (not a total-memory bound). Selected/editor/save
 targets are pinned outside those optional limits. Completed owner transitions immediately
@@ -63,18 +63,18 @@ including boundary and grouped controls, without extra page observers or text me
 Memberships rebuild after owner commit, including boundary controls returning from location
 picking, and sort by page and semantic source position before deduplicating the current window.
 Each eligible reporting lifetime receives the current eager-page replay, including stationary
-same-baseline read restarts; retired callbacks cannot change current demand.
+same-template source read restarts; retired callbacks cannot change current demand.
 Only selected/save-confirmation records enter the stable hydrated-detail projection. Optional
 arrivals do not notify foreground authoring reconciliation, change document render identity or
 paginate. Optional errors remain local to warming; accepted successful current reads retire
 only their own failed-read suppression. Deactivation, pause, blocking, freezing, suspension and
-baseline mismatch release optional work and nearby reporting; any released/recreated read
+template source mismatch release optional work and nearby reporting; any released/recreated read
 requires a fresh observation.
 Successful structure acceptance memoizes the exact immutable
 array, pending render key, compiled contract identity and certification mode; detail hydration
 continues independently. Failed acceptance invalidates that shortcut. Certified structural
 snapshots build interval buckets in one
-pass, avoiding repeated audits of unchanged neighbors. Baseline blocks and their fingerprint
+pass, avoiding repeated audits of unchanged neighbors. Source blocks and their fingerprint
 arrive atomically; authoring readiness requires matching current structure. Detail readiness
 also requires an authoritative successful watermark and matching revision. An unavailable
 detail is loading/error, not proof that its rule was deleted. Warm selections reuse their
@@ -82,15 +82,15 @@ existing current live snapshot synchronously; cold selections wait in the anchor
 without adding a loading row or changing document height. Editing copy can continue while
 a wording preview lays out; new source selection requires the coherent displayed snapshot.
 
-Only active replacement effects contribute to `ContractRenderSource`. Annotation-only
+Only active replacement effects contribute to `DocumentRenderSource`. Annotation-only
 updates retain that source, prepared tokens, pages and `selectionDocument`; they schedule no
 composition, token preparation, paragraph profiling or pagination. Actual wording changes
-reuse the baseline artifact store and compatible pagination history. Admin alternative warming
+reuse the template source artifact store and compatible pagination history. Template alternative warming
 requires an open panel, so confirming an instruction does not start optional layout work.
 
 `DocumentAnnotationProjection` indexes mounted token provenance once per complete snapshot
 and projects changed annotation ranges over the shared highlight controller's measured line
-maps. It handles baseline source, removed runs, generated replacement intervals, repeated
+maps. It handles template source source, removed runs, generated replacement intervals, repeated
 occurrences and structural aliases. Every valid mounted occurrence has a named out-of-flow
 keyboard owner in source/priority order, with Enter/Space and selected/disabled states,
 even before its highlight geometry is measured. Complete clipped source/generated coverage
@@ -109,7 +109,7 @@ not invalidate text layout; font/content changes retain the existing geometry in
 ## Browser geometry compilation
 
 The app layout mounts a persistent `LayoutProfileSurface` and provides its `LayoutProfiler`
-to route viewers. A standalone viewer, or `PUBLIC_CONTRACT_ROUTE_PROFILES=0`, uses the
+to route viewers. A standalone viewer, or `PUBLIC_DOCUMENT_ROUTE_PROFILES=0`, uses the
 original viewer-local host. The profiler
 serializes surface access and resolves cached geometry by fingerprint. Opening, updates and concession warming all follow paginator geometry requests.
 They consult request-local and cached geometry before measuring a missing block;
@@ -127,8 +127,8 @@ blocks share a fingerprint or retained request associations are reactivated afte
 The hidden, inert surface renders production `BlockFragment`, inline, revision and source
 components at contract content width. Profile mode retains layout wrappers while suppressing
 heading IDs, focus semantics and Trigger activation. Each source leaf carries an unconditional
-`data-contract-token` marker. Hidden leaves omit unused source-coordinate and interaction
-attributes by default; `PUBLIC_CONTRACT_PROFILE_METADATA=1` restores them. Visible leaves
+`data-document-token` marker. Hidden leaves omit unused source-coordinate and interaction
+attributes by default; `PUBLIC_DOCUMENT_PROFILE_METADATA=1` restores them. Visible leaves
 always retain all selection and provenance metadata. Text, source spans, revision wrappers and layout classes remain identical. Annotation
 activation owners sit outside the text flow and never appear on the profile surface. A synchronous scoped operation
 mounts one block, reads its geometry, lets pagination request immediate detail, and clears
@@ -194,7 +194,7 @@ sliced content keeps the candidate page. Changed page numbers include removed pa
 
 ## Complete snapshots and interactions
 
-`ContractRenderController` serializes requests and checks generation and live epoch after
+`DocumentRenderController` serializes requests and checks generation and live epoch after
 profiling and immediately before committing, including after commit listeners. The same
 currentness check runs when queued profiling starts and before inserting its results, so
 cancelled or superseded requests skip pending DOM work. A pending job records request
@@ -236,9 +236,13 @@ Page-number keys preserve unchanged DOM. Highlights refresh changed page geometr
 unchanged range contributions; hover and pressed-state updates affect paint separately.
 Search updates changed source blocks, retains unchanged ranges and performs no traversal
 for an empty query. Authoring ranges retain identity when source and intersecting pages
-remain unchanged. Viewport anchoring captures a visible baseline point before commit,
-prefers the same fragment/cell occurrence afterward, and restores its offset only if the
-stage stays connected and the user has not scrolled.
+remain unchanged. Without an open panel, viewport anchoring captures a visible template source
+point before commit, prefers the same fragment occurrence afterward, and restores its offset
+only if the same stage, source and committed pages remain current and the user has not scrolled.
+Opening a panel cancels queued compensation and gives its held workspace position priority.
+The active panel's viewer subtree excludes native scroll anchoring. Preview commits neither
+remeasure an already-resolved same-target panel nor scroll to its source; deliberate navigation
+and returning from secondary-location picking retain their explicit scrolling behavior.
 
 ## Idle prewarming
 
@@ -268,10 +272,10 @@ authoring possibilities and combinations of page assignments are not predicted.
 
 ## Local performance instrumentation
 
-Development builds, or production with `PUBLIC_CONTRACT_PERF=1`, retain at most 100 entries
+Development builds, or production with `PUBLIC_DOCUMENT_PERF=1`, retain at most 100 entries
 in each browser array. Instrumentation sends no analytics and stores no contract text.
-`window.__contractColdStart` records source request, availability and acceptance milestones;
-server/navigation latency requires a browser trace. `window.__contractRenderPerf` records
+`window.__documentColdStart` records source request, availability and acceptance milestones;
+server/navigation latency requires a browser trace. `window.__documentRenderPerf` records
 foreground requests only. Idle work receives no render metrics and does not alter samples.
 Phase durations and partial composition/preparation counters are recorded on failure too;
 completion timestamps are only recorded when a phase succeeds.
@@ -299,7 +303,7 @@ completion timestamps are only recorded when a phase succeeds.
 | `paintOpportunityAt`, `inputToPaintOpportunityMs`                        | Post-tick animation frame followed by a timer; a paint opportunity, not proof of physical presentation                                          |
 | `cancelled`, `failed`                                                    | Request termination flags                                                                                                                       |
 
-`window.__contractPageMountPerf` separately records generation, timestamp, page count,
+`window.__documentPageMountPerf` separately records generation, timestamp, page count,
 append/atomic status and assignment-to-DOM-tick duration. It excludes pacing waits and retains
 no DOM or text references.
 
@@ -344,13 +348,13 @@ geometry require browser verification. Use production traces for latency claims.
 
 `window.__contractStartupPerf` retains source acceptance timing plus count-only
 workspace/renderer/authoring acceptance/profile-surface events. The pure domain's
-fixed numeric counters are available under `window.__contractDomainPerf`: record
+fixed numeric counters are available under `window.__documentDomainPerf`: record
 comparison/recompilation/reuse, projection reuse, geometry entry mutations, queries,
 and visited candidates. Take counter differences around a transition. No document
 text or backend identifiers are included.
 
-These diagnostics use the existing development / `PUBLIC_CONTRACT_PERF=1` gate.
-`__contractColdStart` and `__contractRenderPerf` still separate source acceptance,
+These diagnostics use the existing development / `PUBLIC_DOCUMENT_PERF=1` gate.
+`__documentColdStart` and `__documentRenderPerf` still separate source acceptance,
 viewer/profile mounts, layout epochs, render phases, interaction readiness, and
 paint opportunity. They are not a substitute for controlled production traces.
 
@@ -360,3 +364,7 @@ IDs to their former encoding when comparing frozen provenance hashes; the hashes
 Server markup checks source/generated spans and preserved projection memberships. Projected
 native hit targets, accessibility, geometry, focus and annotation-independent layout require
 the browser acceptance described in `docs/lifecycle.md`; existing suites do not certify them.
+
+## Loading and dependency admission
+
+Skeleton visibility does not make a primary presentation ready. Optional CSM and Home/deal warming still wait for the current primary ticket and its paint/idle policy; advisory setup hints follow that policy too. The heavy profiler is installed by the demanded document host, and the authoring controller implementation by TemplateWorkspace; lightweight membership persistence owners remain stable. Read retries do not key accepted viewers. `npm run verify` includes SSR/exact-fixture hydration and emitted loading-module boundary checks; actual layout/paint/native behavior remains manual browser acceptance.

@@ -11,7 +11,7 @@ type ModalBehaviorOptions = {
 
 export function createModalBehavior({ isOpen, onOpen }: ModalBehaviorOptions) {
 	const interactions = getInteractionController();
-	let dialogElement = $state<HTMLDialogElement | undefined>();
+	let dialogElement = $state<HTMLDialogElement | null | undefined>();
 
 	$effect(() => {
 		const element = dialogElement;
@@ -50,7 +50,7 @@ export function createModalBehavior({ isOpen, onOpen }: ModalBehaviorOptions) {
 		get dialogElement() {
 			return dialogElement;
 		},
-		set dialogElement(element: HTMLDialogElement | undefined) {
+		set dialogElement(element: HTMLDialogElement | null | undefined) {
 			dialogElement = element;
 		}
 	};

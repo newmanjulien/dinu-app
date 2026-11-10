@@ -16,7 +16,7 @@ const traces: Trace[] = [];
 
 /** Bounded, local timings only: never record names, IDs, or document content. */
 export function beginCreation(prepared = false) {
-	if (!dev && env.PUBLIC_CONTRACT_PERF !== '1') return;
+	if (!dev && env.PUBLIC_DOCUMENT_PERF !== '1') return;
 	current = { prepared, phases: { click: performance.now() } };
 	traces.push(current);
 	if (traces.length > 100) traces.shift();

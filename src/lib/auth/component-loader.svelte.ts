@@ -1,3 +1,4 @@
+import { ReadAttempt, waitForRead } from './attempt';
 import { untrack } from 'svelte';
 
 /**
@@ -17,21 +18,24 @@ export function loadModule<T>(
 		void retry;
 		if (!enabled() || module) return;
 		let active = true;
+		const attempt = new ReadAttempt(15_000);
 		untrack(() => {
 			failed = false;
 		});
-		void Promise.resolve()
-			.then(load)
+		void waitForRead(Promise.resolve().then(load), attempt.signal)
 			.then((loaded) => {
+				attempt.complete();
 				if (active) module = loaded;
 			})
 			.catch((cause: unknown) => {
+				attempt.complete();
 				if (!active) return;
 				failed = true;
 				if (import.meta.env.DEV) console.error('Unable to load lazy code.', cause);
 			});
 		return () => {
 			active = false;
+			attempt.abort();
 		};
 	});
 	return {
@@ -51,7 +55,11 @@ export function loadComponent<T>(
 	enabled: () => boolean,
 	generation: () => unknown = () => undefined
 ) {
-	const lazy = loadModule<{ default: T }>(load, enabled, generation);
+	const lazy = loadModule<{ default: T }>(
+		async () => ({ default: (await load()).default }),
+		enabled,
+		generation
+	);
 	return {
 		get component() {
 			return lazy.module?.default;

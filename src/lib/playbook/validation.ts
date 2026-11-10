@@ -1,27 +1,32 @@
-import { validateStorageArrays } from '../contract/storage-limits';
+import type { DeepReadonly } from '../immutable';
+import { validateStorageArrays } from '../document/storage-limits';
 import { PlaybookValidationError } from './validation-error';
-export { MAX_CONTRACT_BLOCKS, MAX_PLAYBOOK_ITEM_BYTES, MAX_PLAYBOOK_ITEMS } from './limits';
+export { MAX_DOCUMENT_BLOCKS, MAX_PLAYBOOK_ITEM_BYTES, MAX_PLAYBOOK_ITEMS } from './limits';
 export { PlaybookValidationError } from './validation-error';
 
-import type { CompiledContract } from '../contract/compiled-contract';
-import { targetContainers } from '../contract/ranges';
-import { hasMeaningfulReplacement } from '../contract/replacement-content';
-import type { ValidationSourceFacts } from '../contract/validation-source';
+import type { CompiledDocument } from '../document/compiled-document';
+import { targetContainers } from '../document/ranges';
+import { hasMeaningfulReplacement } from '../document/replacement-content';
+import type { ValidationSourceFacts } from '../document/validation-source';
 import { createChangeConflictChecker } from './conflicts';
+import type { ChangeStructure } from './structure';
 import { equalConcession } from './content';
 import { changeTriggerOwner, triggersIntersect, validateTriggerRange } from './geometry';
-import type { Concession, ContractChange, PlaybookItem, Trigger } from './model';
+import type { Concession, ContractChange, PlaybookItem, TemplateItem, Trigger } from './model';
 
 import { MAX_PLAYBOOK_ITEM_BYTES } from './limits';
 
-export function validateConcessions(concessions: readonly Concession[]): void {
+export function validateConcessions(concessions: DeepReadonly<Concession[]>): void {
 	for (const concession of concessions)
 		if (concession.changes.length > 2)
 			throw new PlaybookValidationError('A concession can affect at most two selections');
 }
 
 /** Retained concessions are read-only. All content uses the same authoring limits. */
-export function validateConcessionUpdate(saved: PlaybookItem, proposed: PlaybookItem): void {
+export function validateConcessionUpdate(
+	saved: DeepReadonly<PlaybookItem>,
+	proposed: DeepReadonly<PlaybookItem>
+): void {
 	const retained = new Map(saved.concessions.map((concession) => [concession.id, concession]));
 	for (const concession of proposed.concessions) {
 		const existing = retained.get(concession.id);
@@ -54,12 +59,12 @@ export function validateTriggers(index: ValidationSourceFacts, triggers: readonl
 export function validateChangeGeometry(
 	index: ValidationSourceFacts,
 	triggers: readonly Trigger[],
-	changes: readonly ContractChange[]
+	changes: readonly DeepReadonly<ChangeStructure>[]
 ): void {
 	const conflicts = createChangeConflictChecker(index);
 	for (const [i, change] of changes.entries()) {
 		if (
-			change.replacement.some((atom) => atom.kind === 'paragraph-break') &&
+			change.paragraphBreaks > 0 &&
 			targetContainers(index, change.target).some(
 				(container) =>
 					change.target.kind !== 'boundary' &&
@@ -75,9 +80,9 @@ export function validateChangeGeometry(
 }
 
 /** Final items cannot reserve a structural location without changing the contract. */
-export function validateStructuralReplacementContent(
-	item: Pick<PlaybookItem, 'concessions'>
-): void {
+export function validateStructuralReplacementContent(item: {
+	concessions: DeepReadonly<{ changes: DeepReadonly<ContractChange>[] }[]>;
+}): void {
 	for (const concession of item.concessions)
 		for (const change of concession.changes)
 			if (change.target.kind === 'boundary' && !hasMeaningfulReplacement(change.replacement))
@@ -87,15 +92,21 @@ export function validateStructuralReplacementContent(
 }
 
 /** Source-independent checks shared by structural validation and instructions-only saves. */
-export function validatePlaybookItemContent(item: PlaybookItem): void {
+export function validatePlaybookItemContent(item: DeepReadonly<TemplateItem>): void {
 	validateStorageArrays(item);
-	if (item.approvalPolicy.kind === 'required' && !item.approvalPolicy.instructions.trim())
+	if (
+		'approvalPolicy' in item &&
+		item.approvalPolicy.kind === 'required' &&
+		!item.approvalPolicy.instructions.trim()
+	)
 		throw new PlaybookValidationError('Approval instructions cannot be blank');
 	if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_PLAYBOOK_ITEM_BYTES)
-		throw new PlaybookValidationError('Playbook Item exceeds 500 KB');
+		throw new PlaybookValidationError('Instruction exceeds 500 KB');
 	for (const target of [
 		item.trigger.target,
-		...item.concessions.flatMap((concession) => concession.changes.map((change) => change.target))
+		...('concessions' in item ? item.concessions : []).flatMap((concession) =>
+			concession.changes.map((change) => change.target)
+		)
 	]) {
 		if (target.kind !== 'text') continue;
 		for (const point of [target.range.start, target.range.end])
@@ -105,6 +116,12 @@ export function validatePlaybookItemContent(item: PlaybookItem): void {
 				);
 	}
 	unique(new Set(), item.trigger.id, 'Trigger ID');
+	if ('audience' in item) {
+		if (item.trigger.target.kind !== 'text')
+			throw new PlaybookValidationError('Buyer explanations require selected text');
+		if (!item.explanation.trim()) throw new PlaybookValidationError('Explanation cannot be blank');
+		return;
+	}
 	validateConcessions(item.concessions);
 	const concessionIds = new Set<string>();
 	for (const concession of item.concessions) {
@@ -116,8 +133,8 @@ export function validatePlaybookItemContent(item: PlaybookItem): void {
 
 /** Reference checks are independent of cross-item geometry and safe on every keystroke. */
 export function validateChangeReferences(
-	{ validateReference }: Pick<CompiledContract, 'validateReference'>,
-	item: Pick<PlaybookItem, 'concessions'>
+	{ validateReference }: Pick<CompiledDocument, 'validateReference'>,
+	item: { concessions: DeepReadonly<{ changes: DeepReadonly<ContractChange>[] }[]> }
 ): void {
 	for (const concession of item.concessions)
 		for (const change of concession.changes)

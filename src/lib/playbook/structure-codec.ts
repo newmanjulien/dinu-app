@@ -1,4 +1,5 @@
-import { BinaryReader, BinaryWriter } from '../contract/binary';
+import type { DeepReadonly } from '../immutable';
+import { BinaryReader, BinaryWriter } from '../document/binary';
 import type { SourceTarget } from './model';
 import type { ItemStructure } from './structure';
 
@@ -25,9 +26,9 @@ function readTarget(reader: BinaryReader): SourceTarget {
 		}
 	};
 }
-export function encodeStructure(item: ItemStructure): ArrayBuffer {
+export function encodeStructure(item: DeepReadonly<ItemStructure>): ArrayBuffer {
 	const writer = new BinaryWriter();
-	writer.uint(STRUCTURE_CODEC_VERSION);
+	writer.uint(item.audience === 'buyer' ? 2 : STRUCTURE_CODEC_VERSION);
 	writer.string(item.trigger.id);
 	writeTarget(writer, item.trigger.target);
 	writer.uint(item.concessions.length);
@@ -43,7 +44,8 @@ export function encodeStructure(item: ItemStructure): ArrayBuffer {
 }
 export function decodeStructure(bytes: ArrayBuffer): ItemStructure {
 	const reader = new BinaryReader(bytes);
-	if (reader.uint() !== STRUCTURE_CODEC_VERSION) throw new Error('Unsupported structure encoding');
+	const version = reader.uint();
+	if (version !== 1 && version !== 2) throw new Error('Unsupported structure encoding');
 	const trigger = { id: reader.string(), target: readTarget(reader) };
 	const count = reader.uint();
 	if (count > 8192) throw new Error('Invalid structure count');
@@ -59,11 +61,16 @@ export function decodeStructure(bytes: ArrayBuffer): ItemStructure {
 		return { id, changes };
 	});
 	reader.end();
-	return { trigger, concessions };
+	if (version === 2 && (concessions.length || trigger.target.kind !== 'text'))
+		throw new Error('Invalid buyer instruction structure');
+	return { ...(version === 2 ? { audience: 'buyer' as const } : {}), trigger, concessions };
 }
 
 /** Exact equality of the persisted compact geometry surface. */
-export function equalItemStructure(a: ItemStructure, b: ItemStructure): boolean {
+export function equalItemStructure(
+	a: DeepReadonly<ItemStructure>,
+	b: DeepReadonly<ItemStructure>
+): boolean {
 	const left = new Uint8Array(encodeStructure(a)),
 		right = new Uint8Array(encodeStructure(b));
 	return left.length === right.length && left.every((byte, i) => byte === right[i]);

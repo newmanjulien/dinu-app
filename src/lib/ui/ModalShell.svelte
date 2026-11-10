@@ -84,28 +84,28 @@
 			className
 		)}
 	>
-		<header class="flex shrink-0 items-start justify-between gap-4 p-5">
+		<header class="flex shrink-0 items-start justify-between gap-4 p-[17px]">
 			<h2 id={titleId} class="min-w-0 text-[17px] leading-tight font-medium text-ink">{title}</h2>
 			{#if showCloseButton}
 				<IconButton
 					aria-label="Close modal"
 					variant="ghost"
-					class="-my-1.5 -mr-1.5"
+					class="-my-1.5 -mr-1.5 size-[30px]"
 					disabled={!dismissible}
 					onclick={requestClose}
 				>
-					<XIcon aria-hidden="true" class="size-5" weight="regular" />
+					<XIcon aria-hidden="true" class="size-[18px]" weight="regular" />
 				</IconButton>
 			{/if}
 		</header>
 
-		<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5">
+		<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-[17px] pb-[17px]">
 			{@render children?.()}
 		</div>
 
 		{#if footer}
 			<footer
-				class="flex shrink-0 items-center justify-between gap-3 border-t-[length:var(--surface-border-width)] border-line px-5 py-4.5"
+				class="flex shrink-0 items-center justify-between gap-3 border-t-[length:var(--surface-border-width)] border-line px-[17px] py-[15px]"
 			>
 				{@render footer()}
 			</footer>

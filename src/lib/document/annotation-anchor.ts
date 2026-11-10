@@ -4,9 +4,9 @@ import {
 	sameSourceTarget,
 	type SourcePoint,
 	type SourceTarget
-} from '$lib/contract/source-model';
-import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
-import type { ResolvedRun } from '$lib/contract/model';
+} from '$lib/document/source-model';
+import { pointPosition, type SourceIndex } from '$lib/document/source-index';
+import type { ResolvedRun } from '$lib/document/model';
 
 export interface AnnotationActivation {
 	owner: HTMLElement;
@@ -76,7 +76,7 @@ export function annotationOccurrence(
 				? null
 				: owner.ownerDocument
 						.elementFromPoint(clientX, clientY)
-						?.closest<HTMLElement>('[data-contract-token]');
+						?.closest<HTMLElement>('[data-document-token]');
 		const first = registry.occurrence(owner)?.segments[0];
 		const coordinates = hit
 			? tokenCoordinates(hit)

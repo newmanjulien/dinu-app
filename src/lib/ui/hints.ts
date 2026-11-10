@@ -4,12 +4,8 @@ type HintDefinition = {
 };
 
 export const hints = {
-	integrationsIntro: {
-		text: 'Integrations connect Dinu with the tools your team already uses, helping keep contract details and activity in sync.',
-		visitLimit: 3
-	},
 	contractsIntro: {
-		text: 'Contracts are where your team prepares and manages customer agreements using your company’s baseline contract and instructions.'
+		text: 'Create and manage buyer contracts using your company’s template and instructions.'
 	},
 	concessionAutoApproved: {
 		text: "You've auto-approved this concession yourself"

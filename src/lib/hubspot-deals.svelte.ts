@@ -1,3 +1,4 @@
+import { ReadAttempt, waitForRead } from './auth/attempt';
 import { getContext, setContext } from 'svelte';
 import type { ConvexClient } from 'convex/browser';
 import type { FunctionReturnType } from 'convex/server';
@@ -15,12 +16,18 @@ export class HubSpotDeals {
 	private owner: string | null = null;
 	private requests = new Map<string, Promise<DealPage | undefined>>();
 	private destroyed = false;
+	private attempts = new Set<ReadAttempt>();
 
 	constructor(
 		readonly options: {
 			client: Pick<ConvexClient, 'action'>;
 			membershipId: Id<'memberships'>;
-			connection: { readonly data: Connection | undefined; readonly error: Error | undefined };
+			connection: {
+				readonly data: Connection | undefined;
+				readonly error: Error | undefined;
+				readonly isLoading?: boolean;
+				retry?: () => void;
+			};
 			identity: () => string | null;
 		}
 	) {}
@@ -35,9 +42,15 @@ export class HubSpotDeals {
 		return !this.destroyed &&
 			identity &&
 			!this.connection.error &&
+			!this.connection.isLoading &&
 			connection?.enabled &&
 			connection.status === 'connected'
-			? JSON.stringify([identity, connection.accountId, connection.installedAt])
+			? JSON.stringify([
+					identity,
+					connection.connectionId,
+					connection.accountId,
+					connection.installedAt
+				])
 			: null;
 	}
 
@@ -50,37 +63,48 @@ export class HubSpotDeals {
 		this.owner = owner;
 		this.cache = undefined;
 		this.requests.clear();
+		for (const attempt of this.attempts) attempt.abort();
+		this.attempts.clear();
 	}
 
-	load(search = '', force = false): Promise<DealPage | undefined> {
+	load(search = '', force = false, cursor?: string): Promise<DealPage | undefined> {
 		const owner = this.identity;
 		this.align(owner);
 		if (!owner) return Promise.resolve(undefined);
 		const term = search.trim().slice(0, 200);
-		if (!force && !term && this.cache && Date.now() - this.cache.at < freshness)
+		const initial = !term && cursor === undefined;
+		const requestKey = JSON.stringify([term, cursor ?? null]);
+		if (!force && initial && this.cache && Date.now() - this.cache.at < freshness)
 			return Promise.resolve(this.cache.page);
-		const existing = this.requests.get(term);
+		const existing = this.requests.get(requestKey);
 		if (existing) return existing;
-		const request = this.options.client
-			.action(api.hubspotDeals.list, {
+		const attempt = new ReadAttempt(15_000);
+		this.attempts.add(attempt);
+		const request = waitForRead(
+			this.options.client.action(api.hubspotDeals.list, {
 				membershipId: this.options.membershipId,
-				search: term
-			})
+				search: term,
+				...(cursor !== undefined ? { cursor } : {})
+			}),
+			attempt.signal
+		)
 			.then(
 				(page) => {
-					if (this.identity !== owner || this.requests.get(term) !== request) return;
-					if (!term) this.cache = { owner, page, at: Date.now() };
+					if (this.identity !== owner || this.requests.get(requestKey) !== request) return;
+					if (initial) this.cache = { owner, page, at: Date.now() };
 					return page;
 				},
 				(error: unknown) => {
-					if (this.identity === owner && this.requests.get(term) === request) throw error;
+					if (this.identity === owner && this.requests.get(requestKey) === request) throw error;
 					return undefined;
 				}
 			)
 			.finally(() => {
-				if (this.requests.get(term) === request) this.requests.delete(term);
+				attempt.complete();
+				this.attempts.delete(attempt);
+				if (this.requests.get(requestKey) === request) this.requests.delete(requestKey);
 			});
-		this.requests.set(term, request);
+		this.requests.set(requestKey, request);
 		return request;
 	}
 

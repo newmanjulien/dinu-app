@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFrozenStates } from './seed-shape.mjs';
 
 // Compare displayed characters, revisions and original Trigger ownership across
 // run splitting. The full provenance hash below also covers effect memberships.
+/** @param {import('./seed-types').PriorResolvedBlock[]} blocks */
 export function normalize(blocks) {
+	/** @param {import('../src/lib/document/model').ResolvedRun[]} content */
 	const runs = (content) => {
+		/** @type {{text:string;revision:import('../src/lib/document/model').ResolvedRun['revision'];itemId?:string;triggerId?:string}[]} */
 		const result = [];
 		for (const { text, revision, annotations } of content) {
 			if (!text) continue;
@@ -32,20 +35,27 @@ export function normalize(blocks) {
 		block.kind === 'table' ? block : { ...block, content: runs(block.content) }
 	);
 }
+/** @param {string} _key @param {unknown} value @returns {unknown} */
 export function sortedKeys(_key, value) {
 	return value && typeof value === 'object' && !Array.isArray(value)
 		? Object.fromEntries(
 				Object.keys(value)
 					.sort()
-					.map((key) => [key, value[key]])
+					.map((key) => [key, /** @type {Record<string,unknown>} */ (value)[key]])
 			)
 		: value;
 }
 /** Annotation render identity moved from a mutable trigger ID to an immutable item
  * key. Compare every other provenance field against the unchanged frozen oracle. */
+/** @param {string} key @param {unknown} value @returns {unknown} */
 export function frozenProvenanceKeys(key, value) {
 	if (
-		value?.kind === 'trigger' &&
+		value &&
+		typeof value === 'object' &&
+		'kind' in value &&
+		value.kind === 'trigger' &&
+		'itemId' in value &&
+		'triggerId' in value &&
 		typeof value.itemId === 'string' &&
 		typeof value.triggerId === 'string'
 	)
@@ -55,27 +65,40 @@ export function frozenProvenanceKeys(key, value) {
 		});
 	return sortedKeys(key, value);
 }
+/** @param {import('vite').ViteDevServer} server @param {{blocks:import('../src/lib/document/source-model').SourceBlock[];items:import('../src/lib/playbook/document-overlay').DocumentOverlayItem[]}} final */
 export async function verifyOverlayParity(server, final) {
-	const { composeContract } = await server.ssrLoadModule('/src/lib/contract/compose.ts');
-	const { tokenizeInline } = await server.ssrLoadModule('/src/lib/document/pagination/tokenize.ts');
-	const { LayoutPreparationEngine } = await server.ssrLoadModule(
-		'/src/lib/document/pagination/prepare.ts'
+	const { composeDocument } = /** @type {typeof import('../src/lib/document/compose.ts')} */ (
+		await server.ssrLoadModule('/src/lib/document/compose.ts')
 	);
-	const { paginatePreparedDocument } = await server.ssrLoadModule(
-		'/src/lib/document/pagination/paginate.ts'
+	const { tokenizeInline } =
+		/** @type {typeof import('../src/lib/document/pagination/tokenize.ts')} */ (
+			await server.ssrLoadModule('/src/lib/document/pagination/tokenize.ts')
+		);
+	const { LayoutPreparationEngine } =
+		/** @type {typeof import('../src/lib/document/pagination/prepare.ts')} */ (
+			await server.ssrLoadModule('/src/lib/document/pagination/prepare.ts')
+		);
+	const { paginatePreparedDocument } =
+		/** @type {typeof import('../src/lib/document/pagination/paginate.ts')} */ (
+			await server.ssrLoadModule('/src/lib/document/pagination/paginate.ts')
+		);
+	const { validateBlockLayoutProfile } =
+		/** @type {typeof import('../src/lib/document/pagination/profile.ts')} */ (
+			await server.ssrLoadModule('/src/lib/document/pagination/profile.ts')
+		);
+	const { buildSourceIndex, resolvePoint } =
+		/** @type {typeof import('../src/lib/document/source-index.ts')} */ (
+			await server.ssrLoadModule('/src/lib/document/source-index.ts')
+		);
+	const { render } = /** @type {typeof import('svelte/server')} */ (
+		await server.ssrLoadModule('svelte/server')
 	);
-	const { validateBlockLayoutProfile } = await server.ssrLoadModule(
-		'/src/lib/document/pagination/profile.ts'
-	);
-	const { buildSourceIndex, resolvePoint } = await server.ssrLoadModule(
-		'/src/lib/contract/source-index.ts'
-	);
-	const { render } = await server.ssrLoadModule('svelte/server');
-	const { default: InlineContent } = await server.ssrLoadModule(
-		'/src/lib/components/document/InlineContent.svelte'
-	);
+	const { default: RevisionText } =
+		/** @type {{default:import('svelte').Component<{tokens:readonly import('../src/lib/document/pagination/types').InlineToken[]}>}} */ (
+			await server.ssrLoadModule('/src/lib/components/document/RevisionText.svelte')
+		);
 	const sourceIndex = buildSourceIndex(final.blocks);
-	const states = JSON.parse(await readFile('data/reference/compositor.json', 'utf8'));
+	const states = await readFrozenStates();
 	for (const { name, selected, view, sha256, provenanceSha256 } of states) {
 		const activeConcessions = Object.fromEntries(
 			Object.entries(selected).map(([itemId, concessionId]) => {
@@ -86,7 +109,7 @@ export async function verifyOverlayParity(server, final) {
 				return [itemId, concessionId];
 			})
 		);
-		const actual = composeContract({ ...final, activeConcessions, view });
+		const actual = composeDocument({ ...final, activeConcessions, view });
 		assert.equal(
 			createHash('sha256')
 				.update(JSON.stringify(normalize(actual), sortedKeys))
@@ -99,6 +122,7 @@ export async function verifyOverlayParity(server, final) {
 			provenanceSha256,
 			`${name}: source/provenance changed`
 		);
+		/** @type {import('../src/lib/document/pagination/types').InlineToken[]} */
 		const allTokens = actual.flatMap((b) =>
 			b.kind === 'table' ? b.rows.flat().map((value) => ({ value })) : tokenizeInline(b.content)
 		);
@@ -112,7 +136,11 @@ export async function verifyOverlayParity(server, final) {
 				else assert.deepStrictEqual([token.source.start.offset, token.source.end.offset], [0, 1]);
 			}
 			if (token.generated)
-				assert.equal(token.source, undefined, 'Generated text must not claim baseline source');
+				assert.equal(
+					token.source,
+					undefined,
+					'Generated text must not claim source-document coordinates'
+				);
 		}
 		// Synthetic profiles retain the constrained fragment-conservation check.
 		// Their token-sized lines/ten-unit rows do not represent browser geometry.
@@ -121,6 +149,7 @@ export async function verifyOverlayParity(server, final) {
 		const profiles = new Map(
 			prepared.map((block) => {
 				const f = block.fragment;
+				/** @type {import('../src/lib/document/pagination/profile').BlockLayoutProfile} */
 				const profile =
 					f.type === 'paragraph'
 						? {
@@ -166,12 +195,9 @@ export async function verifyOverlayParity(server, final) {
 				return true;
 			});
 		assert.deepStrictEqual(paginated, allTokens, `${name}: pagination lost text or provenance`);
-		const html = render(InlineContent, {
+		const html = render(RevisionText, {
 			props: {
-				tokens: allTokens,
-				selectedAnnotationId: null,
-				canOpenPlaybookItems: false,
-				onAnnotationSelect: () => {}
+				tokens: allTokens
 			}
 		}).body;
 		assert.equal(

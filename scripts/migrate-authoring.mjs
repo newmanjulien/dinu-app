@@ -25,6 +25,7 @@ if (!['dev', 'local'].some((kind) => environment.CONVEX_DEPLOYMENT === `${kind}:
 const target = await companyDeployment({ companyId, authoringMigration: true });
 if (target.deployment !== environment.CONVEX_DEPLOYMENT)
 	throw new Error('The configured deployment changed. No migration was run.');
+/** @param {'begin' | 'step' | 'finish'} name */
 async function run(name) {
 	try {
 		return await target.run(`authoringMigration:${name}`, { companyId });

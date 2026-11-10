@@ -3,12 +3,12 @@ import {
 	mountSelectionPage
 } from '../../src/lib/document/selection/selection-surface';
 import { iterateSelectionDocument } from '../../src/lib/document/selection/selection-model';
-import { complete } from '../../src/lib/contract/iteration';
+import { complete } from '../../src/lib/document/iteration';
 import type { PreparedBlock } from '../../src/lib/document/pagination/prepare';
 import type { InlineToken } from '../../src/lib/document/pagination/types';
 import type { RenderSnapshot } from '../../src/lib/document/runtime/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildSourceIndex } from '../../src/lib/contract/source-index';
+import { buildSourceIndex } from '../../src/lib/document/source-index';
 import { importDomSelection } from '../../src/lib/document/selection/dom-selection';
 import {
 	captureNativeSelection,
@@ -50,8 +50,8 @@ function mappedRange(
 ) {
 	const start = { node: range.startContainer, offset: range.startOffset },
 		end = { node: range.endContainer, offset: range.endOffset };
-	const contract = root.querySelector<HTMLElement>('.contract-document')!;
-	const block = contract.querySelector<HTMLElement>('.contract-block')!;
+	const contract = root.querySelector<HTMLElement>('.document-content')!;
+	const block = contract.querySelector<HTMLElement>('.document-block')!;
 	block.dataset.blockKey = 'paragraph-1';
 	const tokens = Array.from(
 		block.querySelectorAll<HTMLElement>('[data-source-start-key]'),
@@ -95,6 +95,7 @@ function mappedRange(
 	element.append(contract);
 	mountSelectionPage(element, { page, document: selectionDocument });
 	const snapshot: RenderSnapshot = {
+		view: 'redline',
 		id: 1,
 		pages: [page],
 		selectionDocument,
@@ -232,7 +233,7 @@ describe('native selection interaction', () => {
 
 	it('maps a captured range without consulting the live browser selection', () => {
 		const root = document.createElement('div');
-		root.innerHTML = `<article class="contract-document"><p class="contract-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="26" data-source-kind="text">A visible contract clause.</span></p></article>`;
+		root.innerHTML = `<article class="document-content"><p class="document-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="26" data-source-kind="text">A visible contract clause.</span></p></article>`;
 		document.body.append(root);
 		const text = root.querySelector('span')!.firstChild as Text;
 		const range = document.createRange();
@@ -250,7 +251,7 @@ describe('native selection interaction', () => {
 
 	it('rejects unowned formatting whitespace at a structural boundary', () => {
 		const root = document.createElement('div');
-		root.innerHTML = `<article class="contract-document"><p class="contract-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="26" data-source-kind="text">A visible contract clause.</span> <span class="structural-boundary-target" data-structural-boundary="paragraph-1" aria-hidden="true"></span></p></article>`;
+		root.innerHTML = `<article class="document-content"><p class="document-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="26" data-source-kind="text">A visible contract clause.</span> <span class="structural-boundary-target" data-structural-boundary="paragraph-1" aria-hidden="true"></span></p></article>`;
 		document.body.append(root);
 		const text = root.querySelector('[data-source-start-key="text-1"]')!.firstChild as Text;
 		const boundary = root.querySelector('.structural-boundary-target')!;
@@ -264,7 +265,7 @@ describe('native selection interaction', () => {
 
 	it('maps source-backed whitespace with its source offsets', () => {
 		const root = document.createElement('div');
-		root.innerHTML = `<article class="contract-document"><p class="contract-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="1" data-source-kind="text">A</span><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="1" data-source-end-offset="2" data-source-kind="text"> </span><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="2" data-source-end-offset="3" data-source-kind="text">B</span></p></article>`;
+		root.innerHTML = `<article class="document-content"><p class="document-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="1" data-source-kind="text">A</span><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="1" data-source-end-offset="2" data-source-kind="text"> </span><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="2" data-source-end-offset="3" data-source-kind="text">B</span></p></article>`;
 		document.body.append(root);
 		const tokens = root.querySelectorAll('[data-source-start-key="text-1"]');
 		const first = tokens[0].firstChild as Text;
@@ -281,7 +282,7 @@ describe('native selection interaction', () => {
 
 	it('rejects visible contract text without source ownership', () => {
 		const root = document.createElement('div');
-		root.innerHTML = `<article class="contract-document"><p class="contract-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="1" data-source-kind="text">A</span><em>unexpected</em><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="1" data-source-end-offset="2" data-source-kind="text">B</span></p></article>`;
+		root.innerHTML = `<article class="document-content"><p class="document-block"><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="0" data-source-end-offset="1" data-source-kind="text">A</span><em>unexpected</em><span data-source-start-key="text-1" data-source-end-key="text-1" data-source-start-offset="1" data-source-end-offset="2" data-source-kind="text">B</span></p></article>`;
 		document.body.append(root);
 		const tokens = root.querySelectorAll('[data-source-start-key="text-1"]');
 		const first = tokens[0].firstChild as Text;

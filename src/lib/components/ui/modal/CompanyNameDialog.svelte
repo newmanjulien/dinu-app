@@ -1,4 +1,5 @@
 <script lang="ts">
+	import TextInput from '$lib/ui/TextInput.svelte';
 	import { untrack } from 'svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import Button from '$lib/ui/Button.svelte';
@@ -14,6 +15,7 @@
 		submitDisabled = false,
 		error = null,
 		onRetry,
+		onExistingSubmit,
 		onSubmit,
 		onClose,
 		onOpen
@@ -29,6 +31,7 @@
 		submitDisabled?: boolean;
 		error?: string | null;
 		onRetry?: () => void;
+		onExistingSubmit?: () => void;
 		onSubmit: (name: string) => void;
 		onClose: () => void;
 		onOpen?: () => void;
@@ -48,6 +51,11 @@
 	function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (busy || submitDisabled || !open) return;
+		if (onExistingSubmit) {
+			validation = null;
+			onExistingSubmit();
+			return;
+		}
 		if (!name.trim()) {
 			validation = 'Enter a buyer company name.';
 			input?.focus();
@@ -73,8 +81,8 @@
 >
 	<form id={formId} onsubmit={submit}>
 		<label class="mb-2 block text-sm" for={`${formId}-name`}>{nameLabel}</label>
-		<input
-			bind:this={input}
+		<TextInput
+			bind:element={input}
 			id={`${formId}-name`}
 			bind:value={name}
 			oninput={() => (validation = null)}
@@ -83,7 +91,6 @@
 			autocomplete="organization"
 			aria-invalid={Boolean(validation || error)}
 			aria-describedby={validation || error ? `${formId}-error` : undefined}
-			class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted h-9"
 		/>
 		{#if validation || error}<p
 				id={`${formId}-error`}

@@ -1,8 +1,12 @@
 import { browser } from '$app/environment';
 import { env } from '$env/dynamic/public';
-import type { ActivityCommand } from './activity-commands';
+import {
+	MAX_ACTIVITY_COMMANDS,
+	MAX_SAVE_COMMANDS,
+	type ActivityCommand
+} from './activity-commands';
 import type { ApplicationChoices } from './applications';
-import { readContractState, validChoices } from './persisted-values';
+import { validContractState, validChoices } from './persisted-values';
 import type { RetainedSaveRequest } from './persistence.svelte';
 import type { ContractState } from './saved';
 
@@ -21,22 +25,28 @@ const removedMemberships = new Set<string>();
 const prefix = (userId: string) =>
 	`dinu:drafts:v4:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
 
-function validCommands(value: unknown): value is ActivityCommand[] {
-	return (
-		Array.isArray(value) &&
-		value.length <= 250 &&
-		value.every(
-			(c) =>
-				c &&
-				typeof c.id === 'string' &&
-				c.id.length > 0 &&
-				c.id.length <= 200 &&
-				typeof c.itemId === 'string' &&
-				typeof c.occurredAt === 'number' &&
-				Number.isFinite(c.occurredAt) &&
-				(c.choice === null || validChoices({ [c.itemId]: c.choice }))
+function validCommands(value: unknown, limit: number): value is ActivityCommand[] {
+	if (!Array.isArray(value) || value.length > limit) return false;
+	const ids = new Set<string>();
+	for (const command of value) {
+		if (!command || typeof command !== 'object' || Array.isArray(command)) return false;
+		const c: Record<string, unknown> = command;
+		if (
+			Object.keys(c).some((key) => !['id', 'itemId', 'choice', 'occurredAt'].includes(key)) ||
+			typeof c.id !== 'string' ||
+			!c.id.trim() ||
+			c.id.length > 200 ||
+			ids.has(c.id) ||
+			typeof c.itemId !== 'string' ||
+			!c.itemId ||
+			typeof c.occurredAt !== 'number' ||
+			!Number.isFinite(c.occurredAt) ||
+			!(c.choice === null || validChoices({ [c.itemId]: c.choice }))
 		)
-	);
+			return false;
+		ids.add(c.id);
+	}
+	return true;
 }
 function readDraft(value: unknown, id: string): ContractDraft | undefined {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return;
@@ -47,17 +57,18 @@ function readDraft(value: unknown, id: string): ContractDraft | undefined {
 	)
 		return;
 	const draft = value as ContractDraft;
-	const base = readContractState(draft?.base);
+	const base = draft.base;
 	if (
-		base &&
+		validContractState(base) &&
 		(draft?.version === 4 || draft?.version === 5 || draft?.version === 6) &&
 		typeof draft.conflict === 'boolean' &&
 		(draft.version !== 6 ||
-			(validCommands(draft.commands) &&
-				(draft.request === null || validCommands(draft.request?.commands)))) &&
+			(draft.commands !== undefined &&
+				(draft.request === null || draft.request?.commands !== undefined))) &&
 		validChoices(draft.intent) &&
-		(draft.commands === undefined || validCommands(draft.commands)) &&
-		(draft.request?.commands === undefined || validCommands(draft.request.commands)) &&
+		(draft.commands === undefined || validCommands(draft.commands, MAX_ACTIVITY_COMMANDS)) &&
+		(draft.request?.commands === undefined ||
+			validCommands(draft.request.commands, MAX_SAVE_COMMANDS)) &&
 		(draft.request === null ||
 			(typeof draft.request === 'object' &&
 				!Array.isArray(draft.request) &&

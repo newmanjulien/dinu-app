@@ -1,12 +1,18 @@
 <script lang="ts">
+	import TextInput from '$lib/ui/TextInput.svelte';
 	import { tick } from 'svelte';
 	import type { HTMLInputAttributes } from 'svelte/elements';
 
 	type Props = {
 		label: string;
+		id?: string;
+		visibleLabel?: boolean;
+		describedby?: string;
+		onblur?: () => void;
+		oninput?: (value: string) => void;
 		value: string;
 		placeholder?: string;
-		type?: 'email' | 'text' | 'url';
+		type?: 'email' | 'text' | 'url' | 'tel';
 		autocomplete?: HTMLInputAttributes['autocomplete'];
 		inputmode?: HTMLInputAttributes['inputmode'];
 		required?: boolean;
@@ -14,10 +20,16 @@
 		maxlength?: number;
 		autofocus?: boolean;
 		invalid?: boolean;
+		tone?: 'accent' | 'neutral';
 	};
 
 	let {
 		label,
+		id,
+		visibleLabel = false,
+		describedby,
+		onblur,
+		oninput,
 		value = $bindable(),
 		placeholder = '',
 		type = 'text',
@@ -27,7 +39,8 @@
 		disabled = false,
 		maxlength,
 		autofocus = false,
-		invalid = false
+		invalid = false,
+		tone = 'accent'
 	}: Props = $props();
 
 	let inputElement = $state<HTMLInputElement | null>(null);
@@ -45,10 +58,16 @@
 </script>
 
 <label class="block min-w-0">
-	<span class="sr-only">{label}</span>
-	<input
-		bind:this={inputElement}
+	<span class={visibleLabel ? 'mb-2 block text-[13px] font-[450] text-ink' : 'sr-only'}
+		>{label}</span
+	>
+	<TextInput
+		bind:element={inputElement}
 		bind:value
+		{id}
+		{onblur}
+		oninput={(event) => oninput?.(event.currentTarget.value)}
+		aria-describedby={describedby}
 		placeholder={placeholder || label}
 		{type}
 		{autocomplete}
@@ -57,6 +76,7 @@
 		{disabled}
 		{maxlength}
 		aria-invalid={invalid}
-		class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted box-border h-10 leading-none"
+		{tone}
+		class="box-border h-10 leading-none"
 	/>
 </label>

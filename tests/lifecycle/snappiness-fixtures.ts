@@ -1,13 +1,14 @@
 import { getFunctionName } from 'convex/server';
-import type { ConvexClient } from 'convex/browser';
+import type { SnapshotClient } from '../../src/lib/query-once';
+import type { FunctionArgs, FunctionReference, FunctionReturnType } from 'convex/server';
 import { flushSync, tick } from 'svelte';
 import { vi } from 'vitest';
 import type { Id } from '../../src/convex/_generated/dataModel';
-import type { ContractBlock } from '../../src/lib/contract/model';
-import type { ReadyContract } from '../../src/lib/document/runtime/resources.svelte';
+import type { SourceBlock } from '../../src/lib/document/model';
+import type { ReadyContract } from '../../src/lib/contract/saved';
 import type {
 	DetailRecord,
-	DetailSnapshot,
+	ContentSnapshot,
 	StructureSnapshot
 } from '../../src/lib/playbook/structure';
 import { itemStructure } from '../../src/lib/playbook/structure';
@@ -15,13 +16,14 @@ import { itemStructure } from '../../src/lib/playbook/structure';
 export const membershipId = 'member' as Id<'memberships'>;
 export const companyId = 'company' as Id<'company'>;
 export const watermark = {
-	baselineFingerprint: 'baseline',
+	templateSourceFingerprint: 'templateSource',
+	templateSourceId: 'source' as Id<'templateSources'>,
 	authoringGeneration: 1,
 	structuralGeneration: 1
 };
 
 export function documentFixture(count = 12) {
-	const blocks: ContractBlock[] = Array.from({ length: count }, (_, i) => ({
+	const blocks: SourceBlock[] = Array.from({ length: count }, (_, i) => ({
 		kind: 'paragraph',
 		role: 'body',
 		blockKey: `paragraph-${i}`,
@@ -55,10 +57,11 @@ export function documentFixture(count = 12) {
 	const structure: StructureSnapshot = {
 		...watermark,
 		ready: true,
-		items: records.map((record) => itemStructure(record))
+		items: records.map((record) => ({ ...itemStructure(record), companyId: record.companyId }))
 	};
-	const detail = (i: number, record = records[i]): DetailSnapshot => ({
-		...watermark,
+	const detail = (i: number, record = records[i]): ContentSnapshot => ({
+		templateSourceId: watermark.templateSourceId,
+		templateSourceFingerprint: watermark.templateSourceFingerprint,
 		ready: true,
 		status: 'present',
 		item: record
@@ -116,28 +119,36 @@ export function controlledClient() {
 	};
 	const observations: Observation[] = [];
 	const mutation = vi.fn(() => new Promise<never>(() => {}));
-	const onUpdate = vi.fn((reference, args, update, error) => {
+	const subscribe: SnapshotClient['onUpdate'] = <Query extends FunctionReference<'query'>>(
+		reference: Query,
+		args: FunctionArgs<Query>,
+		update: (value: FunctionReturnType<Query>) => void,
+		error?: (error: Error) => unknown
+	) => {
 		const observation: Observation = {
 			name: getFunctionName(reference),
 			args,
-			update,
-			error,
+			update: (value) => update(value as FunctionReturnType<Query>),
+			error: (failure) => {
+				error?.(failure);
+			},
 			released: false
 		};
 		observations.push(observation);
 		return () => {
 			observation.released = true;
 		};
-	});
+	};
+	const onUpdate = vi.fn(subscribe);
 	const live = (name: string) => observations.filter((o) => o.name === name && !o.released);
-	const details = () => live('playbookItems:detail');
+	const details = () => live('playbookItems:content');
 	const publish = (name: string, value: unknown) => live(name).forEach((o) => o.update(value));
-	const publishDetail = (id: string, value: DetailSnapshot) =>
+	const publishDetail = (id: string, value: ContentSnapshot) =>
 		details()
 			.filter((o) => o.args.id === id)
 			.forEach((o) => o.update(value));
 	return {
-		client: { onUpdate, mutation } as unknown as ConvexClient,
+		client: { onUpdate, mutation },
 		observations,
 		mutation,
 		onUpdate,

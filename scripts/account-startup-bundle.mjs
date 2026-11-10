@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 
+/** @type {Record<string, {file:string;imports?:string[]}>} */
 const manifest = JSON.parse(
 	fs.readFileSync('.svelte-kit/output/client/.vite/manifest.json', 'utf8')
 );
@@ -8,7 +9,7 @@ const manifest = JSON.parse(
 const components = new Set([
 	'src/routes/+layout.svelte',
 	'src/routes/(workspace)/+layout.svelte',
-	'src/routes/(workspace)/+page.svelte'
+	'src/routes/(workspace)/contracts/+page.svelte'
 ]);
 const directory = '.svelte-kit/generated/client-optimized/nodes';
 const roots = fs
@@ -20,7 +21,9 @@ const roots = fs
 	.map((file) => `${directory}/${file}`);
 if (roots.length !== components.size)
 	throw new Error('Could not identify all workspace route nodes.');
+/** @type {Set<string>} */
 const visited = new Set();
+/** @param {string} key */
 function visit(key) {
 	if (visited.has(key)) return;
 	const entry = manifest[key];

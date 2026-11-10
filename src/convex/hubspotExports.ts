@@ -1,15 +1,16 @@
 import { ConvexError, v } from 'convex/values';
+import { internal } from './_generated/api';
 import { internalMutation, internalQuery, mutation, type MutationCtx } from './_generated/server';
 import { accessibleContract, requireMembership } from './auth';
 import { actionKey, actorOf, activity } from './hubspotRecords';
 import { exportRequest } from './savedContractValidators';
 import schema from './schema';
-import { snapshotReader } from './templates';
+import { contractReader } from './contractReader';
 import { concessionSelections } from '../lib/contract/applications';
-import { savedReviews } from '../lib/contract/approval';
-import { baselineBlock } from '../lib/contract/source-validators';
-import { historicalItem } from './playbookValidators';
-import { contractName } from '../lib/contract/export/content';
+import { approvedExport } from './documentExport';
+import { sourceBlock } from '../lib/document/source-validators';
+import { contractItem } from './contractItemValidators';
+import { contractName } from '../lib/contract/filename';
 import { deleteUnownedFile } from './storageOwnership';
 import { installation, requireContractWork } from './contractPolicy';
 
@@ -58,18 +59,17 @@ export const reserve = internalMutation({
 		}
 		const contract = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
 		if (!contract) throw new ConvexError('This contract was deleted.');
-		await requireContractWork(ctx, contract);
+		const connection = await requireContractWork(ctx, contract);
 		if (contract.editRevision !== args.expectedEditRevision)
 			throw new ConvexError('This contract changed. Wait for the saved version.');
-		const reader = await snapshotReader(ctx, contract),
-			items = await reader.selectedItems(concessionSelections(contract.applications));
-		if (savedReviews(items, contract).some((r) => r.status !== 'approved'))
-			throw new ConvexError('All selected concessions must be approved before downloading.');
+		await approvedExport(ctx, contract, 'downloading');
 		const now = Date.now(),
 			timestamp = new Date(now).toISOString().slice(0, 19).replace('T', ' ').replaceAll(':', '-');
-		const { availability: _availability, ...destination } = contract.hubspot ?? {
-			availability: 'available'
-		};
+		let destination: DocExport['destination'];
+		if (connection && contract.hubspot) {
+			const { availability: _availability, ...captured } = contract.hubspot;
+			destination = captured;
+		}
 		const id = await ctx.db.insert('hubspotExports', {
 			key,
 			inputs,
@@ -78,9 +78,7 @@ export const reserve = internalMutation({
 			membershipId: access.membershipId,
 			profileId: access.profile._id,
 			actor: actorOf(access.profile),
-			destination: contract.hubspot
-				? (destination as NonNullable<DocExport['destination']>)
-				: undefined,
+			destination,
 			title: contract.buyerCompanyName,
 			templateVersionId: contract.templateVersionId,
 			editRevision: contract.editRevision,
@@ -107,8 +105,8 @@ type DocExport = import('./_generated/dataModel').Doc<'hubspotExports'>;
 export const content = internalQuery({
 	args: { id: v.id('hubspotExports'), claim: v.string() },
 	returns: v.object({
-		blocks: v.array(baselineBlock),
-		items: v.array(historicalItem),
+		blocks: v.array(sourceBlock),
+		items: v.array(contractItem),
 		applications: schema.doc('savedContracts').pick('applications').fields.applications,
 		title: v.string()
 	}),
@@ -135,7 +133,7 @@ export const content = internalQuery({
 			.take(64);
 		if (chunks.length === 64) throw new Error('Download provenance exceeds its storage envelope.');
 		const applications = decodeProvenance(chunks.map((c) => c.data).join(''));
-		const reader = await snapshotReader(ctx, {
+		const reader = await contractReader(ctx, {
 			...current,
 			templateVersionId: attempt.templateVersionId
 		});
@@ -210,7 +208,12 @@ export const release = internalMutation({
 				message:
 					'HubSpot was installed after this download started. Start a new download after linking a deal.'
 			});
-		await requireContractWork(ctx, current);
+		const captured = attempt.destination
+			? await ctx.db.get('hubspotConnections', attempt.destination.connectionId)
+			: null;
+		const retired = attempt.destination && (!captured || captured.status === 'retiring');
+		// Accepted bytes retain their original local retry entitlement, even after reinstall.
+		if (!retired) await requireContractWork(ctx, current);
 		const url = await ctx.storage.getUrl(attempt.fileId);
 		if (!url) throw new ConvexError('This download is unavailable. Start a new download.');
 		await ctx.db.patch('hubspotExports', id, { releasedAt: attempt.releasedAt ?? Date.now() });
@@ -251,14 +254,7 @@ export const acknowledge = mutation({
 			});
 		const now = Date.now();
 		const available = Boolean(attempt.fileId && retainedUntil(attempt) > now);
-		const attachmentUntil =
-			attempt.destination && available && !attempt.remoteFileId ? now + 30 * 24 * hour : undefined;
-		await ctx.db.patch('hubspotExports', attempt._id, {
-			acknowledgedAt: args.initiatedAt,
-			acknowledgedOn: now,
-			attachmentUntil,
-			expiresAt: Math.max(attempt.createdAt + hour, attachmentUntil ?? 0) + READ_GRACE
-		});
+		let active = false;
 		if (attempt.destination) {
 			// Captured destination deliberately survives relinking or contract deletion.
 			const synthetic = {
@@ -267,7 +263,7 @@ export const acknowledge = mutation({
 				buyerCompanyName: attempt.title,
 				hubspot: { ...attempt.destination, availability: 'available' as const }
 			};
-			await activity(
+			active = await activity(
 				ctx,
 				synthetic,
 				attempt.actor,
@@ -282,25 +278,48 @@ export const acknowledge = mutation({
 				attempt._id
 			);
 		}
+		const attachmentUntil =
+			active && available && !attempt.remoteFileId ? now + 30 * 24 * hour : undefined;
+		await ctx.db.patch('hubspotExports', attempt._id, {
+			acknowledgedAt: args.initiatedAt,
+			acknowledgedOn: now,
+			attachmentUntil,
+			expiresAt: Math.max(attempt.createdAt + hour, attachmentUntil ?? 0) + READ_GRACE
+		});
 		return null;
 	}
 });
 export const expire = internalMutation({
-	args: {},
+	args: {
+		state: v.optional(v.union(v.literal('preparing'), v.literal('ready'))),
+		cutoff: v.optional(v.number()),
+		cursor: v.optional(v.string())
+	},
 	returns: v.null(),
-	handler: async (ctx) => {
-		for (const state of ['preparing', 'ready'] as const) {
-			const attempts = await ctx.db
-				.query('hubspotExports')
-				.withIndex('by_state_and_expiresAt', (q) =>
-					q.eq('state', state).lte('expiresAt', Date.now())
-				)
-				.take(20);
-			for (const attempt of attempts) {
-				await ctx.db.patch('hubspotExports', attempt._id, { state: 'expired', fileId: undefined });
-				if (attempt.fileId) await deleteUnownedFile(ctx, attempt.fileId);
-			}
+	handler: async (ctx, args) => {
+		const cutoff = args.cutoff ?? Date.now();
+		const state = args.state ?? 'preparing';
+		const page = await ctx.db
+			.query('hubspotExports')
+			.withIndex('by_state_and_expiresAt', (q) => q.eq('state', state).lte('expiresAt', cutoff))
+			.paginate({
+				cursor: args.cursor ?? null,
+				numItems: 20,
+				maximumRowsRead: 20,
+				maximumBytesRead: 1024 * 1024
+			});
+		for (const attempt of page.page) {
+			await ctx.db.patch('hubspotExports', attempt._id, { state: 'expired', fileId: undefined });
+			if (attempt.fileId) await deleteUnownedFile(ctx, attempt.fileId);
 		}
+		if (!page.isDone)
+			await ctx.scheduler.runAfter(0, internal.hubspotExports.expire, {
+				state,
+				cutoff,
+				cursor: page.continueCursor
+			});
+		else if (state === 'preparing')
+			await ctx.scheduler.runAfter(0, internal.hubspotExports.expire, { state: 'ready', cutoff });
 		return null;
 	}
 });

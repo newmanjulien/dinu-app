@@ -75,6 +75,7 @@ export async function readDirectory(
 		page: await Promise.all(
 			result.page.map(async (contract) => ({
 				_id: contract.contractId,
+				_creationTime: contract.createdAt,
 				hubspot: contract.hubspot,
 				workBlock: blockForConnection(connection, contract.hubspot),
 				buyerCompanyName: contract.buyerCompanyName,

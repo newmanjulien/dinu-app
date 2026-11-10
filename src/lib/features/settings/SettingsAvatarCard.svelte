@@ -53,18 +53,18 @@
 </script>
 
 <SettingsCard {title} {description}>
-	<div class="mt-4">
-		<input
-			bind:this={inputElement}
-			type="file"
-			accept="image/*"
-			class="sr-only"
-			onchange={handleFileChange}
-		/>
-		<p class="min-h-5 text-[0.72rem] leading-5 {errorText ? 'text-danger' : 'text-ink-muted'}">
-			{errorText ?? (uploading ? 'Uploading...' : '')}
+	<input
+		bind:this={inputElement}
+		type="file"
+		accept="image/*"
+		class="sr-only"
+		onchange={handleFileChange}
+	/>
+	{#if errorText || uploading}
+		<p class="mt-4 text-[0.72rem] leading-5 {errorText ? 'text-danger' : 'text-ink-muted'}">
+			{errorText ?? 'Uploading...'}
 		</p>
-	</div>
+	{/if}
 
 	{#snippet media()}
 		<button

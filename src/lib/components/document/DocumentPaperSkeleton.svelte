@@ -2,7 +2,7 @@
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import { PAGE_FORMAT } from '$lib/document/pagination/page-format';
 	let {
-		label = 'Laying out contract pages',
+		label = 'Laying out document pages',
 		announce = true
 	}: { label?: string; announce?: boolean } = $props();
 </script>

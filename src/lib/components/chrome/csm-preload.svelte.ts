@@ -28,9 +28,9 @@ export function setCsmPreload(canStart: () => boolean, setupBooked: () => boolea
 		const v = viewer();
 		return !session.blocked &&
 			!session.closing &&
+			v.membership.role === 'admin' &&
 			session.preparedSessionId &&
-			!v.company.deletionPending &&
-			(setupBooked() || v.permissions.manageTemplate)
+			!v.company.deletionPending
 			? JSON.stringify([
 					session.preparedSessionId,
 					session.transportGeneration,
@@ -61,7 +61,7 @@ export function setCsmPreload(canStart: () => boolean, setupBooked: () => boolea
 						current() &&
 						(mode === 'setup'
 							? (!!replacement || !setupBooked()) && viewer().permissions.manageTemplate
-							: setupBooked())
+							: true)
 				};
 			}
 		}

@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { invalidateAll } from '$app/navigation';
+	import InvitationSkeleton from '$lib/auth/InvitationSkeleton.svelte';
+	import type { InvitationPreview } from '../../../convex/invitationValidators';
+	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 	import { untrack } from 'svelte';
 	import { useClerkContext } from 'svelte-clerk';
 	import EmailCodeFlow from '$lib/auth/EmailCodeFlow.svelte';
@@ -9,9 +12,32 @@
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import AuthStepFrame from '$lib/auth/components/AuthStepFrame.svelte';
-	import LoadingState from '$lib/ui/LoadingState.svelte';
+
 	import type { PageData } from './$types';
 	let { data }: { data: PageData } = $props();
+	let streamed = $state<{ preview: InvitationPreview | null; error: string }>();
+	$effect(() => {
+		const request = data.previewRequest;
+		let active = true;
+		streamed = undefined;
+		if (!request) return;
+		const read = new ReadAttempt(15_000);
+		void waitForRead(Promise.resolve(request), read.signal)
+			.then((value) => {
+				if (active) streamed = value;
+			})
+			.catch(() => {
+				if (active)
+					streamed = { preview: null, error: 'Unable to load this invitation. Please try again.' };
+			})
+			.finally(() => read.complete());
+		return () => {
+			active = false;
+			read.abort();
+		};
+	});
+	const preview = $derived(data.preview ?? streamed?.preview);
+	const previewPending = $derived(Boolean(data.previewRequest && !streamed));
 	const clerk = useClerkContext();
 	const session = useViewerSession();
 	const signedIn = $derived(Boolean(clerk.auth.sessionId || clerk.session));
@@ -20,8 +46,8 @@
 	let previewReloadedFor: string | null | undefined;
 	$effect(() => {
 		expired = false;
-		if (signedIn || data.preview?.status !== 'available') return;
-		const timer = setTimeout(() => (expired = true), data.preview.expiresInMs);
+		if (signedIn || preview?.status !== 'available') return;
+		const timer = setTimeout(() => (expired = true), preview.expiresInMs);
 		return () => clearTimeout(timer);
 	});
 	$effect(() => {
@@ -65,30 +91,37 @@
 	</AuthStepFrame>
 {:else if signedIn}
 	<RequireAccount inline>
+		{#snippet loading({ announce })}<InvitationSkeleton entry="signed-in" {announce} />{/snippet}
 		{#if InvitationLink}<InvitationLink />
-		{:else}
+		{:else if invitation.failed}
 			<AuthStepFrame title="Company invitation">
-				<LoadingState label={invitation.failed ? undefined : 'Loading invitation'}>
-					{#if invitation.failed}
-						<p role="alert" class="text-center text-sm text-danger">
-							Unable to load this invitation. Please try again.
-						</p>
-						<button class="text-sm underline" onclick={() => invitation.retry()}>Try again</button>
-					{/if}
-				</LoadingState>
+				<div class="grid gap-4">
+					<p role="alert" class="text-center text-sm text-danger">
+						Unable to load this invitation. Please try again.
+					</p>
+					<button class="text-sm underline" onclick={() => invitation.retry()}>Try again</button>
+				</div>
 			</AuthStepFrame>
+		{:else}
+			<InvitationSkeleton entry="signed-in" />
 		{/if}
 	</RequireAccount>
 {:else if data.previewSkipped && !clerk.isLoaded}
-	<AccountLoading inline />
+	<AccountLoading inline>
+		{#snippet loading({ announce })}<InvitationSkeleton {announce} />{/snippet}
+	</AccountLoading>
 {:else if data.token !== page.url.searchParams.get('invitation') || (data.previewSkipped && retrying)}
-	<LoadingState label="Loading invitation" />
-{:else if data.preview?.status === 'available' && !expired}
-	{#key data.token}<EmailCodeFlow invitation={data.preview} />{/key}
-{:else if !data.preview}
+	<InvitationSkeleton />
+{:else if previewPending}
+	<InvitationSkeleton
+		entry={clerk.isLoaded && preview?.status === 'available' && !expired ? 'signed-out' : 'unknown'}
+	/>
+{:else if preview?.status === 'available' && !expired}
+	{#key data.token}<EmailCodeFlow invitation={preview} />{/key}
+{:else if !preview}
 	<AuthStepFrame title="Company invitation">
 		<div class="grid justify-items-center gap-4">
-			<p role="alert" class="text-center text-sm text-danger">{data.error}</p>
+			<p role="alert" class="text-center text-sm text-danger">{streamed?.error || data.error}</p>
 			<button class="text-sm underline" disabled={retrying} onclick={() => void retryPreview()}>
 				{retrying ? 'Loading…' : 'Try again'}
 			</button>
@@ -96,14 +129,14 @@
 	</AuthStepFrame>
 {:else}
 	<AuthStepFrame
-		title={data.preview.status === 'accepted'
+		title={preview.status === 'accepted'
 			? 'Invitation already accepted'
-			: data.preview.status === 'expired' || data.preview.status === 'available'
+			: preview.status === 'expired' || preview.status === 'available'
 				? 'Invitation expired'
-				: data.preview.status === 'revoked'
+				: preview.status === 'revoked'
 					? 'Invitation revoked'
 					: 'Invitation unavailable'}
-		description={data.preview.status === 'accepted'
+		description={preview.status === 'accepted'
 			? 'This invitation has already been used. Log in to open your workspace, or ask a colleague for a new invitation.'
 			: 'Open the latest invitation email, or ask a colleague for a new invitation.'}
 	>

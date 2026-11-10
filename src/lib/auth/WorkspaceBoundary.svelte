@@ -75,7 +75,7 @@
 	{/if}
 {/snippet}
 {#if member}
-	{#key `${member.profile.id}:${member.membership.id}`}
+	{#key `${member.profile.id}:${member.membership.id}:${member.company.id}`}
 		<WorkspaceScope viewer={member}>
 			<WorkspaceShell>
 				{#if Workspace}<Workspace>{@render children()}</Workspace>{:else}{@render pending()}{/if}

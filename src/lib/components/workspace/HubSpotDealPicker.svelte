@@ -1,6 +1,8 @@
 <script lang="ts">
+	import TextInput from '$lib/ui/TextInput.svelte';
+	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
+	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { onDestroy, untrack } from 'svelte';
-	import { useQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
@@ -28,6 +30,7 @@
 	let attempt = $state.raw<{
 		owner: string;
 		term: string;
+		cursor?: string;
 		busy: boolean;
 		error: string | null;
 	}>();
@@ -43,7 +46,7 @@
 	const currentAttempt = $derived(
 		attempt?.owner === owner && attempt?.term === term ? attempt : undefined
 	);
-	const busy = $derived(Boolean(owner && (!currentAttempt || currentAttempt.busy)));
+	const fetching = $derived(Boolean(owner && (!currentAttempt || currentAttempt.busy)));
 	const error = $derived(currentAttempt?.error ?? null);
 	const candidates = $derived(
 		[...new Map((page?.deals ?? []).map((deal) => [deal.id, deal])).values()].slice(
@@ -54,7 +57,7 @@
 	const dealIds = $derived([
 		...new Set([...candidates.map((deal) => deal.id), ...(selected ? [selected.id] : [])])
 	]);
-	const eligibility = useQuery(api.hubspotDeals.eligibility, () => {
+	const eligibility = useReadQuery(api.hubspotDeals.eligibility, () => {
 		const current = connection.data;
 		return owner && current?.accountId && current.installedAt !== null && dealIds.length
 			? {
@@ -70,6 +73,8 @@
 	const eligibilityReady = $derived(
 		Boolean(
 			owner &&
+			!eligibility.isLoading &&
+			!eligibility.error &&
 			eligibility.data &&
 			eligibility.data.requestIdentity === owner &&
 			eligibility.data.accountId === connection.data?.accountId &&
@@ -86,17 +91,30 @@
 	const available = $derived(candidates.filter((deal) => !linkedIds.has(deal.id)));
 	const deals = $derived(term ? candidates : eligibilityReady ? available.slice(0, 3) : []);
 	const hasMore = $derived(page?.hasMore ?? false);
+	const seekingMore = $derived(
+		Boolean(
+			owner &&
+			!term &&
+			!fetching &&
+			!error &&
+			!eligibilityLoading &&
+			!eligibilityError &&
+			page?.nextCursor != null &&
+			!deals.length
+		)
+	);
+	const busy = $derived(fetching || seekingMore);
 	let generation = 0;
 	let active = true;
 	onDestroy(() => {
 		active = false;
 		generation++;
 	});
-	async function load(query: string, identity: string, force = false) {
+	async function load(query: string, identity: string, force = false, cursor?: string) {
 		const current = ++generation;
-		attempt = { owner: identity, term: query, busy: true, error: null };
+		attempt = { owner: identity, term: query, cursor, busy: true, error: null };
 		try {
-			const page = await resource.load(query, force);
+			const page = await resource.load(query, force, cursor);
 			if (!active || current !== generation || resource.identity !== identity || !page) return;
 			result = { owner: identity, term: query, page };
 		} catch (cause) {
@@ -104,6 +122,7 @@
 				attempt = {
 					owner: identity,
 					term: query,
+					cursor,
 					busy: false,
 					error: saveError(cause, 'We couldn’t load HubSpot deals. Try again.')
 				};
@@ -122,6 +141,14 @@
 			return;
 		}
 		const timer = setTimeout(() => void load(query, identity), 250);
+		return () => clearTimeout(timer);
+	});
+	$effect(() => {
+		const identity = owner;
+		const cursor = page?.nextCursor;
+		if (!seekingMore || !identity || cursor == null) return;
+		// Keep requests bounded and yield between unavailable pages; typing cancels the scan.
+		const timer = setTimeout(() => void load('', identity, false, cursor), 250);
 		return () => clearTimeout(timer);
 	});
 	$effect(() => {
@@ -147,18 +174,18 @@
 			<div
 				class="flex items-center justify-between gap-3 rounded-button-lg border-hairline border-edge bg-surface p-3 text-[13px] shadow-control"
 			>
-				<span class="min-w-0 break-words">{selected.name}</span><Button
+				<span class="min-w-0 truncate" title={selected.name}>{selected.name}</span><Button
 					variant="secondary"
 					{disabled}
 					onclick={() => (selected = null)}>Change</Button
 				>
 			</div>
 		{:else}
-			<input
+			<TextInput
 				id="hubspot-deal-search"
-				class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted h-9"
 				type="search"
 				placeholder="Search deals…"
+				class="text-[13.5px]"
 				bind:value={search}
 				{disabled}
 			/>
@@ -167,18 +194,31 @@
 				aria-label="HubSpot deals"
 				aria-busy={busy || eligibilityLoading}
 			>
+				{#if (busy || eligibilityLoading) && !deals.length}
+					<div aria-hidden="true">
+						{#each [0, 1, 2] as row (row)}
+							<div class="flex min-h-9 items-center px-3 py-2">
+								<SkeletonBlock class="h-4 w-3/4" />
+							</div>
+						{/each}
+					</div>
+				{/if}
 				{#each deals as deal (deal.id)}
 					<div class="flex items-center gap-2 pr-2">
 						<button
 							type="button"
-							class="block min-h-9 min-w-0 flex-1 cursor-pointer rounded-button-lg px-3 py-2 text-left text-[13px] break-words text-ink-secondary transition-colors not-disabled:hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted motion-reduce:transition-none"
+							class="block min-h-9 min-w-0 flex-1 cursor-pointer truncate rounded-button-lg px-3 py-2 text-left text-[13px] text-ink-secondary transition-colors not-disabled:hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted motion-reduce:transition-none"
+							title={deal.name}
 							disabled={disabled || !eligibilityReady || linkedIds.has(deal.id)}
 							onclick={() => {
 								if (!disabled && eligibilityReady && !linkedIds.has(deal.id)) selected = deal;
 							}}>{deal.name}</button
 						>
 						{#if linkedIds.has(deal.id)}
-							<Tooltip text="This deal is already linked to another contract.">
+							<Tooltip
+								text="This deal is already linked to another contract."
+								placement="bottom-end"
+							>
 								{#snippet children()}
 									<InfoIcon aria-hidden="true" class="size-4 text-ink-muted" />
 								{/snippet}
@@ -189,9 +229,7 @@
 				{#if !busy && !eligibilityLoading && !deals.length && !error && !eligibilityError}<p
 						class="px-3 py-4 text-[13px] text-ink-muted"
 					>
-						{term
-							? 'No deals found.'
-							: 'No unlinked deals in the recent results. Search to find a deal.'}
+						{term ? 'No deals found.' : 'No unlinked HubSpot deals available.'}
 					</p>{/if}
 			</div>
 			{#if !busy && eligibilityReady && !error && (hasMore || (!term && available.length > 3))}<p
@@ -199,7 +237,7 @@
 				>
 					{term
 						? `Showing ${deals.length} ${deals.length === 1 ? 'match' : 'matches'}. Refine your search to find another deal.`
-						: `Showing ${deals.length} recent unlinked ${deals.length === 1 ? 'deal' : 'deals'}. Search to find another deal.`}
+						: `Showing ${deals.length} unlinked ${deals.length === 1 ? 'deal' : 'deals'}. Search to find another deal.`}
 				</p>{/if}
 		{/if}
 		{#if busy || eligibilityLoading}<p class="text-xs text-ink-muted" role="status">
@@ -220,7 +258,10 @@
 				<button
 					type="button"
 					class="underline"
-					onclick={() => owner && void load(term, owner, true)}>Try again</button
+					onclick={() => {
+						eligibility.retry();
+						if (owner) void load(term, owner, true, currentAttempt?.cursor);
+					}}>Try again</button
 				>
 			</p>{/if}
 	</div>

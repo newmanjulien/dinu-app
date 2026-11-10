@@ -1,10 +1,10 @@
 import type { BreakPolicyContext, SelectionCandidate } from '../document/selection/selection-model';
-import type { CompiledContract } from '../contract/compiled-contract';
-import type { Address } from '../contract/numbering';
-import { targetContainers } from '../contract/ranges';
-import { createReferenceCatalog, type ReferenceCatalog } from '../contract/reference-catalog';
-import { hasMeaningfulReplacement } from '../contract/replacement-content';
-import { sameSourceTarget, type ReplacementAtom } from '../contract/source-model';
+import type { CompiledDocument } from '../document/compiled-document';
+import type { Address } from '../document/numbering';
+import { targetContainers } from '../document/ranges';
+import { createReferenceCatalog, type ReferenceCatalog } from '../document/reference-catalog';
+import { hasMeaningfulReplacement } from '../document/replacement-content';
+import { sameSourceTarget, type ReplacementAtom } from '../document/source-model';
 import { countStartupWork } from '../document/runtime/render-perf';
 import { immutable, type DeepReadonly } from '../immutable';
 import { AuthoringContext, type Workflow } from './authoring-context.svelte';
@@ -34,7 +34,7 @@ import {
 
 export type AuthoringSource = {
 	selectionContext?: BreakPolicyContext;
-	contract: CompiledContract | null;
+	document: CompiledDocument | null;
 	geometry: PlaybookGeometryIndex | null;
 	items: readonly { _id: string }[] | null;
 	available: boolean;
@@ -43,13 +43,13 @@ export type AuthoringSource = {
 	itemsCurrent: boolean;
 	addresses?: ReadonlyMap<string, Address>;
 	lookup: (id: string) => {
-		record: PlaybookItemRecord;
+		record: DeepReadonly<PlaybookItemRecord>;
 		annotations: readonly import('./document-overlay').DocumentAnnotation[];
 	} | null;
 	detailStatus?: (id: string) => 'present' | 'missing' | 'loading';
 };
 export type AuthoringRecovery = {
-	item: import('./model').PlaybookItem;
+	item: DeepReadonly<import('./model').PlaybookItem>;
 };
 export type AuthoringTransition =
 	| { kind: 'switch-item'; itemId: string }
@@ -72,7 +72,7 @@ export class AuthoringController {
 	private warning = $state('');
 	private referenceCatalogCache:
 		| {
-				index: CompiledContract['index'] | undefined;
+				index: CompiledDocument['index'] | undefined;
 				addresses: ReadonlyMap<string, Address> | undefined;
 				catalog: ReferenceCatalog;
 		  }
@@ -82,8 +82,9 @@ export class AuthoringController {
 		private submission: {
 			readonly available: boolean;
 			readonly reason: string;
-			submit(operation: Operation, recovery: AuthoringRecovery): boolean;
-		}
+			submit(operation: DeepReadonly<Operation>, recovery: AuthoringRecovery): boolean;
+		},
+		readonly audience: import('./model').InstructionAudience = 'rep'
 	) {}
 	get entry(): object | null {
 		return this.context;
@@ -221,7 +222,7 @@ export class AuthoringController {
 	}
 	get referenceCatalog() {
 		const source = this.source();
-		const index = source.contract?.index;
+		const index = source.document?.index;
 		const addresses = source.addresses ?? index?.addresses;
 		const cached = this.referenceCatalogCache;
 		if (cached && cached.index === index && cached.addresses === addresses) return cached.catalog;
@@ -269,7 +270,7 @@ export class AuthoringController {
 		if (!hasMeaningfulReplacement(concession.changes[0].replacement))
 			return 'Add replacement text before continuing.';
 		if (this.otherClauseActive && !this.secondarySelection)
-			return 'Select the other part of the contract before saving.';
+			return 'Select the other part of the template before saving.';
 		return '';
 	}
 	private currentPrimaryAction = $derived.by(() => {
@@ -381,11 +382,11 @@ export class AuthoringController {
 
 	accept() {
 		countStartupWork('authoringAccept');
-		const { contract, geometry, items, itemsCurrent, lookup, detailStatus } = this.source();
+		const { document, geometry, items, itemsCurrent, lookup, detailStatus } = this.source();
 		const context = this.context;
-		if (!context || !contract || !geometry || !items) return;
+		if (!context || !document || !geometry || !items) return;
 		if (context.geometry !== geometry) context.validateGeometry = geometry.createDraftValidator();
-		context.contract = contract;
+		context.document = document;
 		context.geometry = geometry;
 		context.geometryVersion = geometry.version;
 		context.itemCount = items.length;
@@ -412,7 +413,7 @@ export class AuthoringController {
 		)
 			context.selectedAnnotationId = null;
 	}
-	private observe(record: PlaybookItemRecord) {
+	private observe(record: DeepReadonly<PlaybookItemRecord>) {
 		const context = this.context!;
 		if (!context.remote || record.contentRevision > context.remote.contentRevision)
 			context.remote = immutable(record);
@@ -436,7 +437,7 @@ export class AuthoringController {
 		)
 			this.adopt(context.remote);
 	}
-	private adopt(record: PlaybookItemRecord) {
+	private adopt(record: DeepReadonly<PlaybookItemRecord>) {
 		const context = this.context!;
 		context.confirmed = immutable(record);
 		context.instructions = authoringInstructions(record);
@@ -447,9 +448,13 @@ export class AuthoringController {
 		context.previewConcessionId = null;
 		this.reconcileSelection();
 	}
-	private begin(draft: PlaybookDraft, confirmed: PlaybookItemRecord | null, workflow: Workflow) {
+	private begin(
+		draft: DeepReadonly<PlaybookDraft>,
+		confirmed: DeepReadonly<PlaybookItemRecord> | null,
+		workflow: Workflow
+	) {
 		this.release();
-		const context = new AuthoringContext(draft, confirmed, workflow);
+		const context = new AuthoringContext(draft, confirmed, workflow, this.audience);
 		this.context = context;
 		context.selectedAnnotationId = draft.persistedId
 			? triggerAnnotationId(confirmed?.renderKey ?? draft.persistedId)
@@ -488,43 +493,43 @@ export class AuthoringController {
 	}
 	replacementUsesParagraphs(index: 0 | 1) {
 		const change = this.context?.composer?.changes[index];
-		const contract = this.source().contract;
-		if (!change || !contract) return true;
+		const document = this.source().document;
+		if (!change || !document) return true;
 		return (
 			change.target.kind === 'boundary' ||
-			targetContainers(contract.index, change.target).every(
-				(container) => contract.index.blocks.get(container.blockKey)?.kind === 'paragraph'
+			targetContainers(document.index, change.target).every(
+				(container) => document.index.blocks.get(container.blockKey)?.kind === 'paragraph'
 			)
 		);
 	}
 	private initialSelectionEligibility(range: SourceTarget): SelectionEligibility {
-		const { contract, items, available, geometry, selectionContext } = this.source();
+		const { document, items, available, geometry, selectionContext } = this.source();
 		if (
 			!available ||
-			!contract ||
+			!document ||
 			!items ||
 			!geometry ||
 			!selectionContext ||
-			selectionContext.index !== contract.index
+			selectionContext.index !== document.index
 		)
 			return { allowed: false, issue: { kind: 'unavailable' } };
-		return evaluateInitialSelection(contract.index, range, geometry, selectionContext);
+		return evaluateInitialSelection(document.index, range, geometry, selectionContext);
 	}
 	private secondarySelectionEligibility(range: SourceTarget): SelectionEligibility {
-		const { contract, items, available, geometry, selectionContext } = this.source();
+		const { document, items, available, geometry, selectionContext } = this.source();
 		const context = this.context;
 		if (
 			!available ||
-			!contract ||
+			!document ||
 			!items ||
 			!geometry ||
 			!selectionContext ||
-			selectionContext.index !== contract.index ||
+			selectionContext.index !== document.index ||
 			!context?.composer
 		)
 			return { allowed: false, issue: { kind: 'unavailable' } };
 		return evaluateSecondarySelection(
-			contract.index,
+			document.index,
 			range,
 			{
 				...context.payload,
@@ -541,7 +546,7 @@ export class AuthoringController {
 		if (
 			!selectionContext ||
 			candidate.document !== selectionContext ||
-			candidate.document.index !== this.source().contract?.index
+			candidate.document.index !== this.source().document?.index
 		)
 			return { allowed: false, issue: { kind: 'unavailable' } };
 		const range = candidate.target;
@@ -549,7 +554,7 @@ export class AuthoringController {
 		if (!purpose)
 			return {
 				allowed: false,
-				reason: 'Choose what you are adding before selecting another part of the contract.'
+				reason: 'Choose what you are adding before selecting another part of the template.'
 			};
 		const permission =
 			purpose === 'secondary-location'
@@ -604,6 +609,7 @@ export class AuthoringController {
 		return true;
 	}
 	startConcessionFromSelection(candidate: SelectionCandidate) {
+		if (this.audience === 'buyer') return false;
 		const range = candidate.target;
 		const purpose = this.textSelectionPurpose;
 		if (purpose !== 'new-item') {
@@ -638,7 +644,7 @@ export class AuthoringController {
 			kind: 'creating-concession',
 			step: 'concession',
 			affectsOtherParts: false,
-			baseline: immutable(semanticConcession(concession)),
+			originalConcession: immutable(semanticConcession(concession)),
 			concession
 		});
 		return true;
@@ -659,16 +665,16 @@ export class AuthoringController {
 	}
 	addConcession(tier: Concession['tier']) {
 		if (!this.permit({ kind: 'start-addition' })) return false;
-		const { contract, items, available, geometry, selectionContext } = this.source();
+		const { document, items, available, geometry, selectionContext } = this.source();
 		if (
 			!available ||
-			!contract ||
+			!document ||
 			!items ||
 			!geometry ||
 			!selectionContext ||
-			selectionContext.index !== contract.index
+			selectionContext.index !== document.index
 		) {
-			this.reportBlocked('Wait for the current contract');
+			this.reportBlocked('Wait for the current template');
 			return false;
 		}
 		const context = this.context!;
@@ -689,7 +695,7 @@ export class AuthoringController {
 						}
 					};
 		const permission = evaluateConcessionAddition(
-			contract.index,
+			document.index,
 			range,
 			draft,
 			geometry,
@@ -716,7 +722,7 @@ export class AuthoringController {
 			affectsOtherParts: false,
 			triggerId: trigger.id,
 			concession,
-			baseline: immutable(semanticConcession(concession))
+			originalConcession: immutable(semanticConcession(concession))
 		};
 		context.previewConcessionId = null;
 		this.clearFeedback();
@@ -802,7 +808,7 @@ export class AuthoringController {
 				)
 			: 'retained';
 	}
-	private execute(operation: Operation): AuthoringOutcome {
+	private execute(operation: DeepReadonly<Operation>): AuthoringOutcome {
 		const context = this.context;
 		if (!context || !this.submission.available) return 'retained';
 		this.clearFeedback();
@@ -812,7 +818,7 @@ export class AuthoringController {
 		return 'closed';
 	}
 	/** Recovery is a new editing attempt; submitting it captures a fresh operation/revision. */
-	restore(recovery: AuthoringRecovery, current: PlaybookItemRecord | null) {
+	restore(recovery: AuthoringRecovery, current: DeepReadonly<PlaybookItemRecord> | null) {
 		const context = this.begin(
 			{
 				...recovery.item,

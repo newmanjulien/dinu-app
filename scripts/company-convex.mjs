@@ -20,6 +20,7 @@ export function companyArguments({ audit = false } = {}) {
 	return { companyId, exactSeed };
 }
 
+/** @param {{companyId:string;readOnly?:boolean;readabilityConversion?:boolean;paragraphRoles?:boolean;authoringMigration?:boolean}} options */
 export async function companyDeployment({
 	companyId,
 	readOnly = false,
@@ -67,7 +68,7 @@ export async function companyDeployment({
 	// Role migrations can use an existing personal-dev CLI login, with the exact
 	// validated deployment name. Other operators retain their HTTP-key requirement.
 	const useDevCli = (paragraphRoles || authoringMigration) && kind === 'dev' && !key;
-	const keyParts = key?.split('|');
+	const keyParts = (key ?? '').split('|');
 	if (
 		!useDevCli &&
 		(!key ||
@@ -85,19 +86,27 @@ export async function companyDeployment({
 	return {
 		url: target.origin,
 		deployment,
+		/**
+		 * @template {import('./operator-types').OperatorName} Name
+		 * @param {Name} functionName
+		 * @param {import('./operator-types').OperatorArgs<Name>} args
+		 * @returns {Promise<import('./operator-types').OperatorResult<Name>>}
+		 */
 		async run(functionName, args) {
+			/** @type {Partial<Record<import('./operator-types').OperatorName, string>>} */
 			const conversionFunctions = {
 				'readabilityMigration:convertBatch': 'mutation',
 				'readabilityMigration:versions': 'query',
 				'readabilityMigration:accountVersion': 'mutation'
 			};
+			/** @type {Partial<Record<import('./operator-types').OperatorName, string>>} */
 			const roleFunctions = {
-				'contractFormatting:inspectBaseline': 'query',
-				'baselineParser:analyzeExisting': 'action',
-				'contractFormatting:repairBaseline': 'mutation',
-				'contractFormatting:normalizeBaselines': 'mutation',
-				'contractFormatting:normalizeDetachedChunks': 'mutation',
-				'contractFormatting:recountVersions': 'mutation'
+				'templateSourceFormatting:inspectSource': 'query',
+				'templateSourceParser:analyzeExisting': 'action',
+				'templateSourceFormatting:repairSource': 'mutation',
+				'templateSourceFormatting:normalizeSources': 'mutation',
+				'templateSourceFormatting:normalizeDetachedChunks': 'mutation',
+				'templateSourceFormatting:recountVersions': 'mutation'
 			};
 			const authoringFunctions = new Set([
 				'authoringMigration:begin',
@@ -137,7 +146,10 @@ export async function companyDeployment({
 					],
 					{ timeout: 60_000, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }
 				);
-				return jsonToConvex(JSON.parse(stdout));
+				// The explicit registered function validates its return before the Convex wire codec.
+				return /** @type {import('./operator-types').OperatorResult<Name>} */ (
+					jsonToConvex(JSON.parse(stdout))
+				);
 			}
 			// Convex's function HTTP protocol and public value codec avoid CLI login,
 			// implicit targets, provisioning, command-line payloads and automatic retries.
@@ -154,12 +166,19 @@ export async function companyDeployment({
 			});
 			if (!response.ok && response.status !== 605)
 				throw new Error(`${functionName} failed: HTTP ${response.status}.`);
-			const result = await response.json();
-			if (result.status === 'error')
-				throw new Error(`${functionName} failed: ${result.errorMessage}`);
-			if (!response.ok || result.status !== 'success')
+			const result = /** @type {unknown} */ (await response.json());
+			if (!result || typeof result !== 'object' || Array.isArray(result) || !('status' in result))
 				throw new Error(`${functionName} returned an invalid response.`);
-			return jsonToConvex(result.value);
+			if (result.status === 'error')
+				throw new Error(
+					`${functionName} failed: ${'errorMessage' in result && typeof result.errorMessage === 'string' ? result.errorMessage : 'Unknown error'}`
+				);
+			if (!response.ok || result.status !== 'success' || !('value' in result))
+				throw new Error(`${functionName} returned an invalid response.`);
+			// Successful values have passed the registered function's return validator.
+			return /** @type {import('./operator-types').OperatorResult<Name>} */ (
+				jsonToConvex(/** @type {import('convex/values').JSONValue} */ (result.value))
+			);
 		}
 	};
 }

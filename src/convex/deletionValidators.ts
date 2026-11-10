@@ -9,6 +9,11 @@ const accountDeletion = v.object({
 	cleanupJobId: v.optional(v.id('_scheduled_functions')),
 	cleanupGeneration: v.number(),
 	successorCursor: v.union(v.string(), v.null()),
+	legacyActivityPhase: v.optional(
+		v.union(v.literal('opens'), v.literal('visits'), v.literal('done'))
+	),
+	// Admit old global cursors until existing markers advance; the indexed drain ignores them.
+	legacyActivityCursor: v.optional(v.union(v.string(), v.null())),
 	// An externally deleted sole owner requires an explicit operator handoff.
 	recoveryCompanyId: v.optional(v.id('company'))
 });
@@ -25,6 +30,13 @@ export const companyCleanupPhases = [
 	'deliveries',
 	'emailSelectionChunks',
 	'decisions',
+	'buyerLinkOpens',
+	'buyerLinkStats',
+	'buyerLinkBrowsers',
+	'buyerActivityQuotaKeys',
+	'buyerLinks',
+	'contractBuyerState',
+	'discussions',
 	'contracts',
 	'contractDirectory',
 	'contractCleanups',
@@ -37,7 +49,7 @@ export const companyCleanupPhases = [
 	'contractReceipts',
 	'versions',
 	'pointer',
-	'baselines',
+	'templateSources',
 	'itemRevisions',
 	'csmBookings',
 	'memberships',

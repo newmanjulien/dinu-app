@@ -1,22 +1,11 @@
-import { unitsInRange } from '$lib/contract/ranges';
+import { unitsInRange } from '$lib/document/ranges';
 import {
 	pointPosition,
 	resolvePoint,
 	type SourceIndex,
 	type SourceUnit
-} from '$lib/contract/source-index';
-import {
-	isTextTarget,
-	type SourcePoint,
-	type SourceRange,
-	type SourceTarget
-} from '$lib/contract/source-model';
-import { measureStructuralBoundaryTarget } from '$lib/document/highlights/geometry';
-import {
-	breakGroupKeys,
-	legacyTextNavigationGroups,
-	type SelectionDocument
-} from './selection-model';
+} from '$lib/document/source-index';
+import type { SourcePoint, SourceRange } from '$lib/document/source-model';
 
 type SourceTextToken = {
 	text: Text;
@@ -45,12 +34,12 @@ export function sourceTextToken(
 	index: SourceIndex
 ): SourceTextToken | null {
 	const parent = text.parentElement;
-	const contract = parent?.closest<HTMLElement>('.contract-document');
+	const document = parent?.closest<HTMLElement>('.document-content');
 	if (
 		!parent ||
 		!root.contains(parent) ||
-		!contract ||
-		!root.contains(contract) ||
+		!document ||
+		!root.contains(document) ||
 		parent.closest(
 			'[aria-hidden="true"], [data-document-control], [data-revision], del, ins, table'
 		)
@@ -107,7 +96,7 @@ export function sourceRangeToDomRanges(
 	]);
 	if (!selector) return [];
 	for (const span of root.querySelectorAll<HTMLElement>(selector)) {
-		const nextBlock = span.closest('.contract-block');
+		const nextBlock = span.closest('.document-block');
 		if (nextBlock !== block) current = undefined;
 		block = nextBlock;
 		if (span.closest('[data-revision], del, ins, [aria-hidden="true"]')) {
@@ -216,148 +205,6 @@ export function sourceOccurrence(span: HTMLElement): SourceOccurrencePreference 
 		pageNumber: Number(span.closest<HTMLElement>('.document-page')?.dataset.pageNumber),
 		fragmentIdentity: block?.dataset.sourceFragmentKey ?? ''
 	};
-}
-
-function tokenRange(span: HTMLElement, visual = false): SourceRange | null {
-	const startKey = visual ? span.dataset.visualSourceStartKey : span.dataset.sourceStartKey,
-		endKey = visual ? span.dataset.visualSourceEndKey : span.dataset.sourceEndKey,
-		startOffset = Number(
-			visual ? span.dataset.visualSourceStartOffset : span.dataset.sourceStartOffset
-		),
-		endOffset = Number(visual ? span.dataset.visualSourceEndOffset : span.dataset.sourceEndOffset);
-	if (
-		!startKey ||
-		!endKey ||
-		!Number.isSafeInteger(startOffset) ||
-		!Number.isSafeInteger(endOffset)
-	)
-		return null;
-	return {
-		start: { sourceKey: startKey, offset: startOffset },
-		end: { sourceKey: endKey, offset: endOffset }
-	};
-}
-
-function firstVisibleBounds(element: Element): DOMRect | null {
-	for (const bounds of element.getClientRects()) if (bounds.height || bounds.width) return bounds;
-	const bounds = element.getBoundingClientRect();
-	return bounds.height || bounds.width ? bounds : null;
-}
-
-function sourceTextBounds(span: HTMLElement, offset: number): DOMRect | null {
-	const text = span.firstChild;
-	if (span.dataset.sourceKind !== 'text' || text?.nodeType !== Node.TEXT_NODE) return null;
-	const length = text.textContent?.length ?? 0;
-	if (!length) return null;
-	const from = Math.max(0, Math.min(offset, length - 1));
-	const range = span.ownerDocument.createRange();
-	range.setStart(text, from);
-	range.setEnd(text, from + 1);
-	const bounds = range.getClientRects()[0];
-	return bounds?.height || bounds?.width ? bounds : null;
-}
-
-type BoundsCandidate = { position: number; bounds: DOMRect };
-
-function targetTokenCandidate(
-	span: HTMLElement,
-	range: SourceRange,
-	start: number,
-	end: number,
-	index: SourceIndex,
-	visual: boolean
-): BoundsCandidate | null {
-	let tokenStart: number, tokenEnd: number;
-	try {
-		tokenStart = pointPosition(index, range.start);
-		tokenEnd = pointPosition(index, range.end);
-	} catch {
-		return null;
-	}
-	const overlaps =
-		start === end ? tokenStart <= start && start <= tokenEnd : tokenStart < end && tokenEnd > start;
-	if (!overlaps) return null;
-	const bounds =
-		(!visual ? sourceTextBounds(span, Math.max(0, start - tokenStart)) : null) ??
-		firstVisibleBounds(span);
-	return bounds ? { position: Math.max(start, tokenStart), bounds } : null;
-}
-
-function isRemovedToken(span: HTMLElement) {
-	return (
-		span.dataset.revision === 'removed' || Boolean(span.closest('del, [data-revision="removed"]'))
-	);
-}
-
-/**
- * Resolve a semantic source target to its first visible document fragment. This deliberately
- * ignores an interaction's clicked occurrence: panels belong to their clause, not a wrapped row.
- */
-export function sourceTargetBounds(
-	root: HTMLElement,
-	target: SourceTarget,
-	index: SourceIndex,
-	context: SelectionDocument | undefined
-): DOMRect | null {
-	if (!isTextTarget(target)) {
-		for (const boundary of root.querySelectorAll<HTMLElement>(
-			`[data-structural-boundary="${CSS.escape(target.afterBlockKey)}"]`
-		)) {
-			const bounds = measureStructuralBoundaryTarget(boundary)?.bounds;
-			if (bounds) return bounds;
-		}
-		return null;
-	}
-	let start: number, end: number;
-	try {
-		start = pointPosition(index, target.range.start);
-		end = pointPosition(index, target.range.end);
-	} catch {
-		return null;
-	}
-	let visible: BoundsCandidate | undefined;
-	let removed: BoundsCandidate | undefined;
-	const consider = (span: HTMLElement, visual: boolean) => {
-		if (
-			span.dataset.generated === 'separator' ||
-			span.closest('[aria-hidden="true"], [data-document-control]')
-		)
-			return;
-		const range = tokenRange(span, visual);
-		if (!range) return;
-		const candidate = targetTokenCandidate(span, range, start, end, index, visual);
-		if (!candidate) return;
-		const removedToken = isRemovedToken(span);
-		const best = removedToken ? removed : visible;
-		if (!best || candidate.position < best.position) {
-			if (removedToken) removed = candidate;
-			else visible = candidate;
-		}
-	};
-	// Replacements retain their original source interval in dedicated attributes. Querying its start
-	// key finds a replacement at the target's first source position without scanning every token.
-	for (const span of root.querySelectorAll<HTMLElement>(
-		`[data-visual-source-start-key="${CSS.escape(target.range.start.sourceKey)}"]`
-	))
-		consider(span, true);
-	try {
-		const selector = sourceBlockSelector(index, target.range, ['[data-source-start-key]']);
-		if (selector)
-			for (const span of root.querySelectorAll<HTMLElement>(selector)) consider(span, false);
-	} catch {
-		return null;
-	}
-	if (visible) return visible.bounds;
-	for (const key of context && context.index === index
-		? legacyTextNavigationGroups(context, target).flatMap(breakGroupKeys)
-		: []) {
-		const element = root.querySelector<HTMLElement>(
-			`[data-structural-boundary="${CSS.escape(key)}"]`
-		);
-		const bounds = element && measureStructuralBoundaryTarget(element)?.bounds;
-		if (bounds) return bounds;
-	}
-	return removed?.bounds ?? null;
 }
 
 /** Locate a source point again after panel layout or pagination changes. */

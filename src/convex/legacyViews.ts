@@ -1,3 +1,5 @@
+import { contractItemId } from '../lib/contract/item-identity';
+import { templateContent } from './templateValidators';
 /** Temporary v1 wire views for already-open clients. Canonical records use the domain model. */
 import { v, type Infer } from 'convex/values';
 import { concessionSelections, reviewEntries, reviewStatus } from '../lib/contract/applications';
@@ -7,13 +9,13 @@ import {
 	sourceNumbering,
 	sourceTable,
 	sourceTarget
-} from '../lib/contract/source-validators';
+} from '../lib/document/source-validators';
 import type { PlaybookItem } from '../lib/playbook/model';
 import type { Doc, Id } from './_generated/dataModel';
 import { storedContract } from './contractValidators';
 import type { HistoricalItem } from './playbookItemRevisions';
 import type { DetailRecord } from '../lib/playbook/structure';
-import { contractCard, contractMetadata, contractState, snapshot } from './savedContractValidators';
+import { contractCard, contractMetadata, contractState } from './savedContractValidators';
 
 const base = {
 	blockKey: v.string(),
@@ -38,7 +40,7 @@ export const legacyBlock = v.union(
 
 /** V1 has no title role; flow source coordinates and static table strings survive unchanged. */
 export function legacyBlockView(
-	block: import('../lib/contract/source-model').BaselineBlock
+	block: import('../lib/document/source-model').SourceBlock
 ): Infer<typeof legacyBlock> {
 	if (block.kind === 'table') return block;
 	const { role, anchor, ...source } = block;
@@ -116,7 +118,7 @@ export const legacyStoredContract = storedContract
 		reviews,
 		revision: v.number()
 	});
-export const legacySnapshot = snapshot
+export const legacySnapshot = templateContent
 	.omit('items', 'blocks')
 	.extend({ blocks: v.array(legacyBlock), items: v.array(legacyHistoricalItem) });
 export const legacyCard = contractCard.omit('buyerCompanyName').extend({ companyName: v.string() });
@@ -126,14 +128,16 @@ export const legacySaveResult = v.union(
 	v.object({ status: v.literal('deleted') })
 );
 export const legacyApprovalSelection = v.object({
-	itemId: v.id('playbookItems'),
+	itemId: contractItemId,
 	concessionPosition: v.number(),
 	lifecycle: v.optional(v.string()),
 	reviewStatus: v.optional(reviewStatus)
 });
 
 export function legacyItemView(item: DetailRecord): Infer<typeof legacyStoredItem>;
-export function legacyItemView(item: HistoricalItem): Infer<typeof legacyHistoricalItem>;
+export function legacyItemView(
+	item: Extract<HistoricalItem, { concessions: unknown }>
+): Infer<typeof legacyHistoricalItem>;
 export function legacyItemView(item: PlaybookItem): Infer<typeof legacyPlaybook>;
 export function legacyItemView(
 	item: PlaybookItem & {

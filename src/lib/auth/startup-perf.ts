@@ -11,7 +11,7 @@ declare global {
 		__accountStartup?: StartupMetric[];
 	}
 }
-const enabled = () => browser && (dev || env.PUBLIC_CONTRACT_PERF === '1');
+const enabled = () => browser && (dev || env.PUBLIC_DOCUMENT_PERF === '1');
 export function recordStartup(name: string, duration?: number) {
 	if (!enabled()) return;
 	const metrics = (window.__accountStartup ??= []);

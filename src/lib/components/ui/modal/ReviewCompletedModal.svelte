@@ -8,7 +8,8 @@
 		onReset,
 		busy = false,
 		disabled = false,
-		error = null
+		error = null,
+		publishedBuyer = null
 	}: {
 		onClose: () => void;
 		onSend: () => void;
@@ -16,6 +17,7 @@
 		busy?: boolean;
 		disabled?: boolean;
 		error?: string | null;
+		publishedBuyer?: string | null;
 	} = $props();
 	let confirmingReset = $state(false);
 </script>
@@ -30,8 +32,13 @@
 >
 	<p class="text-sm leading-6 text-ink-secondary">
 		{#if confirmingReset}
-			This will reset everyone’s current approvals and rejections on this contract to pending. Your
-			selected concessions will stay in place, and the results email will not be sent.
+			{#if publishedBuyer}
+				This will reset everyone’s approvals and rejections to pending. {publishedBuyer} will continue
+				to see the wording already published. This will not undo changes they can see. Selected concessions
+				stay in place, and no results email will be sent.
+			{:else}This will reset everyone’s current approvals and rejections on this contract to
+				pending. Your selected concessions will stay in place, and the results email will not be
+				sent.{/if}
 		{:else}
 			All concessions requiring approval have been reviewed. Send the results to the rep, or reset
 			all reviews to start again.

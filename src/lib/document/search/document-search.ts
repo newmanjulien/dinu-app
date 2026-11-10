@@ -197,7 +197,7 @@ export class DocumentSearchRanges {
 						: ` [data-source-row="${point.row}"][data-source-cell="${point.cell}"]`);
 				const owner = root.querySelector<HTMLElement>(selector);
 				if (!owner) return;
-				leaves = owner.querySelectorAll<HTMLElement>('[data-contract-token]');
+				leaves = owner.querySelectorAll<HTMLElement>('[data-document-token]');
 				tokens.set(key, leaves);
 			}
 			const node = leaves[point.tokenIndex]?.firstChild;

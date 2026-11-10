@@ -20,17 +20,21 @@ The authenticated account host mounts after Clerk supplies an identity. It remai
 
 `AccountGate` sets the cache identity from the confirmed viewer before workspace children mount. Account or membership changes release the old snapshot cache and discard its persistent namespace. The root session owns cache cleanup on logout, account switching, and teardown; its resource registration survives route changes. Navigation to entry screens preserves confirmed snapshots and opening history.
 
+`AccountSession` also owns a shared workspace-role hint for loading presentation. Once Clerk identifies the user, it uses any available account result (including matching server startup assistance), otherwise reads a versioned, deployment/user-scoped local-storage record containing membership ID, company ID, and role. A missing or invalid record starts one bounded `accounts.workspaceRole` HTTP query alongside full account startup, including during sign-in; retries follow the session's transport generation. Live viewer membership overrides the hint and updates storage. Confirmed membership loss, company departure, and account deletion remove the record; ordinary sign-out clears active state while keeping the user's hint for a later sign-in. Late results cannot cross identities or overwrite live membership. Storage failure leaves the in-memory result usable. Hints never admit private content or grant permissions.
+
+`WorkspaceSkeleton` consumes that shared role for the Integrations catalog and header tab, Settings' company cards, and Team's Invite/pending-invitations section. Presentational skeletons receive the role as a prop and perform no storage access or fetching. All account, workspace-module, and Contracts-module loading boundaries use this same selector. Server HTML and initial hydration show common structure because the server cannot read local storage; the browser selects the role-specific structure after identity and the remembered role or lookup resolve. Unknown roles never default to admin. Document skeletons remain shared.
+
 `WorkspaceBoundary` requires a live profile, membership, and company. `WorkspaceScope` is keyed by profile and membership and supplies viewer context plus the contract editing sessions that survive route changes. Each workspace captures its own cache instance, cancels its pending reads, and destroys its document resources on teardown; an old workspace cannot cancel a replacement's cache. Membership loss clears the previous membership's draft journal and removes the workspace. Role changes preserve its identity and mounted drafts.
 
-`WorkspaceShell` mounts the shared header and interaction dispatcher as soon as membership is admitted, including while workspace or document code is loading or has failed. Document chrome contributes its search and status content through a scoped header registration. `auth/routes.ts` supplies titles, navigation selection, baseline requirements, and document classification to both mounted routes and URL-only preload/performance callers. The root is the only title writer; entry flows can register a title override scoped to the current route. Titles therefore update at navigation commit even when an editor cannot mount, which also gives SvelteKit's navigation announcer the destination title.
+`WorkspaceShell` mounts the shared header and interaction dispatcher as soon as membership is admitted, including while workspace or document code is loading or has failed. Document chrome contributes its search and status content through a scoped header registration. `auth/routes.ts` supplies titles, navigation selection, template source requirements, and document classification to both mounted routes and URL-only preload/performance callers. The root is the only title writer; entry flows can register a title override scoped to the current route. Titles therefore update at navigation commit even when an editor cannot mount, which also gives SvelteKit's navigation announcer the destination title.
 
-`DocumentBody` gates initial body mounting on any required baseline and, by default, the lazy document host. The contracts layout opts out of the host gate so its skeletons and naming dialog can mount while document code loads; each editor still waits for the host. The persistent Admin owner mounts outside `DocumentBody`, after both its own module and the host are ready. Once mounted, a company deletion hold hides and disables the body while retaining its state. Document resources remain mounted with preparation paused; contract persistence pauses new saves, and document reads stop. Already dispatched writes keep their existing outcome semantics. Settings stays available to finish or cancel deletion, and the contract naming dialog leaves the browser's modal layer during the hold without clearing its input.
+`DocumentBody` gates initial body mounting on any required template source and, by default, the lazy document host. The contracts layout opts out of the host gate so its skeletons and naming dialog can mount while document code loads; each editor still waits for the host. The persistent template editor owner mounts outside `DocumentBody`, after both its own module and the host are ready. Once mounted, a company deletion hold hides and disables the body while retaining its state. Document resources remain mounted with preparation paused; contract persistence pauses new saves, and document reads stop. Already dispatched writes keep their existing outcome semantics. Settings stays available to finish or cancel deletion, and the contract naming dialog leaves the browser's modal layer during the hold without clearing its input.
 
-Home and Team bodies unmount during a hold, releasing their queries, shortcuts, and modals. Their route metadata and shared navigation remain mounted. The route catalog marks Settings as available during the hold.
+Contracts and Team bodies unmount during a hold, releasing their queries, shortcuts, and modals. Their route metadata and shared navigation remain mounted. The route catalog marks Settings as available during the hold.
 
-The workspace retains an admitted Admin owner through a reversible hold and its Settings detour. Returning to Admin reuses the same authoring session, draft, and frozen unresolved operation. Normal departure still checks unresolved work and confirms abandonment; actual workspace teardown destroys the owner. Saved-contract selections use their existing membership-scoped draft journal when taking the Settings recovery detour. No visibility change initiates an Admin save.
+The workspace retains an admitted template editor owner through a reversible hold and its Settings detour. Returning to Template reuses the same authoring session, draft, and frozen unresolved operation. Normal departure still checks unresolved work and confirms abandonment; actual workspace teardown destroys the owner. Saved-contract selections use their existing membership-scoped draft journal when taking the Settings recovery detour. No visibility change initiates a template save.
 
-Deferred Admin and saved-contract navigation captures SvelteKit's intended destination scroll before commit and applies it once the current document is visible and fully prepared. Fragments wait for that DOM as well. New navigation or user input cancels a pending restoration, and focus changes only if it is still on the body. The creation handoff retains `noScroll`/`keepFocus`, and `?review=1` links keep their existing review-specific focus handling.
+Deferred template editor and saved-contract navigation captures SvelteKit's intended destination scroll before commit and applies it once the current document is visible and fully prepared. Fragments wait for that DOM as well. New navigation or user input cancels a pending restoration, and focus changes only if it is still on the body. The creation handoff retains `noScroll`/`keepFocus`, and `?review=1` links keep their existing review-specific focus handling.
 
 ## Entry presentation and onboarding
 
@@ -69,11 +73,11 @@ Onboarding offers company creation and a live invitation inbox. The inbox subscr
 
 ## Loading and recovery
 
-Initial login HTML contains the email form; active invitation HTML contains company context, the invited email, and Continue. The anonymous preview uses a server-only Convex HTTP client. The initial static login and anonymous invitation graphs exclude the Convex transport and workspace document/cache modules. Authenticated invitation resolution code loads only for a signed-in account. During email verification, startup preparation warms an unused Convex connection and preloads the authenticated account host plus the requested route's code. Direct protected workspace loads start those independent downloads while Clerk connects. Workspace destinations also preload the workspace, Home destinations preload Home, and saved-contract destinations preload the document host. Routes requiring a baseline leave editor and renderer loading to Workspace's baseline-readiness guards. Entry destinations avoid those workspace imports. Preloading does not mount components or start authenticated queries; a verified session takes ownership of the warmed connection once.
+Initial login HTML contains the email form. Anonymous invitation HTML contains a public pending frame; its bounded server preview streams company context, the invited email, and Continue after validation. The anonymous preview uses a server-only Convex HTTP client. The initial static login and anonymous invitation graphs exclude the Convex transport and workspace document/cache modules. Authenticated invitation resolution code loads only for a signed-in account. During email verification, startup preparation warms an unused Convex connection and preloads the authenticated account host plus the requested route's code. Direct protected workspace loads start those independent downloads while Clerk connects. Workspace destinations also preload the workspace, Contracts destinations preload Contracts, and saved-contract destinations preload the document host. Routes requiring a template source leave editor and renderer loading to Workspace's template source-readiness guards. Entry destinations avoid those workspace imports. Preloading does not mount components or start authenticated queries; a verified session takes ownership of the warmed connection once.
 
-Ordinary signup preloads and opens onboarding, preserving any requested workspace destination for joining an existing company. After onboarding paints, it preloads the admin setup route without speculatively loading Home. Creating a company opens `/admin`; its completion destination survives temporary blocking of the same session, while navigation waits for readiness. Joining keeps the requested workspace destination. The admin editor and renderer load only after the company's baseline is ready.
+Ordinary signup preloads and opens onboarding, preserving any requested workspace destination for joining an existing company. After onboarding paints, it preloads the template setup route without speculatively loading Contracts. Creating a company opens `/template`; its completion destination survives temporary blocking of the same session, while navigation waits for readiness. Joining keeps the requested workspace destination. The template editor and renderer load only after the company's template source is ready.
 
-Account admission, workspace admission, and the destination's usable marker are distinct. Workspace chrome appears only after membership admission. Home controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Admin code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its naming dialog and skeleton in a lightweight shell while creation code loads. Optional preview imports recover through transport replacement and existing creation controls. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
+Account admission, workspace admission, and destination readiness are distinct. AccountSession keeps the public route children in one position and runs AuthenticatedAccount as a sibling driver. AccountContentScope installs its shared client only for admitted content; RepWorkspace reads the one application backend-auth publisher. WorkspaceFrame persists around initial skeletons and admitted workspace content. A delivered viewer rejection hides private display while retaining save owners; a confirmed identity/membership/company replacement tears down the old scope. Workspace chrome appears only after membership admission. Contracts controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Template editor code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its naming dialog and skeleton in a lightweight shell while creation code loads. Optional preview imports and reads recover through local retry controls. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
 
 Invitation preview and resolution run in Convex's default runtime using Web Crypto
 for SHA-256; invitation email uses Node for random-token creation, while contract
@@ -81,9 +85,9 @@ email uses the default runtime and Loops HTTP. When the server skips anonymous p
 the route uses the shared account-loading recovery while Clerk initializes, so a
 failed initialization exposes the existing retry control.
 
-Document help belongs to `WorkspaceChrome`, alongside its Help buttons. Admin waits
+Document help belongs to `WorkspaceChrome`, alongside its Help buttons. Template help waits
 for prepared, visible document content; saved contracts wait for their existing
-visible-state reconciliation. Admin Help opens only from its button. Each rep
+visible-state reconciliation. Template help opens only from its button. Each rep
 workspace opening checks the “Don't show this again” preference once, and its Help
 button can reopen the guide.
 Loading, missing-contract, and failed-opening views cannot mount the guide. During
@@ -92,12 +96,12 @@ dialog completes its opening handoff; background recovery after a failed attempt
 does not bypass the retry dialog. The shell has no route-driven help context or
 modal hold counter.
 
-Successful contract upload and activation open the delegation modal through a
-one-time `/admin` history-state handoff. `WorkspaceShell` owns one bottom-right
+Successful template upload and activation open the delegation modal through a
+one-time `/template` history-state handoff. `WorkspaceShell` owns one bottom-right
 lazy `CsmWidget`; the widget owns one captured request and native modal frame.
 The profile/calendar body is a separate request-only import. Before the
-setup call is booked, only admins on `/admin` see the delegate widget, after the
-current primary content's success/error paint and with an active baseline. Closing
+setup call is booked, only admins on `/template` see the delegate widget, after the
+current primary content's success/error paint and with an active template source. Closing
 leaves the
 desktop card or compact mobile launcher; ordinary visits do not open the modal.
 After booking, that same widget becomes support on every workspace route for admins
@@ -123,8 +127,54 @@ It also collapses the widget to its icon, persisting the collapsed preference an
 restoring focus to the icon after dismissal. Booked companies do not reopen setup
 after another upload.
 See [CSM booking](delegation.md) for activation.
-Before booking, leaving `/admin` unmounts delegation and closes setup, including when
+Before booking, leaving `/template` unmounts delegation and closes setup, including when
 the authoring owner remains mounted for Settings recovery. Support remains mounted
 across workspace routes. Committed pathname changes and replaced connections close
 the shared modal; deletion holds and blocked/closing sessions unmount the widget in
 either mode. The former post-upload instructions guide has been removed.
+
+## Public buyer routes
+
+`/[token=buyerCode]` displays the contract's current publication directly, beneath the
+buyer header at the existing navigation height. `/[token=buyerCode]/contract` remains a
+supported alias. Codes are 39-digit strings carrying 128 random bits. The routes live
+in the shared `(buyer)` layout. Existing `/buyer/[token]/contract` URLs remain
+supported; `/buyer/[token]/details` and `/buyer/[token]` redirect to the contract.
+These routes bypass Clerk/account initialization, including for signed-in visitors,
+and own an anonymous Convex client. Responses use no-store, no-referrer and noindex.
+There is no buyer form, autosave, readiness submission, or dirty-departure prompt.
+
+Each contract has one permanent buyer link. Document blocks are acquired once per
+opening; a live publication subscription updates the title, released selections and
+buyer revision while the contract is attached. Pending acquisition is canceled on
+exit. Public status is `current` or `unavailable`; losing access discards the document,
+and recovering access reacquires it. Seller activity refreshes while its panel is open.
+
+Public content and Word downloads independently check access. Downloads also require
+connection and recheck the displayed buyer revision so an outdated document cannot
+be released after publication changes. Activity delivery is independent of document
+access. A separate cookie preserves anonymous discussion ownership. Retired form data has a bounded
+[cleanup procedure](buyer-form-removal.md).
+
+The route catalog explicitly classifies loading presentations, including integration details and buyer destinations. Region subscriptions retain accepted data only for the same arguments, fence obsolete callbacks and expose local deadlines/retry. HubSpotDeals owns coalesced request deadlines so Retry can replace a hung shared request. Buyer AnonymousProvider lives in the buyer layout; compatible document opening retries preserve the accepted resource and scheduler. Basic public/Contracts graphs exclude document construction, profiling and authoring-controller implementations; `verify:loading-bundles` checks emitted source-module closures after build.
+
+## Contract-card link activity
+
+The anchored panel beside Copy link shows recorded openings and distinct-clause
+activity from the newest ten eligible openings, with five measured rows before
+scrolling. It uses an authorized trusted-clock mutation while open, refreshes every
+30 seconds and removes expired rows locally. No city or account tags are collected.
+Visitor numbers are contract-local approximate browsers/page openings, not people.
+A new page opening from a recognized browser is a return; inactivity never
+invents an opening. Times are labelled as recorded times. Outside click,
+focus leaving and Escape retain existing dismissal and focus behavior.
+
+Buyer activity records openings and clause clicks automatically. Browser recognition
+is contract-scoped; event history stays on the server. Reading, downloads and
+discussions are independent of activity delivery. See [activity storage](cookies-and-activity.md).
+
+## Contracts routes
+
+`/contracts` is the contracts list and the default workspace destination. `/` redirects to it, preserving query parameters. Login and onboarding normalize old root return destinations to `/contracts` while retaining requested contract URLs.
+
+The list owns its streamed startup loader and lazy Contracts module. New and saved contracts share the persistent `contracts/(document)` layout, preserving the naming-dialog handoff to the saved workspace. Contract settings sits outside that layout and needs no editor-bypass condition. The route catalog uses URL patterns and strips layout groups from mounted route IDs, so layout organization does not change navigation policy. The existing `accounts.startupHome` backend query and startup snapshot data contract remain in use.

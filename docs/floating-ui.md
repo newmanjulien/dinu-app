@@ -21,6 +21,31 @@ z-index fixes, or absolute floating coordinates. Native modal dialogs keep
 `showModal()`; opening a workspace modal closes transient surfaces, and a modal blocks workspace
 dismissal and shortcuts.
 
+Workspace status messages live in `WorkspaceStatus`, a passive manual popover positioned
+from the measured app-header height. It preserves the existing status stack and does
+not register as an interaction or take focus. A successful buyer-link copy promotes
+that stack above other surfaces in the browser top layer.
+`BuyerLinkController` calls the required workspace feedback callback only after the
+clipboard write succeeds. `CopyConfirmation` renders once in `WorkspaceShell`, using
+`StatusBubble`, the text “Latest link copied” (or “New link copied” after creating a
+link), the approved 8px upward offset, and a
+2.5-second lifetime that restarts with each successful copy. Cards and menus do not
+own confirmation state. Keep the clipboard-failure manual-copy fallback separate.
+
+Buyer-link options stay in one dropdown: versions appear newest first in a list
+that shows two full rows and part of the third to signal scrolling. Older links
+load as the list scrolls, without a “More links” button. Each version opens its saved contract directly in a
+snapshot preview; the latest also has a copy action. Earlier versions remain viewable
+after replacement. Creating a new link saves and copies the new version. There is no
+separate history-list modal.
+
+The options dropdown uses the already-loaded latest link to omit history entirely
+when no links exist, leaving only “Create new link”. For existing links, its history
+area reserves one or two rows, or two rows and part of the third, based on the latest
+version. Loading placeholders use the same row heights. History starts on first open
+and remains subscribed until the contract unmounts or the session is blocked, so
+reopening preserves the current list and loaded pages.
+
 All modals use `$lib/ui/ModalShell.svelte`. Its `dialog` variant centers a
 content-height surface; its `panel` variant fills the available height and supports
 right alignment. The shared `--radius-modal` token defines outer corners. Tailwind
@@ -47,6 +72,9 @@ with a `contextElement` is supported. Removed or disabled anchors close their su
 Tooltips close when their reference is clipped. Selection actions hide while clipped,
 keeping accepted native endpoints so scrolling back restores the actions.
 
+Floating surfaces default to content width. Caller width classes take precedence;
+only trigger-width matching writes an inline width. Viewport constraints still apply.
+
 ## Adding an interaction
 
 Use `Tooltip` for supplementary text, `Menu` for actions, and `Popover` for ordinary
@@ -70,8 +98,12 @@ interactive controls. Each has its own semantics and focus behavior:
 
 Both interactive components restore the available trigger after Escape or activation.
 Outside pointers and focus leaving dismiss without preventing the clicked action or
-redirecting focus. Preferred placements are below-end for tooltips and menus, and
-below-start with trigger-width matching for options popovers.
+redirecting focus. Preferred placements are below-start for tooltips, below-end for
+menus, and below-start with trigger-width matching for options popovers.
+Tooltips and menus accept a `placement` override: HubSpot deal hints use below-end
+to extend inward from the row's right edge, and review decision menus use below-start
+to extend rightward from the document's left-side tabs. All placements retain viewport
+flipping and shifting.
 
 A workspace sets an owner symbol through `setInteractionOwner`. `BoxDismissal`
 registers that symbol as a panel. Descendant floating surfaces inherit ownership;
@@ -84,8 +116,27 @@ gestures leave the working context intact. Pointer interactions with descendants
 count as inside their owners, even when those descendants render in the top layer.
 Protected boundaries inherit through the same ownership chain.
 
+Document workspace panels open at the canonical selected source target, independently of
+the clicked occurrence used for focus restoration. `document/panel-anchor.ts` resolves
+geometry from one committed snapshot and its exact mounted pages. Redline openings prefer
+the earliest original source, including struck-through text; effective openings use the
+earliest represented source position. Structural targets follow the existing boundary aliases.
+`DocumentViewer` then holds that workspace-relative top through same-target previews,
+concession changes and pagination, even if the passage moves. Ordinary scrolling carries
+the desktop panel with the document; secondary-location picking retains its sticky behavior.
+Target switches, source changes, display scale and settled layout epochs can
+reanchor. Close or deactivation clears placement; unresolved updates retain the visible
+editor and its position. Switch animation starts only when an accepted new target's
+guarded placement commits. The 1150px bottom sheet uses the same editor subtree.
+
 Escape closes a visible tooltip first, then the most recently active interactive
 surface or search, then the owning panel on a subsequent press. Hidden selection
 surfaces do not consume Escape. Dirty-draft and staged-creation safeguards remain in
 `AuthoringController`. Registration cleanup closes descendants when their owner disappears;
 the persistent dispatcher is released with the app layout.
+
+Saved-contract buyer controls use a fixed bottom bar. Its ResizeObserver publishes
+`--buyer-link-bar-height` (functional geometry only); document scroll space, the 1150px
+clause sheet and CSM widget reserve that inset. The 1000px mobile tools include DOCX.
+Buyer summaries reuse PlaybookCard/PlaybookText and the document's existing gesture,
+keyboard and focus infrastructure, with public clause-summary accessibility labels.

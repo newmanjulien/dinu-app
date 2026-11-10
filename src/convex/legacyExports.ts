@@ -1,3 +1,4 @@
+import { contractItemId } from '../lib/contract/item-identity';
 /** Existing Node actions can finish across a backend/frontend release boundary. */
 import { v, type Infer } from 'convex/values';
 import { internal } from './_generated/api';
@@ -17,14 +18,14 @@ const request = v.object({
 	expectedRevision: v.number()
 });
 const review = v.object({
-	itemId: v.id('playbookItems'),
+	itemId: contractItemId,
 	concessionId: v.string(),
 	lifecycle: v.string()
 });
 const sourceResult = v.object({
 	contract: legacyStoredContract,
 	blocks: v.array(legacyBlock),
-	items: v.array(legacyHistoricalItem),
+	items: v.array(legacyHistoricalItem.omit('_id').extend({ _id: contractItemId })),
 	requiredReviews: v.array(review)
 });
 export const source = internalQuery({
@@ -39,7 +40,13 @@ export const source = internalQuery({
 			...result,
 			contract: legacyContractView(result.contract),
 			blocks: result.blocks.map(legacyBlockView),
-			items: result.items.map((item) => legacyItemView(item)),
+			items: result.items.map((item) => ({
+				...legacyItemView(item),
+				_id: item._id,
+				_creationTime: item._creationTime,
+				companyId: item.companyId,
+				revision: item.contentRevision
+			})),
 			requiredReviews: result.requiredReviews.map(({ applicationId, ...selection }) => ({
 				...selection,
 				lifecycle: applicationId

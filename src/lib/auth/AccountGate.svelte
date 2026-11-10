@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { useAccountContext } from './account-context.svelte';
 	import { useAuth, useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../convex/_generated/api';
 	import { discardMembershipDrafts } from '$lib/contract/draft-recovery.svelte';
@@ -10,8 +11,9 @@
 	import { recordStartup } from './startup-perf';
 	import { useStartupData } from './startup-data';
 	import { untrack, onDestroy, type Snippet } from 'svelte';
-	let { children }: { children: Snippet } = $props();
+	let { children }: { children?: Snippet } = $props();
 	const client = useConvexClient();
+	const publication = useAccountContext();
 	const auth = useAuth();
 	const session = useViewerSession();
 	session.registerResources(contractCacheResources);
@@ -88,6 +90,13 @@
 				if (account?.membership && account.membership.id !== value.membership?.id && session.userId)
 					discardMembershipDrafts(session.userId, account.membership.id);
 				account = value;
+				if (publication) publication.account = value;
+			}
+			if (publication && viewer.error) publication.rejected = true;
+			else if (publication && value !== undefined) publication.rejected = false;
+			if (value === null) {
+				account = undefined;
+				if (publication) publication.account = null;
 			}
 			if (ready && !recorded) {
 				recordStartup('account-ready');
@@ -98,4 +107,4 @@
 	});
 </script>
 
-{@render children()}
+{@render children?.()}

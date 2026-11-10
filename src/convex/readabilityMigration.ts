@@ -1,9 +1,10 @@
+import { validate } from 'convex-helpers/validators';
 import type { GenericDatabaseWriter, GenericDataModel } from 'convex/server';
-import { ConvexError, v, type GenericValidator, type Value } from 'convex/values';
+import { ConvexError, v, type Value } from 'convex/values';
 import { legacyRow } from '../lib/contract/legacy-values';
-import { MAX_STORAGE_DOCUMENT_BYTES } from '../lib/contract/storage-limits';
+import { MAX_STORAGE_DOCUMENT_BYTES } from '../lib/document/storage-limits';
 import { internalMutation, internalQuery } from './_generated/server';
-import { baselineBlocks, canonicalFingerprint } from './baselineStorage';
+import { templateSourceBlocks, canonicalFingerprint } from './templateSourceStorage';
 import { historicalRevision } from './playbookItemRevisions';
 import schema from './schema';
 import { documentBytes } from './storageCapacity';
@@ -17,60 +18,18 @@ function requireTransition() {
 		);
 }
 
-/** Validate converted rows even while native schema admission is temporarily disabled. */
-function matches(
-	value: unknown,
-	validator: GenericValidator,
-	db: GenericDatabaseWriter<GenericDataModel>
-): boolean {
-	switch (validator.kind) {
-		case 'any':
-			return true;
-		case 'null':
-			return value === null;
-		case 'float64':
-			return typeof value === 'number';
-		case 'int64':
-		case 'commitTs':
-			return typeof value === 'bigint';
-		case 'boolean':
-		case 'string':
-			return typeof value === validator.kind;
-		case 'bytes':
-			return value instanceof ArrayBuffer;
-		case 'literal':
-			return value === validator.value;
-		case 'id':
-			return typeof value === 'string' && db.normalizeId(validator.tableName, value) !== null;
-		case 'array':
-			return Array.isArray(value) && value.every((entry) => matches(entry, validator.element, db));
-		case 'union':
-			return validator.members.some((member) => matches(value, member, db));
-		case 'object': {
-			if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-			const fields = value as Record<string, unknown>;
-			return (
-				Object.keys(fields).every((key) => key in validator.fields) &&
-				Object.entries(validator.fields).every(
-					([key, field]) =>
-						(!(key in fields) && field.isOptional === 'optional') || matches(fields[key], field, db)
-				)
-			);
-		}
-		case 'record':
-			return (
-				!!value &&
-				typeof value === 'object' &&
-				!Array.isArray(value) &&
-				Object.entries(value).every(
-					([key, entry]) => matches(key, validator.key, db) && matches(entry, validator.value, db)
-				)
-			);
-	}
+/** The helper's record check also accepts arrays/bytes; stored application maps require objects. */
+function hasApplicationMap(value: unknown): boolean {
+	return (
+		value !== null &&
+		typeof value === 'object' &&
+		!Array.isArray(value) &&
+		!(value instanceof ArrayBuffer)
+	);
 }
 
 export const conversionTables = [
-	'baselines',
+	'templateSources',
 	'playbookItems',
 	'playbookItemRevisions',
 	'savedContracts',
@@ -113,7 +72,10 @@ export const convertBatch = internalMutation({
 					: args.table === 'emailSnapshots'
 						? 'emailSelectionChunks'
 						: args.table;
-			if (!matches(fields, schema.tables[destination].validator, db))
+			if (
+				(destination === 'savedContracts' && !hasApplicationMap(fields.applications)) ||
+				!validate(schema.tables[destination].validator, fields, { db })
+			)
 				throw new ConvexError(`Converted ${destination} record is invalid.`);
 			const values = fields as Record<string, Value>;
 			documentBytes(values);
@@ -123,7 +85,7 @@ export const convertBatch = internalMutation({
 					destination === 'playbookItemCreationReceipts'
 						? await ctx.db
 								.query('playbookItemCreationReceipts')
-								.withIndex('by_operationId', (q) => q.eq('operationId', String(fields.operationId)))
+								.withIndex('by_operationId', (q) => q.eq('operationId', String(values.operationId)))
 								.unique()
 						: await ctx.db
 								.query('emailSelectionChunks')
@@ -131,9 +93,9 @@ export const convertBatch = internalMutation({
 									q
 										.eq(
 											'deliveryId',
-											ctx.db.normalizeId('emailDeliveries', String(fields.deliveryId))!
+											ctx.db.normalizeId('emailDeliveries', String(values.deliveryId))!
 										)
-										.eq('order', Number(fields.order))
+										.eq('order', Number(values.order))
 								)
 								.unique();
 				if (existing) {
@@ -177,7 +139,7 @@ export const versions = internalQuery({
 export const mapSeedKey = internalMutation({
 	args: {
 		companyId: v.id('company'),
-		baselineId: v.id('baselines'),
+		templateSourceId: v.id('templateSources'),
 		previous: v.string(),
 		next: v.string()
 	},
@@ -186,13 +148,17 @@ export const mapSeedKey = internalMutation({
 		requireTransition();
 		if (![args.previous, args.next].every((value) => /^[0-9a-f]{64}$/.test(value)))
 			throw new ConvexError('Invalid approved seed fingerprint.');
-		const baseline = await ctx.db.get('baselines', args.baselineId);
-		if (!baseline || baseline.companyId !== args.companyId || baseline.source !== 'seed')
+		const templateSource = await ctx.db.get('templateSources', args.templateSourceId);
+		if (
+			!templateSource ||
+			templateSource.companyId !== args.companyId ||
+			templateSource.source !== 'seed'
+		)
 			throw new ConvexError('Conversion scope mismatch.');
-		if (baseline.bootstrapKey === args.next) return null;
-		if (baseline.bootstrapKey !== args.previous)
+		if (templateSource.bootstrapKey === args.next) return null;
+		if (templateSource.bootstrapKey !== args.previous)
 			throw new ConvexError('Seed receipt does not match the approved original input.');
-		await ctx.db.patch('baselines', baseline._id, { bootstrapKey: args.next });
+		await ctx.db.patch('templateSources', templateSource._id, { bootstrapKey: args.next });
 		return null;
 	}
 });
@@ -206,23 +172,26 @@ export const accountVersion = internalMutation({
 		const version = await ctx.db.get('templateVersions', args.versionId);
 		if (!version || version.companyId !== args.companyId)
 			throw new ConvexError('Conversion scope mismatch.');
-		const baseline = await ctx.db.get('baselines', version.baselineId);
-		if (!baseline || baseline.companyId !== args.companyId)
-			throw new ConvexError('Missing conversion baseline.');
-		const identity = canonicalFingerprint({ items: version.items, baseline: baseline.fingerprint });
+		const templateSource = await ctx.db.get('templateSources', version.templateSourceId);
+		if (!templateSource || templateSource.companyId !== args.companyId)
+			throw new ConvexError('Missing conversion template source.');
+		const identity = canonicalFingerprint({
+			items: version.items,
+			templateSource: templateSource.fingerprint
+		});
 		const progress = await db
 			.query('readabilityProgress')
 			.withIndex('by_versionId', (q) => q.eq('versionId', version._id))
 			.unique();
 		if (!progress) {
-			const blocks = await baselineBlocks(ctx, baseline._id, args.companyId);
+			const blocks = await templateSourceBlocks(ctx, templateSource._id, args.companyId);
 			await db.insert('readabilityProgress', {
 				companyId: args.companyId,
 				versionId: version._id,
 				identity,
 				nextItem: 0,
 				jsonBytes: new TextEncoder().encode(JSON.stringify({ blocks, items: [] })).byteLength,
-				readBytes: baseline.chunkReadBytes
+				readBytes: templateSource.chunkReadBytes
 			});
 			return { done: false };
 		}
@@ -268,7 +237,7 @@ export const accountVersion = internalMutation({
 		}
 		if (
 			jsonBytes > MAX_SNAPSHOT_BYTES ||
-			readBytes + documentBytes(version) + documentBytes(baseline) + 65_536 > 16 * 1024 * 1024
+			readBytes + documentBytes(version) + documentBytes(templateSource) + 65_536 > 16 * 1024 * 1024
 		)
 			throw new ConvexError('Converted template exceeds its existing capacity guarantee.');
 		await ctx.db.patch('templateVersions', version._id, {

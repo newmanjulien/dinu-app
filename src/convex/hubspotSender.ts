@@ -4,7 +4,15 @@ import type { Doc } from './_generated/dataModel';
 import { env } from './_generated/server';
 import { internal } from './_generated/api';
 import { retainedUntil } from './hubspotExports';
-import { connectionToken, hubspot, readDeal, HubSpotError } from './hubspotApi';
+import {
+	connectionToken,
+	hubspot,
+	readDeal,
+	HubSpotError,
+	record,
+	objectId,
+	nextCursor
+} from './hubspotApi';
 
 function html(s: string) {
 	return s
@@ -105,7 +113,7 @@ export const send = internalAction({
 			reserve();
 			await authority();
 			requests++;
-			return hubspot(ctx, connection!, path);
+			return record(await hubspot(ctx, connection!, path));
 		};
 		const settle = async (
 			outcome:
@@ -194,12 +202,9 @@ export const send = internalAction({
 								...progress,
 								ids: associations.results
 									.slice(0, 100)
-									.map((a: { toObjectId: string | number }) => String(a.toObjectId)),
+									.map((value: unknown) => objectId(record(value).toObjectId)),
 								position: 0,
-								next:
-									associations.paging?.next?.after === undefined
-										? undefined
-										: String(associations.paging.next.after)
+								next: nextCursor(associations) ?? undefined
 							};
 							await checkpoint();
 						}
@@ -208,11 +213,11 @@ export const send = internalAction({
 								const note = await read(
 									`/crm/v3/objects/notes/${encodeURIComponent(progress.ids[progress.position])}?properties=hs_note_body`
 								);
-								if (
-									note.id &&
-									String(note.properties?.hs_note_body ?? '').includes(marker(event))
-								) {
-									await settle('sent', String(note.id));
+								const noteId = objectId(note.id);
+								const body = record(note.properties).hs_note_body;
+								if (typeof body !== 'string') throw new HubSpotError(502);
+								if (body.includes(marker(event))) {
+									await settle('sent', noteId);
 									return null;
 								}
 							} catch (error) {
@@ -241,7 +246,9 @@ export const send = internalAction({
 						if (!Array.isArray(candidates.results)) throw new HubSpotError(502);
 						progress = {
 							...progress,
-							ids: candidates.results.slice(0, 100).map((f: { id: string }) => String(f.id)),
+							ids: candidates.results
+								.slice(0, 100)
+								.map((value: unknown) => objectId(record(value).id)),
 							position: 0
 						};
 						await checkpoint();
@@ -252,6 +259,13 @@ export const send = internalAction({
 							const file = await read(
 								`/files/v3/files/${encodeURIComponent(progress.ids[progress.position])}`
 							);
+							const fileId = objectId(file.id);
+							if (
+								typeof file.name !== 'string' ||
+								typeof file.access !== 'string' ||
+								(file.extension !== undefined && typeof file.extension !== 'string')
+							)
+								throw new HubSpotError(502);
 							if (
 								(file.name === filename(event) ||
 									`${file.name}.${file.extension}` === filename(event)) &&
@@ -264,7 +278,7 @@ export const send = internalAction({
 									throw new Error('File exceeds bounded verification allowance');
 								if (bodyBytes + expected > BODY_BYTES) throw new YieldObservation();
 								const signed = await read(
-									`/files/v3/files/${encodeURIComponent(file.id)}/signed-url`
+									`/files/v3/files/${encodeURIComponent(fileId)}/signed-url`
 								);
 								if (typeof signed.url === 'string') {
 									reserve();
@@ -279,10 +293,10 @@ export const send = internalAction({
 											(b) => b.toString(16).padStart(2, '0')
 										).join('');
 										if (digest === data.attempt.sha256) {
-											await settle('file', String(file.id));
+											await settle('file', fileId);
 											event = {
 												...event,
-												fileId: String(file.id),
+												fileId,
 												dispatch: undefined,
 												dispatchId: undefined
 											};
@@ -360,19 +374,23 @@ export const send = internalAction({
 						return null;
 					}
 					requests++;
-					const file = await hubspot(
-						ctx,
-						connection,
-						'/files/v3/files',
-						{ method: 'POST', body: form },
-						false,
+					const file = record(
+						await hubspot(
+							ctx,
+							connection,
+							'/files/v3/files',
+							{ method: 'POST', body: form },
+							false,
+							'create'
+						),
 						'create'
 					);
-					if (!file.id || (file.access && file.access !== 'PRIVATE'))
+					const fileId = objectId(file.id, 'create');
+					if (file.access !== undefined && file.access !== 'PRIVATE')
 						throw new HubSpotError(502, 60_000, 'attempted', 'create');
-					await settle('file', String(file.id));
+					await settle('file', fileId);
 					freshDispatch = undefined;
-					event = { ...event, fileId: String(file.id) };
+					event = { ...event, fileId };
 				}
 			}
 			const verbs = {
@@ -415,16 +433,18 @@ export const send = internalAction({
 				return null;
 			}
 			requests++;
-			const note = await hubspot(
-				ctx,
-				connection,
-				'/crm/v3/objects/notes',
-				{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: noteBody },
-				false,
+			const note = record(
+				await hubspot(
+					ctx,
+					connection,
+					'/crm/v3/objects/notes',
+					{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: noteBody },
+					false,
+					'create'
+				),
 				'create'
 			);
-			if (!note.id) throw new HubSpotError(502, 60_000, 'attempted', 'create');
-			await settle('sent', String(note.id));
+			await settle('sent', objectId(note.id, 'create'));
 		} catch (error) {
 			const e = error instanceof HubSpotError ? error : null;
 			const safeLocalDenial = Boolean(

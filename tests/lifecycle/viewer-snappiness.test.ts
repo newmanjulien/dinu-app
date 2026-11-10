@@ -1,7 +1,7 @@
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DocumentResources } from '../../src/lib/document/runtime/resources.svelte';
-import { createContractWorkspace } from '../../src/lib/document/runtime/workspace-factory';
+import { createDocumentWorkspace } from '../../src/lib/document/runtime/workspace-factory';
 import { itemStructure } from '../../src/lib/playbook/structure';
 import Harness from './ViewerSnappinessHarness.svelte';
 import { csmState } from './csm-state.svelte';
@@ -34,15 +34,15 @@ async function fixture() {
 	const data = documentFixture(20),
 		layout = layoutFixture();
 	// Deliberately opposite structure order: nearby reports must follow document source order.
-	data.structure.items.reverse();
-	const resources = new DocumentResources(layout.profiles, () => createContractWorkspace);
+	data.structure = { ...data.structure, items: [...data.structure.items].reverse() };
+	const resources = new DocumentResources(layout.profiles, () => createDocumentWorkspace);
 	cleanups.push(() => {
 		resources.destroy();
 		layout.destroy();
 	});
 	const entry = resources.acquire('admin', {
 		blocks: { data: data.blocks },
-		items: {},
+		kind: 'structure',
 		structure: { data: data.structure }
 	});
 	resources.activate(entry);
@@ -89,13 +89,13 @@ it('instruction-only revision updates preserve mounted page elements and schedul
 	};
 	workspace.accept({
 		blocks: { data: f.data.blocks },
-		items: {},
+		kind: 'structure',
 		structure: {
 			data: {
 				...f.data.structure,
 				authoringGeneration: 2,
 				items: f.data.structure.items.map((head) =>
-					head._id === updated._id ? itemStructure(updated) : head
+					head._id === updated._id ? { ...itemStructure(updated), companyId: head.companyId } : head
 				)
 			}
 		},

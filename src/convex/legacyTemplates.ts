@@ -1,3 +1,4 @@
+import { isRepItem } from '../lib/playbook/model';
 import { v, type Infer } from 'convex/values';
 import { api } from './_generated/api';
 import { query } from './_generated/server';
@@ -11,8 +12,9 @@ export const version = query({
 		const content = await ctx.runQuery(api.templates.content, args);
 		return {
 			...content,
+			itemCount: content.items.filter(isRepItem).length,
 			blocks: content.blocks.map(legacyBlockView),
-			items: content.items.map((item) => legacyItemView(item))
+			items: content.items.filter(isRepItem).map((item) => legacyItemView(item))
 		};
 	}
 });

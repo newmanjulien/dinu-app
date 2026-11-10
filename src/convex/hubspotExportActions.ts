@@ -3,8 +3,9 @@ import { ConvexError, v } from 'convex/values';
 import { internalAction } from './_generated/server';
 import { internal } from './_generated/api';
 import { exportRequest } from './savedContractValidators';
-import { generateWord } from '../lib/server/contract/export/word';
-import { composeExport } from '../lib/contract/export/content';
+import { contractName } from '../lib/contract/filename';
+import { generateWord } from '../lib/server/document/export/word';
+import { composeExport } from '../lib/document/export/content';
 import { concessionSelections } from '../lib/contract/applications';
 import { toDocumentOverlay } from '../lib/playbook/document-overlay';
 import { createHash } from 'node:crypto';
@@ -34,7 +35,7 @@ export const generate = internalAction({
 					items: content.items.map(toDocumentOverlay),
 					activeConcessions: concessionSelections(content.applications)
 				}),
-				content.title
+				contractName(content.title)
 			);
 			const bytes = await blob.arrayBuffer(),
 				fileId = await ctx.storage.store(blob);

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750" fill="none">
+  <rect width="1200" height="750" fill="#f6e9de"/>
+  <g font-family="Inter, Arial, sans-serif">
+    <text x="64" y="66" fill="#8d6047" font-size="15" font-weight="600" letter-spacing="2">DINU + HUBSPOT</text>
+    <text x="64" y="123" fill="#553e30" font-size="38" font-weight="600">Keep the whole story on the deal.</text>
+    <text x="64" y="160" fill="#93735e" font-size="20">Contract activity appears right where your team works.</text>
+    <rect x="1010" y="44" width="126" height="32" rx="16" fill="#ecdbcd"/>
+    <text x="1073" y="65" text-anchor="middle" fill="#93735e" font-size="13">Sample screen</text>
+    <rect x="64" y="205" width="1072" height="480" rx="16" fill="#fff" stroke="#e3d9d0"/>
+    <path d="M64 265H1136" stroke="#e6eaed"/>
+    <text x="92" y="243" fill="#ff7a59" font-size="22" font-weight="600">HubSpot</text>
+    <text x="237" y="241" fill="#677888" font-size="14">CRM</text>
+    <text x="308" y="241" fill="#677888" font-size="14">Sales</text>
+    <text x="387" y="241" fill="#677888" font-size="14">Commerce</text>
+    <path d="M410 265V685" stroke="#e6eaed"/>
+    <text x="92" y="309" fill="#738493" font-size="13">← Deals</text>
+    <text x="92" y="353" fill="#33475b" font-size="21" font-weight="600">Acme · Annual agreement</text>
+    <text x="92" y="390" fill="#738493" font-size="14">Amount</text>
+    <text x="92" y="418" fill="#33475b" font-size="23">$24,000</text>
+    <path d="M92 444H382" stroke="#e6eaed"/>
+    <text x="92" y="479" fill="#738493" font-size="13">Deal stage</text>
+    <text x="92" y="504" fill="#33475b" font-size="15">Contract sent</text>
+    <text x="92" y="549" fill="#738493" font-size="13">Deal owner</text>
+    <text x="92" y="574" fill="#33475b" font-size="15">Jordan Davis</text>
+    <text x="444" y="308" fill="#33475b" font-size="16" font-weight="600">Activities</text>
+    <text x="555" y="308" fill="#738493" font-size="15">Overview</text>
+    <path d="M444 323H517" stroke="#ff7a59" stroke-width="3"/>
+    <path d="M444 324H1104" stroke="#e6eaed"/>
+    <path d="M466 367V625" stroke="#e6eaed" stroke-width="2"/>
+    <circle cx="466" cy="376" r="17" fill="#fce9e2"/>
+    <text x="466" y="382" text-anchor="middle" fill="#b96a47" font-size="16">✓</text>
+    <rect x="501" y="350" width="603" height="103" rx="8" fill="#fff" stroke="#e1e6eb"/>
+    <text x="522" y="380" fill="#33475b" font-size="15" font-weight="600">Contract downloaded</text>
+    <text x="1082" y="380" text-anchor="end" fill="#8a99a6" font-size="12">Today, 2:42 PM</text>
+    <text x="522" y="407" fill="#677888" font-size="14">Jordan downloaded the latest contract in Dinu.</text>
+    <text x="522" y="432" fill="#398598" font-size="13">Acme — Master Services Agreement.docx</text>
+    <circle cx="466" cy="496" r="17" fill="#edf3ed"/>
+    <text x="466" y="502" text-anchor="middle" fill="#5e7d68" font-size="16">✓</text>
+    <rect x="501" y="472" width="603" height="77" rx="8" fill="#fff" stroke="#e1e6eb"/>
+    <text x="522" y="502" fill="#33475b" font-size="15" font-weight="600">Concession approved</text>
+    <text x="1082" y="502" text-anchor="end" fill="#8a99a6" font-size="12">Today, 2:35 PM</text>
+    <text x="522" y="528" fill="#677888" font-size="14">The requested payment terms were approved in Dinu.</text>
+    <circle cx="466" cy="594" r="17" fill="#edf1f5"/>
+    <text x="466" y="600" text-anchor="middle" fill="#677888" font-size="19">+</text>
+    <rect x="501" y="570" width="603" height="77" rx="8" fill="#fff" stroke="#e1e6eb"/>
+    <text x="522" y="600" fill="#33475b" font-size="15" font-weight="600">Contract created</text>
+    <text x="1082" y="600" text-anchor="end" fill="#8a99a6" font-size="12">Today, 1:20 PM</text>
+    <text x="522" y="626" fill="#677888" font-size="14">A new Dinu contract was linked to this deal.</text>
+  </g>
+</svg>

@@ -1,9 +1,9 @@
 <script lang="ts">
 	import SnappinessContext from './SnappinessContext.svelte';
-	import AdminWorkspace from '../../src/lib/components/workspace/AdminWorkspace.svelte';
-	import type { AdminAuthoringSession } from '../../src/lib/playbook/admin-authoring-session.svelte';
+	import TemplateWorkspace from '../../src/lib/components/workspace/TemplateWorkspace.svelte';
+	import type { TemplateAuthoringSession } from '../../src/lib/playbook/template-authoring-session.svelte';
 	import type { CsmState } from './csm-state.svelte';
-	let { state, authoring }: { state: CsmState; authoring: AdminAuthoringSession } = $props();
+	let { state, authoring }: { state: CsmState; authoring: TemplateAuthoringSession } = $props();
 </script>
 
-<SnappinessContext {state} {authoring}><AdminWorkspace /></SnappinessContext>
+<SnappinessContext {state} {authoring}><TemplateWorkspace /></SnappinessContext>

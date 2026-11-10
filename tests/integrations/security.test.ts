@@ -152,11 +152,23 @@ describe('integration authorization', () => {
 		expect(
 			await f.t.query(api.hubspotConnections.status, { membershipId: f.owner.membershipId })
 		).toEqual({
+			quotes: {
+				installationId: null,
+				epoch: 0,
+				installed: false,
+				connected: false,
+				enabled: false,
+				pushEnabled: false
+			},
 			configured: true,
 			enabled: true,
 			status: 'connected',
+			connectionId: f.connectionId,
 			accountId: '12345',
-			installedAt: NOW
+			installedAt: NOW,
+			companyReadGranted: false,
+			shared: false,
+			removal: null
 		});
 	});
 });

@@ -1,6 +1,7 @@
+import type { Id } from '../../src/convex/_generated/dataModel';
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { StartupData } from '../../src/lib/auth/startup-data';
+import type { StartupHome } from '../../src/lib/auth/startup-data';
 import { csmState } from './csm-state.svelte';
 import Harness from './HomeSnappinessHarness.svelte';
 import { reactive } from './snappiness-observers.svelte';
@@ -10,7 +11,8 @@ import { navigating, page } from './navigation.svelte';
 const context = vi.hoisted(() => ({ query: undefined as unknown, cache: undefined as unknown }));
 vi.mock('convex-svelte', () => ({
 	useConvexClient: () => ({}),
-	usePaginatedQuery: () => context.query
+	usePaginatedQuery: () => context.query,
+	useQuery: () => ({ data: undefined, error: undefined, isLoading: false })
 }));
 vi.mock('$lib/contract/snapshot-cache', async (importOriginal) => ({
 	...(await importOriginal<object>()),
@@ -33,7 +35,7 @@ beforeEach(() => {
 	visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
 	Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
 	navigating.to = null;
-	page.url = new URL('https://test.local/');
+	page.url = new URL('https://test.local/contracts');
 });
 afterEach(async () => {
 	if (component) await unmount(component);
@@ -42,15 +44,18 @@ afterEach(async () => {
 	else Reflect.deleteProperty(document, 'visibilityState');
 	vi.useRealTimers();
 });
-async function fixture() {
+async function fixture(scope: Partial<NonNullable<StartupHome>['scope']> = {}) {
 	const state = csmState();
 	state.viewer.instructionsReady = true;
 	state.session.workspaceAdmitted = true;
 	const card = {
-		_id: 'contract-a',
+		_id: 'contract-a' as Id<'savedContracts'>,
 		buyerCompanyName: 'Synthetic Buyer',
+		_creationTime: 1,
+		hubspot: undefined,
+		workBlock: null,
 		savedAt: 1,
-		creator: { id: 'profile', name: 'Synthetic', avatarUrl: null }
+		creator: { name: 'Synthetic', avatarUrl: null }
 	};
 	const query = reactive({
 		status: 'LoadingFirstPage',
@@ -67,18 +72,26 @@ async function fixture() {
 	};
 	context.query = query;
 	context.cache = cache;
-	const startup = {
+	const startup: StartupHome = {
 		sessionId: 'session',
 		userId: 'user',
-		viewer: state.viewer,
-		contracts: { page: [card], isDone: true }
-	} as unknown as StartupData;
+		scope: {
+			profileId: state.viewer.profile.id,
+			membershipId: state.viewer.membership.id,
+			companyId: state.viewer.company.id,
+			...scope
+		},
+		search: '',
+		cursor: null,
+		numItems: 24,
+		contracts: { page: [card], isDone: true, continueCursor: '' }
+	};
 	component = mount(Harness, { target: document.body, props: { state, startup } });
 	await settle();
 	return { query, card, cache };
 }
 
-it('displays startup contract cards while the live first-page query remains unresolved', async () => {
+it('displays startup cards immediately, warms only after live readiness and two paint frames, and pauses warming during interaction', async () => {
 	const f = await fixture();
 	expect(
 		document.querySelector('a[aria-label="Open contract for Synthetic Buyer"]')
@@ -86,10 +99,7 @@ it('displays startup contract cards while the live first-page query remains unre
 	expect(f.query.status).toBe('LoadingFirstPage');
 	expect(f.query.results).toEqual([]);
 	expect(f.cache.allowBackground).not.toHaveBeenCalled();
-});
 
-it('allows visible-card warming only after live readiness and two paint frames, and pauses it during interaction', async () => {
-	const f = await fixture();
 	f.query.results = [f.card];
 	f.query.status = 'Exhausted';
 	await settle();
@@ -128,4 +138,19 @@ it('retains the displayed cards while a replacement search page is pending', asy
 	await settle();
 	expect(document.querySelector('a[aria-label="Open contract for Synthetic Buyer"]')).toBe(card);
 	expect(document.body.textContent).not.toContain('No contracts');
+});
+
+it.each([
+	{ companyId: 'another-company' as Id<'company'> },
+	{ membershipId: 'another-membership' as Id<'memberships'> },
+	{ profileId: 'another-profile' as Id<'profiles'> }
+])('ignores startup cards with mismatched scope %o', async (scope) => {
+	const f = await fixture(scope);
+	expect(document.querySelector('a[aria-label="Open contract for Synthetic Buyer"]')).toBeNull();
+	f.query.results = [f.card];
+	f.query.status = 'Exhausted';
+	await settle();
+	expect(
+		document.querySelector('a[aria-label="Open contract for Synthetic Buyer"]')
+	).not.toBeNull();
 });

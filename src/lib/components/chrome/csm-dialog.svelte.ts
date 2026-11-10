@@ -2,6 +2,7 @@ import { getContext, setContext, tick } from 'svelte';
 import { page } from '$app/state';
 import { initialCalendar, useCsmPreload, type CsmOwner } from './csm-preload.svelte';
 import { loadCsmModal } from './csm-modal';
+import { supportContent, type SupportContent, type SupportContext } from './csm-support';
 import type { CalendarSelection } from './csm-availability';
 import type { CsmBookingMode, CsmReplacement } from './csm-booking';
 
@@ -9,6 +10,8 @@ export type CsmRequest = {
 	path: string;
 	owner: CsmOwner;
 	initial: CalendarSelection;
+	context: SupportContext;
+	content: SupportContent;
 	trigger?: HTMLButtonElement;
 	onOpen?: () => void;
 	onBooked?: () => void;
@@ -17,17 +20,28 @@ const key = Symbol('csm-dialog');
 export function setCsmDialog(
 	canStart: () => boolean,
 	setupAvailable: () => boolean,
-	onSetupBooked: () => void
+	onSetupBooked: () => void,
+	support: () => SupportContext | undefined
 ) {
 	const preload = useCsmPreload();
 	let request = $state.raw<CsmRequest>();
 	let fallback: (() => void) | undefined;
+	function content() {
+		const context = support();
+		return request && current(request)
+			? request.content
+			: context
+				? supportContent(context)
+				: undefined;
+	}
 	function current(value: CsmRequest) {
+		const context = support();
 		return (
 			request === value &&
 			preload.owner === value.owner &&
 			value.owner.calendar.current() &&
 			value.path === page.url.pathname &&
+			context?.section === value.context.section &&
 			(!!value.initial.replacement || value.initial.mode !== 'setup' || setupAvailable())
 		);
 	}
@@ -37,7 +51,8 @@ export function setCsmDialog(
 		callbacks?: Pick<CsmRequest, 'onOpen' | 'onBooked'>,
 		replacement?: CsmReplacement
 	) {
-		if (request) return false;
+		const context = support();
+		if (request || !context) return false;
 		const owner = preload.align();
 		if (!owner?.canRead(mode, replacement)) return false;
 		// Target identity is frozen synchronously, before any import/read can finish.
@@ -46,12 +61,23 @@ export function setCsmDialog(
 			...(replacement ? { replacement: { ...replacement } } : {})
 		};
 		void loadCsmModal().catch(() => {});
-		request = { path: page.url.pathname, owner, initial, trigger, ...callbacks };
+		request = {
+			path: page.url.pathname,
+			owner,
+			initial,
+			context,
+			content: supportContent(context),
+			trigger,
+			...callbacks
+		};
 		return true;
 	}
 	const value = {
 		get request() {
 			return request;
+		},
+		get content() {
+			return content();
 		},
 		canStart,
 		current,

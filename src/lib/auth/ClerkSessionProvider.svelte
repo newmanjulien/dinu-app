@@ -4,7 +4,7 @@
 	import { deriveState } from '@clerk/shared/deriveState';
 	import type { Resources } from '@clerk/shared/types';
 	import { ReadAttempt, waitForRead } from './attempt';
-	import { clerkScriptHead, resetFailedClerkScript, waitForClerkScript } from './clerk-script';
+	import { clerkScriptHead, waitForClerkScript } from './clerk-script';
 	import { setClerkReadiness } from './clerk-readiness';
 	import { recordStartup } from './startup-perf';
 
@@ -48,10 +48,11 @@
 			// ClerkJS 6 attempts to construct and rejects during every startup.
 			await waitForRead(
 				instance.load({
+					telemetry: false,
 					signInUrl: '/login',
 					signUpUrl: '/join',
-					signInFallbackRedirectUrl: '/',
-					signUpFallbackRedirectUrl: '/'
+					signInFallbackRedirectUrl: '/contracts',
+					signUpFallbackRedirectUrl: '/contracts'
 				}),
 				current.signal
 			);
@@ -92,7 +93,6 @@
 		ready: ({ signal }) => waitForRead(initialize(), signal),
 		retry: () => {
 			if (status === 'error') {
-				resetFailedClerkScript();
 				pending = undefined;
 			}
 			return initialize();

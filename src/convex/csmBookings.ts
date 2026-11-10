@@ -23,7 +23,7 @@ import {
 	verifiedIdentity,
 	type CompanyAccess
 } from './auth';
-import { readTextBody } from './uploadHttp';
+import { readTextBody } from '../lib/http-body';
 import { assertPermission } from './permissions';
 import schema from './schema';
 import { retireSupersededSetupAppointment } from './csmSetupLifecycle';
@@ -126,20 +126,17 @@ async function pending(ctx: QueryCtx, membershipId: Id<'memberships'>) {
 	return null;
 }
 function assertDisplayAccess(a: CompanyAccess, mode: BookingMode, replacement?: Replacement) {
-	if (mode === 'setup') assertPermission(a.membership.role, 'manageTemplate', a.isOwner);
+	assertPermission(a.membership.role, 'manageTemplate', a.isOwner);
 	if (replacement) {
 		if (mode !== 'setup') throw new ConvexError('This setup call is unavailable.');
 		return;
 	}
-	if (
-		(mode === 'setup' && a.company.csmCallBookedAt !== undefined) ||
-		(mode === 'support' && a.company.csmCallBookedAt === undefined)
-	)
+	if (mode === 'setup' && a.company.csmCallBookedAt !== undefined)
 		throw new ConvexError('Your booking access has changed. Close this window and reopen it.');
 }
 function assertAccess(a: CompanyAccess, mode: BookingMode, replacement?: Replacement) {
 	assertDisplayAccess(a, mode, replacement);
-	if (mode === 'setup' && !a.company.baselineId)
+	if (mode === 'setup' && !a.company.templateSourceId)
 		throw new ConvexError('Your booking access has changed. Close this window and reopen it.');
 }
 async function stillEligible(ctx: QueryCtx, a: Attempt) {
@@ -153,11 +150,10 @@ async function stillEligible(ctx: QueryCtx, a: Attempt) {
 		!!company &&
 		member?.profileId === a.profileId &&
 		member.companyId === a.companyId &&
-		(a.mode === 'setup'
-			? member.role === 'admin' &&
-				!!company.baselineId &&
-				(a.replacement !== undefined || company.csmCallBookedAt === undefined)
-			: company.csmCallBookedAt !== undefined);
+		member.role === 'admin' &&
+		(a.mode !== 'setup' ||
+			(!!company.templateSourceId &&
+				(a.replacement !== undefined || company.csmCallBookedAt === undefined)));
 	if (!memberEligible || !a.replacement) return memberEligible;
 	const source = await ctx.db.get('csmSetupAppointments', a.replacement.appointmentId);
 	return (
@@ -192,7 +188,7 @@ export const authorize = internalQuery({
 	args: { ...memberArgs, mode: bookingMode, replacement: v.optional(setupReplacement) },
 	returns: v.null(),
 	handler: async (ctx, a) => {
-		// Display reads may warm setup before a baseline exists. New bookings remain strict.
+		// Display reads may warm setup before a templateSource exists. New bookings remain strict.
 		const owner = await requireMembership(ctx, a.membershipId);
 		assertDisplayAccess(owner, a.mode, a.replacement);
 		if (a.replacement && (await sharedReplacement(ctx, owner, a.replacement)).state !== 'ready')

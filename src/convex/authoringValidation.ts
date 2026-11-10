@@ -1,16 +1,16 @@
-import { validateBaseline } from '../lib/contract/validate-source';
+import { validateDocumentSource } from '../lib/document/validate-source';
 import {
 	certifyValidationFacts,
 	decodeValidationFacts,
 	VALIDATION_CODEC_VERSION
-} from '../lib/contract/validation-codec';
-import { validateReferenceFacts } from '../lib/contract/validation-source';
-import type { BaselineBlock } from '../lib/contract/source-model';
+} from '../lib/document/validation-codec';
+import { validateReferenceFacts } from '../lib/document/validation-source';
+import type { SourceBlock } from '../lib/document/source-model';
 import type { Doc, Id } from './_generated/dataModel';
 import { internalMutation, type MutationCtx, type QueryCtx } from './_generated/server';
 import { v } from 'convex/values';
 import { requireCompany } from './auth';
-import { readBaseline } from './baselineStorage';
+import { readTemplateSource } from './templateSourceStorage';
 import { authoringReadCapacity, currentPointer, templateReadCapacity } from './templates';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { templateRejected } from './templateCapacity';
@@ -19,12 +19,12 @@ const CHUNK_BYTES = 768 * 1024;
 export function readValidationCertificate(
 	ctx: QueryCtx,
 	companyId: Id<'company'>,
-	baselineId: Id<'baselines'>
+	templateSourceId: Id<'templateSources'>
 ) {
 	return ctx.db
-		.query('baselineAuthoring')
-		.withIndex('by_companyId_and_baselineId', (q) =>
-			q.eq('companyId', companyId).eq('baselineId', baselineId)
+		.query('templateSourceCertificates')
+		.withIndex('by_companyId_and_templateSourceId', (q) =>
+			q.eq('companyId', companyId).eq('templateSourceId', templateSourceId)
 		)
 		.unique();
 }
@@ -33,24 +33,24 @@ export async function writeValidationFacts(
 	ctx: MutationCtx,
 	args: {
 		companyId: Id<'company'>;
-		baselineId: Id<'baselines'>;
+		templateSourceId: Id<'templateSources'>;
 		fingerprint: string;
-		blocks: readonly BaselineBlock[];
+		blocks: readonly SourceBlock[];
 	}
 ) {
-	const data = certifyValidationFacts(validateBaseline(args.blocks).index);
+	const data = certifyValidationFacts(validateDocumentSource(args.blocks).index);
 	const chunks = Math.ceil(data.byteLength / CHUNK_BYTES);
-	const baseline = await ctx.db.get('baselines', args.baselineId);
-	if (!baseline || baseline.companyId !== args.companyId)
+	const templateSource = await ctx.db.get('templateSources', args.templateSourceId);
+	if (!templateSource || templateSource.companyId !== args.companyId)
 		throw templateRejected('Source validation storage is unavailable.');
-	const existing = await readValidationCertificate(ctx, args.companyId, args.baselineId);
+	const existing = await readValidationCertificate(ctx, args.companyId, args.templateSourceId);
 	const old = existing?.chunkIds ?? [];
-	const chunkIds: Id<'baselineValidationChunks'>[] = [];
+	const chunkIds: Id<'templateSourceValidationChunks'>[] = [];
 	let readBytes = 0;
 	for (let order = 0; order < chunks; order++) {
 		const row = {
 			companyId: args.companyId,
-			baselineId: args.baselineId,
+			templateSourceId: args.templateSourceId,
 			order,
 			data: data.slice(order * CHUNK_BYTES, (order + 1) * CHUNK_BYTES)
 		};
@@ -60,21 +60,21 @@ export async function writeValidationFacts(
 			queries: 1,
 			readDocuments: 1
 		});
-		let id: Id<'baselineValidationChunks'>;
+		let id: Id<'templateSourceValidationChunks'>;
 		if (old[order]) {
 			id = old[order];
-			await ctx.db.replace('baselineValidationChunks', id, row);
-		} else id = await ctx.db.insert('baselineValidationChunks', row);
+			await ctx.db.replace('templateSourceValidationChunks', id, row);
+		} else id = await ctx.db.insert('templateSourceValidationChunks', row);
 		chunkIds.push(id);
 		readBytes += documentBytes({ ...row, _id: id, _creationTime: 0 });
 	}
 	for (const row of old.slice(chunks)) {
 		await assertStorageCapacity(ctx, { documents: 1 });
-		await ctx.db.delete('baselineValidationChunks', row);
+		await ctx.db.delete('templateSourceValidationChunks', row);
 	}
 	const certificate = {
 		companyId: args.companyId,
-		baselineId: args.baselineId,
+		templateSourceId: args.templateSourceId,
 		format: VALIDATION_CODEC_VERSION,
 		fingerprint: args.fingerprint,
 		chunkCount: chunks,
@@ -84,24 +84,24 @@ export async function writeValidationFacts(
 	};
 	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(certificate) });
 	if (existing) {
-		await ctx.db.replace('baselineAuthoring', existing._id, certificate);
+		await ctx.db.replace('templateSourceCertificates', existing._id, certificate);
 		return { ...certificate, _id: existing._id, _creationTime: existing._creationTime };
 	}
-	const id = await ctx.db.insert('baselineAuthoring', certificate);
+	const id = await ctx.db.insert('templateSourceCertificates', certificate);
 	return { ...certificate, _id: id, _creationTime: 0 };
 }
 
 export function validationCertified(
-	baseline: Doc<'baselines'>,
-	facts: Doc<'baselineAuthoring'> | null,
+	templateSource: Doc<'templateSources'>,
+	facts: Doc<'templateSourceCertificates'> | null,
 	version?: Doc<'templateVersions'>
 ) {
 	return Boolean(
 		facts &&
-		facts.companyId === baseline.companyId &&
-		facts.baselineId === baseline._id &&
+		facts.companyId === templateSource.companyId &&
+		facts.templateSourceId === templateSource._id &&
 		facts.format === VALIDATION_CODEC_VERSION &&
-		facts.fingerprint === baseline.fingerprint &&
+		facts.fingerprint === templateSource.fingerprint &&
 		Number.isSafeInteger(facts.chunkCount) &&
 		facts.chunkCount > 0 &&
 		facts.chunkCount <= 4096 &&
@@ -112,7 +112,7 @@ export function validationCertified(
 		facts.readBytes > 0 &&
 		(!version ||
 			(version.validation?.format === VALIDATION_CODEC_VERSION &&
-				version.validation.fingerprint === baseline.fingerprint &&
+				version.validation.fingerprint === templateSource.fingerprint &&
 				Number.isSafeInteger(version.headReadBytes) &&
 				version.headReadBytes! >= 0 &&
 				Number.isSafeInteger(version.structureResultBytes) &&
@@ -123,18 +123,19 @@ export function validationCertified(
 /** No source prose, canonical serialization or hashing occurs on ordinary saves. */
 export async function readValidationFacts(
 	ctx: QueryCtx,
-	baseline: Doc<'baselines'>,
-	knownCertificate?: Doc<'baselineAuthoring'>
+	templateSource: Doc<'templateSources'>,
+	knownCertificate?: Doc<'templateSourceCertificates'>
 ) {
 	const certificate =
-		knownCertificate ?? (await readValidationCertificate(ctx, baseline.companyId, baseline._id));
-	if (!validationCertified(baseline, certificate))
-		throw templateRejected('The baseline needs authoring certification.');
+		knownCertificate ??
+		(await readValidationCertificate(ctx, templateSource.companyId, templateSource._id));
+	if (!validationCertified(templateSource, certificate))
+		throw templateRejected('The template source needs authoring certification.');
 	const facts = certificate!;
 	const rows = await ctx.db
-		.query('baselineValidationChunks')
-		.withIndex('by_companyId_and_baselineId_and_order', (q) =>
-			q.eq('companyId', baseline.companyId).eq('baselineId', baseline._id)
+		.query('templateSourceValidationChunks')
+		.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
+			q.eq('companyId', templateSource.companyId).eq('templateSourceId', templateSource._id)
 		)
 		.take(facts.chunkCount + 1);
 	const bytes = new Uint8Array(facts.dataBytes);
@@ -144,8 +145,8 @@ export async function readValidationFacts(
 		if (
 			row.order !== order ||
 			row._id !== facts.chunkIds[order] ||
-			row.baselineId !== baseline._id ||
-			row.companyId !== baseline.companyId ||
+			row.templateSourceId !== templateSource._id ||
+			row.companyId !== templateSource.companyId ||
 			cursor + row.data.byteLength > bytes.length
 		)
 			throw templateRejected('Source validation storage is incomplete.');
@@ -156,7 +157,7 @@ export async function readValidationFacts(
 	if (rows.length !== facts.chunkCount || cursor !== bytes.length || readBytes !== facts.readBytes)
 		throw templateRejected('Source validation storage is incomplete.');
 	const decoded = decodeValidationFacts(bytes.buffer);
-	if (decoded.index.orderedBlocks.length !== baseline.blockCount)
+	if (decoded.index.orderedBlocks.length !== templateSource.blockCount)
 		throw templateRejected('Source validation storage is incomplete.');
 	return {
 		index: decoded.index,
@@ -172,39 +173,42 @@ export const certify = internalMutation({
 	handler: async (ctx, { companyId, versionId }) => {
 		const company = await requireCompany(ctx, companyId),
 			pointer = await currentPointer(ctx, companyId);
-		if (company.authoringMigration || pointer?.versionId !== versionId || !company.baselineId)
+		if (company.authoringMigration || pointer?.versionId !== versionId || !company.templateSourceId)
 			return null;
 		const version = await ctx.db.get('templateVersions', versionId),
-			baseline = await ctx.db.get('baselines', company.baselineId);
+			templateSource = await ctx.db.get('templateSources', company.templateSourceId);
 		if (
 			!version ||
-			!baseline ||
+			!templateSource ||
 			version.companyId !== companyId ||
-			baseline.companyId !== companyId ||
-			version.baselineId !== baseline._id ||
-			baseline.state !== 'active'
+			templateSource.companyId !== companyId ||
+			version.templateSourceId !== templateSource._id ||
+			templateSource.state !== 'active'
 		)
 			return null;
-		let certificate = await readValidationCertificate(ctx, companyId, baseline._id);
-		if (validationCertified(baseline, certificate, version)) return null;
+		let certificate = await readValidationCertificate(ctx, companyId, templateSource._id);
+		if (validationCertified(templateSource, certificate, version)) return null;
 		// Only the canonical bulk writer supplies this full-source/body audit proof.
 		// Legacy/repair data must pass the complete scoped migration instead.
-		if (version.validation?.format !== 0 || version.validation.fingerprint !== baseline.fingerprint)
+		if (
+			version.validation?.format !== 0 ||
+			version.validation.fingerprint !== templateSource.fingerprint
+		)
 			return null;
-		if (!validationCertified(baseline, certificate)) {
-			const source = await readBaseline(ctx, baseline._id, companyId, baseline);
+		if (!validationCertified(templateSource, certificate)) {
+			const source = await readTemplateSource(ctx, templateSource._id, companyId, templateSource);
 			certificate = await writeValidationFacts(ctx, {
 				companyId,
-				baselineId: baseline._id,
-				fingerprint: baseline.fingerprint,
+				templateSourceId: templateSource._id,
+				fingerprint: templateSource.fingerprint,
 				blocks: source.blocks
 			});
 		}
-		authoringReadCapacity(version, baseline, certificate);
-		templateReadCapacity(version, baseline);
+		authoringReadCapacity(version, templateSource, certificate);
+		templateReadCapacity(version, templateSource);
 		const next = {
 			...version,
-			validation: { format: VALIDATION_CODEC_VERSION, fingerprint: baseline.fingerprint }
+			validation: { format: VALIDATION_CODEC_VERSION, fingerprint: templateSource.fingerprint }
 		};
 		await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(next) });
 		await ctx.db.patch('templateVersions', versionId, { validation: next.validation });

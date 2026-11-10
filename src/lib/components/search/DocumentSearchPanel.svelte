@@ -2,7 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import CaretUpIcon from 'phosphor-svelte/lib/CaretUpIcon';
-	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
+	import SearchField from '$lib/ui/SearchField.svelte';
 	import type { DocumentSearchSession } from '$lib/document/search/search-session.svelte';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 
@@ -13,7 +13,7 @@
 	}: {
 		session: DocumentSearchSession;
 		panelElement?: HTMLElement;
-		inputElement?: HTMLInputElement;
+		inputElement?: HTMLInputElement | null;
 	} = $props();
 
 	function handleInput(event: Event) {
@@ -39,27 +39,17 @@
 	aria-label="Search"
 	data-utility-panel="document-search"
 >
-	<label
-		class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-ink aria-disabled:bg-canvas aria-disabled:text-ink-muted flex h-9 items-center gap-2"
-	>
-		<span class="sr-only">Find in document</span>
-		<MagnifyingGlassIcon
-			aria-hidden="true"
-			weight="regular"
-			class="size-[17px] shrink-0 text-ink-muted"
-		/>
-		<input
-			class="min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted w-full flex-1 border-0 bg-transparent p-0 text-inherit outline-none [&::-webkit-search-cancel-button]:hidden"
-			bind:this={inputElement}
-			type="search"
-			value={session.query}
-			placeholder="Find in document"
-			autocomplete="off"
-			spellcheck="false"
-			oninput={handleInput}
-			onkeydown={handleInputKeydown}
-		/>
-	</label>
+	<SearchField
+		bind:element={inputElement}
+		label="Find in document"
+		value={session.query}
+		placeholder="Find in document"
+		autocomplete="off"
+		spellcheck="false"
+		clearable={false}
+		oninput={handleInput}
+		onkeydown={handleInputKeydown}
+	/>
 
 	{#if session.query}
 		<div class="mt-3 flex min-h-9 items-center justify-between">

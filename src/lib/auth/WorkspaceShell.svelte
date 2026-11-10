@@ -4,6 +4,12 @@
 	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
 	import WorkspaceSaveStatus from '$lib/components/chrome/WorkspaceSaveStatus.svelte';
 	import AppStatus from '$lib/components/chrome/AppStatus.svelte';
+	import WorkspaceStatus from '$lib/components/chrome/WorkspaceStatus.svelte';
+	import CopyConfirmation from '$lib/buyer/CopyConfirmation.svelte';
+	import { setBuyerLinkCopyFeedback } from '$lib/buyer/copy-feedback.svelte';
+	import { setIntegrationFeedback } from '$lib/integration-feedback.svelte';
+	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
+	import StatusBubble from '$lib/components/chrome/StatusBubble.svelte';
 	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
 	import { setHeaderContent } from '$lib/components/chrome/header-content.svelte';
 	import { InteractionController, setInteractionController } from '$lib/components/ui/interactions';
@@ -15,25 +21,44 @@
 	import { setCsmPreload } from '$lib/components/chrome/csm-preload.svelte';
 	import { setCsmDialog } from '$lib/components/chrome/csm-dialog.svelte';
 	import CsmDialogHost from '$lib/components/chrome/CsmDialogHost.svelte';
+	import { supportSection, supportContent } from '$lib/components/chrome/csm-support';
+	import { setCompanySetup } from '$lib/features/company-setup/company-setup.svelte';
 	let { children }: { children: Snippet } = $props();
 	const header = setHeaderContent();
 	const feedback = getWorkspaceFeedback();
+	const copies = setBuyerLinkCopyFeedback();
+	const integrations = setIntegrationFeedback();
+	const hubspot = useHubSpotDeals().connection;
+	const confirmationAnnouncements = $derived(
+		copies.confirmation || integrations.confirmation
+			? [copies.confirmation, integrations.confirmation]
+			: null
+	);
+	$effect(() => {
+		integrations.observe(hubspot.error || hubspot.isLoading ? undefined : hubspot.data);
+	});
+	onDestroy(() => {
+		copies.destroy();
+		integrations.destroy();
+	});
 	const viewer = useViewer();
 	const session = useViewerSession();
+	const section = $derived(supportSection(page.route.id, viewer().templateReady));
 	const supportAvailable = $derived(
-		!session.blocked && !session.closing && !viewer().company.deletionPending
+		viewer().membership.role === 'admin' &&
+			!session.blocked &&
+			!session.closing &&
+			!viewer().company.deletionPending
 	);
 	const setupAvailable = $derived(
 		supportAvailable &&
-			describeRoute(page.route.id).document === 'admin' &&
-			viewer().membership.role === 'admin' &&
+			describeRoute(page.route.id).document === 'template' &&
 			viewer().templateReady
 	);
 	// This fact belongs to the membership, beyond a launcher or connection lifetime.
 	let optimisticSetupBooked = $state(false);
 	const setupBooked = $derived(viewer().company.csmCallBooked || optimisticSetupBooked);
-	const eligible = $derived(supportAvailable && (setupBooked || setupAvailable));
-	const noticeEligible = $derived(supportAvailable && viewer().membership.role === 'admin');
+	const eligible = $derived(supportAvailable && !!section);
 	const generation = $derived(`${session.preparedSessionId}:${session.transportGeneration}`);
 	const presentation = setWorkspacePresentation(
 		() =>
@@ -42,7 +67,7 @@
 				page.url.pathname,
 				page.url.search,
 				generation,
-				describeRoute(page.route.id).baseline ? viewer().templateReady : null
+				describeRoute(page.route.id).requiresTemplate ? viewer().templateReady : null
 			]),
 		() => Boolean(navigating.to)
 	);
@@ -65,17 +90,20 @@
 			if (untrack(() => presentation.painted) === ticket) presentation.painted = undefined;
 		};
 	});
+	const setup = setCompanySetup(() => presentation.canStart());
+	const support = $derived(eligible && section ? { section, complete: setup.complete } : undefined);
 	const preload = setCsmPreload(
-		() => presentation.canStart(),
+		() => eligible && presentation.canStart(),
 		() => setupBooked
 	);
 	$effect(() => {
 		preload.align();
 	});
 	const dialog = setCsmDialog(
-		() => supportAvailable && presentation.canStart(),
+		() => eligible && presentation.canStart(),
 		() => setupAvailable,
-		() => (optimisticSetupBooked = true)
+		() => (optimisticSetupBooked = true),
+		() => support
 	);
 	$effect(() => {
 		dialog.align();
@@ -85,18 +113,16 @@
 	let automaticAttempted = false;
 	$effect(() => {
 		const owner = preload.owner;
-		const admitted =
-			describeRoute(page.route.id).document === 'admin' &&
-			!setupBooked &&
-			viewer().permissions.manageTemplate &&
-			!!owner;
+		const admitted = section === 'upload' && supportAvailable && !!owner;
 		if (!admitted || automaticOwner !== owner) {
 			automaticOwner = owner;
 			automaticAttempted = false;
 		}
 		if (!admitted || automaticAttempted || !presentation.canStart()) return;
 		automaticAttempted = true;
-		untrack(() => preload.warm('setup'));
+		untrack(() => {
+			preload.warm('support');
+		});
 	});
 	const widget = loadComponent(
 		() => import('$lib/components/chrome/CsmWidget.svelte'),
@@ -106,13 +132,13 @@
 	const CsmWidget = $derived(widget.component);
 	const notice = loadComponent(
 		() => import('$lib/components/chrome/CsmSetupCallBar.svelte'),
-		() => noticeEligible && presentation.canStart(),
+		() => eligible && presentation.canStart(),
 		() => presentation.painted
 	);
 	const CsmSetupCallBar = $derived(notice.component);
 	let noticeGeneration = $state<string>();
 	$effect(() => {
-		if (!noticeEligible || noticeGeneration !== generation) noticeGeneration = undefined;
+		if (!eligible || noticeGeneration !== generation) noticeGeneration = undefined;
 	});
 	let initializedGeneration = $state<string>();
 	$effect(() => {
@@ -124,7 +150,7 @@
 
 <AppHeader>
 	{#snippet notice()}
-		{#if CsmSetupCallBar && noticeEligible && (noticeGeneration === generation || presentation.canStart())}
+		{#if CsmSetupCallBar && eligible && (noticeGeneration === generation || presentation.canStart())}
 			{#key generation}
 				{@const mountedGeneration = generation}
 				<CsmSetupCallBar onReady={() => (noticeGeneration = mountedGeneration)} />
@@ -132,13 +158,19 @@
 		{/if}
 		{#if header.notice}{@render header.notice()}{/if}
 	{/snippet}
-	<div
-		class="pointer-events-none absolute top-[calc(100%+20px)] right-0 left-0 flex justify-center max-[999px]:top-[calc(100%+8px)] max-[999px]:right-3 max-[999px]:left-auto max-[999px]:w-[min(454px,calc(100vw-24px))] max-[999px]:flex-col max-[999px]:items-end max-[999px]:gap-2"
-	>
+	<WorkspaceStatus announcement={confirmationAnnouncements}>
 		{#if header.content}{@render header.content()}{/if}
 		<div
 			class={`flex w-fit max-w-[min(640px,calc(100vw-32px))] flex-col gap-2 max-[999px]:w-full ${header.content ? 'ml-auto max-w-[calc(100vw-486px)] max-[999px]:max-w-none' : ''}`}
 		>
+			<CopyConfirmation />
+			{#key integrations.confirmation}
+				{#if integrations.confirmation}
+					<div class="-translate-y-2">
+						<StatusBubble>{integrations.confirmation.message}</StatusBubble>
+					</div>
+				{/if}
+			{/key}
 			<AppStatus
 				feedback={feedback.document?.feedback}
 				renderPending={feedback.document?.renderPending}
@@ -149,22 +181,19 @@
 				{#snippet saveFeedback()}<WorkspaceSaveStatus />{/snippet}
 			</AppStatus>
 		</div>
-	</div>
+	</WorkspaceStatus>
 </AppHeader>
 {@render children()}
-{#if CsmWidget && eligible && (initializedGeneration === generation || presentation.canStart())}
+{#if CsmWidget && eligible && support && (initializedGeneration === generation || presentation.canStart())}
 	{#key generation}
 		{@const mountedGeneration = generation}
 		<CsmWidget
-			mode={setupBooked ? 'support' : 'setup'}
+			content={supportContent(support)}
+			upload={section === 'upload'}
 			onReady={() => (initializedGeneration = mountedGeneration)}
 			canStart={() => eligible && presentation.canStart()}
 		/>
 	{/key}
 {/if}
 
-{#if dialog.request}
-	{#key dialog.request}
-		<CsmDialogHost />
-	{/key}
-{/if}
+<CsmDialogHost />

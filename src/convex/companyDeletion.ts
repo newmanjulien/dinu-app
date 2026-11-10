@@ -12,6 +12,7 @@ import { cancelAppointmentJobs } from './csmSetupAppointments';
 import { activeJob, cancelJob, RETIRED_DELIVERY_RECHECK } from './emailDeliveries';
 import { retireDelivery } from './emailDisposal';
 import { deleteUnownedFile } from './storageOwnership';
+import { resetQuota } from './buyerActivityQuota';
 
 async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>, delay = 0) {
 	const generation = marker.cleanupGeneration + 1;
@@ -204,6 +205,112 @@ export const clean = internalMutation({
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
+				case 'buyerLinkOpens':
+					// Reuse this phase to drain current activity and retired history.
+					drained = true;
+					for (const table of [
+						'buyerActivityReceipts',
+						'buyerActivityClauses',
+						'buyerActivityOpenings',
+						'buyerActivityCounters'
+					] as const) {
+						if (
+							!(await drain(
+								table,
+								ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+							))
+						) {
+							drained = false;
+							break;
+						}
+					}
+					drained =
+						drained &&
+						(await drain(
+							'buyerVisits',
+							ctx.db
+								.query('buyerVisits')
+								.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+						)) &&
+						(await drain(
+							'buyerLinkOpens',
+							ctx.db
+								.query('buyerLinkOpens')
+								.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+						));
+					break;
+				case 'buyerLinkStats':
+					drained = await drain(
+						'buyerLinkStats',
+						ctx.db
+							.query('buyerLinkStats')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'buyerLinkBrowsers':
+					drained = await drain(
+						'buyerLinkBrowsers',
+						ctx.db
+							.query('buyerLinkBrowsers')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'buyerActivityQuotaKeys':
+					drained = await drain(
+						'buyerActivityQuotaKeys',
+						ctx.db
+							.query('buyerActivityQuotaKeys')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						{
+							beforeDelete: (owner) => resetQuota(ctx, owner)
+						}
+					);
+					break;
+				case 'buyerLinks':
+					drained = await drain(
+						'buyerLinks',
+						ctx.db
+							.query('buyerLinks')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'contractBuyerState':
+					drained = await drain(
+						'contractBuyerState',
+						ctx.db
+							.query('contractBuyerState')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					);
+					break;
+				case 'discussions':
+					drained = await drain(
+						'discussionQuotaKeys',
+						ctx.db
+							.query('discussionQuotaKeys')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						{ beforeDelete: (owner) => resetQuota(ctx, owner) }
+					);
+					if (!drained) break;
+					for (const table of [
+						'discussionMessages',
+						'discussionThreads',
+						'discussionReceipts',
+						'proposalApplications',
+						'contractConcessions',
+						'publicationAcknowledgments',
+						'contractAccess'
+					] as const) {
+						if (
+							!(await drain(
+								table,
+								ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+							))
+						) {
+							drained = false;
+							break;
+						}
+					}
+					break;
 				case 'contracts':
 					drained = await drain(
 						'savedContracts',
@@ -233,18 +340,18 @@ export const clean = internalMutation({
 					break;
 				case 'validationCertificates':
 					drained = await drain(
-						'baselineAuthoring',
+						'templateSourceCertificates',
 						ctx.db
-							.query('baselineAuthoring')
-							.withIndex('by_companyId_and_baselineId', (q) => q.eq('companyId', companyId))
+							.query('templateSourceCertificates')
+							.withIndex('by_companyId_and_templateSourceId', (q) => q.eq('companyId', companyId))
 					);
 					break;
 				case 'validationFacts':
 					drained = await drain(
-						'baselineValidationChunks',
+						'templateSourceValidationChunks',
 						ctx.db
-							.query('baselineValidationChunks')
-							.withIndex('by_companyId_and_baselineId_and_order', (q) =>
+							.query('templateSourceValidationChunks')
+							.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
 								q.eq('companyId', companyId)
 							)
 					);
@@ -259,10 +366,10 @@ export const clean = internalMutation({
 					break;
 				case 'blocks':
 					drained = await drain(
-						'baselineChunks',
+						'templateSourceChunks',
 						ctx.db
-							.query('baselineChunks')
-							.withIndex('by_companyId_and_baselineId_and_order', (q) =>
+							.query('templateSourceChunks')
+							.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
 								q.eq('companyId', companyId)
 							)
 					);
@@ -307,11 +414,11 @@ export const clean = internalMutation({
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
-				case 'baselines':
+				case 'templateSources':
 					drained = await drain(
-						'baselines',
+						'templateSources',
 						ctx.db
-							.query('baselines')
+							.query('templateSources')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
 						{
 							afterDelete: async (row) => {
@@ -384,11 +491,15 @@ export const clean = internalMutation({
 					if (
 						!(await drain(
 							'csmBookingAttempts',
-							ctx.db.query('csmBookingAttempts').withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-							{ beforeDelete: async (row) => {
-								await cancelJob(ctx, row.sendJobId);
-								await cancelJob(ctx, row.watchdogJobId);
-							} }
+							ctx.db
+								.query('csmBookingAttempts')
+								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+							{
+								beforeDelete: async (row) => {
+									await cancelJob(ctx, row.sendJobId);
+									await cancelJob(ctx, row.watchdogJobId);
+								}
+							}
 						))
 					) {
 						drained = false;
@@ -396,16 +507,16 @@ export const clean = internalMutation({
 					}
 					const authoringRowsDrained =
 						(await drain(
-							'baselineAuthoring',
+							'templateSourceCertificates',
 							ctx.db
-								.query('baselineAuthoring')
-								.withIndex('by_companyId_and_baselineId', (q) => q.eq('companyId', companyId))
+								.query('templateSourceCertificates')
+								.withIndex('by_companyId_and_templateSourceId', (q) => q.eq('companyId', companyId))
 						)) &&
 						(await drain(
-							'baselineValidationChunks',
+							'templateSourceValidationChunks',
 							ctx.db
-								.query('baselineValidationChunks')
-								.withIndex('by_companyId_and_baselineId_and_order', (q) =>
+								.query('templateSourceValidationChunks')
+								.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
 									q.eq('companyId', companyId)
 								)
 						)) &&

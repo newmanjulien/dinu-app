@@ -1,6 +1,8 @@
+import type { ContractItemId } from './item-identity';
+import type { TemplateContent } from '../template/model';
 import type { Id } from '../../convex/_generated/dataModel';
-import type { ContractState, TemplateContent } from './saved';
-import type { SourceTarget } from './source-model';
+import type { ContractState } from './saved';
+import type { SourceTarget } from '../document/source-model';
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 export type ReviewDecision = Exclude<ReviewStatus, 'pending'>;
@@ -19,7 +21,7 @@ export type ReviewTag = {
 export type ReviewNavigation = { afterItemId?: string };
 /** Selected approval changes can be identified without a prepared document. */
 export function selectedReviewApplications(
-	items: TemplateContent['items'],
+	items: readonly import('../playbook/model').ContractItemRecord[],
 	choices: Readonly<Record<string, string>>
 ) {
 	return items.flatMap((item) => {
@@ -35,7 +37,7 @@ export function selectedReviewApplications(
 }
 /** Business readiness uses saved choices and reviews, independently of document layout. */
 export function savedReviews(
-	items: TemplateContent['items'],
+	items: readonly import('../playbook/model').ContractItemRecord[],
 	state: Pick<ContractState, 'applications'>
 ) {
 	return items.flatMap((item) => {
@@ -61,8 +63,8 @@ export function reviewStatus(
 	concessionId: string,
 	applicationId: string
 ): ReviewStatus {
-	const review = state.applications[itemId as Id<'playbookItems'>]?.approval;
-	return state.applications[itemId as Id<'playbookItems'>]?.concessionId === concessionId &&
+	const review = state.applications[itemId as ContractItemId]?.approval;
+	return state.applications[itemId as ContractItemId]?.concessionId === concessionId &&
 		review?.applicationId === applicationId
 		? review.status
 		: 'pending';

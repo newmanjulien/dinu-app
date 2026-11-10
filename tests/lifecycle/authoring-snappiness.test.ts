@@ -1,9 +1,10 @@
+import { AuthoringController } from '../../src/lib/playbook/authoring-controller.svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { AdminAuthoringSession } from '../../src/lib/playbook/admin-authoring-session.svelte';
+import { TemplateAuthoringSession } from '../../src/lib/playbook/template-authoring-session.svelte';
 import { documentAnnotations } from '../../src/lib/playbook/document-overlay';
 import type { SessionEditor } from '../../src/lib/auth/viewer-session.svelte';
-import { ContractSourceController } from '../../src/lib/document/runtime/source.svelte';
+import { DocumentSourceController } from '../../src/lib/document/runtime/source.svelte';
 import {
 	companyId,
 	controlledClient,
@@ -22,7 +23,7 @@ function fixture(count = 12, sourceReady = true) {
 	const data = documentFixture(count),
 		network = controlledClient();
 	let lifecycle!: SessionEditor;
-	const session = new AdminAuthoringSession({
+	const session = new TemplateAuthoringSession({
 		client: network.client,
 		membershipId,
 		companyId,
@@ -31,11 +32,16 @@ function fixture(count = 12, sourceReady = true) {
 			return () => {};
 		}
 	});
+	session.installController(AuthoringController);
 	session.start();
-	const source = new ContractSourceController();
-	source.accept({ blocks: { data: data.blocks }, items: {}, structure: { data: data.structure } });
+	const source = new DocumentSourceController();
+	source.accept({
+		kind: 'structure',
+		blocks: { data: data.blocks },
+		structure: { data: data.structure }
+	});
 	const detach = session.attach(() => ({
-		contract: source.compiled,
+		document: source.compiled,
 		geometry: source.geometry,
 		items: source.structuralItems,
 		itemsCurrent: true,
@@ -46,7 +52,7 @@ function fixture(count = 12, sourceReady = true) {
 		},
 		detailStatus: (id) => session.detailStatus(id)
 	}));
-	session.configurePreloading(data.structure.baselineFingerprint);
+	session.configurePreloading(data.structure.templateSourceFingerprint);
 	network.publish('playbookItems:currentStructure', data.structure);
 	cleanups.push(() => {
 		session.destroy();
@@ -144,7 +150,7 @@ it('a formerly warm instruction waits for its current revision rather than prese
 	expect(f.session.controller.entry).toBeNull();
 	f.respond(0);
 	expect(f.session.controller.entry).toBeNull();
-	f.network.publishDetail(updated._id, { ...f.data.detail(0, updated), authoringGeneration: 2 });
+	f.network.publishDetail(updated._id, f.data.detail(0, updated));
 	expect(f.session.pendingPanel).toBeNull();
 	expect(f.session.controller.draft?.instructions.summary).toBe('Current guidance');
 });
@@ -166,7 +172,7 @@ it('optional failures stay local and an explicit foreground retry can still open
 	expect(f.network.onUpdate).toHaveBeenCalledTimes(calls);
 });
 
-it('prioritizes nearby demand, renews the reporter after same-baseline refresh, and fences retired reports', () => {
+it('prioritizes nearby demand, renews the reporter after same-templateSource refresh, and fences retired reports', () => {
 	const f = fixture(24),
 		nearby = [f.data.records[20]._id, f.data.records[19]._id];
 	const first = f.session.instructionPreload!;
@@ -242,7 +248,7 @@ it('optional arrivals do not notify the foreground projection or reaccept docume
 			accept(details);
 			f.source.accept({
 				blocks: { data: f.data.blocks },
-				items: {},
+				kind: 'structure',
 				structure: { data: f.data.structure },
 				details
 			});
@@ -258,7 +264,7 @@ it('optional arrivals do not notify the foreground projection or reaccept docume
 	expect(accept).toHaveBeenCalledTimes(calls);
 	expect(f.session.hydratedDetails).toBe(projection);
 	expect(f.source.renderSource).toBe(renderSource);
-	expect(f.source.domain.metrics.compiledContractBuilds).toBe(1);
+	expect(f.source.domain.metrics.compiledDocumentBuilds).toBe(1);
 });
 
 it('releases speculative work on freeze and detach, and ignores callbacks from released reads', () => {

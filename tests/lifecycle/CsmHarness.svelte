@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import WorkspaceShell from '../../src/lib/auth/WorkspaceShell.svelte';
 	import WorkspacePresentationReporter from '../../src/lib/auth/WorkspacePresentationReporter.svelte';
-	import BaselineSetup from '../../src/lib/components/template/BaselineSetup.svelte';
+	import TemplateSetup from '../../src/lib/components/template/TemplateSetup.svelte';
 	import { setViewer, setViewerSession } from '../../src/lib/auth/viewer-session.svelte';
 	import type { CsmState } from './csm-state.svelte';
 	let { state }: { state: CsmState } = $props();
@@ -12,5 +12,5 @@
 
 <WorkspaceShell>
 	<WorkspacePresentationReporter outcome={state.outcome} revision={state.revision} />
-	{#if state.form}<BaselineSetup getNavigationIntent={() => 0} />{/if}
+	{#if state.form}<TemplateSetup getNavigationIntent={() => 0} />{/if}
 </WorkspaceShell>

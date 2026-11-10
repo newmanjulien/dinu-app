@@ -1,21 +1,28 @@
 <script lang="ts">
+	import { setBuyerLinkCopyFeedback } from '../../src/lib/buyer/copy-feedback.svelte';
+	import { setAccountContext } from '../../src/lib/auth/account-context.svelte';
 	import { onDestroy, untrack, type Snippet } from 'svelte';
 	import { HubSpotDeals, setHubSpotDeals } from '../../src/lib/hubspot-deals.svelte';
 	import { setViewer, setViewerSession } from '../../src/lib/auth/viewer-session.svelte';
 	import { setWorkspaceRuntime } from '../../src/lib/auth/workspace-context.svelte';
-	import { setStartupData, type StartupData } from '../../src/lib/auth/startup-data';
 	import {
-		setAdminAuthoringSession,
-		type AdminAuthoringSession
-	} from '../../src/lib/playbook/admin-authoring-session.svelte';
+		setStartupData,
+		setStartupHome,
+		type StartupHome,
+		type StartupData
+	} from '../../src/lib/auth/startup-data';
+	import {
+		setTemplateAuthoringSession,
+		type TemplateAuthoringSession
+	} from '../../src/lib/playbook/template-authoring-session.svelte';
 	import {
 		setDocumentResources,
 		type DocumentResources
 	} from '../../src/lib/document/runtime/resources.svelte';
-	import { setContractLayoutProfiles } from '../../src/lib/document/runtime/layout-context.svelte';
+	import { setDocumentLayoutProfiles } from '../../src/lib/document/runtime/layout-context.svelte';
 	import {
-		setContractWorkspace,
-		type ContractWorkspace
+		setDocumentWorkspace,
+		type DocumentWorkspace
 	} from '../../src/lib/document/runtime/workspace-context';
 	import {
 		InteractionController,
@@ -32,15 +39,22 @@
 		resources,
 		workspace,
 		startup,
+		startupHome,
 		children
 	}: {
 		state: CsmState;
-		authoring?: AdminAuthoringSession;
+		authoring?: TemplateAuthoringSession;
 		resources?: DocumentResources;
-		workspace?: ContractWorkspace;
+		workspace?: DocumentWorkspace;
 		startup?: StartupData | null;
+		startupHome?: StartupHome | null;
 		children: Snippet;
 	} = $props();
+	const copyFeedback = setBuyerLinkCopyFeedback();
+	onDestroy(() => copyFeedback.destroy());
+	const accountContext = setAccountContext();
+	accountContext.authenticated = true;
+	accountContext.loading = false;
 	setViewer(() => state.viewer);
 	const hubspot = setHubSpotDeals(
 		new HubSpotDeals({
@@ -52,11 +66,23 @@
 			membershipId: untrack(() => state.viewer.membership.id),
 			connection: {
 				data: {
+					quotes: {
+						installationId: null,
+						epoch: 0,
+						installed: false,
+						connected: false,
+						enabled: false,
+						pushEnabled: false
+					},
 					status: 'uninstalled',
 					enabled: false,
 					configured: false,
 					accountId: null,
-					installedAt: null
+					connectionId: null,
+					shared: false,
+					removal: null,
+					installedAt: null,
+					companyReadGranted: false
 				},
 				error: undefined
 			},
@@ -76,13 +102,14 @@
 	const feedback = setWorkspaceFeedback(new WorkspaceFeedback(() => []));
 	onDestroy(() => feedback.destroy());
 	setStartupData(() => startup ?? null);
+	setStartupHome(() => startupHome ?? null);
 	untrack(() => {
-		if (authoring) setAdminAuthoringSession(authoring);
+		if (authoring) setTemplateAuthoringSession(authoring);
 		if (resources) {
 			setDocumentResources(resources);
-			setContractLayoutProfiles(resources.profiles);
+			setDocumentLayoutProfiles(resources.profiles);
 		}
-		if (workspace) setContractWorkspace(workspace);
+		if (workspace) setDocumentWorkspace(workspace);
 	});
 </script>
 

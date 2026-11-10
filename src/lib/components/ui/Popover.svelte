@@ -19,7 +19,7 @@
 		keyboard?: boolean;
 		children: Snippet;
 	} = $props();
-	let element = $state<HTMLDivElement>();
+	let element = $state<HTMLDivElement | null>();
 	function close(reason: CloseReason) {
 		onClose(reason);
 		if (

@@ -1,9 +1,11 @@
-import { getFunctionName } from 'convex/server';
+import { getFunctionName, type FunctionReturnType } from 'convex/server';
 import type { Snippet } from 'svelte';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Id } from '../../src/convex/_generated/dataModel';
+import { api } from '../../src/convex/_generated/api';
 import { AccountLifecycle } from '../../src/lib/auth/account-lifecycle.svelte';
+import { BuyerLinkController } from '../../src/lib/buyer/links.svelte';
 import type { SessionEditor } from '../../src/lib/auth/viewer-session.svelte';
 import { type ApplicationChoices } from '../../src/lib/contract/applications';
 import type { ContractDraft } from '../../src/lib/contract/draft-recovery.svelte';
@@ -11,10 +13,10 @@ import { DraftJournal, discoverContractDrafts } from '../../src/lib/contract/dra
 import { ContractEditors } from '../../src/lib/contract/editors.svelte';
 import { WorkspaceFeedback } from '../../src/lib/components/chrome/workspace-feedback.svelte';
 import type { ContractSaveRequest } from '../../src/lib/contract/persistence.svelte';
-import type { TemplateContent } from '../../src/lib/contract/saved';
-import type { ContractLayoutProfiles } from '../../src/lib/document/runtime/layout-context.svelte';
+import type { TemplateContent } from '../../src/lib/template/model';
+import type { DocumentLayoutProfiles } from '../../src/lib/document/runtime/layout-context.svelte';
 import { DocumentResources } from '../../src/lib/document/runtime/resources.svelte';
-import type { ContractWorkspace } from '../../src/lib/document/runtime/workspace-context';
+import type { DocumentWorkspace } from '../../src/lib/document/runtime/workspace-context';
 import Harness from './RouteHarness.svelte';
 import { page, screen, setNavigate } from './navigation.svelte';
 import { rendering } from './rendering.svelte';
@@ -165,6 +167,10 @@ function fixture({
 	let removal = deferred<null>();
 	const client = {
 		onUpdate: vi.fn((_ref, args, data, error) => {
+			if (getFunctionName(_ref) === 'templates:current') {
+				queueMicrotask(() => data({ versionId: 'version' }));
+				return () => {};
+			}
 			const entry = { data, error };
 			let listeners = subscriptions.get(args.id);
 			if (!listeners) subscriptions.set(args.id, (listeners = new Set()));
@@ -274,6 +280,43 @@ function show(owner: ContractEditors) {
 	mounted.push(component);
 	return target;
 }
+function buyerLinkFixture(owner: ContractEditors) {
+	type Client = ConstructorParameters<typeof BuyerLinkController>[0];
+	const latest: FunctionReturnType<typeof api.buyerLinkActions.ensureLatest> = {
+		id: 'link' as Id<'buyerLinks'>,
+		token: '0'.repeat(39),
+		createdAt: 0
+	};
+	const query = vi.fn<Client['query']>().mockResolvedValue(null);
+	const action = vi.fn<Client['action']>().mockResolvedValue(latest);
+	const mutation = vi.fn<Client['mutation']>().mockResolvedValue(null);
+	const writeText = vi.fn().mockResolvedValue(undefined);
+	const onCopied = vi.fn();
+	vi.stubGlobal('navigator', { clipboard: { writeText } });
+	const links = new BuyerLinkController(
+		{
+			query,
+			action,
+			mutation,
+			connectionState: () => ({
+				isWebSocketConnected: true,
+				hasInflightRequests: false,
+				timeOfOldestInflightRequest: null,
+				hasEverConnected: true,
+				connectionCount: 1,
+				connectionRetries: 0,
+				inflightMutations: 0,
+				inflightActions: 0
+			})
+		},
+		owner,
+		'membership' as Id<'memberships'>,
+		'contract-a' as Id<'savedContracts'>,
+		onCopied
+	);
+	owners.push(links);
+	return { links, latest, query, action, writeText, onCopied };
+}
 beforeEach(() => {
 	rendering.ready = true;
 	sessionStorage.clear();
@@ -285,7 +328,7 @@ beforeEach(() => {
 		page.url = new URL(path, page.url);
 		page.data = {};
 		await tick();
-		if (path === '/') screen.home = true;
+		if (path === '/contracts') screen.home = true;
 		else {
 			screen.home = false;
 			screen.destination = { kind: 'saved', id: path.split('/').pop()! };
@@ -302,8 +345,115 @@ afterEach(async () => {
 	vi.useRealTimers();
 });
 
+describe('buyer link preparation', () => {
+	it('copies a clean contract through one request without opening its editor or loading its template', async () => {
+		const f = fixture();
+		const b = buyerLinkFixture(f.owner);
+		const capture = deferred<typeof b.latest>();
+		b.action.mockReturnValue(capture.promise);
+		const copying = b.links.copy();
+		await settle();
+		expect(b.action).toHaveBeenCalledOnce();
+		expect(getFunctionName(b.action.mock.calls[0][0])).toBe('buyerLinkActions:ensureLatest');
+		expect(b.action.mock.calls[0][1]).toEqual({
+			membershipId: 'membership',
+			id: 'contract-a',
+			preparation: { kind: 'saved' },
+			operationId: expect.any(String)
+		});
+		expect(f.client.onUpdate).not.toHaveBeenCalled();
+		expect(f.cache.loadVersion).not.toHaveBeenCalled();
+		expect(f.client.mutation).not.toHaveBeenCalled();
+		expect(b.writeText).not.toHaveBeenCalled();
+		capture.resolve(b.latest);
+		await copying;
+		await settle();
+		expect(b.query).not.toHaveBeenCalled();
+		expect(b.action).toHaveBeenCalledOnce();
+		expect(b.writeText).toHaveBeenCalledExactlyOnceWith(`${location.origin}/${b.latest.token}`);
+		expect(b.onCopied).toHaveBeenCalledOnce();
+		expect(f.cache.loadVersion).not.toHaveBeenCalled();
+		expect(f.owner.entries).toHaveLength(0);
+	});
+	it.each([
+		{ source: 'local', outcome: 'saved' },
+		{ source: 'recovered', outcome: 'saved' },
+		{ source: 'recovered', outcome: 'failed' }
+	])(
+		'guards first-link creation for a $source draft when saving is $outcome',
+		async ({ source, outcome }) => {
+			const f = fixture();
+			if (source === 'local') {
+				const a = f.owner.acquire('contract-a');
+				await settle();
+				a.editor.persistence!.select('item-a' as Id<'playbookItems'>, 'preferred');
+				await settle();
+				a.release();
+			} else {
+				// The link reservation itself must discover this unopened draft.
+				new DraftJournal('user', 'contract-a', 'membership').write(draft());
+			}
+			const b = buyerLinkFixture(f.owner);
+			const copying = b.links.copy();
+			await settle();
+			expect(b.query).toHaveBeenCalledOnce();
+			expect(getFunctionName(b.query.mock.calls[0][0])).toBe('buyerLinks:latest');
+			expect(f.writes).toHaveLength(1);
+			expect(b.action).not.toHaveBeenCalled();
+			expect(b.writeText).not.toHaveBeenCalled();
+			if (outcome === 'failed') f.writes[0].result.reject(new Error('Save failed'));
+			else f.ack();
+			await copying;
+			await settle();
+			if (outcome === 'failed') {
+				expect(b.links.error).toBe('Resolve unsaved changes before creating a link.');
+				expect(b.action).not.toHaveBeenCalled();
+				expect(b.writeText).not.toHaveBeenCalled();
+				expect(b.onCopied).not.toHaveBeenCalled();
+				expect(f.owner.pending).toBe(true);
+			} else {
+				expect(b.action).toHaveBeenCalledOnce();
+				expect(b.action.mock.calls[0][1]).toMatchObject({
+					preparation: { kind: 'flushed', expectedEditRevision: 2 }
+				});
+				expect(b.writeText).toHaveBeenCalledExactlyOnceWith(`${location.origin}/${b.latest.token}`);
+				expect(b.onCopied).toHaveBeenCalledOnce();
+				expect(b.links.error).toBeNull();
+			}
+		}
+	);
+	it('retains a timed-out operation for retry and waits for another click before copying a late result', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		const b = buyerLinkFixture(f.owner);
+		const capture = deferred<typeof b.latest>();
+		b.action.mockReturnValue(capture.promise);
+		const first = b.links.copy();
+		await vi.advanceTimersByTimeAsync(20_001);
+		await first;
+		expect(b.links.error).toBe('We couldn’t prepare the link. Try again.');
+		expect(b.links.busy).toBeNull();
+		const retry = b.links.copy();
+		expect(b.action).toHaveBeenCalledTimes(2);
+		expect(b.action.mock.calls[1][1]).toEqual(b.action.mock.calls[0][1]);
+		await vi.advanceTimersByTimeAsync(20_001);
+		await retry;
+		capture.resolve(b.latest);
+		await settle();
+		expect(b.writeText).not.toHaveBeenCalled();
+		expect(b.onCopied).not.toHaveBeenCalled();
+		expect(b.links.manualUrl).toBeNull();
+		await b.links.copy();
+		expect(b.action).toHaveBeenCalledTimes(2);
+		expect(b.query).not.toHaveBeenCalled();
+		expect(b.writeText).toHaveBeenCalledExactlyOnceWith(`${location.origin}/${b.latest.token}`);
+		expect(b.onCopied).toHaveBeenCalledOnce();
+		expect(b.links.error).toBeNull();
+	});
+});
+
 describe('route and editing lifetimes', () => {
-	it('commits Home while saving and reattaches one owner with local choices', async () => {
+	it('commits Contracts while saving and reattaches one owner with local choices', async () => {
 		const f = fixture();
 		const target = show(f.owner);
 		await settle();
@@ -313,7 +463,7 @@ describe('route and editing lifetimes', () => {
 		expect(f.writes).toHaveLength(1);
 		(target.querySelector('button') as HTMLButtonElement).click();
 		await settle();
-		expect(target.textContent).toContain('Home content');
+		expect(target.textContent).toContain('Contracts content');
 		expect(original.pending).toBe(true);
 		expect(f.active('contract-a')).toBe(1);
 		screen.home = false;
@@ -387,52 +537,44 @@ describe('route and editing lifetimes', () => {
 		await settle();
 		expect(f.owner.entries).toHaveLength(0);
 	});
-	it('keeps the created ID when opening fails and the creator retries', async () => {
-		const f = fixture();
-		f.failNext();
-		screen.destination = { kind: 'new' };
-		const target = show(f.owner);
-		await settle();
-		(target.querySelectorAll('button')[1] as HTMLButtonElement).click();
-		await settle();
-		expect(target.textContent).toContain('Your contract was created, but we couldn’t open it');
-		const open = [...target.querySelectorAll('button')].find(
-			(button) => button.textContent === 'Open contract'
-		)!;
-		open.click();
-		await settle();
-		expect(target.querySelector('[aria-label="Contract viewer"]')).not.toBeNull();
-		expect(
-			f.client.mutation.mock.calls.filter(([ref]) => getFunctionName(ref) === 'contracts:create')
-		).toHaveLength(1);
-		expect(screen.destination).toEqual({ kind: 'saved', id: 'contract-b' });
-	});
-	it('offers creation Retry when rendering stalls without creating another contract', async () => {
-		vi.useFakeTimers();
-		rendering.ready = false;
-		const f = fixture();
-		screen.destination = { kind: 'new' };
-		const target = show(f.owner);
-		await settle();
-		(target.querySelectorAll('button')[1] as HTMLButtonElement).click();
-		await settle();
-		expect(f.active('contract-b')).toBe(1);
-		await vi.advanceTimersByTimeAsync(15_001);
-		await settle();
-		expect(target.textContent).toContain('Your contract was created, but we couldn’t open it');
-		rendering.ready = true;
-		[...target.querySelectorAll('button')]
-			.find((button) => button.textContent === 'Open contract')!
-			.click();
-		await settle();
-		expect(target.textContent).not.toContain('Your contract was created, but we couldn’t open it');
-		expect(
-			f.client.mutation.mock.calls.filter(([ref]) => getFunctionName(ref) === 'contracts:create')
-		).toHaveLength(1);
-		expect(screen.destination).toEqual({ kind: 'saved', id: 'contract-b' });
-		expect(f.owner.entries[0].attachments).toBe(1);
-		expect(f.active('contract-b')).toBe(1);
-	});
+	it.each(['opening failure', 'rendering timeout'])(
+		'retries creation after %s without creating another contract',
+		async (failure) => {
+			const renderingTimeout = failure === 'rendering timeout';
+			if (renderingTimeout) {
+				vi.useFakeTimers();
+				rendering.ready = false;
+			}
+			const f = fixture();
+			if (!renderingTimeout) f.failNext();
+			screen.destination = { kind: 'new' };
+			const target = show(f.owner);
+			await settle();
+			(target.querySelectorAll('button')[1] as HTMLButtonElement).click();
+			await settle();
+			if (renderingTimeout) {
+				expect(f.active('contract-b')).toBe(1);
+				await vi.advanceTimersByTimeAsync(15_001);
+				await settle();
+			}
+			expect(target.textContent).toContain('Your contract was created, but we couldn’t open it');
+			rendering.ready = true;
+			[...target.querySelectorAll('button')]
+				.find((button) => button.textContent === 'Open contract')!
+				.click();
+			await settle();
+			expect(target.querySelector('[aria-label="Contract viewer"]')).not.toBeNull();
+			expect(target.textContent).not.toContain(
+				'Your contract was created, but we couldn’t open it'
+			);
+			expect(
+				f.client.mutation.mock.calls.filter(([ref]) => getFunctionName(ref) === 'contracts:create')
+			).toHaveLength(1);
+			expect(screen.destination).toEqual({ kind: 'saved', id: 'contract-b' });
+			expect(f.owner.entries[0].attachments).toBe(1);
+			expect(f.active('contract-b')).toBe(1);
+		}
+	);
 	it('disposes a detached opening failure when it has no unsaved intent', async () => {
 		const f = fixture();
 		f.failNext();
@@ -705,15 +847,19 @@ it('prevents old attachments from clearing a replacement view', () => {
 	const profiles = {
 		profiler: undefined,
 		scheduler: { wake: vi.fn() }
-	} as unknown as ContractLayoutProfiles;
+	} as unknown as DocumentLayoutProfiles;
 	const workspace = {
 		accept: vi.fn(),
 		source: {},
 		viewer: { ready: false, visible: false },
 		renderer: { retainedPageCount: 0, destroy: vi.fn() }
-	} as unknown as ContractWorkspace;
+	} as unknown as DocumentWorkspace;
 	const resources = new DocumentResources(profiles, () => () => workspace);
-	const entry = resources.acquire('contract-a', { blocks: { data: [] }, items: { data: [] } });
+	const entry = resources.acquire('contract-a', {
+		kind: 'records' as const,
+		blocks: { data: [] },
+		items: { data: [] }
+	});
 	const old = resources.activate(entry, { 'item-a': 'old' });
 	const current = resources.activate(entry, { 'item-a': 'new' });
 	const target = document.createElement('div');

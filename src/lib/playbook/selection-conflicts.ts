@@ -1,7 +1,8 @@
 import type { DocumentOverlayItem } from './document-overlay';
-import type { SourceIndex } from '../contract/source-index';
+import type { SourceIndex } from '../document/source-index';
 import type { ConcessionSelection } from './model';
-import { createChangeConflictChecker } from './conflicts';
+import { createChangeConflictChecker, iterateChangeConflicts } from './conflicts';
+import { complete } from '../document/iteration';
 export function selectedItems(
 	items: readonly DocumentOverlayItem[],
 	selection: ConcessionSelection
@@ -34,15 +35,12 @@ export function conflictsForConcession(
 export function activeConflicts(
 	index: SourceIndex,
 	items: readonly DocumentOverlayItem[],
-	selection: ConcessionSelection,
-	conflicts = createChangeConflictChecker(index)
+	selection: ConcessionSelection
 ) {
 	const active = selectedItems(items, selection);
-	return active.filter((a, i) =>
-		active.some(
-			(b, j) =>
-				i !== j &&
-				a.concession.changes.some((x) => b.concession.changes.some((y) => conflicts(x, y)))
-		)
-	);
+	const changes = active.flatMap((item) => item.concession.changes);
+	const groups = active.flatMap((item) => item.concession.changes.map(() => item.itemId));
+	const conflicts = complete(iterateChangeConflicts(index, changes, { groups }));
+	const itemIds = new Set([...conflicts].map((i) => groups[i]));
+	return active.filter((item) => itemIds.has(item.itemId));
 }

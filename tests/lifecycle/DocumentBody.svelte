@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	let { children }: { children?: Snippet; requiresBaseline?: boolean } = $props();
+	let { children }: { children?: Snippet; requiresTemplate?: boolean } = $props();
 </script>
 
 {@render children?.()}

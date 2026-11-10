@@ -4,7 +4,7 @@
 		DocumentAttachment,
 		ViewerBindings
 	} from '$lib/document/runtime/resources.svelte';
-	import ContractViewer from './ContractViewer.svelte';
+	import DocumentViewer from './DocumentViewer.svelte';
 	let {
 		entry,
 		attachment,
@@ -19,5 +19,5 @@
 {#if entry}
 	<div bind:this={target}></div>
 {:else}
-	<ContractViewer {...bindings} />
+	<DocumentViewer {...bindings} />
 {/if}

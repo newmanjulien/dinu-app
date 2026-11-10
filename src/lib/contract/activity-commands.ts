@@ -1,8 +1,9 @@
+import { contractItemId, type ContractItemId } from './item-identity';
 import { v, type Infer } from 'convex/values';
 import type { ApplicationChoices } from './applications';
 export const activityCommand = v.object({
 	id: v.string(),
-	itemId: v.id('playbookItems'),
+	itemId: contractItemId,
 	choice: v.union(
 		v.object({ concessionId: v.string(), applicationId: v.optional(v.string()) }),
 		v.null()
@@ -11,6 +12,7 @@ export const activityCommand = v.object({
 });
 export type ActivityCommand = Infer<typeof activityCommand>;
 export const MAX_ACTIVITY_COMMANDS = 250;
+export const MAX_SAVE_COMMANDS = 25;
 export function projectCommands(
 	base: ApplicationChoices,
 	commands: readonly ActivityCommand[]

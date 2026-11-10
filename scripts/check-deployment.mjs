@@ -19,6 +19,7 @@ const cancellation = new AbortController();
 const phaseSignal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(phaseTimeoutMs)]);
 
 class CheckError extends Error {
+	/** @param {string} check @param {string} reason @param {boolean} [retryable] @param {number} [retryAfterMs] */
 	constructor(check, reason, retryable = false, retryAfterMs = 0) {
 		super(`${check}: ${reason}`);
 		this.retryable = retryable;
@@ -26,10 +27,12 @@ class CheckError extends Error {
 	}
 }
 
+/** @param {unknown} condition @param {string} check @param {string} reason @returns {asserts condition} */
 function requireValue(condition, check, reason) {
 	if (!condition) throw new CheckError(check, reason);
 }
 
+/** @param {Record<string,unknown>} environment @param {string} name @param {string} location */
 function envValue(environment, name, location) {
 	const value = environment[name];
 	const check = `${location} ${name}`;
@@ -38,6 +41,7 @@ function envValue(environment, name, location) {
 	return value;
 }
 
+/** @param {string|null} value */
 function retryAfterMs(value) {
 	if (!value) return 0;
 	const seconds = Number(value);
@@ -45,6 +49,7 @@ function retryAfterMs(value) {
 	return Number.isFinite(wait) ? Math.max(0, wait) : 0;
 }
 
+/** @param {string} check @param {string} url @param {RequestInit & {expectedStatus?:number;json?:boolean}} [options] */
 async function request(check, url, { expectedStatus = 200, json = true, ...init } = {}) {
 	for (let attempt = 0; ; attempt++) {
 		const signal = AbortSignal.any([phaseSignal, AbortSignal.timeout(15_000)]);
@@ -66,14 +71,14 @@ async function request(check, url, { expectedStatus = 200, json = true, ...init 
 			}
 			if (!json) {
 				await response.body?.cancel();
-				return;
+				return {};
 			}
-			return await response.json();
+			return object(await response.json());
 		} catch (error) {
-			let failure = error;
+			let failure = error instanceof CheckError ? error : new CheckError(check, 'request failed');
 			if (!(error instanceof CheckError)) {
 				// Aborting response-body reads can produce AbortError rather than TimeoutError.
-				const timeout = signal.aborted || error?.name === 'TimeoutError';
+				const timeout = signal.aborted || (error instanceof Error && error.name === 'TimeoutError');
 				const network = [
 					'ECONNRESET',
 					'ECONNREFUSED',
@@ -84,7 +89,15 @@ async function request(check, url, { expectedStatus = 200, json = true, ...init 
 					'UND_ERR_HEADERS_TIMEOUT',
 					'UND_ERR_BODY_TIMEOUT',
 					'UND_ERR_SOCKET'
-				].includes(error?.cause?.code);
+				].includes(
+					error instanceof Error &&
+						error.cause &&
+						typeof error.cause === 'object' &&
+						'code' in error.cause &&
+						typeof error.cause.code === 'string'
+						? error.cause.code
+						: ''
+				);
 				let reason = 'request failed';
 				if (phaseSignal.aborted) reason = 'phase deadline reached or checks cancelled';
 				else if (timeout) reason = 'request timed out';
@@ -107,27 +120,30 @@ async function request(check, url, { expectedStatus = 200, json = true, ...init 
 	}
 }
 
+/** @param {string} deployKey */
 async function readConvexEnvironment(deployKey) {
 	const result = await request(
 		'Convex environment read (requires deployment-key environment read access)',
 		`${convexUrl}/api/v1/list_environment_variables`,
 		{ headers: { Authorization: `Convex ${deployKey}` } }
 	);
-	const environment = result?.environmentVariables;
+	const environment = result.environmentVariables;
 	requireValue(
 		environment && typeof environment === 'object' && !Array.isArray(environment),
 		'Convex environment read',
 		'expected an environmentVariables object'
 	);
-	return environment;
+	return object(environment);
 }
 
+/** @param {string} check @param {string} path @param {string} secretKey */
 function clerkRequest(check, path, secretKey) {
 	return request(check, `https://api.clerk.com/v1/${path}`, {
 		headers: { Authorization: `Bearer ${secretKey}` }
 	});
 }
 
+/** @param {string} secretKey @param {string} location */
 async function checkInstance(secretKey, location) {
 	const check = `${location} Clerk production instance`;
 	requireValue(secretKey.startsWith('sk_live_'), check, 'expected a production secret key');
@@ -139,6 +155,7 @@ async function checkInstance(secretKey, location) {
 	);
 }
 
+/** @param {Record<string,unknown>} environment */
 function webhookSigner(environment) {
 	const secret = envValue(environment, 'CLERK_WEBHOOK_SIGNING_SECRET', 'Convex');
 	try {
@@ -148,6 +165,7 @@ function webhookSigner(environment) {
 	}
 }
 
+/** @param {string} deployKey */
 async function preflight(deployKey) {
 	requireValue(
 		envValue(process.env, 'PUBLIC_CONVEX_URL', 'Vercel') === convexUrl,
@@ -184,9 +202,10 @@ async function preflight(deployKey) {
 		clerkRequest('Clerk production domain', 'domains', secretKey).then((domains) => {
 			requireValue(
 				Array.isArray(domains?.data) &&
-					domains.data.some(
-						(domain) => domain?.name === appHost && domain.frontend_api_url === issuer
-					),
+					domains.data.some((value) => {
+						const domain = object(value);
+						return domain.name === appHost && domain.frontend_api_url === issuer;
+					}),
 				'Clerk production domain',
 				'website domain and frontend API must match the production target'
 			);
@@ -197,18 +216,19 @@ async function preflight(deployKey) {
 			secretKey
 		).then((templates) => {
 			const template = Array.isArray(templates?.data)
-				? templates.data.find((item) => item?.name === 'convex')
+				? templates.data.map(object).find((item) => item.name === 'convex')
 				: undefined;
 			requireValue(
-				template?.claims?.aud === 'convex' &&
+				template &&
+					object(template.claims).aud === 'convex' &&
 					template.custom_signing_key === false &&
 					template.signing_algorithm === 'RS256',
 				'Clerk convex JWT template',
 				'requires audience convex and standard RS256 signing'
 			);
 			requireValue(
-				template.claims.email === '{{user.primary_email_address}}' &&
-					template.claims.email_verified === '{{user.email_verified}}',
+				object(template.claims).email === '{{user.primary_email_address}}' &&
+					object(template.claims).email_verified === '{{user.email_verified}}',
 				'Clerk convex JWT identity claims',
 				'requires the documented email and email_verified shortcodes'
 			);
@@ -225,6 +245,7 @@ async function preflight(deployKey) {
 	]);
 }
 
+/** @param {string} deployKey */
 async function smoke(deployKey) {
 	const webhook = webhookSigner(await readConvexEnvironment(deployKey));
 	const body = JSON.stringify({ type: 'configuration.check' });
@@ -287,4 +308,14 @@ try {
 		);
 	}
 	process.exitCode = 1;
+}
+
+/** @param {unknown} value @returns {Record<string,unknown>} */
+function object(value) {
+	requireValue(
+		value && typeof value === 'object' && !Array.isArray(value),
+		'Provider response',
+		'expected an object'
+	);
+	return /** @type {Record<string,unknown>} */ (value);
 }

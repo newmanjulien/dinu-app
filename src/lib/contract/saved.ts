@@ -1,11 +1,12 @@
 import { ConvexError, type Infer } from 'convex/values';
 import type {
 	contractMetadata,
+	liveContractMetadata,
 	contractState,
-	saveResult,
-	snapshot
+	saveResult
 } from '../../convex/savedContractValidators';
-export type TemplateContent = Infer<typeof snapshot>;
+import type { Id } from '../../convex/_generated/dataModel';
+import type { TemplateContent } from '../template/model';
 export type ReadyContract = {
 	id: string;
 	status: 'ready';
@@ -13,6 +14,7 @@ export type ReadyContract = {
 	contract: Infer<typeof contractMetadata>;
 };
 export type ContractState = Infer<typeof contractState>;
+export type LiveContractState = Infer<typeof liveContractMetadata>;
 export type ContractSaveResult = Infer<typeof saveResult>;
 export type ContractDestination = { kind: 'new' } | { kind: 'saved'; id: string };
 export type ContractSnapshotResult =
@@ -41,6 +43,15 @@ export function isHubSpotDealConflict(error: unknown) {
 		error.data.code === 'hubspot-deal-already-linked'
 	);
 }
+export function isHubSpotInstallationRetired(error: unknown) {
+	return (
+		error instanceof ConvexError &&
+		error.data !== null &&
+		typeof error.data === 'object' &&
+		'code' in error.data &&
+		error.data.code === 'hubspot-installation-retired'
+	);
+}
 
 /** Canonical metadata has one freshness version, independent of business revisions. */
 export function olderContractState(next: ContractState, current: ContractState) {
@@ -48,4 +59,5 @@ export function olderContractState(next: ContractState, current: ContractState) 
 }
 
 export type ContractCreationInput =
-	{ kind: 'manual'; name: string } | { kind: 'deal'; dealId: string };
+	| { kind: 'manual'; name: string }
+	| { kind: 'deal'; dealId: string; connectionId: Id<'hubspotConnections'> };

@@ -7,11 +7,10 @@ import {
 } from './profile';
 
 function requireLayout(condition: boolean, detail: string): asserts condition {
-	if (!condition) throw new Error(`Unsupported contract layout: ${detail}.`);
+	if (!condition) throw new Error(`Unsupported document layout: ${detail}.`);
 }
 
-function margins(element: HTMLElement) {
-	const style = getComputedStyle(element);
+function margins(style: CSSStyleDeclaration) {
 	return {
 		marginBlockStart: parseFloat(style.marginBlockStart),
 		marginBlockEnd: parseFloat(style.marginBlockEnd)
@@ -28,10 +27,10 @@ export function readParagraphBounds(
 	if (
 		!element.matches(
 			fragment.role === 'title'
-				? 'h1.contract-heading.is-final'
+				? 'h1.document-heading.is-final'
 				: fragment.role === 'heading'
-					? 'h2.contract-heading.is-final'
-					: 'p.contract-paragraph.is-final'
+					? 'h2.document-heading.is-final'
+					: 'p.document-paragraph.is-final'
 		) ||
 		style.display !== 'block' ||
 		style.whiteSpace !== 'pre-line' ||
@@ -50,7 +49,7 @@ export function readParagraphBounds(
 		parseFloat(style.lineHeight) <= 0
 	)
 		return undefined;
-	const leaves = [...element.querySelectorAll<HTMLElement>('[data-contract-token]')];
+	const leaves = [...element.querySelectorAll<HTMLElement>('[data-document-token]')];
 	if (leaves.length !== fragment.tokens.length) return undefined;
 	for (let index = 0; index < leaves.length; index++) {
 		const leaf = leaves[index];
@@ -86,7 +85,7 @@ export function readParagraphBounds(
 	return {
 		kind: 'paragraph',
 		tokenCount: fragment.tokens.length,
-		...margins(element),
+		...margins(style),
 		contentHeight: element.getBoundingClientRect().height
 	};
 }
@@ -109,11 +108,11 @@ export function readParagraphProfile(
 		),
 		'paragraph padding or borders require an explicit profile model'
 	);
-	const contentHeight = element.getBoundingClientRect().height;
 	const bounds = element.getBoundingClientRect();
+	const contentHeight = bounds.height;
 	const lineHeight = parseFloat(style.lineHeight);
 	requireLayout(Number.isFinite(lineHeight) && lineHeight > 0, 'paragraph line height');
-	const leaves = [...element.querySelectorAll<HTMLElement>('[data-contract-token]')];
+	const leaves = [...element.querySelectorAll<HTMLElement>('[data-document-token]')];
 	requireLayout(leaves.length === fragment.tokens.length, 'paragraph token markers');
 	const range = element.ownerDocument.createRange();
 	const observed: { top: number; startToken: number; endToken: number }[] = [];
@@ -169,7 +168,7 @@ export function readParagraphProfile(
 		return {
 			kind: 'paragraph',
 			tokenCount: fragment.tokens.length,
-			...margins(element),
+			...margins(style),
 			contentHeight,
 			lines: []
 		};
@@ -189,7 +188,7 @@ export function readParagraphProfile(
 	return {
 		kind: 'paragraph',
 		tokenCount: fragment.tokens.length,
-		...margins(element),
+		...margins(style),
 		contentHeight,
 		lines
 	};
@@ -215,8 +214,9 @@ export function readTableProfile(
 	element: HTMLTableElement,
 	fragment: TableFragment
 ): TableLayoutProfile {
+	const style = fragment.columnWidths ? getComputedStyle(element) : undefined;
 	requireLayout(
-		Boolean(fragment.columnWidths) && getComputedStyle(element).tableLayout === 'fixed',
+		style !== undefined && style.tableLayout === 'fixed',
 		'table rows were not rendered under canonical columns'
 	);
 	const bounds = element.getBoundingClientRect();
@@ -238,7 +238,7 @@ export function readTableProfile(
 	return {
 		kind: 'table',
 		columnWidths: widths,
-		...margins(element),
+		...margins(style),
 		headerRowCount: fragment.headerRowCount,
 		headerHeight: rows
 			.slice(0, fragment.headerRowCount)

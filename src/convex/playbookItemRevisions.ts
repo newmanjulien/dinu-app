@@ -1,6 +1,6 @@
 import type { Infer } from 'convex/values';
-import type { PlaybookItem } from '../lib/playbook/model';
-import type { DetailRecord } from '../lib/playbook/structure';
+import type { TemplateItem } from '../lib/playbook/model';
+import type { TemplateDetailRecord as DetailRecord } from '../lib/playbook/structure';
 import { playbookStructure } from '../lib/playbook/structure';
 import { encodeStructure, decodeStructure } from '../lib/playbook/structure-codec';
 import type { Doc, Id } from './_generated/dataModel';
@@ -11,7 +11,9 @@ import { assertStorageCapacity, documentBytes } from './storageCapacity';
 export type HistoricalItem = Infer<typeof historicalItem>;
 
 /** Project the business fields without persistence metadata. */
-export function businessItem(item: PlaybookItem): PlaybookItem {
+export function businessItem(item: TemplateItem): TemplateItem {
+	if ('audience' in item)
+		return { audience: item.audience, trigger: item.trigger, explanation: item.explanation };
 	const { trigger, instructions, concessions, approvalPolicy } = item;
 	return {
 		approvalPolicy,
@@ -143,7 +145,7 @@ export async function hydrateHead(
 /** Allocate identity cheaply; publish the complete packed head once in the same transaction. */
 export async function createAuthoringItem(
 	ctx: MutationCtx,
-	content: PlaybookItem & {
+	content: TemplateItem & {
 		companyId: Id<'company'>;
 		lastOperation?: DetailRecord['lastOperation'];
 		renderKey?: string;

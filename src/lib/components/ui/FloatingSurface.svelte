@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { Placement } from '@floating-ui/dom';
+	import { cn } from '$lib/ui/cn';
 	import { positionFloating, type FloatingAnchor } from './floating';
 	import {
 		getInteractionController,
@@ -58,7 +59,7 @@
 		onpointerenter?: (event: PointerEvent) => void;
 		onpointerleave?: (event: PointerEvent) => void;
 		onpointerdown?: (event: PointerEvent) => void;
-		element?: HTMLDivElement;
+		element?: HTMLDivElement | null;
 	} = $props();
 	const controller = getInteractionController();
 	const interactionId = Symbol('floating-surface');
@@ -118,7 +119,7 @@
 	{id}
 	{role}
 	aria-label={label}
-	class={`box-border min-w-0 overflow-auto overscroll-contain ${className}`}
+	class={cn('box-border w-max min-w-0 overflow-auto overscroll-contain', className)}
 	ontoggle={nativeToggle}
 	oninputcapture={capturePortaledInput}
 	onclickcapture={capturePortaledInput}

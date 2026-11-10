@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ContractCreationSkeleton from './ContractCreationSkeleton.svelte';
 	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { beforeNavigate, goto } from '$app/navigation';
@@ -66,9 +67,9 @@
 	async function cancel() {
 		if (busy) return;
 		try {
-			await goto('/');
+			await goto('/contracts');
 		} catch {
-			error = 'We couldn’t return to Home. Try again.';
+			error = 'We couldn’t return to Contracts. Try again.';
 		}
 	}
 	async function submitDeal() {
@@ -76,13 +77,29 @@
 		if (createdId || locked) return controller?.submit();
 		if (
 			selectedDeal &&
+			!connection.isLoading &&
+			!connection.error &&
 			selectionEligible &&
 			connection.data?.status === 'connected' &&
+			connection.data.connectionId &&
 			connection.data.enabled
 		)
-			await controller?.submit({ kind: 'deal', dealId: selectedDeal.id });
+			await controller?.submit({
+				kind: 'deal',
+				dealId: selectedDeal.id,
+				connectionId: connection.data.connectionId
+			});
 	}
 </script>
+
+{#snippet creationError()}
+	{#if runtime.error || creation.failed || error}
+		<p role="alert" class="mt-3 text-sm text-danger">
+			{runtime.error ||
+				(creation.failed ? 'We couldn’t load contract creation. Reload to try again.' : error)}
+		</p>
+	{/if}
+{/snippet}
 
 {#if ContractCreation}
 	<ContractCreation
@@ -105,13 +122,22 @@
 	</main>
 {/if}
 <WorkspacePresentationReporter active={!runtime.paused} outcome={presentationOutcome} />
-{#if connection.data?.status === 'uninstalled' && !connection.error}
+{#if !connection.data && !connection.error}
+	<ContractCreationSkeleton
+		open={!runtime.paused}
+		onOpen={() => (dialogOpen = true)}
+		onClose={() => void cancel()}>{@render creationError()}</ContractCreationSkeleton
+	>
+{:else if (connection.data?.status === 'uninstalled' || connection.data?.status === 'uninstalling') && !connection.error}
 	<CompanyNameDialog
 		onOpen={() => (dialogOpen = true)}
 		title="Name your contract"
 		open={!runtime.paused}
-		submitLabel={deleted ? 'Back to Home' : createdId ? 'Open contract' : 'Create contract'}
-		submitDisabled={!runtime.hostReady || !controller}
+		submitLabel={deleted ? 'Back to Contracts' : createdId ? 'Open contract' : 'Create contract'}
+		submitDisabled={connection.isLoading ||
+			Boolean(connection.error) ||
+			!runtime.hostReady ||
+			!controller}
 		busyLabel={createdId ? 'Opening…' : 'Creating…'}
 		lockName={locked || Boolean(createdId) || deleted}
 		nameLabel="Contract name"
@@ -125,12 +151,15 @@
 				}
 			: undefined}
 		onSubmit={(name) => void (deleted ? cancel() : controller?.submit({ kind: 'manual', name }))}
+		onExistingSubmit={deleted || createdId || locked
+			? () => void (deleted ? cancel() : controller?.submit())
+			: undefined}
 		onClose={() => void cancel()}
 	/>
 {:else}
 	<ModalShell
 		open={!runtime.paused}
-		title="Choose a HubSpot deal"
+		title={connection.data ? 'Choose a HubSpot deal' : 'Create a contract'}
 		onOpen={() => (dialogOpen = true)}
 		onClose={() => void cancel()}
 		dismissible={!busy}
@@ -139,10 +168,11 @@
 	>
 		{#if connection.error}
 			<p role="alert" class="text-sm text-danger">
-				We couldn’t check your HubSpot installation. Reconnect or reload to continue.
+				We couldn’t check your HubSpot installation. <button
+					class="underline"
+					onclick={() => connection.retry?.()}>Try again</button
+				>
 			</p>
-		{:else if !connection.data}
-			<p role="status" class="text-sm text-ink-muted">Checking HubSpot installation…</p>
 		{:else}
 			<HubSpotDealPicker
 				bind:selected={selectedDeal}
@@ -151,10 +181,7 @@
 				disabled={busy || locked || Boolean(createdId) || deleted}
 			/>
 		{/if}
-		{#if runtime.error || creation.failed || error}<p role="alert" class="mt-3 text-sm text-danger">
-				{runtime.error ||
-					(creation.failed ? 'We couldn’t load contract creation. Reload to try again.' : error)}
-			</p>{/if}
+		{@render creationError()}
 		{#snippet footer()}<div class="ml-auto flex gap-2">
 				<Button variant="secondary" disabled={busy} onclick={() => void cancel()}>Cancel</Button>
 				<Button
@@ -175,7 +202,7 @@
 							? 'Opening…'
 							: 'Creating…'
 						: deleted
-							? 'Back to Home'
+							? 'Back to Contracts'
 							: createdId
 								? 'Open contract'
 								: locked

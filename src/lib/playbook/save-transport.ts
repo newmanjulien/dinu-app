@@ -1,41 +1,50 @@
+import { authoredItem, authoringRecord } from './authoring-item';
+import type { InstructionAudience, PlaybookItem } from './model';
+import type { DetailRecord } from './structure';
+import type { DeepReadonly } from '../immutable';
+import { semanticPlaybookDraft } from './content';
 import type { ConvexClient } from 'convex/browser';
+import type { FunctionArgs, FunctionReturnType } from 'convex/server';
 import { ConvexError } from 'convex/values';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
-import { type PlaybookItem, type PlaybookItemRecord } from './model';
-import type { AuthoringWatermark, DetailRecord } from './structure';
+import type { PlaybookItemRecord } from './model';
 
-export type SaveRequest = {
-	id?: PlaybookItemRecord['_id'];
-	item: PlaybookItem;
-	expectedContentRevision: number;
-	operationId: string;
-};
+export type SaveRequest = Omit<
+	FunctionArgs<typeof api.playbookItems.savePlaybookItem>,
+	'membershipId' | 'item'
+> & { item: PlaybookItem };
 export type Operation =
 	| { kind: 'save'; request: SaveRequest }
 	| { kind: 'delete'; id: PlaybookItemRecord['_id']; expectedContentRevision: number };
-export type SaveResult =
-	| ({ status: 'saved'; item: DetailRecord } & AuthoringWatermark)
-	| ({ status: 'conflict'; item: PlaybookItemRecord } & AuthoringWatermark)
-	| ({ status: 'deleted' } & AuthoringWatermark)
-	| { status: 'missing' }
+type RawResult =
+	| FunctionReturnType<typeof api.playbookItems.savePlaybookItem>
+	| FunctionReturnType<typeof api.playbookItems.deletePlaybookItem>
 	| { status: 'rejected'; message: string };
-export type SaveTransport = (operation: Operation) => Promise<SaveResult>;
+type EditorResult<T> = T extends { item: unknown } ? Omit<T, 'item'> & { item: DetailRecord } : T;
+export type SaveResult = EditorResult<RawResult>;
+export type SaveTransport = (operation: DeepReadonly<Operation>) => Promise<SaveResult>;
 export const convexSaveTransport =
-	(client: ConvexClient, membershipId: Id<'memberships'>): SaveTransport =>
+	(
+		client: Pick<ConvexClient, 'mutation'>,
+		membershipId: Id<'memberships'>,
+		audience: InstructionAudience = 'rep'
+	): SaveTransport =>
 	async (operation) => {
 		try {
 			const result = await (operation.kind === 'save'
 				? client.mutation(api.playbookItems.savePlaybookItem, {
 						...operation.request,
+						item: authoredItem(semanticPlaybookDraft(operation.request.item), audience),
 						membershipId
 					})
 				: client.mutation(api.playbookItems.deletePlaybookItem, {
 						membershipId,
+						audience,
 						id: operation.id,
 						expectedContentRevision: operation.expectedContentRevision
 					}));
-			return result;
+			return 'item' in result ? { ...result, item: authoringRecord(result.item) } : result;
 		} catch (error) {
 			if (error instanceof ConvexError && typeof error.data === 'string')
 				return { status: 'rejected', message: error.data };

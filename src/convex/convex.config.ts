@@ -5,12 +5,17 @@ import rateLimiter from '@convex-dev/rate-limiter/convex.config';
 
 const app = defineApp({
 	env: {
+		BUYER_LINK_INGEST_SECRET: v.optional(v.string()),
 		HUBSPOT_CLIENT_ID: v.optional(v.string()),
 		HUBSPOT_CLIENT_SECRET: v.optional(v.string()),
 		HUBSPOT_REDIRECT_URI: v.optional(v.string()),
 		HUBSPOT_SCOPES: v.optional(v.string()),
 		HUBSPOT_ENABLED: v.optional(v.string()),
+		HUBSPOT_QUOTES_ENABLED: v.optional(v.string()),
+		HUBSPOT_QUOTES_PUSH_ENABLED: v.optional(v.string()),
 		HUBSPOT_DELIVERY_ENABLED: v.optional(v.string()),
+		HUBSPOT_APP_ID: v.optional(v.string()),
+		HUBSPOT_JOURNAL_ENABLED: v.optional(v.string()),
 		CLERK_SECRET_KEY: v.optional(v.string()),
 		CLERK_WEBHOOK_SIGNING_SECRET: v.optional(v.string()),
 		CLERK_JWT_ISSUER_DOMAIN: v.optional(v.string()),

@@ -1,6 +1,6 @@
 import { getContext, setContext } from 'svelte';
-import type { SourceRange, SourceTarget } from '../contract/source-model';
-import type { ResolvedRun } from '../contract/model';
+import type { SourceRange, SourceTarget } from './source-model';
+import type { ResolvedRun } from './model';
 
 export type AnnotationSegment = {
 	source?: SourceRange;

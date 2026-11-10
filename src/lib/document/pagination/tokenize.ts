@@ -1,5 +1,5 @@
-import { complete } from '$lib/contract/iteration';
-import type { ResolvedRun } from '$lib/contract/model';
+import { complete } from '$lib/document/iteration';
+import type { ResolvedRun } from '$lib/document/model';
 import type { InlineToken } from './types';
 
 // The browser can wrap after an ASCII hyphen inside a word. Expose that boundary
@@ -27,7 +27,11 @@ export function* iterateInlineTokens(
 	let count = 0;
 	for (const { text, ...metadata } of runs) {
 		// Generated labels/references are atomic even if their displayed text changes length.
-		if (metadata.sourceKind === 'number' || metadata.sourceKind === 'reference') {
+		if (
+			metadata.sourceKind === 'number' ||
+			metadata.sourceKind === 'reference' ||
+			metadata.discussion?.atomic
+		) {
 			if (text) tokens.push({ ...metadata, value: text });
 			yield undefined;
 			continue;
@@ -41,6 +45,9 @@ export function* iterateInlineTokens(
 			tokens.push({
 				...metadata,
 				value,
+				...(metadata.discussion
+					? { discussion: { ...metadata.discussion, offset: metadata.discussion.offset + offset } }
+					: {}),
 				...(lineBreak ? { lineBreak: true } : {}),
 				...(metadata.generatedOffset !== undefined
 					? { generatedOffset: metadata.generatedOffset + offset }

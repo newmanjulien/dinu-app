@@ -1,30 +1,30 @@
 import { ConvexError, getConvexSize, v } from 'convex/values';
-import type { BaselineBlock } from '../lib/contract/source-model';
-import { baselineBlock } from '../lib/contract/source-validators';
+import type { SourceBlock } from '../lib/document/source-model';
+import { sourceBlock } from '../lib/document/source-validators';
 import { validatePlaybook } from '../lib/playbook/audit';
-import type { PlaybookItem } from '../lib/playbook/model';
+import type { TemplateItem } from '../lib/playbook/model';
 import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/validation';
 import type { Doc, Id } from './_generated/dataModel';
 import { internalMutation, internalQuery, type QueryCtx } from './_generated/server';
 import { requireCompany } from './auth';
 import {
-	baselineIntegrity,
+	templateSourceIntegrity,
 	canonicalFingerprint,
-	planBaselineChunks,
-	writeBaselineChunks
-} from './baselineStorage';
+	planTemplateSourceChunks,
+	writeTemplateSourceChunks
+} from './templateSourceStorage';
 import {
 	businessItem,
 	createAuthoringItem,
 	historicalRevision,
 	snapshotItem
 } from './playbookItemRevisions';
-import { playbookItem } from './playbookValidators';
+import { templateItem } from '../lib/playbook/validators';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { MAX_SNAPSHOT_BYTES, templateRejected } from './templateCapacity';
 import { currentPointer, saveTemplateVersion, readLiveSnapshot } from './templates';
 
-const seedProjection = v.object({ blocks: v.array(baselineBlock), items: v.array(playbookItem) });
+const seedProjection = v.object({ blocks: v.array(sourceBlock), items: v.array(templateItem) });
 const refuseOverwrite = () =>
 	new ConvexError(
 		'This company already has template data or another import. Refusing to overwrite it.'
@@ -32,11 +32,11 @@ const refuseOverwrite = () =>
 const incomplete = () => new ConvexError('The active seed is incomplete.');
 const measurementId = 'x'.repeat(32);
 
-function digest(blocks: readonly BaselineBlock[], items: readonly PlaybookItem[]) {
+function digest(blocks: readonly SourceBlock[], items: readonly TemplateItem[]) {
 	return canonicalFingerprint({ blocks, items });
 }
 
-function assertSeedResultCapacity(blocks: BaselineBlock[], items: PlaybookItem[]) {
+function assertSeedResultCapacity(blocks: SourceBlock[], items: TemplateItem[]) {
 	// The read-back API returns both live and historical business projections.
 	if (getConvexSize({ blocks, items, snapshot: { blocks, items } }) > 16 * 1024 * 1024)
 		throw templateRejected('The seed verification result exceeds supported size.');
@@ -49,16 +49,17 @@ async function activeSeed(
 	knownRevisions?: Doc<'playbookItemRevisions'>[]
 ) {
 	const pointer = await currentPointer(ctx, company._id);
-	if (!company.baselineId || !pointer) throw incomplete();
+	if (!company.templateSourceId || !pointer) throw incomplete();
 	const live = await readLiveSnapshot(ctx, company._id, pointer, company);
-	if (live.baseline.source !== 'seed' || live.baseline.state !== 'active') throw incomplete();
-	if (!Number.isSafeInteger(live.baseline.activatedAt) || live.baseline.activatedAt < 0)
+	if (live.templateSource.source !== 'seed' || live.templateSource.state !== 'active')
+		throw incomplete();
+	if (!Number.isSafeInteger(live.templateSource.activatedAt) || live.templateSource.activatedAt < 0)
 		throw incomplete();
 	const version = await ctx.db.get('templateVersions', pointer.versionId);
 	if (
 		!version ||
 		version.companyId !== company._id ||
-		version.baselineId !== company.baselineId ||
+		version.templateSourceId !== company.templateSourceId ||
 		version.blockCount !== live.blocks.length ||
 		version.itemCount !== live.items.length ||
 		version.items.length !== live.items.length ||
@@ -109,7 +110,7 @@ async function activeSeed(
 			throw incomplete();
 	}
 	const contentReadBytes =
-		live.baseline.chunkReadBytes +
+		live.templateSource.chunkReadBytes +
 		revisions.reduce((sum, contentRevision) => sum + documentBytes(contentRevision), 0);
 	if (
 		version.contentReadBytes !== contentReadBytes ||
@@ -128,7 +129,7 @@ async function activeSeed(
 	};
 	assertSeedResultCapacity(blocks, items);
 	return {
-		baseline: live.baseline,
+		templateSource: live.templateSource,
 		versionId: pointer.versionId,
 		projection
 	};
@@ -137,43 +138,49 @@ async function activeSeed(
 /** Canonical seed setup is one transaction; a lost response can only replay a complete seed. */
 export const bootstrap = internalMutation({
 	args: { companyId: v.id('company'), ...seedProjection.fields },
-	returns: v.object({ baselineId: v.id('baselines'), versionId: v.id('templateVersions') }),
+	returns: v.object({
+		templateSourceId: v.id('templateSources'),
+		versionId: v.id('templateVersions')
+	}),
 	handler: async (ctx, { companyId, blocks, items }) => {
 		const company = await requireCompany(ctx, companyId);
 		// Bootstrap uses the same canonical content and geometry invariants as template saves.
 		validatePlaybook(blocks, items);
 		const bootstrapKey = digest(blocks, items);
-		const [pointer, baselines, heads, versions, revisions, chunks, receipts] = await Promise.all([
-			currentPointer(ctx, companyId),
-			ctx.db
-				.query('baselines')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-				.take(2),
-			ctx.db
-				.query('playbookItems')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-				.take(1),
-			ctx.db
-				.query('templateVersions')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-				.take(2),
-			ctx.db
-				.query('playbookItemRevisions')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-				.take(Math.min(items.length, MAX_PLAYBOOK_ITEMS) + 1),
-			ctx.db
-				.query('baselineChunks')
-				.withIndex('by_companyId_and_baselineId_and_order', (q) => q.eq('companyId', companyId))
-				.take(1),
-			ctx.db
-				.query('playbookItemCreationReceipts')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-				.take(1)
-		]);
+		const [pointer, templateSources, heads, versions, revisions, chunks, receipts] =
+			await Promise.all([
+				currentPointer(ctx, companyId),
+				ctx.db
+					.query('templateSources')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.take(2),
+				ctx.db
+					.query('playbookItems')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.take(1),
+				ctx.db
+					.query('templateVersions')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.take(2),
+				ctx.db
+					.query('playbookItemRevisions')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.take(Math.min(items.length, MAX_PLAYBOOK_ITEMS) + 1),
+				ctx.db
+					.query('templateSourceChunks')
+					.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
+						q.eq('companyId', companyId)
+					)
+					.take(1),
+				ctx.db
+					.query('playbookItemCreationReceipts')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.take(1)
+			]);
 		if (
-			company.baselineId ||
+			company.templateSourceId ||
 			pointer ||
-			baselines.length ||
+			templateSources.length ||
 			heads.length ||
 			versions.length ||
 			revisions.length ||
@@ -188,27 +195,27 @@ export const bootstrap = internalMutation({
 				throw refuseOverwrite();
 			}
 			if (
-				baselines.length !== 1 ||
+				templateSources.length !== 1 ||
 				versions.length !== 1 ||
 				receipts.length !== 0 ||
 				revisions.length !== items.length ||
 				revisions.some((contentRevision) => contentRevision.contentRevision !== 1) ||
-				existing.baseline.bootstrapKey !== bootstrapKey ||
+				existing.templateSource.bootstrapKey !== bootstrapKey ||
 				digest(existing.projection.blocks, existing.projection.items) !== bootstrapKey ||
 				digest(existing.projection.snapshot.blocks, existing.projection.snapshot.items) !==
 					bootstrapKey
 			)
 				throw refuseOverwrite();
-			return { baselineId: existing.baseline._id, versionId: existing.versionId };
+			return { templateSourceId: existing.templateSource._id, versionId: existing.versionId };
 		}
 
 		// Reject a native read-back limit before creating a seed that cannot be verified.
 		assertSeedResultCapacity(blocks, items);
-		const baseline = {
+		const templateSource = {
 			companyId,
 			source: 'seed' as const,
 			state: 'active' as const,
-			...baselineIntegrity(blocks),
+			...templateSourceIntegrity(blocks),
 			bootstrapKey,
 			activatedAt: Date.now(),
 			issues: [],
@@ -218,23 +225,23 @@ export const bootstrap = internalMutation({
 		};
 		// Plan the complete native envelope before allocating any seed data. Writers recheck
 		// remaining capacity with actual IDs and wrappers after each allocation group.
-		const plannedChunks = planBaselineChunks({
+		const plannedChunks = planTemplateSourceChunks({
 			companyId,
-			baselineId: measurementId as Id<'baselines'>,
+			templateSourceId: measurementId as Id<'templateSources'>,
 			blocks
 		});
 		const historical = items.map((item) => ({
 			...item,
 			companyId,
 			_id: measurementId,
-			_creationTime: baseline.activatedAt,
+			_creationTime: templateSource.activatedAt,
 			contentRevision: 1
 		}));
 		const snapshotBytes = new TextEncoder().encode(
 			JSON.stringify({ blocks, items: historical })
 		).byteLength;
 		if (snapshotBytes > MAX_SNAPSHOT_BYTES)
-			throw templateRejected('Contract snapshot exceeds supported size.');
+			throw templateRejected('Template snapshot exceeds supported size.');
 		const chunkBytes = plannedChunks.reduce((sum, chunk) => sum + documentBytes(chunk), 0);
 		let itemBytes = 0;
 		let contentReadBytes = chunkBytes;
@@ -252,32 +259,32 @@ export const bootstrap = internalMutation({
 		}
 		const versionBytes = documentBytes({
 			companyId,
-			baselineId: measurementId,
-			updatedAt: baseline.activatedAt,
+			templateSourceId: measurementId,
+			updatedAt: templateSource.activatedAt,
 			blockCount: blocks.length,
 			itemCount: items.length,
 			snapshotBytes,
 			contentReadBytes,
 			items: items.map(() => ({ itemId: measurementId, revisionId: measurementId }))
 		});
-		if (contentReadBytes + versionBytes + documentBytes(baseline) + 65_536 > 16 * 1024 * 1024)
-			throw templateRejected('Contract snapshot exceeds supported read capacity.');
+		if (contentReadBytes + versionBytes + documentBytes(templateSource) + 65_536 > 16 * 1024 * 1024)
+			throw templateRejected('Template snapshot exceeds supported read capacity.');
 		await assertStorageCapacity(ctx, {
 			documents: plannedChunks.length + items.length * 3 + 5,
-			bytes: chunkBytes + itemBytes + documentBytes(baseline) * 2 + versionBytes + 4096,
+			bytes: chunkBytes + itemBytes + documentBytes(templateSource) * 2 + versionBytes + 4096,
 			queries: plannedChunks.length + items.length * 2 + 8,
 			readDocuments: plannedChunks.length + items.length * 2 + 8,
 			readBytes: contentReadBytes + historical.reduce((sum, item) => sum + documentBytes(item), 0)
 		});
-		const baselineId = await ctx.db.insert('baselines', baseline);
-		const counters = await writeBaselineChunks(ctx, { companyId, baselineId, blocks });
+		const templateSourceId = await ctx.db.insert('templateSources', templateSource);
+		const counters = await writeTemplateSourceChunks(ctx, { companyId, templateSourceId, blocks });
 		await assertStorageCapacity(ctx, {
 			documents: 1,
-			bytes: documentBytes({ ...baseline, ...counters })
+			bytes: documentBytes({ ...templateSource, ...counters })
 		});
-		await ctx.db.patch('baselines', baselineId, counters);
-		const savedBaseline = (await ctx.db.get('baselines', baselineId))!;
-		const liveItems: import('../lib/playbook/structure').DetailRecord[] = [];
+		await ctx.db.patch('templateSources', templateSourceId, counters);
+		const savedTemplateSource = (await ctx.db.get('templateSources', templateSourceId))!;
+		const liveItems: import('../lib/playbook/structure').TemplateDetailRecord[] = [];
 		for (const item of items)
 			liveItems.push(await createAuthoringItem(ctx, { ...item, companyId }));
 		const versionId = await saveTemplateVersion(
@@ -285,14 +292,14 @@ export const bootstrap = internalMutation({
 			companyId,
 			{
 				pointer: null,
-				baseline: savedBaseline,
+				templateSource: savedTemplateSource,
 				blocks,
 				items: liveItems,
 				normalized: true
 			},
 			company
 		);
-		return { baselineId, versionId };
+		return { templateSourceId, versionId };
 	}
 });
 

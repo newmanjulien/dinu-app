@@ -1,23 +1,12 @@
+import { contractItemId } from '../lib/contract/item-identity';
 import { ConvexError, v, type Infer } from 'convex/values';
 import { approvalState } from '../lib/contract/applications';
 
-/** One plain mailbox, with the same identity at storage and provider boundaries. */
+import { normalizedEmailAddress } from '../lib/email-address';
+
 export function emailAddress(input: string) {
-	const email = input.trim().toLowerCase();
-	const [local, domain, extra] = email.split('@');
-	if (
-		email.length > 254 ||
-		!local ||
-		local.length > 64 ||
-		!domain ||
-		extra !== undefined ||
-		!/^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/.test(local) ||
-		!domain.includes('.') ||
-		domain
-			.split('.')
-			.some((label) => label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))
-	)
-		throw new ConvexError('Enter a valid email address.');
+	const email = normalizedEmailAddress(input);
+	if (email === null) throw new ConvexError('Enter a valid email address.');
 	return email;
 }
 
@@ -32,7 +21,7 @@ export type EmailOutcome = Infer<typeof emailOutcome>;
 export const emailAttempt = v.object({ id: v.id('emailDeliveries'), attempt: v.number() });
 export const emailRecipients = v.object({ recipientEmail: v.string(), cc: v.array(v.string()) });
 export const emailSelection = v.object({
-	itemId: v.id('playbookItems'),
+	itemId: contractItemId,
 	concessionId: v.string(),
 	concessionPosition: v.optional(v.number()),
 	approval: v.optional(approvalState)

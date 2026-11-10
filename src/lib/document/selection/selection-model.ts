@@ -3,20 +3,20 @@ import {
 	resolvePoint,
 	type SourceIndex,
 	type StructuralBoundary
-} from '$lib/contract/source-index';
+} from '$lib/document/source-index';
 import type {
 	BoundarySourceTarget,
 	SourcePoint,
 	SourceRange,
 	SourceTarget,
 	TextSourceTarget
-} from '$lib/contract/source-model';
+} from '$lib/document/source-model';
 import {
 	crossesBoundary,
 	targetPosition,
 	unitsInRange,
 	validateTarget
-} from '$lib/contract/ranges';
+} from '$lib/document/ranges';
 import type { PreparedBlock } from '../pagination/prepare';
 import {
 	fragmentKey,

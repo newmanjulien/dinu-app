@@ -1,4 +1,5 @@
 <script lang="ts">
+	import TextArea from '$lib/ui/TextArea.svelte';
 	import { tick } from 'svelte';
 	import DotsThreeVerticalIcon from 'phosphor-svelte/lib/DotsThreeVerticalIcon';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
@@ -17,12 +18,14 @@
 	import PlaybookSection from './PlaybookSection.svelte';
 	let {
 		controller,
+		buyerTemplate = false,
 		animateContent = false,
 		onCancel,
 		onPrimary,
 		onDelete
 	}: {
 		controller: AuthoringController;
+		buyerTemplate?: boolean;
 		animateContent?: boolean;
 		onCancel: () => void;
 		onPrimary: () => void;
@@ -40,7 +43,7 @@
 	const forwardDisabled = $derived(primaryAction.disabled);
 	const menuId = $props.id();
 	let menuOpen = $state(false);
-	let menuButton = $state<HTMLButtonElement>();
+	let menuButton = $state<HTMLButtonElement | null>();
 	const addButtons: Partial<Record<Concession['tier'], HTMLButtonElement>> = {};
 	const tiers = ['preferred', 'rare'] as const;
 
@@ -93,12 +96,12 @@
 				]}
 			>
 				<span class="min-w-0 text-[14px] font-medium text-ink-secondary"
-					>Edit the instructions your reps see</span
+					>Edit the instructions {buyerTemplate ? 'buyers' : 'reps'} see</span
 				>
 				<div class="flex shrink-0 items-center gap-1">
 					<div>
 						<SquareIconButton
-							class="size-7"
+							class="size-[27px]"
 							type="button"
 							aria-label="Instruction box options"
 							disabled={!controller.canDelete}
@@ -118,7 +121,7 @@
 						</SquareIconButton>
 						<Menu
 							open={menuOpen}
-							trigger={menuButton}
+							trigger={menuButton ?? undefined}
 							onClose={() => (menuOpen = false)}
 							id={menuId}
 							label="Instruction box options"
@@ -144,7 +147,13 @@
 					animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
 				]}
 			>
-				<span class="min-w-0">{stagedCreation ? stepTitle : 'Explain this clause for reps'}</span>
+				<span class="min-w-0"
+					>{buyerTemplate
+						? 'Explain this clause for buyers'
+						: stagedCreation
+							? stepTitle
+							: 'Explain this clause for reps'}</span
+				>
 			</div>
 		{/if}
 		<fieldset
@@ -157,14 +166,16 @@
 			]}
 		>
 			{#if !creating || !creationConcession}
-				<textarea
-					class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted block min-h-28 resize-y py-2 leading-[1.45]"
-					aria-label="Summary for this clause"
-					placeholder={instructionsFields[0].placeholder}
+				<TextArea
+					aria-label={buyerTemplate ? 'Explanation' : 'Summary for this clause'}
+					placeholder={buyerTemplate
+						? 'Explain this clause in plain English for buyers'
+						: instructionsFields[0].placeholder}
 					bind:value={
 						() => draft.instructions.summary ?? '',
 						(text) => controller.setInstruction('summary', text)
-					}></textarea>
+					}
+				/>
 			{:else if step === 'concession'}
 				<ConcessionCreationEditor
 					concession={creationConcession}
@@ -196,18 +207,18 @@
 					/>
 				</div>
 			{/if}
-			{#if !creating}
+			{#if !creating && !buyerTemplate}
 				<div class="flex min-w-0 flex-col gap-2 text-[14px] leading-[1.45] text-ink-muted">
 					{#each instructionsFields.slice(1) as field}
 						<PlaybookSection value={field.key} label={field.label} bind:open>
-							<textarea
-								class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted block min-h-28 resize-y py-2 leading-[1.45]"
+							<TextArea
 								aria-label={`${field.label} for this clause`}
 								placeholder={field.placeholder}
 								bind:value={
 									() => draft.instructions[field.key] ?? '',
 									(text) => controller.setInstruction(field.key, text)
-								}></textarea>
+								}
+							/>
 						</PlaybookSection>
 					{/each}
 					{#each tiers as tier}

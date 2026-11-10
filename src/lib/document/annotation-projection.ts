@@ -1,10 +1,10 @@
-import { pointPosition, type SourceIndex } from '../contract/source-index';
-import { unitsInRange } from '../contract/ranges';
-import { sameSourceTarget, type SourceTarget } from '../contract/source-model';
+import { pointPosition, type SourceIndex } from './source-index';
+import { unitsInRange } from './ranges';
+import { sameSourceTarget, type SourceTarget } from './source-model';
 import type {
 	AnnotationMembership,
 	DocumentAnnotation,
-	DocumentOverlayItem
+	DocumentAnnotationItem
 } from '../playbook/document-overlay';
 import type { AnnotationActivation } from './annotation-anchor';
 import type {
@@ -13,7 +13,7 @@ import type {
 	ProjectedOccurrence
 } from './annotation-registry';
 import type { DocumentHighlightController } from './highlights/controller';
-import type { ResolvedRun } from '../contract/model';
+import type { ResolvedRun } from './model';
 import type { RenderSnapshot } from './runtime/types';
 
 type Token = { element: HTMLElement; from: number; to: number; visual?: SourceTarget };
@@ -53,7 +53,12 @@ export class DocumentAnnotationProjection {
 		private stage: HTMLElement,
 		private highlights: DocumentHighlightController,
 		private registry: AnnotationRegistry,
-		private select: (itemId: string, annotationId: string, activation: AnnotationActivation) => void
+		private select: (
+			itemId: string,
+			annotationId: string,
+			activation: AnnotationActivation
+		) => void,
+		private label = 'saved instructions'
 	) {
 		for (const event of ['focus', 'keydown', 'pointerdown', 'wheel', 'touchstart', 'touchmove'])
 			stage.ownerDocument.addEventListener(event, () => this.intentVersion++, {
@@ -68,7 +73,7 @@ export class DocumentAnnotationProjection {
 	}
 	update(
 		snapshot: RenderSnapshot,
-		items: readonly DocumentOverlayItem[],
+		items: readonly DocumentAnnotationItem[],
 		selected: string | null,
 		capable: boolean,
 		enabled: boolean
@@ -184,8 +189,8 @@ export class DocumentAnnotationProjection {
 						annotation.pending
 							? 'Saving instructions'
 							: text
-								? `Open instructions: ${text}`
-								: 'Open saved instructions'
+								? `Open ${this.label}: ${text}`
+								: `Open ${this.label}`
 					);
 					const anchor = coverage[0].token;
 					if (owner.anchor !== anchor) reordered = true;
@@ -291,8 +296,12 @@ export class DocumentAnnotationProjection {
 				this.layers.delete(page);
 			}
 		const index = snapshot.source.sourceIndex;
-		for (const element of this.stage.querySelectorAll<HTMLElement>('[data-contract-token]')) {
-			if (element.closest('[data-annotation-layer]') || element.dataset.generated === 'separator')
+		for (const element of this.stage.querySelectorAll<HTMLElement>('[data-document-token]')) {
+			if (
+				element.closest('[data-annotation-layer]') ||
+				element.dataset.generated === 'separator' ||
+				(snapshot.view === 'effective' && element.dataset.generated === 'empty-hit-target')
+			)
 				continue;
 			let visual: SourceTarget | undefined;
 			try {

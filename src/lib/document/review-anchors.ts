@@ -1,9 +1,10 @@
 import type { ReviewTag } from '$lib/contract/approval';
-import { targetPosition } from '$lib/contract/ranges';
-import { pointPosition, type SourceIndex } from '$lib/contract/source-index';
-import { isTextTarget, type SourceRange, type SourceTarget } from '$lib/contract/source-model';
+import { targetPosition } from '$lib/document/ranges';
+import { pointPosition } from '$lib/document/source-index';
+import { isTextTarget, type SourceRange, type SourceTarget } from '$lib/document/source-model';
 import type { PaginatedPage } from './pagination/types';
 import { sourcePointBounds } from './selection/dom-selection';
+import type { SelectionDocument } from './selection/selection-model';
 
 export type ReviewAnchor = {
 	key: string;
@@ -65,10 +66,10 @@ function firstCandidate(page: CachedPage, start: number) {
 	return low;
 }
 
-/** Cache source parsing and location projection by immutable page content. Coordinates
+/** Cache source parsing and location projection by mounted selection document and page. Coordinates
  * stay relative to the page, so appended pages and viewport scaling reuse earlier work. */
 export class ReviewAnchorProjector {
-	private index?: SourceIndex;
+	private document?: SelectionDocument;
 	private geometryKey?: string;
 	private locations: Location[] = [];
 	private cache = new Map<number, CachedPage>();
@@ -76,15 +77,17 @@ export class ReviewAnchorProjector {
 	project(
 		host: HTMLElement,
 		tags: readonly Pick<ReviewTag, 'itemId' | 'applicationId' | 'target'>[],
-		index: SourceIndex,
+		document: SelectionDocument,
 		pages: readonly PaginatedPage[],
 		scale: number,
 		geometryKey: string
 	): ReviewAnchor[] {
-		if (this.index !== index) {
+		const index = document.index;
+		// Boundary owners mount with the selection document, after the page text.
+		if (this.document !== document) {
 			this.cache.clear();
 			this.geometryKey = undefined;
-			this.index = index;
+			this.document = document;
 		}
 		if (this.geometryKey !== geometryKey) {
 			this.geometryKey = geometryKey;
@@ -143,7 +146,7 @@ export class ReviewAnchorProjector {
 			let cached = this.cache.get(page.number);
 			if (!cached || cached.page !== page || cached.element !== element) {
 				const tokens = Array.from(
-					element.querySelectorAll<HTMLElement>('[data-contract-token]')
+					element.querySelectorAll<HTMLElement>('[data-document-token]')
 				).flatMap((span) => {
 					try {
 						const visualSource: SourceTarget | undefined = span.dataset.visualSource

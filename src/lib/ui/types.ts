@@ -1,5 +1,6 @@
-import type { PathnameWithSearchOrHash, RouteIdWithSearchOrHash } from '$app/types';
+import type { ResolvedPathname } from '$app/types';
 
-export type ButtonHref = PathnameWithSearchOrHash | RouteIdWithSearchOrHash;
+export type ButtonHref =
+	ResolvedPathname | `${ResolvedPathname}?${string}` | `${ResolvedPathname}#${string}`;
 export type ButtonType = 'button' | 'submit' | 'reset';
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost';

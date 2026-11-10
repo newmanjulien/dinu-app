@@ -1,3 +1,4 @@
+import type { ContractItemId } from './item-identity';
 import type { Id } from '../../convex/_generated/dataModel';
 import {
 	choicesOf,
@@ -5,15 +6,21 @@ import {
 	sameApplications,
 	type ApplicationChoices
 } from './applications';
-import { projectCommands, MAX_ACTIVITY_COMMANDS, type ActivityCommand } from './activity-commands';
+import {
+	projectCommands,
+	MAX_ACTIVITY_COMMANDS,
+	MAX_SAVE_COMMANDS,
+	type ActivityCommand
+} from './activity-commands';
 import type { ContractDraft } from './draft-recovery.svelte';
 import {
 	olderContractState,
 	saveError,
 	type ContractSaveResult,
-	type ContractState
+	type ContractState,
+	type LiveContractState
 } from './saved';
-import { MAX_SELECTED_CONCESSIONS } from './selection-limits';
+import { MAX_SELECTED_CONCESSIONS } from '../document/selection-limits';
 import {
 	workBlockFromError,
 	workBlockMessage,
@@ -55,15 +62,13 @@ export class ContractPersistence {
 	get workBlock() {
 		return this.policy;
 	}
-	blockWork(block: ContractWorkBlock) {
-		this.acceptPolicy(block);
-	}
 	get blockedReason() {
 		return this.policy ? workBlockMessage(this.policy) : null;
 	}
 	private acceptPolicy(block: ContractWorkBlock | null) {
 		if (block === this.policy) return;
 		this.policy = block;
+		if (this.policyRefused) this.clearError();
 		this.policyRefused = false;
 	}
 	private resolution = $state.raw<Resolution>({ kind: 'current' });
@@ -86,6 +91,7 @@ export class ContractPersistence {
 	private fail(message: string) {
 		this.resolution = this.conflict ? { kind: 'conflict', message } : { kind: 'failed', message };
 	}
+	publicationConfirmationRequired = $state(false);
 	selectionLimitError = $state<string | null>(null);
 	private running = $state.raw<Promise<void> | null>(null);
 	inFlight = $derived(this.running !== null);
@@ -106,13 +112,7 @@ export class ContractPersistence {
 		private required: ReadonlySet<string> = new Set()
 	) {
 		this.confirmed = $state.raw(initial);
-		this.acceptPolicy(
-			initial.workBlock !== undefined
-				? initial.workBlock
-				: initial.hubspot?.availability === 'unavailable'
-					? 'deal-unavailable'
-					: null
-		);
+		this.acceptPolicy(initial.workBlock ?? null);
 		this.intent = choicesOf(initial.applications);
 		this.recovery = recovery;
 		if (recovery) this.restoreChoices(recovery);
@@ -178,7 +178,10 @@ export class ContractPersistence {
 		);
 	}
 
-	select(itemId: Id<'playbookItems'>, concessionId: string | null) {
+	setRequired(ids: ReadonlySet<string>) {
+		this.required = ids;
+	}
+	select(itemId: ContractItemId, concessionId: string | null) {
 		if (!this.editable) return;
 		const next = { ...this.intent };
 		if (concessionId === null || next[itemId]?.concessionId === concessionId) delete next[itemId];
@@ -203,6 +206,14 @@ export class ContractPersistence {
 		this.start();
 	}
 
+	/** Only the ordered live subscription may replace persistent installation policy. */
+	acceptLive(next: LiveContractState | null) {
+		if (!this.active || this.deleted) return;
+		if (next) this.acceptPolicy(next.workBlock);
+		this.accept(next);
+		this.start();
+	}
+
 	accept(next: ContractState | null) {
 		if (!this.active || this.deleted) return;
 		if (next === null) {
@@ -218,8 +229,6 @@ export class ContractPersistence {
 			return;
 		}
 		if (olderContractState(next, this.confirmed)) return;
-		if (Object.hasOwn(next, 'workBlock')) this.acceptPolicy(next.workBlock ?? null);
-		else if (next.hubspot?.availability === 'unavailable') this.acceptPolicy('deal-unavailable');
 		if (this.recoveryPending) {
 			this.restore(next);
 			return;
@@ -228,10 +237,10 @@ export class ContractPersistence {
 		const own = Boolean(this.request && next.lastOperationId === this.request.operationId);
 		if (next.editRevision > this.confirmed.editRevision && pending && !own)
 			this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
-		if (next.stateVersion !== this.confirmed.stateVersion || Object.hasOwn(next, 'workBlock'))
+		if (next.stateVersion !== this.confirmed.stateVersion)
 			this.confirmed = {
 				...next,
-				workBlock: Object.hasOwn(next, 'workBlock') ? next.workBlock : this.confirmed.workBlock
+				workBlock: this.policy
 			};
 		if (!pending && !this.conflict) this.useConfirmedChoices();
 		// A subscription can confirm an ambiguous failed response. Do not send a duplicate.
@@ -274,7 +283,7 @@ export class ContractPersistence {
 		const removals: ActivityCommand[] = [];
 		const applications: ActivityCommand[] = [];
 		for (const id of new Set([...Object.keys(base), ...Object.keys(intent)])) {
-			const itemId = id as Id<'playbookItems'>;
+			const itemId = id as ContractItemId;
 			if (
 				sameApplications(
 					base[itemId] ? { [id]: base[itemId] } : {},
@@ -331,14 +340,14 @@ export class ContractPersistence {
 		// choices already present on the server. Different choices keep their identity.
 		const intent = { ...this.intent };
 		for (const [id, choice] of Object.entries(this.confirmedChoices)) {
-			if (intent[id as Id<'playbookItems'>]?.concessionId === choice.concessionId)
-				intent[id as Id<'playbookItems'>] = choice;
+			if (intent[id as ContractItemId]?.concessionId === choice.concessionId)
+				intent[id as ContractItemId] = choice;
 		}
 		if (!this.commands.length || this.legacyIntent) this.stageIntent(intent);
 		else {
 			// Only the leading application epoch may already exist on the server.
 			// Explicit removals or different concessions keep their fresh identities.
-			const transitioned = new Set<Id<'playbookItems'>>();
+			const transitioned = new Set<ContractItemId>();
 			this.commands = this.commands.map((command) => {
 				const current = this.confirmedChoices[command.itemId];
 				if (
@@ -365,7 +374,8 @@ export class ContractPersistence {
 			!this.canSave ||
 			this.running ||
 			this.error ||
-			(this.policy && (!this.request || this.policyRefused))
+			this.policyRefused ||
+			(this.policy && !this.request)
 		)
 			return;
 		if (!this.request) {
@@ -375,10 +385,11 @@ export class ContractPersistence {
 				return;
 			}
 			this.selectionLimitError = null;
+			const batch = this.commands.slice(0, MAX_SAVE_COMMANDS);
 			this.request = {
 				id: this.id,
-				choices: projectCommands(this.confirmedChoices, this.commands.slice(0, 25)),
-				commands: this.commands.slice(0, 25),
+				choices: projectCommands(this.confirmedChoices, batch),
+				commands: batch,
 				expectedEditRevision: this.confirmed.editRevision,
 				operationId: crypto.randomUUID()
 			};
@@ -423,8 +434,11 @@ export class ContractPersistence {
 				this.acknowledgeCommands();
 				this.request = null;
 			} else if (workBlockFromError(cause)) {
-				this.acceptPolicy(workBlockFromError(cause));
 				this.policyRefused = true;
+				this.fail(workBlockMessage(workBlockFromError(cause)!));
+			} else if (errorCode(cause) === 'PUBLICATION_CONFIRMATION_REQUIRED') {
+				this.publicationConfirmationRequired = true;
+				this.fail(saveError(cause, 'Confirm publication before saving these approvals.'));
 			} else if (errorCode(cause) === 'SAVE_PROTOCOL_REQUIRED') {
 				this.legacyRejected = true;
 				this.resolution = {
@@ -456,6 +470,8 @@ export class ContractPersistence {
 	}
 	retry() {
 		if (!this.canSave || this.running) return;
+		this.policyRefused = false;
+		this.publicationConfirmationRequired = false;
 		this.clearError();
 		this.start();
 	}

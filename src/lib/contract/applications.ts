@@ -1,5 +1,5 @@
+import { contractItemId, type ContractItemId } from './item-identity';
 import { v, type Infer } from 'convex/values';
-import type { Id } from '../../convex/_generated/dataModel';
 
 export const reviewStatus = v.union(
 	v.literal('pending'),
@@ -11,13 +11,13 @@ export const applicationChoice = v.object({
 	concessionId: v.string(),
 	applicationId: v.optional(v.string())
 });
-export const applicationChoices = v.record(v.id('playbookItems'), applicationChoice);
+export const applicationChoices = v.record(contractItemId, applicationChoice);
 export const approvalState = v.object({ applicationId: v.string(), status: reviewStatus });
 export const appliedConcession = v.object({
 	concessionId: v.string(),
 	approval: v.optional(approvalState)
 });
-export const appliedConcessions = v.record(v.id('playbookItems'), appliedConcession);
+export const appliedConcessions = v.record(contractItemId, appliedConcession);
 export type ApplicationChoices = Infer<typeof applicationChoices>;
 export type AppliedConcessions = Infer<typeof appliedConcessions>;
 
@@ -27,7 +27,7 @@ export function concessionSelections(
 ) {
 	return Object.fromEntries(
 		Object.entries(applications).map(([id, value]) => [id, value.concessionId])
-	) as Record<Id<'playbookItems'>, string>;
+	) as Record<ContractItemId, string>;
 }
 
 /** A client chooses application identity; only the server chooses its status. */
@@ -48,8 +48,8 @@ export function sameApplications(a: ApplicationChoices, b: ApplicationChoices): 
 		Object.keys(a).length === Object.keys(b).length &&
 		Object.entries(a).every(
 			([id, value]) =>
-				b[id as Id<'playbookItems'>]?.concessionId === value.concessionId &&
-				b[id as Id<'playbookItems'>]?.applicationId === value.applicationId
+				b[id as ContractItemId]?.concessionId === value.concessionId &&
+				b[id as ContractItemId]?.applicationId === value.applicationId
 		)
 	);
 }
@@ -57,12 +57,7 @@ export function sameApplications(a: ApplicationChoices, b: ApplicationChoices): 
 export function reviewEntries(applications: AppliedConcessions) {
 	return Object.entries(applications).flatMap(([id, value]) =>
 		value.approval
-			? [
-					[
-						id as Id<'playbookItems'>,
-						{ concessionId: value.concessionId, ...value.approval }
-					] as const
-				]
+			? [[id as ContractItemId, { concessionId: value.concessionId, ...value.approval }] as const]
 			: []
 	);
 }

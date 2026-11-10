@@ -8,7 +8,10 @@
 	const session = useViewerSession();
 </script>
 
-<AuthEntryShell showFooter={presentation.showFooter && Boolean(presentation.footer || account?.())}>
+<AuthEntryShell
+	showFooter={presentation.showFooter && Boolean(presentation.footer || account?.())}
+	signupStep={presentation.signupStep}
+>
 	{#snippet footer()}
 		{#if presentation.footer}{@render presentation.footer()}
 		{:else if account?.()}

@@ -29,7 +29,9 @@ if (!['dev', 'local'].some((kind) => environment.CONVEX_DEPLOYMENT === `${kind}:
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 let tables;
 try {
-	tables = (await server.ssrLoadModule('/src/convex/readabilityMigration.ts')).conversionTables;
+	tables = /** @type {typeof import('../src/convex/readabilityMigration.ts')} */ (
+		await server.ssrLoadModule('/src/convex/readabilityMigration.ts')
+	).conversionTables;
 } finally {
 	await server.close();
 }
@@ -37,21 +39,30 @@ try {
 const target = await companyDeployment({ companyId, readabilityConversion: true });
 if (target.deployment !== environment.CONVEX_DEPLOYMENT)
 	throw new Error('The configured deployment changed before conversion. No operation was run.');
+/**
+ * @template {'convertBatch' | 'versions' | 'accountVersion'} Name
+ * @param {Name} name
+ * @param {import('./operator-types').OperatorArgs<`readabilityMigration:${Name}`>} fields
+ * @returns {Promise<import('./operator-types').OperatorResult<`readabilityMigration:${Name}`>>}
+ */
 async function run(name, fields) {
 	try {
-		return await target.run(`readabilityMigration:${name}`, { companyId, ...fields });
+		return await target.run(`readabilityMigration:${name}`, fields);
 	} catch {
 		throw new Error(
 			`Conversion ${name} failed. No automatic retry; inspect the explicit target before resuming.`
 		);
 	}
 }
+
 console.log(`Readability rehearsal: ${deployment}, company ${companyId}`);
 for (const table of tables) {
+	/** @type {string|null} */
 	let cursor = null,
 		changed = 0;
 	while (true) {
-		const result = await run('convertBatch', { table, cursor });
+		/** @type {import('./operator-types').OperatorResult<'readabilityMigration:convertBatch'>} */
+		const result = await run('convertBatch', { companyId, table, cursor });
 		changed += result.changed;
 		if (result.done) break;
 		if (result.cursor === cursor) throw new Error('Conversion cursor did not advance.');
@@ -59,11 +70,13 @@ for (const table of tables) {
 	}
 	console.log(`${table}: ${changed} records converted`);
 }
+/** @type {string|null} */
 let cursor = null;
 while (true) {
-	const page = await run('versions', { cursor });
+	/** @type {import('./operator-types').OperatorResult<'readabilityMigration:versions'>} */
+	const page = await run('versions', { companyId, cursor });
 	for (const versionId of page.ids) {
-		while (!(await run('accountVersion', { versionId })).done) {
+		while (!(await run('accountVersion', { companyId, versionId })).done) {
 			/* Durable progress bounds each transaction. */
 		}
 	}

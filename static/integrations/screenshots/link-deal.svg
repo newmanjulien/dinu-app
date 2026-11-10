@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750" fill="none">
+  <rect width="1200" height="750" fill="#e9efeb"/>
+  <g font-family="Inter, Arial, sans-serif">
+    <text x="64" y="66" fill="#4c6b5d" font-size="15" font-weight="600" letter-spacing="2">DINU + HUBSPOT</text>
+    <text x="64" y="123" fill="#253c32" font-size="38" font-weight="600">Every contract starts with a deal.</text>
+    <text x="64" y="160" fill="#61756a" font-size="20">Choose a HubSpot deal and keep your team connected.</text>
+    <rect x="1010" y="44" width="126" height="32" rx="16" fill="#dae4dd"/>
+    <text x="1073" y="65" text-anchor="middle" fill="#61756a" font-size="13">Sample screen</text>
+    <rect x="64" y="205" width="1072" height="480" rx="16" fill="#fff" stroke="#d6ded8"/>
+    <path d="M64 265H1136" stroke="#e8ebe8"/>
+    <text x="93" y="243" fill="#263b31" font-size="23" font-weight="600">dinu</text>
+    <text x="185" y="241" fill="#7b857f" font-size="14">Contracts</text>
+    <text x="287" y="241" fill="#7b857f" font-size="14">Integrations</text>
+    <circle cx="1096" cy="235" r="15" fill="#e9efeb"/>
+    <text x="1096" y="240" text-anchor="middle" fill="#4c6b5d" font-size="12">JD</text>
+    <text x="104" y="315" fill="#7b857f" font-size="13">Contracts / New contract</text>
+    <text x="104" y="360" fill="#27382f" font-size="25" font-weight="600">Create a contract</text>
+    <text x="104" y="395" fill="#7b857f" font-size="15">Start with a template and link your HubSpot deal.</text>
+    <text x="104" y="450" fill="#53645a" font-size="14">Template</text>
+    <rect x="104" y="465" width="380" height="48" rx="8" fill="#fafbf9" stroke="#e0e5e0"/>
+    <text x="120" y="494" fill="#35493d" font-size="15">Master Services Agreement</text>
+    <path d="m453 486 6 6 6-6" stroke="#7b857f" stroke-width="2"/>
+    <text x="104" y="557" fill="#53645a" font-size="14">HubSpot deal</text>
+    <rect x="104" y="572" width="380" height="48" rx="8" fill="#fafbf9" stroke="#e0e5e0"/>
+    <text x="120" y="601" fill="#7b857f" font-size="15">Choose a deal…</text>
+    <rect x="548" y="300" width="548" height="344" rx="12" fill="#fff" stroke="#cad6cd"/>
+    <text x="574" y="339" fill="#27382f" font-size="19" font-weight="600">Choose a HubSpot deal</text>
+    <rect x="572" y="358" width="500" height="44" rx="7" fill="#f7f9f6" stroke="#e0e5e0"/>
+    <circle cx="593" cy="379" r="6" stroke="#8a958e" stroke-width="1.5"/>
+    <path d="m597 383 5 5" stroke="#8a958e" stroke-width="1.5"/>
+    <text x="617" y="385" fill="#8a958e" font-size="14">Search deals</text>
+    <rect x="572" y="418" width="500" height="63" rx="8" fill="#edf3ed"/>
+    <text x="590" y="444" fill="#35493d" font-size="15" font-weight="600">Acme · Annual agreement</text>
+    <text x="590" y="466" fill="#78867c" font-size="12">Contract sent · $24,000</text>
+    <path d="m1036 447 6 6 12-13" stroke="#4c6b5d" stroke-width="2"/>
+    <text x="590" y="517" fill="#35493d" font-size="15">Northstar · Expansion</text>
+    <text x="590" y="539" fill="#78867c" font-size="12">Decision maker bought-in · $18,000</text>
+    <path d="M572 560H1072" stroke="#e8ebe8"/>
+    <text x="590" y="589" fill="#35493d" font-size="15">Evergreen · Renewal</text>
+    <text x="590" y="611" fill="#78867c" font-size="12">Presentation scheduled · $32,000</text>
+  </g>
+</svg>

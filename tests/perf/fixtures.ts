@@ -1,8 +1,8 @@
 import type { PlaybookItem } from '../../src/lib/playbook/model';
 import type { MutationCtx } from '../../src/convex/_generated/server';
-import type { BaselineBlock } from '../../src/lib/contract/source-model';
+import type { SourceBlock } from '../../src/lib/document/source-model';
 
-export const block: BaselineBlock = {
+export const block: SourceBlock = {
 	kind: 'paragraph',
 	role: 'body',
 	blockKey: 'paragraph-1',

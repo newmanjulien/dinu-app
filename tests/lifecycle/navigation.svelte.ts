@@ -1,6 +1,6 @@
 export const page = $state({
 	url: new URL('https://test.local/contracts/contract-a'),
-	route: { id: '/(workspace)/contracts/[id]' },
+	route: { id: '/(workspace)/contracts/(document)/[id]' },
 	data: {} as Record<string, unknown>,
 	state: {} as App.PageState
 });
@@ -23,3 +23,7 @@ export const replaceState = (url: URL, state: App.PageState) => {
 	page.url = url;
 	page.state = state;
 };
+
+export const afterNavigate = () => {};
+export const onNavigate = () => {};
+export const invalidateAll = async () => {};

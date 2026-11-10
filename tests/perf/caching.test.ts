@@ -9,7 +9,7 @@ import {
 	releaseContractSnapshotCache,
 	replaceContractCacheScope
 } from '../../src/lib/contract/snapshot-cache';
-import type { ReadyContract } from '../../src/lib/contract/snapshot-storage';
+import type { ReadyContract } from '../../src/lib/contract/saved';
 import { block, item } from './fixtures';
 import { observeSnapshotStorage } from './snapshot-storage-observer';
 
@@ -105,25 +105,16 @@ describe('snapshot caching work', () => {
 		}
 	});
 
-	it('loads once from the network and reopens the same snapshot from memory', async () => {
-		const { client, state, version } = networkFixture();
-		const cache = getContractSnapshotCache();
-		const committed = storage.committedRevision(0);
-		const first = await cache.load(id, client);
-		expect(first.status).toBe('ready');
-		await committed;
-		expect(await cache.load(id, client)).toBe(first);
-		expect(state).toHaveBeenCalledTimes(1);
-		expect(version).toHaveBeenCalledTimes(1);
-		expect(storage.immutableWrites).toBe(1);
-	});
-
-	it('reopens initial and confirmed state from IndexedDB without another download or immutable write', async () => {
+	it('reopens from memory and restores initial and confirmed state from IndexedDB without another download or immutable write', async () => {
 		const { client, state, version } = networkFixture();
 		const initialCommit = storage.committedRevision(0);
 		const first = await getContractSnapshotCache().load(id, client);
 		expect(first.status).toBe('ready');
 		await initialCommit;
+		expect(await getContractSnapshotCache().load(id, client)).toBe(first);
+		expect(state).toHaveBeenCalledTimes(1);
+		expect(version).toHaveBeenCalledTimes(1);
+		expect(storage.immutableWrites).toBe(1);
 		releaseContractSnapshotCache();
 
 		const cache = getContractSnapshotCache();

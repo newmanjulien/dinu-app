@@ -1,3 +1,5 @@
+import { publishContract, requirePublicationAcknowledgment } from './contractPublication';
+import { contractItemId } from '../lib/contract/item-identity';
 import { ConvexError, v, type Infer } from 'convex/values';
 import { concessionSelections } from '../lib/contract/applications';
 import { approvalCoversPending } from '../lib/contract/approval';
@@ -12,7 +14,7 @@ import { selectionsFor } from './emailSelectionChunks';
 import { emailAddress, type EmailSelection } from './emailValidators';
 import { completedReview, recordDecision } from './reviews';
 import { activity, actorOf, actionKey, receipt, remember } from './hubspotRecords';
-import { snapshotReader } from './templates';
+import { contractReader } from './contractReader';
 import { requireContractWork } from './contractPolicy';
 
 type Request = Doc<'approvalRequests'>;
@@ -114,7 +116,7 @@ export const request = mutation({
 		if (!configured)
 			throw new ConvexError('Ask your company admin to configure an approval email in Settings.');
 		const recipientEmail = emailAddress(configured);
-		const reader = await snapshotReader(ctx, contract);
+		const reader = await contractReader(ctx, contract);
 		const items = await reader.selectedItems(concessionSelections(contract.applications));
 		const selections: EmailSelection[] = items.map((item) => {
 			const concessionId = contract.applications[item._id].concessionId;
@@ -220,7 +222,7 @@ export const decide = mutation({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.id('savedContracts'),
-		itemId: v.id('playbookItems'),
+		itemId: contractItemId,
 		concessionId: v.string(),
 		applicationId: v.string(),
 		status: reviewDecision,
@@ -258,7 +260,7 @@ export const decide = mutation({
 		await requireContractWork(ctx, contract);
 		if (contract.applications[args.itemId]?.concessionId !== args.concessionId)
 			throw new ConvexError('This concession changed. Review its current version.');
-		const reader = await snapshotReader(ctx, contract);
+		const reader = await contractReader(ctx, contract);
 		const [item] = await reader.selectedItems({ [args.itemId]: args.concessionId });
 		if (item?.approvalPolicy.kind !== 'required')
 			throw new ConvexError('This concession does not require approval.');
@@ -270,6 +272,8 @@ export const decide = mutation({
 		const previousStatus = review.status;
 		const changed = previousStatus !== args.status;
 		if (changed) {
+			if (args.status === 'approved')
+				await requirePublicationAcknowledgment(ctx, contract, access.profile._id);
 			const applications = {
 				...contract.applications,
 				[args.itemId]: {
@@ -291,6 +295,7 @@ export const decide = mutation({
 				stateVersion: contract.stateVersion + 1
 			};
 			await ctx.db.patch('savedContracts', args.id, changes);
+			await publishContract(ctx, { ...contract, ...changes }, reader);
 		}
 		await recordDecision(ctx, contract, access.profile, {
 			itemId: args.itemId,

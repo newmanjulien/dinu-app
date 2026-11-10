@@ -4,7 +4,7 @@ import { describeDestination } from '$lib/auth/routes';
 import type { DocumentDomain } from '../domain/document-domain';
 import type { LayoutProfileMetrics } from '../pagination/profiler';
 
-const enabled = () => dev || env.PUBLIC_CONTRACT_PERF === '1';
+const enabled = () => dev || env.PUBLIC_DOCUMENT_PERF === '1';
 
 type OverlayWork =
 	| 'measuredPages'
@@ -19,9 +19,9 @@ type OverlayWork =
 export function countOverlayWork(name: OverlayWork, count = 1) {
 	if (!enabled() || typeof window === 'undefined') return;
 	const target = window as typeof window & {
-		__contractOverlayPerf?: Partial<Record<OverlayWork, number>>;
+		__documentOverlayPerf?: Partial<Record<OverlayWork, number>>;
 	};
-	const counters = (target.__contractOverlayPerf ??= {});
+	const counters = (target.__documentOverlayPerf ??= {});
 	counters[name] = (counters[name] ?? 0) + count;
 }
 
@@ -37,32 +37,32 @@ type SearchWork =
 export function countSearchWork(name: SearchWork, count = 1) {
 	if (!enabled() || typeof window === 'undefined') return;
 	const target = window as typeof window & {
-		__contractSearchPerf?: Partial<Record<SearchWork, number>>;
+		__documentSearchPerf?: Partial<Record<SearchWork, number>>;
 	};
-	const counters = (target.__contractSearchPerf ??= {});
+	const counters = (target.__documentSearchPerf ??= {});
 	counters[name] = (counters[name] ?? 0) + count;
 }
 
-/** Aggregate Admin lifetime counters; no departed component or query references. */
-function adminQueryCounters() {
+/** Aggregate template editor lifetime counters; no departed component or query references. */
+function templateQueryCounters() {
 	if (!enabled() || typeof window === 'undefined') return;
 	const target = window as typeof window & {
-		__adminQueryPerf?: {
+		__templateQueryPerf?: {
 			activeOwners: number;
 			mounts: number;
 			unmounts: number;
 			sourceUpdates: number;
 		};
 	};
-	return (target.__adminQueryPerf ??= {
+	return (target.__templateQueryPerf ??= {
 		activeOwners: 0,
 		mounts: 0,
 		unmounts: 0,
 		sourceUpdates: 0
 	});
 }
-export function recordAdminQueryOwner() {
-	const counters = adminQueryCounters();
+export function recordTemplateQueryOwner() {
+	const counters = templateQueryCounters();
 	if (!counters) return;
 	counters.activeOwners++;
 	counters.mounts++;
@@ -71,8 +71,8 @@ export function recordAdminQueryOwner() {
 		counters.unmounts++;
 	};
 }
-export function recordAdminSourceUpdate() {
-	const counters = adminQueryCounters();
+export function recordTemplateSourceUpdate() {
+	const counters = templateQueryCounters();
 	if (counters) counters.sourceUpdates++;
 }
 
@@ -81,9 +81,9 @@ export function recordColdStart(name: string, startedAt?: number) {
 	if (!enabled() || typeof window === 'undefined') return;
 	const at = performance.now();
 	const target = window as typeof window & {
-		__contractColdStart?: { name: string; at: number; durationMs?: number }[];
+		__documentColdStart?: { name: string; at: number; durationMs?: number }[];
 	};
-	const marks = (target.__contractColdStart ??= []);
+	const marks = (target.__documentColdStart ??= []);
 	marks.push({ name, at, durationMs: startedAt === undefined ? undefined : at - startedAt });
 	if (marks.length > 100) marks.shift();
 }
@@ -97,7 +97,7 @@ export function recordPageMount(
 ) {
 	if (!enabled() || typeof window === 'undefined') return;
 	const target = window as typeof window & {
-		__contractPageMountPerf?: {
+		__documentPageMountPerf?: {
 			generation: number;
 			at: number;
 			durationMs: number;
@@ -105,7 +105,7 @@ export function recordPageMount(
 			atomic: boolean;
 		}[];
 	};
-	const samples = (target.__contractPageMountPerf ??= []);
+	const samples = (target.__documentPageMountPerf ??= []);
 	samples.push({
 		generation,
 		at: startedAt,
@@ -129,8 +129,8 @@ export interface SchedulerWindowSample {
 }
 export function recordSchedulerWindow(sample: SchedulerWindowSample) {
 	if (!enabled() || typeof window === 'undefined') return;
-	const target = window as typeof window & { __contractSchedulerPerf?: SchedulerWindowSample[] };
-	const samples = (target.__contractSchedulerPerf ??= []);
+	const target = window as typeof window & { __documentSchedulerPerf?: SchedulerWindowSample[] };
+	const samples = (target.__documentSchedulerPerf ??= []);
 	samples.push({ ...sample });
 	if (samples.length > 100) samples.shift();
 }
@@ -195,8 +195,8 @@ export function recordDocumentReady() {
 	const navigation = documentNavigation;
 	if (!navigation || navigation.pathname !== window.location.pathname) return;
 	recordColdStart(
-		describeDestination(navigation.pathname).document === 'admin'
-			? 'admin-navigation-to-document-ready'
+		describeDestination(navigation.pathname).document === 'template'
+			? 'template-navigation-to-document-ready'
 			: 'contract-navigation-to-document-ready',
 		navigation.startedAt
 	);
@@ -237,12 +237,12 @@ export function countStartupWork(name: StartupCount) {
 export function recordDomainWork(domain: DocumentDomain) {
 	if (!enabled() || typeof window === 'undefined') return;
 	const target = window as typeof window & {
-		__contractDomainPerf?: {
+		__documentDomainPerf?: {
 			ingestion: DocumentDomain['metrics'];
 			geometry: NonNullable<DocumentDomain['geometry']>['metrics'] | undefined;
 		};
 	};
-	target.__contractDomainPerf = { ingestion: domain.metrics, geometry: domain.geometry?.metrics };
+	target.__documentDomainPerf = { ingestion: domain.metrics, geometry: domain.geometry?.metrics };
 }
 
 export interface RenderPerfSample extends LayoutProfileMetrics {
@@ -291,7 +291,7 @@ export interface RenderPerfSample extends LayoutProfileMetrics {
 	failed: boolean;
 }
 let lastInputAt = 0;
-export function recordContractInput(event: Event) {
+export function recordDocumentInput(event: Event) {
 	if (enabled()) lastInputAt = event.timeStamp;
 }
 export function createPerfSample(
@@ -349,8 +349,8 @@ export function createPerfSample(
 // Bounded, opt-in inspection without production logging or reactive dependencies.
 export function recordPerfSample(sample?: RenderPerfSample) {
 	if (!enabled() || !sample || typeof window === 'undefined') return;
-	const target = window as typeof window & { __contractRenderPerf?: RenderPerfSample[] };
-	const samples = (target.__contractRenderPerf ??= []);
+	const target = window as typeof window & { __documentRenderPerf?: RenderPerfSample[] };
+	const samples = (target.__documentRenderPerf ??= []);
 	const index = samples.findIndex(
 		(value) => value.generation === sample.generation && value.requestedAt === sample.requestedAt
 	);

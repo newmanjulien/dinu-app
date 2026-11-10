@@ -1,4 +1,5 @@
-import type { ContractChange, PlaybookItemRecord, SourceTarget, Trigger } from './model';
+import type { DeepReadonly } from '../immutable';
+import type { ContractChange, ContractItemRecord, SourceTarget, Trigger } from './model';
 
 export type DocumentAnnotation = {
 	id: string;
@@ -18,7 +19,7 @@ export function documentAnnotations(record: {
 	_id: string;
 	renderKey?: string;
 	trigger: Trigger;
-	concessions: { id: string; changes: { target: SourceTarget }[] }[];
+	concessions: readonly { id: string; changes: readonly { target: SourceTarget }[] }[];
 }): DocumentAnnotation[] {
 	return [
 		{
@@ -46,15 +47,19 @@ export function documentAnnotations(record: {
 	];
 }
 
-export type DocumentOverlayItem = {
+/** Structural annotation consumers need membership and targets, never replacement bodies. */
+export type DocumentAnnotationItem = {
 	itemId: string;
-	annotations: DocumentAnnotation[];
+	annotations: readonly DocumentAnnotation[];
+};
+
+export type DocumentOverlayItem = DocumentAnnotationItem & {
 	trigger: Trigger;
-	concessions: { id: string; changes: ContractChange[] }[];
+	concessions: DeepReadonly<{ id: string; changes: ContractChange[] }[]>;
 };
 
 /** Only this projection may contribute Playbook data to render-source identity. */
-export function toDocumentOverlay(record: PlaybookItemRecord): DocumentOverlayItem {
+export function toDocumentOverlay(record: DeepReadonly<ContractItemRecord>): DocumentOverlayItem {
 	return {
 		itemId: record._id,
 		annotations: documentAnnotations(record),

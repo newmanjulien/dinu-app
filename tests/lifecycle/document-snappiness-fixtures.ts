@@ -1,10 +1,13 @@
 import { expect, vi } from 'vitest';
-import { ContractLayoutProfiles } from '../../src/lib/document/runtime/layout-context.svelte';
-import { createContractWorkspace } from '../../src/lib/document/runtime/workspace-factory';
-import type { LayoutProfileSurface } from '../../src/lib/document/pagination/profiler';
+import { DocumentLayoutProfiles } from '../../src/lib/document/runtime/layout-context.svelte';
+import { createDocumentWorkspace } from '../../src/lib/document/runtime/workspace-factory';
+import {
+	LayoutProfiler,
+	type LayoutProfileSurface
+} from '../../src/lib/document/pagination/profiler';
 import type { BlockLayoutProfile } from '../../src/lib/document/pagination/profile';
 import type { PreparedBlock } from '../../src/lib/document/pagination/prepare';
-import type { ContractWorkspace } from '../../src/lib/document/runtime/workspace-context';
+import type { DocumentWorkspace } from '../../src/lib/document/runtime/workspace-context';
 import type { ConcessionSelection } from '../../src/lib/playbook/model';
 import { documentFixture, settle } from './snappiness-fixtures';
 
@@ -18,7 +21,8 @@ export function layoutFixture() {
 		}
 	};
 	const measure = vi.spyOn(surface, 'withBlock');
-	const profiles = new ContractLayoutProfiles();
+	const profiles = new DocumentLayoutProfiles();
+	profiles.install(LayoutProfiler);
 	profiles.surface = surface;
 	return { profiles, measure, destroy: () => profiles.scheduler.destroy() };
 }
@@ -46,7 +50,7 @@ export async function driveUntil(done: () => boolean) {
 }
 
 export async function render(
-	workspace: ContractWorkspace,
+	workspace: DocumentWorkspace,
 	layout: ReturnType<typeof layoutFixture>,
 	concessions: ConcessionSelection = {}
 ) {
@@ -65,7 +69,8 @@ export async function render(
 
 export function workspaceFixture(data = documentFixture()) {
 	const layout = layoutFixture();
-	const workspace = createContractWorkspace({
+	const workspace = createDocumentWorkspace({
+		kind: 'records',
 		blocks: { data: data.blocks },
 		items: { data: data.records }
 	});

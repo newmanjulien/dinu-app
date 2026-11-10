@@ -18,8 +18,8 @@ company were created using each environment's existing verified Clerk account.
 
 The current seed has **112 blocks, three static tables, 55 items, 21 concessions,
 and 29 changes**. The monthly-fee discount rule and its five concessions/changes
-are retired. Both deployed seed reads exactly match the local baseline, playbook,
-and immutable template version. Account reads confirm owner/admin access and a ready
+are retired. Both deployed seed reads exactly match the local template source, playbook,
+and immutable template version. Account reads confirm owner/template access and a ready
 template. Local verification passed 48 compositor states, 23 performance checks,
 frontend/backend type checks, and the production build. Browser visuals, search
 highlight geometry, live DOCX upload, and third-party Word rendering remain

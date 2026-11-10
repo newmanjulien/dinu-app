@@ -3,6 +3,7 @@
 	import editorialFont from '@fontsource/newsreader/files/newsreader-latin-400-normal.woff2?url';
 	import { page } from '$app/state';
 	import { describeRoute } from '$lib/auth/routes';
+	import { isBuyerPath } from '$lib/buyer/urls';
 	import { setPageMetadata } from '$lib/auth/page-metadata.svelte';
 	import { env } from '$env/dynamic/public';
 	import AuthBridge from '$lib/auth/AuthBridge.svelte';
@@ -26,7 +27,9 @@
 	<meta name="description" content={route.description ?? ''} />
 </svelte:head>
 
-{#if env.PUBLIC_CLERK_PUBLISHABLE_KEY && env.PUBLIC_CONVEX_URL}
+{#if isBuyerPath(page.url.pathname) && env.PUBLIC_CONVEX_URL}
+	{@render children()}
+{:else if env.PUBLIC_CLERK_PUBLISHABLE_KEY && env.PUBLIC_CONVEX_URL}
 	<ClerkSessionProvider publishableKey={env.PUBLIC_CLERK_PUBLISHABLE_KEY}>
 		<AuthBridge
 			><StartupDataProvider

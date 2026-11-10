@@ -17,16 +17,12 @@
 		errorText?: string | null;
 		onSave: (role: Role) => Promise<void>;
 	} = $props();
-	let draft = $state<Role>('rep');
-	let syncedValue = $state<Role>();
+	let draft = $derived(value);
 	let hideServerError = $state(false);
 	const shownError = $derived(hideServerError ? null : errorText);
 	$effect(() => {
-		if (syncedValue !== value) {
-			draft = value;
-			syncedValue = value;
-			hideServerError = false;
-		}
+		void value;
+		hideServerError = false;
 	});
 	async function save() {
 		if (saving || disabled || draft === value) return;
@@ -48,7 +44,7 @@
 				disabled={saving || disabled}
 				class="w-full rounded-button-lg border-hairline border-edge bg-surface px-3 shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-disabled:not-aria-disabled:[&:not([readonly])]:not-aria-invalid:hover:not-focus-within:bg-field-hover not-disabled:not-aria-disabled:aria-invalid:border-danger/30 not-disabled:not-aria-disabled:aria-invalid:bg-danger-surface not-disabled:not-aria-disabled:aria-invalid:text-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:border-danger not-disabled:not-aria-disabled:aria-invalid:focus-within:outline-danger/18 motion-reduce:transition-none min-w-0 text-[13px] placeholder:font-[350] placeholder:text-ink-muted text-ink disabled:bg-canvas disabled:text-ink-muted [&[readonly]]:bg-canvas [&[readonly]]:text-ink-muted h-9 appearance-none py-0 pr-9 leading-5"
 				aria-invalid={Boolean(shownError)}
-				aria-describedby="personal-role-message"
+				aria-describedby={shownError ? 'personal-role-message' : undefined}
 				onchange={() => (hideServerError = true)}
 			>
 				<option value="rep">Rep</option>
@@ -59,13 +55,15 @@
 				class="size-3.5 pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted"
 			/>
 		</div>
-		<p
-			id="personal-role-message"
-			role={shownError ? 'alert' : undefined}
-			class="min-h-5 text-[0.72rem] leading-5 text-danger"
-		>
-			{shownError ?? ''}
-		</p>
+		{#if shownError}
+			<p
+				id="personal-role-message"
+				role="alert"
+				class="text-[0.72rem] leading-5 text-danger"
+			>
+				{shownError}
+			</p>
+		{/if}
 	</div>
 	{#snippet footer()}<p>You can change your role at any time.</p>{/snippet}
 	{#snippet action()}<Button disabled={saving || disabled || draft === value} onclick={save}

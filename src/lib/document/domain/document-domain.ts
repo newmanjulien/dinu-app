@@ -1,31 +1,41 @@
-import { CompiledContract } from '../../contract/compiled-contract';
-import type { ContractBlock } from '../../contract/model';
-import { immutable } from '../../immutable';
-import { toDocumentOverlay, type DocumentOverlayItem } from '../../playbook/document-overlay';
+import type { ContractItemId } from '$lib/contract/item-identity';
+import { CompiledDocument } from '../compiled-document';
+import type { SourceBlock } from '../model';
+import { immutable, type DeepReadonly } from '../../immutable';
+import {
+	toDocumentOverlay,
+	type DocumentAnnotationItem,
+	type DocumentOverlayItem
+} from '../../playbook/document-overlay';
 import { playbookGeometryKey } from '../../playbook/geometry';
 import { PlaybookGeometryIndex } from '../../playbook/geometry-index';
-import type { PlaybookItemRecord } from '../../playbook/model';
+import type { ContractItemRecord } from '../../playbook/model';
+import { semanticPlaybookDraft } from '../../playbook/content';
 
 import { documentAnnotations } from '../../playbook/document-overlay';
-import { itemStructure, structureGeometry, type StructureItem } from '../../playbook/structure';
+import {
+	validateChangeReferences,
+	validateStructuralReplacementContent
+} from '../../playbook/validation';
+import { itemStructure, playbookStructure, type StructureItem } from '../../playbook/structure';
 
 type StructuralEntry = {
-	item: StructureItem;
+	item: DeepReadonly<StructureItem<ContractItemId>>;
 	key: string;
-	overlay: DocumentOverlayItem;
+	overlay: DocumentAnnotationItem;
 	geometryKey: string;
 };
 
 /** Workspace-owned semantics. Annotations and hydrated content have independent identities. */
 export class DocumentDomain {
-	contract: CompiledContract | null = null;
+	document: CompiledDocument | null = null;
 	geometry: PlaybookGeometryIndex | null = null;
-	records: readonly PlaybookItemRecord[] | null = null;
-	structures: readonly StructureItem[] | null = null;
-	overlays: readonly DocumentOverlayItem[] = [];
+	records: DeepReadonly<ContractItemRecord[]> | null = null;
+	structures: DeepReadonly<StructureItem<ContractItemId>[]> | null = null;
+	overlays: readonly DocumentAnnotationItem[] = [];
 	contentOverlays: readonly DocumentOverlayItem[] = [];
 	readonly metrics = {
-		compiledContractBuilds: 0,
+		compiledDocumentBuilds: 0,
 		snapshotsAccepted: 0,
 		recordsCompared: 0,
 		recordsRecompiled: 0,
@@ -34,16 +44,21 @@ export class DocumentDomain {
 		overlaysReused: 0
 	};
 	private structureInput: {
-		items: readonly StructureItem[];
+		items: DeepReadonly<StructureItem<ContractItemId>[]>;
 		pendingRenderKey: string | undefined;
-		contract: CompiledContract | null;
+		document: CompiledDocument | null;
 		certified: boolean;
 	} | null = null;
-	private baselineKey = '';
-	private baselineInput: readonly ContractBlock[] | null = null;
+	private sourceKey = '';
+	private sourceInput: readonly SourceBlock[] | null = null;
 	private accepted = new Map<
 		string,
-		{ record: PlaybookItemRecord; identity: string; overlay: DocumentOverlayItem; key: string }
+		{
+			record: DeepReadonly<ContractItemRecord>;
+			identity: string;
+			overlay: DocumentOverlayItem;
+			key: string;
+		}
 	>();
 	private structural = new Map<string, StructuralEntry>();
 	lookup(id: string) {
@@ -53,24 +68,35 @@ export class DocumentDomain {
 			? { record: entry.record, annotations: structure.overlay.annotations }
 			: null;
 	}
-	acceptBlocks(blocks: readonly ContractBlock[]) {
-		if (blocks === this.baselineInput) return;
-		const key = JSON.stringify(blocks);
-		this.baselineInput = blocks;
-		if (key === this.baselineKey) return;
-		const contract = new CompiledContract(JSON.parse(key));
-		const geometry = new PlaybookGeometryIndex(contract);
-		this.contract = contract;
-		this.geometry = geometry;
-		this.baselineKey = key;
-		this.metrics.compiledContractBuilds++;
+	acceptBlocks(
+		blocks: readonly SourceBlock[],
+		initialGeometry: 'empty' | 'defer-to-overlays' = 'empty'
+	) {
+		const key = blocks === this.sourceInput ? this.sourceKey : JSON.stringify(blocks);
+		if (key !== this.sourceKey) {
+			const document = new CompiledDocument(JSON.parse(key));
+			const geometry = initialGeometry === 'empty' ? new PlaybookGeometryIndex(document) : null;
+			this.document = document;
+			// Deferred overlay acceptance must never use an index for the previous document.
+			this.geometry = geometry;
+			this.sourceKey = key;
+			this.metrics.compiledDocumentBuilds++;
+		} else if (initialGeometry === 'empty' && !this.geometry && this.document) {
+			// Restore normal initialization after a failed deferred acceptance of these blocks.
+			this.geometry = new PlaybookGeometryIndex(this.document);
+		}
+		this.sourceInput = blocks;
 	}
-	acceptStructure(items: readonly StructureItem[], pendingRenderKey?: string, certified = false) {
+	acceptStructure(
+		items: DeepReadonly<StructureItem<ContractItemId>[]>,
+		pendingRenderKey?: string,
+		certified = false
+	) {
 		const previousInput = this.structureInput;
 		if (
 			previousInput?.items === items &&
 			previousInput.pendingRenderKey === pendingRenderKey &&
-			previousInput.contract === this.contract &&
+			previousInput.document === this.document &&
 			previousInput.certified === certified
 		)
 			return;
@@ -93,24 +119,21 @@ export class DocumentDomain {
 			if (previous?.key === key) {
 				if (!this.geometry?.items.has(item._id)) {
 					geometryChanged = true;
-					if (!certified) this.geometry?.set(item._id, structureGeometry(item));
+					if (!certified) this.geometry?.set(item._id, item);
 				}
 				next.set(item._id, previous);
 				continue;
 			}
-			const geometry = structureGeometry(item);
-			const overlay: DocumentOverlayItem = {
+			const overlay: DocumentAnnotationItem = {
 				itemId: item._id,
-				trigger: item.trigger,
-				concessions: geometry.concessions,
 				annotations: documentAnnotations(item).map((annotation) =>
 					pending ? { ...annotation, pending: true } : annotation
 				)
 			};
-			const geometryKey = playbookGeometryKey(overlay);
+			const geometryKey = playbookGeometryKey(item);
 			if (previous?.geometryKey !== geometryKey || !this.geometry?.items.has(item._id)) {
 				geometryChanged = true;
-				if (!certified) this.geometry?.set(item._id, geometry);
+				if (!certified) this.geometry?.set(item._id, item);
 			}
 			next.set(item._id, { item, key, overlay, geometryKey });
 		}
@@ -119,11 +142,9 @@ export class DocumentDomain {
 				geometryChanged = true;
 				if (!certified) this.geometry?.remove(id);
 			}
-		if (certified && geometryChanged && this.contract) {
-			const geometry = new PlaybookGeometryIndex(this.contract);
-			geometry.loadCertified(
-				[...next].map(([id, { item }]) => [id, structureGeometry(item)] as const)
-			);
+		if (certified && geometryChanged && this.document) {
+			const geometry = new PlaybookGeometryIndex(this.document);
+			geometry.loadCertified([...next].map(([id, { item }]) => [id, item] as const));
 			this.geometry = geometry;
 		} else if (!certified) this.geometry?.refreshValidation();
 		const overlays = [...next.values()].map(({ overlay }) => overlay);
@@ -134,13 +155,40 @@ export class DocumentDomain {
 			this.overlays = overlays;
 		this.structures = items;
 		this.structural = next;
-		this.structureInput = { items, pendingRenderKey, contract: this.contract, certified };
+		this.structureInput = { items, pendingRenderKey, document: this.document, certified };
 	}
-	acceptItems(records: readonly PlaybookItemRecord[]) {
-		this.acceptStructure(records.map((record) => itemStructure(record)));
+	/** Public content is already projected; never invent private authoring records. */
+	acceptOverlays(overlays: readonly DocumentOverlayItem[], contract = false) {
+		if (!this.document) throw new Error('Document blocks are required.');
+		const geometry = new PlaybookGeometryIndex(this.document);
+		const ids = new Set<string>();
+		for (const overlay of overlays) {
+			if (ids.has(overlay.itemId)) throw new Error('Duplicate clause.');
+			ids.add(overlay.itemId);
+			if (!contract) geometry.set(overlay.itemId, playbookStructure(overlay));
+		}
+		if (contract)
+			geometry.loadCertified(overlays.map((o) => [o.itemId, playbookStructure(o)] as const));
+		else geometry.auditGeometry();
+		for (const overlay of overlays) {
+			validateStructuralReplacementContent(overlay);
+			validateChangeReferences(this.document, overlay);
+		}
+		this.geometry = geometry;
+		this.structures = [];
+		this.records = [];
+		this.overlays = overlays;
+		this.contentOverlays = overlays;
+	}
+	acceptItems(records: DeepReadonly<ContractItemRecord[]>, contract = false) {
+		this.acceptStructure(
+			records.map((record) => itemStructure(record)),
+			undefined,
+			contract
+		);
 		this.acceptDetails(records);
 	}
-	acceptDetails(records: readonly PlaybookItemRecord[]) {
+	acceptDetails(records: DeepReadonly<ContractItemRecord[]>) {
 		this.metrics.snapshotsAccepted++;
 		const next = new Map<string, typeof this.accepted extends Map<string, infer T> ? T : never>();
 		for (const record of records) {
@@ -153,7 +201,12 @@ export class DocumentDomain {
 				this.metrics.overlaysReused++;
 				continue;
 			}
-			const copy = immutable(JSON.parse(JSON.stringify(record))) as PlaybookItemRecord;
+			// Copy the domain tree explicitly so reactive query proxies are supported too.
+			const copy = immutable({
+				...record,
+				...semanticPlaybookDraft(record),
+				...(record.instructions !== undefined ? { instructions: { ...record.instructions } } : {})
+			});
 			const projected = { ...toDocumentOverlay(copy), annotations: [] };
 			const key = JSON.stringify(projected);
 			next.set(record._id, {

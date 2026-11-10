@@ -3,6 +3,7 @@ import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import type { CompanyAccess } from './auth';
 import { hubspotKind } from './hubspotValidators';
+import { activeDestination } from './hubspotInstallation';
 
 export function operation(value: string) {
 	if (!value.trim() || value.length > 200) throw new ConvexError('Invalid operation identity.');
@@ -68,14 +69,15 @@ export async function activity(
 	occurredAt = Date.now(),
 	attemptId?: Doc<'hubspotExports'>['_id']
 ) {
-	if (!contract.hubspot) return;
+	if (!contract.hubspot || !(await activeDestination(ctx, contract.companyId, contract.hubspot)))
+		return false;
 	if (
 		await ctx.db
 			.query('hubspotEvents')
 			.withIndex('by_key', (q) => q.eq('key', key))
 			.unique()
 	)
-		return;
+		return true;
 	const { availability: _availability, ...destination } = contract.hubspot;
 	// Rendered details are bounded independently of immutable reference chunks/receipts.
 	let bounded = detail;
@@ -111,6 +113,7 @@ export async function activity(
 		dueAt: Date.now(),
 		tries: 0
 	});
+	return true;
 }
 export function actionKey(access: CompanyAccess, kind: string, id: string) {
 	operation(id);

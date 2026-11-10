@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { untrack, onDestroy } from 'svelte';
@@ -11,7 +12,7 @@
 	import type { InvitationResolution } from '../../convex/invitationValidators';
 	import AuthButton from './components/AuthButton.svelte';
 	import AuthStepFrame from './components/AuthStepFrame.svelte';
-	import LoadingState from '$lib/ui/LoadingState.svelte';
+	import InvitationSkeleton from './InvitationSkeleton.svelte';
 	import RouteTitle from './RouteTitle.svelte';
 	const client = useConvexClient();
 	const session = useViewerSession();
@@ -43,7 +44,7 @@
 							: 'Join your team'
 	);
 	const teamHref = $derived(
-		`/team?returnTo=${encodeURIComponent(currentDestination(page.url))}` as const
+		`${resolve('/team')}?returnTo=${encodeURIComponent(currentDestination(page.url))}` as const
 	);
 	$effect(() => {
 		const token = page.url.searchParams.get('invitation');
@@ -111,7 +112,7 @@
 			});
 			if (!current()) return;
 			joined = true;
-			await goto('/', { replaceState: true });
+			await goto('/contracts', { replaceState: true });
 		} catch (e) {
 			if (current()) error = e instanceof Error ? e.message : 'Unable to accept this invitation.';
 		} finally {
@@ -129,7 +130,7 @@
 			? `Open ${result.companyName} on Dinu.`
 			: 'Your company is ready to open.'}
 	>
-		<AuthButton href="/">Open workspace</AuthButton>
+		<AuthButton href={resolve('/contracts')}>Open workspace</AuthButton>
 		{#if error}<p role="alert" class="mt-3 text-sm text-danger">{error}</p>{/if}
 	</AuthStepFrame>
 {:else if result?.status === 'available'}
@@ -177,17 +178,18 @@
 			: 'Ask a colleague for a new invitation to continue.'}
 	>
 		<a
-			href={account()?.membership ? '/' : '/onboarding'}
+			href={resolve(account()?.membership ? '/contracts' : '/onboarding')}
 			class="block text-center text-sm underline"
 			>{account()?.membership ? 'Open your workspace' : 'Set up your company'}</a
 		>
 	</AuthStepFrame>
-{:else}
+{:else if error}
 	<AuthStepFrame title="Company invitation">
-		<LoadingState label={error ? undefined : 'Loading invitation'}>
-			{#if error}<p role="alert" class="text-center text-sm text-danger">{error}</p>
-				<button class="text-sm underline" onclick={() => retry++}>Try again</button>
-			{/if}
-		</LoadingState>
+		<div class="grid gap-4">
+			<p role="alert" class="text-center text-sm text-danger">{error}</p>
+			<button class="text-sm underline" onclick={() => retry++}>Try again</button>
+		</div>
 	</AuthStepFrame>
+{:else}
+	<InvitationSkeleton entry="signed-in" />
 {/if}

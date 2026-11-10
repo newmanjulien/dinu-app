@@ -3,15 +3,45 @@ import { internalMutation, internalQuery, query, env, type MutationCtx } from '.
 import { availableCompany, requireMembership } from './auth';
 import { hubspotConnection } from './hubspotValidators';
 import schema from './schema';
+import { quoteInstallationFor } from './hubspotQuotesInstallation';
+import { hasQuoteScopes } from './hubspotQuoteValidators';
+import { lifecycle, otherAttachments } from './hubspotInstallation';
+import { hubspotRemovalOutcome } from './hubspotValidators';
 
 export const status = query({
 	args: { membershipId: v.id('memberships') },
 	returns: v.object({
+		quotes: v.object({
+			installationId: v.union(v.id('hubspotQuoteInstallations'), v.null()),
+			epoch: v.number(),
+			installed: v.boolean(),
+			connected: v.boolean(),
+			enabled: v.boolean(),
+			pushEnabled: v.boolean()
+		}),
 		configured: v.boolean(),
 		enabled: v.boolean(),
-		status: v.union(v.literal('uninstalled'), v.literal('connected'), v.literal('reconnect')),
+		status: v.union(
+			v.literal('uninstalled'),
+			v.literal('connected'),
+			v.literal('reconnect'),
+			v.literal('uninstalling')
+		),
+		connectionId: v.union(v.id('hubspotConnections'), v.null()),
 		accountId: v.union(v.string(), v.null()),
-		installedAt: v.union(v.number(), v.null())
+		installedAt: v.union(v.number(), v.null()),
+		companyReadGranted: v.boolean(),
+		shared: v.boolean(),
+		removal: v.union(
+			v.object({
+				id: v.id('hubspotRemovals'),
+				provider: hubspotRemovalOutcome,
+				done: v.boolean(),
+				blocking: v.boolean(),
+				accountId: v.string()
+			}),
+			v.null()
+		)
 	}),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
@@ -19,7 +49,28 @@ export const status = query({
 			.query('hubspotConnections')
 			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
 			.unique();
+		const state = await lifecycle(ctx, access.companyId);
+		const removal = state?.removalId ? await ctx.db.get('hubspotRemovals', state.removalId) : null;
+		const provider = removal
+			? await ctx.db.get('hubspotAccountRemovals', removal.providerId)
+			: null;
+		const quotes = await quoteInstallationFor(ctx, access.companyId);
+		const installed = Boolean(
+			quotes?.enabled &&
+			row &&
+			row.status !== 'retiring' &&
+			quotes.connectionId === row._id &&
+			quotes.accountId === row.accountId
+		);
 		return {
+			quotes: {
+				installationId: quotes?._id ?? null,
+				epoch: quotes?.epoch ?? 0,
+				installed,
+				connected: Boolean(installed && row?.status === 'connected' && hasQuoteScopes(row.scopes)),
+				enabled: env.HUBSPOT_QUOTES_ENABLED === 'true',
+				pushEnabled: env.HUBSPOT_QUOTES_PUSH_ENABLED === 'true'
+			},
 			configured: Boolean(
 				env.HUBSPOT_CLIENT_ID &&
 				env.HUBSPOT_CLIENT_SECRET &&
@@ -27,9 +78,24 @@ export const status = query({
 				env.HUBSPOT_SCOPES
 			),
 			enabled: env.HUBSPOT_ENABLED === 'true',
-			status: row?.status ?? ('uninstalled' as const),
+			status:
+				row?.status === 'retiring' || (removal && !removal.done)
+					? ('uninstalling' as const)
+					: (row?.status ?? ('uninstalled' as const)),
+			connectionId: row?._id ?? null,
 			accountId: row?.accountId ?? null,
-			installedAt: row?.installedAt ?? null
+			installedAt: row?.installedAt ?? null,
+			companyReadGranted: Boolean(row?.scopes.includes('crm.objects.companies.read')),
+			shared: row ? await otherAttachments(ctx, row.accountId, access.companyId) : false,
+			removal: removal
+				? {
+						id: removal._id,
+						provider: provider?.provider ?? 'attention',
+						done: removal.done,
+						blocking: provider?.blocking ?? false,
+						accountId: removal.accountId
+					}
+				: null
 		};
 	}
 });
@@ -93,7 +159,7 @@ export const refreshed = internalMutation({
 		)
 			return false;
 		await ctx.db.patch('hubspotConnections', row._id, {
-			...(args.tokens ?? { status: 'reconnect' as const }),
+			...(args.tokens ?? (row.status === 'retiring' ? {} : { status: 'reconnect' as const })),
 			generation: row.generation + 1,
 			refreshClaim: undefined,
 			refreshUntil: undefined
@@ -115,6 +181,7 @@ export async function requireReconnect(
 	const row = await ctx.db.get('hubspotConnections', args.id);
 	if (
 		!row ||
+		row.status === 'retiring' ||
 		row.companyId !== args.companyId ||
 		row.accountId !== args.accountId ||
 		row.generation !== args.generation ||

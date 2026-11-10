@@ -9,7 +9,12 @@
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import HubSpotDealPicker from './HubSpotDealPicker.svelte';
-	import { isHubSpotDealConflict, saveError } from '$lib/contract/saved';
+	import {
+		isHubSpotDealConflict,
+		isHubSpotInstallationRetired,
+		saveError
+	} from '$lib/contract/saved';
+	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
 	let {
 		contractId,
 		link,
@@ -19,10 +24,22 @@
 	const client = useConvexClient(),
 		viewer = useViewer();
 	const expectedGeneration = untrack(() => link?.generation ?? null);
+	const connection = useHubSpotDeals().connection;
+	const currentLink = $derived(
+		Boolean(
+			link &&
+			link.connectionId === connection.data?.connectionId &&
+			link.accountId === connection.data?.accountId
+		)
+	);
 	let selected = $state<{ id: string; name: string } | null>(null),
 		busy = $state(false),
 		error = $state<string | null>(null);
-	let request = $state.raw<{ operationId: string; dealId: string } | null>(null);
+	let request = $state.raw<{
+		operationId: string;
+		dealId: string;
+		expectedConnectionId: Id<'hubspotConnections'>;
+	} | null>(null);
 	let selectionEligible = $state(false);
 	let deleted = $state(false);
 	const canSubmit = $derived(
@@ -31,8 +48,9 @@
 	async function submit() {
 		if (!canSubmit) return;
 		if (!request) {
-			if (!selected || !selectionEligible) return;
-			request = { operationId: crypto.randomUUID(), dealId: selected.id };
+			const expectedConnectionId = connection.data?.connectionId;
+			if (!selected || !selectionEligible || !expectedConnectionId) return;
+			request = { operationId: crypto.randomUUID(), dealId: selected.id, expectedConnectionId };
 		}
 		busy = true;
 		error = null;
@@ -50,7 +68,7 @@
 			}
 			onClose();
 		} catch (cause) {
-			if (request && isHubSpotDealConflict(cause)) {
+			if (request && (isHubSpotDealConflict(cause) || isHubSpotInstallationRetired(cause))) {
 				if (selected?.id === request.dealId) selected = null;
 				request = null;
 			}
@@ -63,7 +81,7 @@
 
 <ModalShell
 	open
-	title={link ? 'Link another deal' : 'Link a HubSpot deal'}
+	title={currentLink ? 'Link another deal' : 'Link a HubSpot deal'}
 	{onClose}
 	dismissible={!busy}
 >

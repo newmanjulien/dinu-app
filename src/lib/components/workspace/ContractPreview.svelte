@@ -1,26 +1,32 @@
 <script lang="ts">
+	import { isRepItem } from '$lib/playbook/model';
 	import { untrack } from 'svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
-	import type { TemplateContent } from '$lib/contract/saved';
-	import { createContractWorkspace } from '$lib/document/runtime/workspace-factory';
-	import { setContractWorkspace } from '$lib/document/runtime/workspace-context';
-	import ContractViewer from '$lib/components/document/ContractViewer.svelte';
+	import type { TemplateContent } from '$lib/template/model';
+	import { createDocumentWorkspace } from '$lib/document/runtime/workspace-factory';
+	import { setDocumentWorkspace } from '$lib/document/runtime/workspace-context';
+	import DocumentViewer from '$lib/components/document/DocumentViewer.svelte';
 	let { snapshot }: { snapshot: TemplateContent } = $props();
 	const runtime = getWorkspaceRuntime();
-	const workspace = setContractWorkspace(
+	const workspace = setDocumentWorkspace(
 		untrack(() =>
-			createContractWorkspace({
+			createDocumentWorkspace({
+				kind: 'records',
 				blocks: { data: snapshot.blocks },
-				items: { data: snapshot.items }
+				items: { data: snapshot.items.filter(isRepItem) }
 			})
 		)
 	);
 	$effect(() =>
-		workspace.accept({ blocks: { data: snapshot.blocks }, items: { data: snapshot.items } })
+		workspace.accept({
+			kind: 'records' as const,
+			blocks: { data: snapshot.blocks },
+			items: { data: snapshot.items.filter(isRepItem) }
+		})
 	);
 </script>
 
-<ContractViewer
+<DocumentViewer
 	active={!runtime.paused}
 	prepare={!runtime.paused}
 	interactive={false}
@@ -30,4 +36,4 @@
 	onSelect={() => false}
 >
 	{#snippet panelContent()}{/snippet}
-</ContractViewer>
+</DocumentViewer>

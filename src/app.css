@@ -45,12 +45,12 @@
 	--radius-button-md: 6px;
 	--radius-button-lg: 10px;
 	--radius-button-xl: 12px;
-	--spacing-button-sm: 38px;
+	--spacing-button-sm: 37px;
 }
 
 :root {
 	--surface-border-width: 0.5px;
-	--app-nav-height: 30px;
+	--app-nav-height: 29.5px;
 	--app-header-height: var(--app-nav-height);
 	--document-viewport-gap: 16px;
 	--mobile-utility-rail-height: calc(
@@ -84,7 +84,7 @@
 
 @media (min-width: 768px) {
 	:root {
-		--app-nav-height: 35px;
+		--app-nav-height: 34.5px;
 	}
 }
 

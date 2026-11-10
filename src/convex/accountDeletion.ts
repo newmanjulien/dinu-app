@@ -8,7 +8,7 @@ import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import { internalMutation, internalQuery, mutation, query } from './_generated/server';
 import { companyDeletion, liveProfile, membershipForProfile, requireProfile } from './auth';
-import { CLEANUP_DISCOVERY_PAGE_SIZE } from './cleanup';
+import { CLEANUP_DISCOVERY_PAGE_SIZE, cleanupBudget } from './cleanup';
 import { confirmAccountDeletion } from './companyDeletion';
 import {
 	ACCOUNT_DELETION_BATCH_SIZE,
@@ -353,6 +353,42 @@ export const clean = internalMutation({
 			await ctx.db.delete('csmBookingAttempts', attempt._id);
 		}
 		if (attempts.length === 25) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
+		// No new activity records carry an account identity. Retired tables still need
+		// bounded erasure for accounts deleted before the explicit legacy retirement.
+		if (marker.legacyActivityPhase !== 'done') {
+			const phase = marker.legacyActivityPhase ?? 'opens';
+			const budget = cleanupBudget(ctx);
+			if (phase === 'opens') {
+				const done =
+					(await budget.drain(
+						'buyerLinkOpens',
+						ctx.db
+							.query('buyerLinkOpens')
+							.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
+					)) &&
+					(await budget.drain(
+						'buyerLinkOpens',
+						ctx.db
+							.query('buyerLinkOpens')
+							.withIndex('by_visitorKey', (q) => q.eq('visitorKey', `account:${profileId}`))
+					));
+				await ctx.db.patch('deletedUsers', marker._id, {
+					legacyActivityPhase: done ? 'visits' : 'opens',
+					legacyActivityCursor: undefined
+				});
+			} else {
+				const done = await budget.drain(
+					'buyerVisits',
+					ctx.db.query('buyerVisits').withIndex('by_profileId', (q) => q.eq('profileId', profileId))
+				);
+				await ctx.db.patch('deletedUsers', marker._id, {
+					legacyActivityPhase: done ? 'done' : 'visits',
+					legacyActivityCursor: undefined
+				});
+			}
 			await scheduleCleanup(ctx, marker);
 			return null;
 		}

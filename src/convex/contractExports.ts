@@ -1,18 +1,18 @@
+import { contractItemId } from '../lib/contract/item-identity';
 import { ConvexError, v, type Infer } from 'convex/values';
-import { concessionSelections } from '../lib/contract/applications';
-import { savedReviews } from '../lib/contract/approval';
-import { baselineBlock } from '../lib/contract/source-validators';
+import { sourceBlock } from '../lib/document/source-validators';
 import { internal } from './_generated/api';
 import { internalMutation, internalQuery, type QueryCtx } from './_generated/server';
 import { accessibleContract, requireMembership } from './auth';
-import { historicalItem } from './playbookValidators';
+import { contractItem } from './contractItemValidators';
 import { exportRequest } from './savedContractValidators';
 import schema from './schema';
-import { snapshotReader } from './templates';
+import { contractReader } from './contractReader';
+import { approvedExport } from './documentExport';
 import { installation, requireContractWork } from './contractPolicy';
 
 const requiredReview = v.object({
-	itemId: v.id('playbookItems'),
+	itemId: contractItemId,
 	concessionId: v.string(),
 	applicationId: v.string()
 });
@@ -39,23 +39,23 @@ export const capture = internalQuery({
 	args: exportRequest.fields,
 	returns: v.object({
 		contract: schema.doc('savedContracts'),
-		blocks: v.array(baselineBlock),
-		items: v.array(historicalItem),
+		blocks: v.array(sourceBlock),
+		items: v.array(contractItem),
 		requiredReviews: v.array(requiredReview)
 	}),
 	handler: async (ctx, args) => {
 		const contract = await currentContract(ctx, args);
-		const reader = await snapshotReader(ctx, contract);
-		const [blocks, items] = await Promise.all([
+		const reader = await contractReader(ctx, contract);
+		const [blocks, { items, reviews }] = await Promise.all([
 			reader.blocks(),
-			reader.selectedItems(
-				concessionSelections(contract.applications),
-				'This contract contains an unavailable concession.'
+			approvedExport(
+				ctx,
+				contract,
+				'downloading',
+				'This contract contains an unavailable concession.',
+				reader
 			)
 		]);
-		const reviews = savedReviews(items, contract);
-		if (reviews.some((review) => review.status !== 'approved'))
-			throw new ConvexError('All selected concessions must be approved before downloading.');
 		return {
 			contract,
 			blocks,

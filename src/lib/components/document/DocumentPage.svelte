@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { AnnotationActivation } from '$lib/document/annotation-anchor';
 	import { PAGE_FORMAT } from '$lib/document/pagination/page-format';
-	import { CONTRACT_STYLE } from '$lib/contract/format';
+	import { DOCUMENT_STYLE } from '$lib/document/format';
 	import type { HighlightRect } from '$lib/document/highlights/geometry';
 	import type { BoundaryOption } from '$lib/document/selection/boundary-options';
 	import type { AnnotationMembership } from '$lib/playbook/document-overlay';
@@ -70,17 +70,17 @@
 	</span>
 {/snippet}
 
-<!-- Keep these siblings adjacent: formatting whitespace is not contract content. -->
+<!-- Keep these siblings adjacent: formatting whitespace is not document content. -->
 <!-- prettier-ignore -->
 <article
 	use:mountSelectionPage={{ page, document: selectionDocument }}
-	class="document-page relative isolate h-(--contract-page-height) w-(--contract-page-width) overflow-hidden px-(--contract-page-horizontal-padding) pt-(--contract-page-top-padding) pb-(--contract-page-bottom-padding) data-[page-number=1]:pt-(--contract-first-page-top-padding) rounded-none border-0 bg-surface shadow-card outline-(length:--surface-border-width) outline-edge outline-offset-[calc(-1*var(--surface-border-width))]"
+	class="document-page relative isolate h-(--document-page-height) w-(--document-page-width) overflow-hidden px-(--document-page-horizontal-padding) pt-(--document-page-top-padding) pb-(--document-page-bottom-padding) data-[page-number=1]:pt-(--document-first-page-top-padding) rounded-none border-0 bg-surface shadow-card outline-(length:--surface-border-width) outline-edge outline-offset-[calc(-1*var(--surface-border-width))]"
 	aria-label={`Page ${page.number}`}
 	data-page-number={page.number}
 >
 	<div
-		class="document-page__content contract-document flex w-(--contract-content-width) flex-col"
-		style={CONTRACT_STYLE}
+		class="document-page__content document-content flex w-(--document-content-width) flex-col"
+		style={DOCUMENT_STYLE}
 	>
 		{#each page.placements as placement (fragmentKey(placement.fragment))}
 			{@const fragment = placement.fragment}

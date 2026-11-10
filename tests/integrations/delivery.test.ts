@@ -40,12 +40,11 @@ describe('ambiguous provider writes', () => {
 		const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
 			const p = path(input);
 			if (p === '/crm/v3/objects/notes') {
-				remote = { id: 'remote-note', properties: JSON.parse(String(init?.body)).properties };
+				remote = { id: '201', properties: JSON.parse(String(init?.body)).properties };
 				throw new TypeError('Response lost after provider committed');
 			}
-			if (p.includes('/associations/notes'))
-				return json({ results: [{ toObjectId: 'remote-note' }] });
-			if (p.endsWith('/notes/remote-note')) return json(remote);
+			if (p.includes('/associations/notes')) return json({ results: [{ toObjectId: '201' }] });
+			if (p.endsWith('/notes/201')) return json(remote);
 			return deal();
 		});
 		vi.stubGlobal('fetch', fetcher);
@@ -54,7 +53,7 @@ describe('ambiguous provider writes', () => {
 		expect(uncertain).toMatchObject({ status: 'uncertain', dispatch: 'note' });
 		expect(uncertain.dispatchId).toBeTruthy();
 		await retry(f, queued);
-		expect(await event(f)).toMatchObject({ status: 'sent', noteId: 'remote-note' });
+		expect(await event(f)).toMatchObject({ status: 'sent', noteId: '201' });
 		expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 	});
 	it.each(['empty', 'missing', 'throttled'] as const)(
@@ -74,7 +73,7 @@ describe('ambiguous provider writes', () => {
 				if (path(input).includes('/associations/notes'))
 					return mode === 'throttled'
 						? json({}, 429, { 'retry-after': '5' })
-						: json({ results: mode === 'empty' ? [] : [{ toObjectId: 'missing-note' }] });
+						: json({ results: mode === 'empty' ? [] : [{ toObjectId: '202' }] });
 				return json({}, 404);
 			});
 			vi.stubGlobal('fetch', fetcher);
@@ -125,14 +124,14 @@ describe('ambiguous provider writes', () => {
 				options = JSON.parse(String(form.get('options')));
 				throw new TypeError('File committed; response lost');
 			}
-			if (p === '/files/v3/files/search') return json({ results: [{ id: 'remote-file' }] });
+			if (p === '/files/v3/files/search') return json({ results: [{ id: '301' }] });
 			if (p.endsWith('/signed-url')) return json({ url: 'https://private.example/file' });
 			if (p === '/file') return new Response(bytes);
-			if (p === '/files/v3/files/remote-file')
-				return json({ id: 'remote-file', name: `dinu-${download._id}.docx`, access: 'PRIVATE' });
+			if (p === '/files/v3/files/301')
+				return json({ id: '301', name: `dinu-${download._id}.docx`, access: 'PRIVATE' });
 			if (p === '/crm/v3/objects/notes') {
 				postedNote = JSON.parse(String(init?.body));
-				return json({ id: 'download-note' });
+				return json({ id: '203' });
 			}
 			return deal();
 		});
@@ -147,18 +146,18 @@ describe('ambiguous provider writes', () => {
 		await retry(f, queued);
 		expect(await f.t.run(({ db }) => db.get('hubspotEvents', download._id))).toMatchObject({
 			status: 'sent',
-			fileId: 'remote-file',
-			noteId: 'download-note'
+			fileId: '301',
+			noteId: '203'
 		});
 		expect(postedNote).toMatchObject({
-			properties: { hs_attachment_ids: 'remote-file' },
+			properties: { hs_attachment_ids: '301' },
 			associations: [{ to: { id: '101' } }]
 		});
 		expect(fetcher.mock.calls.filter(([input]) => path(input) === '/files/v3/files')).toHaveLength(
 			1
 		);
 		expect(await f.t.run(({ db }) => db.get('hubspotExports', attempt._id))).toMatchObject({
-			remoteFileId: 'remote-file'
+			remoteFileId: '301'
 		});
 	});
 });
@@ -167,12 +166,12 @@ describe('execution and credential fences', () => {
 	it('runs queued delivery and its completion through the real Workpool component', async () => {
 		const f = await fixture();
 		const fetcher = vi.fn(async (input: string) =>
-			path(input) === '/crm/v3/objects/notes' ? json({ id: 'scheduled-note' }) : deal()
+			path(input) === '/crm/v3/objects/notes' ? json({ id: '204' }) : deal()
 		);
 		vi.stubGlobal('fetch', fetcher);
 		await f.t.mutation(internal.hubspotDelivery.pump, {});
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-		expect(await event(f)).toMatchObject({ status: 'sent', noteId: 'scheduled-note' });
+		expect(await event(f)).toMatchObject({ status: 'sent', noteId: '204' });
 		expect((await event(f)).workId).toBeUndefined();
 		expect((await event(f)).execution).toBeUndefined();
 		expect(fetcher).toHaveBeenCalledTimes(2);
@@ -309,15 +308,15 @@ describe('execution and credential fences', () => {
 		vi.setSystemTime(NOW + 60_000);
 		const fetcher = vi.fn(async (input: string) =>
 			path(input).includes('/associations/notes')
-				? json({ results: [{ toObjectId: 'old-note' }] })
-				: json({ id: 'old-note', properties: { hs_note_body: `Dinu activity ${owned._id}` } })
+				? json({ results: [{ toObjectId: '205' }] })
+				: json({ id: '205', properties: { hs_note_body: `Dinu activity ${owned._id}` } })
 		);
 		vi.stubGlobal('fetch', fetcher);
 		await send(f);
 		expect(dispatchId).toBeTruthy();
 		expect(await event(f)).toMatchObject({
 			status: 'sent',
-			noteId: 'old-note',
+			noteId: '205',
 			destination: { dealId: '101' }
 		});
 		expect(await f.t.run(({ db }) => db.get('savedContracts', f.id))).toMatchObject({
@@ -375,10 +374,10 @@ describe('execution and credential fences', () => {
 		const f = await fixture(),
 			owned = await claim(f);
 		vi.setSystemTime(NOW + 5 * 60_000 + 29_999);
-		await f.t.mutation(internal.hubspotDelivery.pump, {});
+		await f.t.mutation(internal.hubspotDelivery.pump, { status: 'working' });
 		expect((await event(f)).execution).toBe(owned.execution);
 		vi.setSystemTime(NOW + 5 * 60_000 + 30_001);
-		await f.t.mutation(internal.hubspotDelivery.pump, {});
+		await f.t.mutation(internal.hubspotDelivery.pump, { status: 'working' });
 		expect((await event(f)).execution).not.toBe(owned.execution);
 		expect((await event(f)).claim).toBeUndefined();
 		expect(
@@ -406,7 +405,7 @@ describe('bounded resumable reconciliation', () => {
 		);
 		const fetcher = vi.fn(async (input: string) => {
 			if (path(input).includes('/associations/notes'))
-				return json({ results: [{ toObjectId: 'slow' }, { toObjectId: 'later' }] });
+				return json({ results: [{ toObjectId: '206' }, { toObjectId: '207' }] });
 			vi.setSystemTime(NOW + 125_000);
 			return json({}, 404);
 		});
@@ -430,13 +429,13 @@ describe('bounded resumable reconciliation', () => {
 				dispatchedAt: NOW
 			})
 		);
-		const ids = Array.from({ length: 20 }, (_, i) => `note-${i}`);
+		const ids = Array.from({ length: 20 }, (_, i) => String(1000 + i));
 		const fetcher = vi.fn(async (input: string) => {
 			const p = path(input);
 			if (p.includes('/associations/notes'))
 				return json({ results: ids.map((toObjectId) => ({ toObjectId })) });
-			return p.endsWith('/note-19')
-				? json({ id: 'note-19', properties: { hs_note_body: `Dinu activity ${row._id}` } })
+			return p.endsWith('/1019')
+				? json({ id: '1019', properties: { hs_note_body: `Dinu activity ${row._id}` } })
 				: json({}, 404);
 		});
 		vi.stubGlobal('fetch', fetcher);
@@ -449,7 +448,7 @@ describe('bounded resumable reconciliation', () => {
 		fetcher.mockClear();
 		await retry(f, queued);
 		expect(fetcher).toHaveBeenCalledTimes(9);
-		expect(await event(f)).toMatchObject({ status: 'sent', noteId: 'note-19' });
+		expect(await event(f)).toMatchObject({ status: 'sent', noteId: '1019' });
 		expect(fetcher.mock.calls.some(([input]) => path(input).includes('/associations/notes'))).toBe(
 			false
 		);
@@ -469,13 +468,13 @@ describe('bounded resumable reconciliation', () => {
 			const url = new URL(input);
 			if (url.pathname.includes('/associations/notes'))
 				return url.searchParams.has('after')
-					? json({ results: [{ toObjectId: 'last' }] })
+					? json({ results: [{ toObjectId: '208' }] })
 					: json({
-							results: Array.from({ length: 11 }, (_, i) => ({ toObjectId: `first-${i}` })),
+							results: Array.from({ length: 11 }, (_, i) => ({ toObjectId: String(2000 + i) })),
 							paging: { next: { after: 'page-two' } }
 						});
-			return url.pathname.endsWith('/last')
-				? json({ id: 'last', properties: { hs_note_body: `Dinu activity ${row._id}` } })
+			return url.pathname.endsWith('/208')
+				? json({ id: '208', properties: { hs_note_body: `Dinu activity ${row._id}` } })
 				: json({
 						id: url.pathname.split('/').at(-1),
 						properties: { hs_note_body: 'Other activity' }
@@ -487,7 +486,7 @@ describe('bounded resumable reconciliation', () => {
 		fetcher.mockClear();
 		await retry(f, queued);
 		expect(fetcher.mock.calls[0][0]).toContain('after=page-two');
-		expect(await event(f)).toMatchObject({ status: 'sent', noteId: 'last' });
+		expect(await event(f)).toMatchObject({ status: 'sent', noteId: '208' });
 	});
 	it('keeps the current member on global throttling and retries that member later', async () => {
 		const f = await fixture(),
@@ -503,10 +502,10 @@ describe('bounded resumable reconciliation', () => {
 		let throttled = true;
 		const fetcher = vi.fn(async (input: string) =>
 			path(input).includes('/associations/notes')
-				? json({ results: [{ toObjectId: 'member' }] })
+				? json({ results: [{ toObjectId: '209' }] })
 				: throttled
 					? json({}, 429)
-					: json({ id: 'member', properties: { hs_note_body: `Dinu activity ${row._id}` } })
+					: json({ id: '209', properties: { hs_note_body: `Dinu activity ${row._id}` } })
 		);
 		vi.stubGlobal('fetch', fetcher);
 		const queued = await send(f);
@@ -515,7 +514,7 @@ describe('bounded resumable reconciliation', () => {
 		fetcher.mockClear();
 		await retry(f, queued);
 		expect(fetcher).toHaveBeenCalledTimes(1);
-		expect(await event(f)).toMatchObject({ status: 'sent', noteId: 'member' });
+		expect(await event(f)).toMatchObject({ status: 'sent', noteId: '209' });
 	});
 	it('stops automatic observation at the original horizon and grants only one bounded operator segment', async () => {
 		const f = await fixture(),
@@ -530,7 +529,7 @@ describe('bounded resumable reconciliation', () => {
 		);
 		const fetcher = vi.fn(async () => json({ results: [] }));
 		vi.stubGlobal('fetch', fetcher);
-		await f.t.mutation(internal.hubspotDelivery.pump, {});
+		await f.t.mutation(internal.hubspotDelivery.pump, { status: 'uncertain' });
 		expect(await event(f)).toMatchObject({ status: 'attention', dispatchedAt: NOW - 24 * HOUR });
 		expect(fetcher).not.toHaveBeenCalled();
 		await f.t.mutation(internal.hubspotOperations.recover, {

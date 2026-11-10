@@ -1,3 +1,4 @@
+import { requireTerminologyReady } from './terminologyMaintenance';
 import { v } from 'convex/values';
 import { internalMutation, type QueryCtx, type MutationCtx } from './_generated/server';
 import { internal } from './_generated/api';
@@ -7,9 +8,9 @@ const ORPHAN_GRACE = 24 * 60 * 60_000;
 
 /** Read ownership inside the same transaction as deletion, including staged uploads. */
 export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
-	const [baseline, profile, company, exportAttempt] = await Promise.all([
+	const [templateSource, profile, company, exportAttempt, quotePush] = await Promise.all([
 		ctx.db
-			.query('baselines')
+			.query('templateSources')
 			.withIndex('by_originalFileId', (q) => q.eq('originalFileId', fileId))
 			.first(),
 		ctx.db
@@ -23,13 +24,18 @@ export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
 		ctx.db
 			.query('hubspotExports')
 			.withIndex('by_fileId', (q) => q.eq('fileId', fileId))
+			.first(),
+		ctx.db
+			.query('hubspotQuotePushes')
+			.withIndex('by_fileId', (q) => q.eq('fileId', fileId))
 			.first()
 	]);
-	return !!(baseline || profile || company || exportAttempt);
+	return !!(templateSource || profile || company || exportAttempt || quotePush);
 }
 
 /** Release the owner's reference first, then check all owners in this transaction. */
 export async function deleteUnownedFile(ctx: MutationCtx, fileId: Id<'_storage'>) {
+	requireTerminologyReady();
 	if (!(await fileOwned(ctx, fileId))) await ctx.storage.delete(fileId);
 }
 
@@ -49,6 +55,7 @@ export const cleanOrphanFiles = internalMutation({
 	args: { cursor: v.optional(v.union(v.string(), v.null())), cutoff: v.optional(v.number()) },
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		requireTerminologyReady();
 		const sweep = await ctx.db
 			.query('fileSweeps')
 			.withIndex('by_kind', (q) => q.eq('kind', 'storage-orphans'))

@@ -1,7 +1,7 @@
-import { CompositionArtifactStore } from '$lib/contract/composition-artifacts';
-import { ContractCompositionEngine } from '$lib/contract/compose';
+import { CompositionArtifactStore } from '$lib/document/composition-artifacts';
+import { DocumentCompositionEngine } from '$lib/document/compose';
 import { LayoutPreparationEngine } from '../pagination/prepare';
-import type { ContractRenderSource } from './types';
+import type { DocumentRenderSource } from './types';
 
 /** Lifetime follows the workspace's accepted render source, independently of layout epochs. */
 export class DocumentArtifacts {
@@ -15,12 +15,12 @@ export class DocumentArtifacts {
 		this.composition.destroy();
 	}
 	readonly #preparation = new LayoutPreparationEngine();
-	constructor(readonly source: ContractRenderSource) {}
+	constructor(readonly source: DocumentRenderSource) {}
 	createPreparation() {
 		return this.#preparation.fork();
 	}
 	createComposer() {
-		return new ContractCompositionEngine(
+		return new DocumentCompositionEngine(
 			this.source.blocks,
 			this.source.sourceIndex,
 			this.composition

@@ -1,0 +1,258 @@
+import type { SourceBlock, InlineSource, ReplacementInline } from '../../../document/source-model';
+import { validateDocumentSource } from '../../../document/validate-source';
+import type { ParagraphDecision } from '../../../document/roles';
+import { analyzeParagraphs } from './analysis';
+import { TEMPLATE_SOURCE_MAX_BYTES, type ImportIssue } from '../../../document/import/limits';
+import { textPrefix } from '../../../text';
+import { child, type XmlNode } from './xml';
+import type { Issue } from './format';
+import { openPackage } from './package';
+import { isCommentControl, isCommentRun, parseDocument, type Paragraph } from './document';
+import { restoreCanonicalNumbering } from './canonical-numbering';
+import { resolveNumbering } from './numbering';
+import { resolveReferences } from './references';
+
+export function importDocx(input: Uint8Array): {
+	blocks: SourceBlock[];
+	issues: ImportIssue[];
+	decisions: ParagraphDecision[];
+} {
+	const pkg = openPackage(input);
+	const body = child(child(pkg.document, 'document'), 'body');
+	if (!body) throw new Error('The Word document has no body.');
+	const issues: ImportIssue[] = [];
+	const seen = new Set<string>();
+	const origins = new Map<ImportIssue, string>();
+	let warningCount = 0,
+		errorCount = 0;
+	const issue: Issue = (where, message, severity = 'error') => {
+		const id = typeof where === 'string' ? where : where.id;
+		const location = typeof where === 'string' ? where : where.label;
+		const key = `${severity}:${id}:${message}`;
+		if (seen.has(key)) return;
+		// Cap retained detail independently: warning volume never changes validity.
+		if (severity === 'warning' && warningCount >= 100) return;
+		if (severity === 'error' && errorCount >= 500) return;
+		seen.add(key);
+		if (severity === 'warning') warningCount++;
+		else errorCount++;
+		const item: ImportIssue = { severity, location, message };
+		issues.push(item);
+		origins.set(item, id);
+	};
+	issue(
+		'Document',
+		'Dinu uses its own fonts, spacing, colors, table borders, and page breaks.',
+		'warning'
+	);
+	const relationships = new Map(pkg.related.map((r) => [r.id, r]));
+	function audit(node: XmlNode) {
+		if (node.name === 'footerReference' || node.name.startsWith('comment') || isCommentRun(node))
+			return;
+		if (/PrChange$/.test(node.name))
+			issue('Document', 'Accept or reject tracked formatting changes in Word.');
+		if (node.name === 'headerReference') {
+			const relationship = relationships.get(node.attrs['r:id']);
+			if (!relationship || relationship.type !== 'header' || relationship.external)
+				issue('Document', 'Repair missing section header relationships in Word.');
+		}
+		for (const c of node.children) audit(c);
+	}
+	const styles = pkg.relatedPart('styles'),
+		numbering = pkg.relatedPart('numbering');
+	if ((styles && !child(styles, 'styles')) || (numbering && !child(numbering, 'numbering')))
+		throw new Error('The Word styles or numbering part is malformed.');
+	for (const node of [pkg.document, styles, numbering]) if (node) audit(node);
+	const parsed = parseDocument(body, child(styles, 'styles'), issue);
+	// References depend on reliable clause addresses.
+	if (
+		restoreCanonicalNumbering(parsed, pkg.canonicalNumbering) ||
+		resolveNumbering(parsed.blocks, child(numbering, 'numbering'), issue)
+	)
+		resolveReferences(parsed.blocks, parsed.paragraphs, parsed.bookmarks, issue);
+	// Footers and comments are discarded. Headers still require body content.
+	// Check header relationships, regardless of their filename. Literal
+	// numbers are substantive; only actual PAGE/NUMPAGES fields can be discarded.
+	for (const relationship of pkg.related)
+		if (relationship.type === 'header') {
+			if (relationship.external) {
+				issue('Document', 'External headers are unsupported.');
+				continue;
+			}
+			const root = child(pkg.read(relationship.target), 'hdr');
+			if (!root) throw new Error('The Word header part is malformed.');
+			audit(root);
+			checkPagination(root, issue);
+		}
+	let sourceId = 0;
+	function content(paragraphs: Paragraph[]): InlineSource[] {
+		const normalized: ReplacementInline[] = [];
+		function append(atom: ReplacementInline) {
+			const last = normalized.at(-1);
+			if (last?.kind === 'text' && atom.kind === 'text') last.text += atom.text;
+			else normalized.push({ ...atom });
+		}
+		for (const [i, paragraph] of paragraphs.entries()) {
+			if (i) append({ kind: 'text', text: '\n' });
+			for (const atom of paragraph.content) if (atom.kind !== 'text' || atom.text) append(atom);
+		}
+		if (!normalized.length) normalized.push({ kind: 'text', text: '' });
+		return normalized.map((atom) => ({ ...atom, sourceKey: `docx-source-${++sourceId}` }));
+	}
+	const paragraphs = new Map(
+		parsed.blocks.flatMap((block) =>
+			block.kind === 'paragraph' ? [[block.blockKey, block.paragraph] as const] : []
+		)
+	);
+	const analysis = analyzeParagraphs(
+		parsed.blocks.map((block): SourceBlock => {
+			if (block.kind === 'table')
+				return {
+					blockKey: block.blockKey,
+					order: block.order,
+					kind: 'table',
+					headerRowCount: block.headerRowCount,
+					rows: block.rows.map((row) =>
+						row.map((paragraphs) => paragraphs.map((paragraph) => paragraph.plain).join('\n'))
+					),
+					...(block.variant ? { variant: block.variant } : {})
+				};
+			const base = {
+				blockKey: block.blockKey,
+				order: block.order,
+				...(block.numbering ? { numbering: block.numbering } : {})
+			};
+			const paragraph =
+				!block.numbering && block.paragraph.number?.displayedLabel
+					? {
+							...block.paragraph,
+							content: [
+								{
+									kind: 'text' as const,
+									text: block.paragraph.number.displayedLabel + '\t'
+								},
+								...block.paragraph.content
+							]
+						}
+					: block.paragraph;
+			const paragraphContent = content([paragraph]);
+			return {
+				...base,
+				kind: 'paragraph',
+				role: 'body',
+				anchor: block.blockKey,
+				content: paragraphContent
+			};
+		}),
+		paragraphs
+	);
+	const blocks = analysis.blocks;
+	try {
+		validateDocumentSource(blocks);
+	} catch (error) {
+		issue(
+			'Document',
+			error instanceof Error ? error.message : 'The document structure is invalid.'
+		);
+	}
+	if (
+		!blocks.some((block) => {
+			if (block.kind === 'table')
+				return block.rows.some((row) => row.some((cell) => cell.trim().length > 0));
+			return block.content.some((atom) => atom.kind === 'text' && atom.text.trim().length > 0);
+		})
+	)
+		issue('Document', 'Add document text to the document before uploading.');
+	if (new TextEncoder().encode(JSON.stringify(blocks)).length > TEMPLATE_SOURCE_MAX_BYTES)
+		issue('Document', 'The converted document exceeds 512 KB. Shorten it before uploading.');
+	const byId = new Map(parsed.paragraphs.map((p) => [p.id, p]));
+	for (const item of issues) {
+		const p = byId.get(origins.get(item)!);
+		if (p) item.context = textPrefix(p.plain, 1200);
+	}
+	return { blocks, issues, decisions: analysis.decisions };
+}
+
+function checkPagination(root: XmlNode, issue: Issue) {
+	let field: { instruction: string; separated: boolean; cached: string } | undefined;
+	let pageFields = 0,
+		literal = '',
+		invalid = false;
+	function walk(node: XmlNode, parent?: string) {
+		if (
+			node.name.startsWith('comment') ||
+			isCommentRun(node) ||
+			(parent === 'p' && isCommentControl(node))
+		)
+			return;
+		if (['hdr', 'p', 'r'].includes(node.name)) {
+			for (const c of node.children) walk(c, node.name);
+			return;
+		}
+		if (['pPr', 'rPr', 'bookmarkStart', 'bookmarkEnd', 'proofErr'].includes(node.name)) return;
+		if (node.name === 'fldSimple') {
+			if (
+				field ||
+				!/^\s*(PAGE|NUMPAGES)(?:\s+\\\*\s+(?:MERGEFORMAT|ARABIC))?\s*$/i.test(
+					node.attrs.instr ?? ''
+				)
+			)
+				invalid = true;
+			else {
+				pageFields++;
+				let cached = '';
+				for (const run of node.children) {
+					if (run.name !== 'r') invalid = true;
+					for (const c of run.children) {
+						if (c.name === 't' && !c.children.length) cached += c.text;
+						else if (c.name !== 'rPr') invalid = true;
+					}
+				}
+				if (!/^\s*\d+\s*$/.test(cached)) invalid = true;
+			}
+			return;
+		}
+		if (node.name === 'fldChar') {
+			if (node.attrs.fldCharType === 'begin' && !field)
+				field = { instruction: '', separated: false, cached: '' };
+			else if (node.attrs.fldCharType === 'separate' && field && !field.separated)
+				field.separated = true;
+			else if (node.attrs.fldCharType === 'end' && field && field.separated) {
+				if (
+					/^\s*(PAGE|NUMPAGES)(?:\s+\\\*\s+(?:MERGEFORMAT|ARABIC))?\s*$/i.test(field.instruction) &&
+					/^\s*\d+\s*$/.test(field.cached)
+				)
+					pageFields++;
+				else invalid = true;
+				field = undefined;
+			} else invalid = true;
+			return;
+		}
+		if (node.name === 'instrText' && field && !field.separated) {
+			field.instruction += node.text;
+			return;
+		}
+		if (node.name === 't') {
+			if (node.children.length) invalid = true;
+			if (!field) literal += node.text;
+			else if (field.separated) field.cached += node.text;
+			else invalid = true;
+			return;
+		}
+		if (['tab', 'ptab', 'br', 'cr'].includes(node.name)) {
+			if (!field) literal += ' ';
+			else invalid = true;
+			return;
+		}
+		invalid = true;
+	}
+	walk(root);
+	if (
+		field ||
+		invalid ||
+		(literal.trim() && (!pageFields || literal.replace(/\b(page|of)\b|[\s/.,:–—-]/gi, '')))
+	)
+		issue('Document', 'Move substantive headers into the document body in Word.');
+	else if (pageFields)
+		issue('Document', 'Word page headers are replaced by Dinu’s pagination.', 'warning');
+}

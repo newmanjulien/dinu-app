@@ -1,6 +1,6 @@
-import { pointPosition } from '$lib/contract/source-index';
-import { validateRange } from '$lib/contract/ranges';
-import type { SourcePoint, SourceTarget } from '$lib/contract/source-model';
+import { pointPosition } from '$lib/document/source-index';
+import { validateRange } from '$lib/document/ranges';
+import type { SourcePoint, SourceTarget } from '$lib/document/source-model';
 import type { RenderSnapshot } from '../runtime/types';
 import type { PaginatedPage } from '../pagination/types';
 import { sourceTextToken, readSelectedDomEnvelope } from './dom-selection';
@@ -62,6 +62,15 @@ export function mountSelectionPage(
 		}
 	};
 }
+
+/** Geometry and interaction adapters must use the same committed page and selection metadata. */
+export function isSelectionPageMounted(element: HTMLElement, snapshot: RenderSnapshot): boolean {
+	const mount = mounts.get(element);
+	return (
+		mount?.document === snapshot.selectionDocument &&
+		snapshot.pages[Number(element.dataset.pageNumber) - 1] === mount.page
+	);
+}
 const escapeHtml = (text: string) =>
 	text.replace(
 		/[&<>"']/g,
@@ -87,19 +96,15 @@ export class SelectionSurface {
 		this.document = snapshot.selectionDocument;
 		this.index = this.document.index;
 		for (const page of root.querySelectorAll<HTMLElement>('.document-page')) {
-			const mount = mounts.get(page);
-			if (
-				mount?.document !== this.document ||
-				snapshot.pages[Number(page.dataset.pageNumber) - 1] !== mount.page
-			)
-				continue;
+			if (!isSelectionPageMounted(page, snapshot)) continue;
+			const pageNumber = Number(page.dataset.pageNumber);
 			const blocks = new Map(
 				Array.from(page.querySelectorAll<HTMLElement>('[data-source-fragment-key]'), (block) => [
 					block.dataset.sourceFragmentKey!,
 					block
 				])
 			);
-			for (const occurrence of this.document.pages.get(mount.page.number) ?? []) {
+			for (const occurrence of this.document.pages.get(pageNumber) ?? []) {
 				if (occurrence.kind === 'break') {
 					const element = page.querySelector<HTMLElement>(
 						`[data-selection-group="${occurrence.group.id}"]`
@@ -150,7 +155,7 @@ export class SelectionSurface {
 				this.#bindings.set(occurrence.order, bindings);
 			}
 			// Existing presentation anchors and truly collapsed paragraphs retain layout/owners only.
-			for (const placement of mount.page.placements) {
+			for (const placement of snapshot.pages[pageNumber - 1].placements) {
 				const block = blocks.get(
 					`${placement.fragment.blockKey}:${placement.fragment.interval?.start ?? 0}:${placement.fragment.interval?.end ?? 'whole'}`
 				);

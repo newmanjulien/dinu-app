@@ -1,6 +1,6 @@
-import type { ReplacementAtom } from './source-model';
-import { referenceText, type Address } from './numbering';
-import { normalizeReferenceAddress, type ReferenceCatalog } from './reference-catalog';
+import type { ReplacementAtom } from '../document/source-model';
+import { referenceText, type Address } from '../document/numbering';
+import { normalizeReferenceAddress, type ReferenceCatalog } from '../document/reference-catalog';
 
 type Reference = Extract<ReplacementAtom, { kind: 'reference' }>;
 type Candidate = { targetItemKey: string; address: Address; bareAlphabetic: boolean };

@@ -1,7 +1,13 @@
-import type { ConvexClient } from 'convex/browser';
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from 'convex/server';
 
-export type SnapshotClient = Pick<ConvexClient, 'onUpdate'>;
+export interface SnapshotClient {
+	onUpdate<Query extends FunctionReference<'query'>>(
+		query: Query,
+		args: FunctionArgs<Query>,
+		onUpdate: (value: FunctionReturnType<Query>) => void,
+		onError?: (error: Error) => unknown
+	): () => void;
+}
 
 /** Own the subscription until the first result, error, or cancellation. */
 export function queryOnce<Query extends FunctionReference<'query'>>(

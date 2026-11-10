@@ -24,6 +24,10 @@ export const recover = internalMutation({
 		if (args.disposition === 'reconcile' && !event.dispatch)
 			throw new ConvexError('There is no ambiguous write to reconcile.');
 		const facts = await deliveryFacts(ctx, event);
+		if (!facts.connection || facts.connection.status === 'retiring')
+			throw new ConvexError(
+				'This HubSpot installation was removed. Its activity cannot be resumed.'
+			);
 		if (args.disposition === 'confirmed-not-sent' && (!facts.linkValid || !facts.accountValid))
 			throw new ConvexError('The original live deal link is required for a fresh write.');
 		if (event.workId) await pool.cancel(ctx, event.workId as WorkId);

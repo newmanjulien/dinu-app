@@ -1,4 +1,4 @@
-import type { StructuralBoundary } from '$lib/contract/source-index';
+import type { StructuralBoundary } from '$lib/document/source-index';
 
 export interface BoundaryOption {
 	boundary: StructuralBoundary;

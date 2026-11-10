@@ -1,19 +1,17 @@
 <script lang="ts">
-	import { useAccount, useViewerSession } from './viewer-session.svelte';
+	import { useViewerSession } from './viewer-session.svelte';
 	import { useClerkReadiness } from './clerk-readiness';
+	import RegionSkeleton from '$lib/ui/RegionSkeleton.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import { page } from '$app/state';
 	import WorkspaceSkeleton from './WorkspaceSkeleton.svelte';
-	let { inline = false }: { inline?: boolean } = $props();
+	import type { Snippet } from 'svelte';
+	let {
+		inline = false,
+		loading
+	}: { inline?: boolean; loading?: Snippet<[{ announce: boolean }]> } = $props();
 	const session = useViewerSession();
-	const account = useAccount();
 	const readiness = useClerkReadiness();
-	const workspaceKnown = $derived.by(() => {
-		const value = account?.();
-		return Boolean(
-			value?.membership && value.company && !value.needsInitialization && !session.closing
-		);
-	});
 	const failure = $derived(
 		readiness.error || (session.phase === 'authentication-error' ? session.authenticationError : '')
 	);
@@ -39,12 +37,24 @@
 	{/if}
 {/snippet}
 
-{#if !inline && workspaceKnown && page.route.id?.startsWith('/(workspace)') && !failure}
-	{#if session.delayed}
+{#if loading}
+	<div>{@render loading({ announce: !failure && !session.delayed })}</div>
+	{#if failure || session.delayed}
+		<div
+			class="fixed inset-x-3 bottom-4 z-50 mx-auto grid max-w-md justify-items-center gap-3 rounded-xl border-hairline border-edge bg-surface p-5 text-center shadow-floating"
+		>
+			{@render recovery()}
+		</div>
+	{/if}
+{:else if !inline && page.route.id?.startsWith('/(workspace)')}
+	{#if session.delayed || failure}
 		<WorkspaceSkeleton header announce={false}>{@render recovery()}</WorkspaceSkeleton>
 	{:else}
 		<WorkspaceSkeleton header label="Connecting your account" />
 	{/if}
+{:else if inline && !failure}
+	<RegionSkeleton kind="form" label="Connecting your account" />
+	{@render recovery()}
 {:else}
 	<LoadingState
 		layout={inline ? 'section' : 'screen'}

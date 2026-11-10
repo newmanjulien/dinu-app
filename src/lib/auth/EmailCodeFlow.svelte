@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import RouteTitle from './RouteTitle.svelte';
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -164,7 +165,7 @@
 	);
 
 	const joinHref = $derived(
-		(joining ? '/login' : '/join') + '?returnTo=' + encodeURIComponent(returnTo)
+		`${resolve(joining ? '/login' : '/join')}?returnTo=${encodeURIComponent(returnTo)}` as const
 	);
 	const canContinue = $derived(
 		hydrated && email.trim().length > 0 && !isSubmittingEmail && !opening
@@ -272,10 +273,17 @@
 	$effect(() => {
 		presentation.footer = accountFooter;
 		presentation.showFooter = !invitation && step === 'login' && !opening && !ticketPending;
+		presentation.signupStep =
+			joining && !invitation && !authTicket && !clerk.session
+				? step === 'code'
+					? 2
+					: 1
+				: undefined;
 		return () => {
 			if (presentation.footer === accountFooter) {
 				presentation.footer = undefined;
 				presentation.showFooter = true;
+				presentation.signupStep = undefined;
 			}
 		};
 	});

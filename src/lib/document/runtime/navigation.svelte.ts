@@ -2,7 +2,7 @@ import { afterNavigate, beforeNavigate, onNavigate } from '$app/navigation';
 import { page } from '$app/state';
 import { describeRoute } from '$lib/auth/routes';
 import { getContext, onMount, setContext, tick, untrack } from 'svelte';
-import type { ContractViewerState } from './viewer.svelte';
+import type { DocumentViewerState } from './viewer.svelte';
 
 const key = Symbol('document-navigation');
 interface Destination {
@@ -26,7 +26,7 @@ class DocumentNavigation {
 	cancel() {
 		this.pending = undefined;
 	}
-	visible(viewer: ContractViewerState) {
+	visible(viewer: DocumentViewerState) {
 		const destination = this.pending;
 		if (
 			!destination ||
@@ -66,7 +66,7 @@ export function setDocumentNavigation() {
 	onNavigate(({ to }) => {
 		if (
 			!to ||
-			!['admin', 'saved'].includes(describeRoute(to.route.id).document ?? '') ||
+			!['template', 'saved'].includes(describeRoute(to.route.id).document ?? '') ||
 			navigation.isPreserved(to.url.href) ||
 			to.url.searchParams.get('review') === '1'
 		)
@@ -85,7 +85,7 @@ export function setDocumentNavigation() {
 		if (
 			type === 'enter' &&
 			to &&
-			['admin', 'saved'].includes(describeRoute(to.route.id).document ?? '') &&
+			['template', 'saved'].includes(describeRoute(to.route.id).document ?? '') &&
 			to.url.hash &&
 			to.url.searchParams.get('review') !== '1'
 		)
@@ -106,7 +106,7 @@ export function getDocumentNavigation(): DocumentNavigation | undefined {
 	return getContext(key);
 }
 
-export function restoreDocumentNavigation(viewer: ContractViewerState) {
+export function restoreDocumentNavigation(viewer: DocumentViewerState) {
 	const navigation = getDocumentNavigation();
 	$effect(() => {
 		void navigation?.pending;

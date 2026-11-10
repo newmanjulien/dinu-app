@@ -102,7 +102,7 @@ it('rejects ranges with a different duration than the validated event', async ()
 	);
 	await expect(t.action(api.csmBookings.availability, args)).rejects.toThrow('duration');
 });
-it('allows pre-baseline setup display but still refuses new booking; foreign, rep and support reads call no provider', async () => {
+it('allows admin support before template setup; reps, legacy setup booking and foreign reads stay restricted', async () => {
 	const { t, owner, args } = await fixture();
 	const fetcher = vi.fn(async (input: string) =>
 		response(input.includes('event-types') ? event : times)
@@ -120,9 +120,11 @@ it('allows pre-baseline setup display but still refuses new booking; foreign, re
 		})
 	).rejects.toThrow('access');
 	fetcher.mockClear();
-	await expect(
-		t.action(api.csmBookings.availability, { ...args, mode: 'support' })
-	).rejects.toThrow();
+	expect((await t.action(api.csmBookings.availability, { ...args, mode: 'support' })).status).toBe(
+		'ready'
+	);
+	expect(fetcher).toHaveBeenCalledTimes(2);
+	fetcher.mockClear();
 	await expect(
 		t
 			.withIdentity({ ...identity, tokenIdentifier: 'foreign' })
@@ -130,6 +132,10 @@ it('allows pre-baseline setup display but still refuses new booking; foreign, re
 	).rejects.toThrow();
 	await t.run(async (ctx) => ctx.db.patch('memberships', owner.membershipId, { role: 'rep' }));
 	await expect(t.action(api.csmBookings.availability, args)).rejects.toThrow();
+	expect(fetcher).not.toHaveBeenCalled();
+	await expect(
+		t.action(api.csmBookings.availability, { ...args, mode: 'support' })
+	).rejects.toThrow();
 	expect(fetcher).not.toHaveBeenCalled();
 });
 it('preserves replay/adoption ahead of new-booking eligibility and sender uses fresh explicit-duration preflight', async () => {
@@ -177,7 +183,7 @@ it('preserves replay/adoption ahead of new-booking eligibility and sender uses f
 			return response(input.includes('event-types') ? event : times);
 		})
 	);
-	// No active baseline: fresh preflight may read, but the live claim must refuse create POST.
+	// No active templateSource: fresh preflight may read, but the live claim must refuse create POST.
 	await t.action(internal.csmBookings.send, { attemptId });
 	expect(urls.map((u) => u.pathname)).toEqual(['/v2/event-types/' + EVENT_ID, '/v2/slots']);
 	expect(urls[1].searchParams.get('duration')).toBe('30');
@@ -209,7 +215,7 @@ it('missing local credentials and deleted companies perform no provider work', a
 it('a sender rechecks revoked membership after fresh preflight and never dispatches a create POST', async () => {
 	const { t, owner } = await fixture();
 	const attemptId = await t.run(async (ctx) => {
-		const baselineId = await ctx.db.insert('baselines', {
+		const templateSourceId = await ctx.db.insert('templateSources', {
 			companyId: owner.companyId,
 			source: 'seed',
 			state: 'active',
@@ -222,7 +228,7 @@ it('a sender rechecks revoked membership after fresh preflight and never dispatc
 			blocksJsonBytes: 2,
 			chunkReadBytes: 0
 		});
-		await ctx.db.patch('company', owner.companyId, { baselineId });
+		await ctx.db.patch('company', owner.companyId, { templateSourceId });
 		return ctx.db.insert('csmBookingAttempts', {
 			companyId: owner.companyId,
 			profileId: owner.profileId,

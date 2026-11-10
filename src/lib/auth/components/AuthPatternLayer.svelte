@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	const spacing = 7.6;
+	const spacing = 6.1731;
 	const interval = 300;
 	let canvas: HTMLCanvasElement;
 	let ready = $state(false);
@@ -101,7 +101,7 @@
 					const x = column * spacing;
 					const seed = Math.imul(row + 1, 0x1f123bb5) ^ Math.imul(column + 1, 0x5f356495);
 					const path = new Path2D();
-					path.roundRect(x, y, 2, 2, 0.32);
+					path.roundRect(x, y, 1.8, 1.8, 0.288);
 					dots.push({ x, y, path, seed, phase: random(seed) * interval, step: -1 });
 				}
 			}
@@ -140,7 +140,7 @@
 	<svg class="absolute inset-0 size-full" class:invisible={ready} width="100%" height="100%">
 		<defs>
 			<pattern id="auth-dot-grid" width={spacing} height={spacing} patternUnits="userSpaceOnUse">
-				<rect width="2" height="2" rx="0.32" fill="var(--color-line-strong)" opacity="0.42" />
+				<rect width="1.8" height="1.8" rx="0.288" fill="var(--color-line-strong)" opacity="0.42" />
 			</pattern>
 		</defs>
 		<rect width="100%" height="100%" fill="url(#auth-dot-grid)" />

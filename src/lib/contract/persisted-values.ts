@@ -1,13 +1,9 @@
-import { MAX_CONTRACT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
+import type { TemplateContent } from '../template/model';
+import { MAX_DOCUMENT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
 import type { ApplicationChoices, AppliedConcessions } from './applications';
-import type {
-	ContractSnapshotResult,
-	ContractState,
-	ReadyContract,
-	TemplateContent
-} from './saved';
-import { MAX_APPLICATION_ID_LENGTH, MAX_SELECTED_CONCESSIONS } from './selection-limits';
-import { MAX_STORAGE_ARRAY_ENTRIES } from './storage-limits';
+import type { ContractState, ReadyContract } from './saved';
+import { MAX_APPLICATION_ID_LENGTH, MAX_SELECTED_CONCESSIONS } from '../document/selection-limits';
+import { MAX_STORAGE_ARRAY_ENTRIES } from '../document/storage-limits';
 
 // Disk data is unknown even though network data is validated by Convex. These
 // checks describe the persisted domain, without interpreting a schema language
@@ -104,7 +100,7 @@ export function validContractState(value: unknown): value is ContractState {
 		validApplications(value.applications)
 	);
 }
-type Metadata = Extract<ContractSnapshotResult, { status: 'ready' }>['contract'];
+type Metadata = ReadyContract['contract'];
 export function validContractMetadata(value: unknown, id: string): value is Metadata {
 	return (
 		object(value) &&
@@ -116,10 +112,6 @@ export function validContractMetadata(value: unknown, id: string): value is Meta
 		finite(value.savedAt) &&
 		validContractState(value)
 	);
-}
-
-export function readContractState(value: unknown): ContractState | undefined {
-	return validContractState(value) ? value : undefined;
 }
 
 function point(value: unknown) {
@@ -140,10 +132,12 @@ function pattern(value: unknown) {
 		value,
 		(part) =>
 			object(part) &&
-			(text(part.text) ||
-				(finite(part.level) &&
+			(Object.hasOwn(part, 'text')
+				? Object.keys(part).every((key) => key === 'text') && text(part.text)
+				: Object.keys(part).every((key) => ['level', 'case', 'minimumDigits'].includes(key)) &&
+					finite(part.level) &&
 					(part.case === undefined || part.case === 'upper' || part.case === 'lower') &&
-					(part.minimumDigits === undefined || finite(part.minimumDigits))))
+					(part.minimumDigits === undefined || finite(part.minimumDigits)))
 	);
 }
 function reference(value: Record<string, unknown>) {
@@ -239,27 +233,36 @@ function item(value: unknown, companyId: string) {
 		natural(value.contentRevision) &&
 		object(value.trigger) &&
 		text(value.trigger.id) &&
-		object(value.approvalPolicy) &&
-		(value.approvalPolicy.kind === 'none' ||
-			(value.approvalPolicy.kind === 'required' &&
-				text(value.approvalPolicy.instructions) &&
-				Boolean(value.approvalPolicy.instructions.trim()))) &&
 		sourceTarget(value.trigger.target) &&
-		(value.instructions === undefined || instructions(value.instructions)) &&
-		array(
-			value.concessions,
-			(concession) =>
-				object(concession) &&
-				text(concession.id) &&
-				text(concession.description) &&
-				(concession.tier === 'preferred' || concession.tier === 'rare') &&
+		(value.audience === 'buyer'
+			? object(value.trigger.target) &&
+				value.trigger.target.kind === 'text' &&
+				text(value.explanation) &&
+				Boolean(value.explanation.trim())
+			: value.audience === undefined &&
+				object(value.approvalPolicy) &&
+				(value.approvalPolicy.kind === 'none' ||
+					(value.approvalPolicy.kind === 'required' &&
+						text(value.approvalPolicy.instructions) &&
+						Boolean(value.approvalPolicy.instructions.trim()))) &&
+				sourceTarget(value.trigger.target) &&
+				(value.instructions === undefined || instructions(value.instructions)) &&
 				array(
-					concession.changes,
-					(change) =>
-						object(change) && sourceTarget(change.target) && array(change.replacement, replacement),
-					2
-				)
-		)
+					value.concessions,
+					(concession) =>
+						object(concession) &&
+						text(concession.id) &&
+						text(concession.description) &&
+						(concession.tier === 'preferred' || concession.tier === 'rare') &&
+						array(
+							concession.changes,
+							(change) =>
+								object(change) &&
+								sourceTarget(change.target) &&
+								array(change.replacement, replacement),
+							2
+						)
+				))
 	);
 }
 
@@ -276,12 +279,12 @@ export function validTemplate(value: unknown, companyId: string): value is Templ
 		value.blockCount !== value.blocks.length ||
 		!Array.isArray(value.items) ||
 		value.itemCount !== value.items.length ||
-		value.blockCount > MAX_CONTRACT_BLOCKS ||
+		value.blockCount > MAX_DOCUMENT_BLOCKS ||
 		value.itemCount > MAX_PLAYBOOK_ITEMS
 	)
 		return false;
 	if (
-		!array(value.blocks, block, MAX_CONTRACT_BLOCKS) ||
+		!array(value.blocks, block, MAX_DOCUMENT_BLOCKS) ||
 		!array(value.items, (entry) => item(entry, companyId), MAX_PLAYBOOK_ITEMS)
 	)
 		return false;

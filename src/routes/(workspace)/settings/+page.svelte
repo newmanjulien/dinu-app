@@ -55,11 +55,13 @@
 <WorkspacePresentationReporter outcome="success" />
 
 <section
-	class="flex min-h-[calc(100dvh-var(--app-header-height))] w-full bg-page px-3 py-4 md:px-6 md:py-6"
+	class="flex min-h-[calc(100dvh-var(--app-header-height))] w-full bg-page pt-8 md:pt-10"
 >
-	<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 pb-10 md:gap-7 md:pb-16">
+	<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 md:gap-7">
+		<h1 class="text-lg font-medium">Settings</h1>
 		<fieldset disabled={Boolean(viewer().company.deletionPending)} class="contents">
 			<SettingsTextFieldCard
+				kind="personal-name"
 				title="Your name"
 				description="This is your visible name in Dinu."
 				fieldId="personal-name"
@@ -80,6 +82,7 @@
 			/>
 			{#if viewer().permissions.editCompanyProfile}
 				<SettingsTextFieldCard
+					kind="company-name"
 					title="Company name"
 					description="This is your company's visible name in Dinu."
 					fieldId="company-name"
@@ -94,6 +97,7 @@
 						)}
 				/>
 				<SettingsTextFieldCard
+					kind="approval-email"
 					title="Approval email"
 					description="Contract approval requests are sent to this address."
 					fieldId="approval-email"

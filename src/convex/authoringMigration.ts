@@ -2,7 +2,7 @@
 import { ConvexError, v, getConvexSize } from 'convex/values';
 import { validatePlaybook } from '../lib/playbook/audit';
 import { itemStructure } from '../lib/playbook/structure';
-import { VALIDATION_CODEC_VERSION } from '../lib/contract/validation-codec';
+import { VALIDATION_CODEC_VERSION } from '../lib/document/validation-codec';
 import type { Doc } from './_generated/dataModel';
 import { internalMutation, type MutationCtx } from './_generated/server';
 import { requireCompany } from './auth';
@@ -11,7 +11,7 @@ import {
 	validationCertified,
 	readValidationCertificate
 } from './authoringValidation';
-import { canonicalFingerprint, readBaseline } from './baselineStorage';
+import { canonicalFingerprint, readTemplateSource } from './templateSourceStorage';
 import {
 	businessItem,
 	compactHead,
@@ -50,25 +50,25 @@ async function captured(ctx: MutationCtx, companyId: Doc<'company'>['_id']) {
 	if (!migration) throw unavailable();
 	const pointer = await currentPointer(ctx, companyId),
 		version = await ctx.db.get('templateVersions', migration.versionId),
-		baseline = await ctx.db.get('baselines', migration.baselineId);
+		templateSource = await ctx.db.get('templateSources', migration.templateSourceId);
 	if (
 		(migration.state !== 'complete' && !company.authoringMigration) ||
 		!pointer ||
 		!version ||
-		!baseline ||
+		!templateSource ||
 		(migration.state !== 'complete' && pointer.versionId !== version._id) ||
 		version.companyId !== companyId ||
-		baseline.companyId !== companyId ||
-		company.baselineId !== baseline._id ||
-		version.baselineId !== baseline._id ||
-		(migration.state !== 'complete' && baseline.fingerprint !== migration.fingerprint) ||
+		templateSource.companyId !== companyId ||
+		company.templateSourceId !== templateSource._id ||
+		version.templateSourceId !== templateSource._id ||
+		(migration.state !== 'complete' && templateSource.fingerprint !== migration.fingerprint) ||
 		(migration.state !== 'complete' &&
 			(pointer.authoringGeneration ?? version.authoringGeneration ?? 0) !== migration.generation)
 	)
 		throw unavailable();
 	versionReferences(version);
-	const certificate = await readValidationCertificate(ctx, companyId, baseline._id);
-	return { company, migration, pointer, version, baseline, certificate };
+	const certificate = await readValidationCertificate(ctx, companyId, templateSource._id);
+	return { company, migration, pointer, version, templateSource, certificate };
 }
 export const begin = internalMutation({
 	args: { companyId: v.id('company') },
@@ -93,18 +93,26 @@ export const begin = internalMutation({
 			}
 		}
 		const pointer = await currentPointer(ctx, companyId);
-		if (!pointer || !company.baselineId)
+		if (!pointer || !company.templateSourceId)
 			throw new ConvexError('The company has no active template.');
 		const version = await ctx.db.get('templateVersions', pointer.versionId);
-		if (!version || version.companyId !== companyId || version.baselineId !== company.baselineId)
+		if (
+			!version ||
+			version.companyId !== companyId ||
+			version.templateSourceId !== company.templateSourceId
+		)
 			throw unavailable();
-		const { baseline, blocks } = await readBaseline(ctx, company.baselineId, companyId);
-		if (baseline.state !== 'active') throw unavailable();
-		const certificate = await readValidationCertificate(ctx, companyId, baseline._id);
+		const { templateSource, blocks } = await readTemplateSource(
+			ctx,
+			company.templateSourceId,
+			companyId
+		);
+		if (templateSource.state !== 'active') throw unavailable();
+		const certificate = await readValidationCertificate(ctx, companyId, templateSource._id);
 		if (
 			existing?.state === 'complete' &&
 			!company.authoringMigration &&
-			validationCertified(baseline, certificate, version)
+			validationCertified(templateSource, certificate, version)
 		)
 			return {
 				state: 'complete' as const,
@@ -115,11 +123,11 @@ export const begin = internalMutation({
 		// is the only whole-playbook audit in migration; staged heads are checked separately below.
 		const items = await (await versionReader(ctx, version._id, companyId)).readItems();
 		validatePlaybook(blocks, items);
-		if (!validationCertified(baseline, certificate))
+		if (!validationCertified(templateSource, certificate))
 			await writeValidationFacts(ctx, {
 				companyId,
-				baselineId: baseline._id,
-				fingerprint: baseline.fingerprint,
+				templateSourceId: templateSource._id,
+				fingerprint: templateSource.fingerprint,
 				blocks
 			});
 		await ctx.db.patch('company', companyId, { authoringMigration: true });
@@ -130,8 +138,8 @@ export const begin = internalMutation({
 		});
 		const migration = {
 			companyId,
-			baselineId: baseline._id,
-			fingerprint: baseline.fingerprint,
+			templateSourceId: templateSource._id,
+			fingerprint: templateSource.fingerprint,
 			versionId: version._id,
 			generation: pointer.authoringGeneration ?? version.authoringGeneration ?? 0,
 			state: 'heads' as const,
@@ -147,7 +155,7 @@ export const step = internalMutation({
 	args: { companyId: v.id('company') },
 	returns: progress,
 	handler: async (ctx, { companyId }) => {
-		const { migration, version, baseline } = await captured(ctx, companyId);
+		const { migration, version, templateSource } = await captured(ctx, companyId);
 		if (migration.state === 'versions') {
 			const page = await ctx.db
 				.query('templateVersions')
@@ -155,7 +163,7 @@ export const step = internalMutation({
 				.paginate({ cursor: migration.versionCursor ?? null, numItems: 1 });
 			for (const stored of page.page) {
 				versionReferences(stored);
-				const parent = await ctx.db.get('baselines', stored.baselineId);
+				const parent = await ctx.db.get('templateSources', stored.templateSourceId);
 				if (!parent || parent.companyId !== companyId) throw unavailable();
 				let contentReadBytes = parent.chunkReadBytes,
 					itemJsonBytes = 2;
@@ -244,7 +252,7 @@ export const step = internalMutation({
 				...(head.lastOperation ? { lastOperation: head.lastOperation } : {})
 			});
 		}
-		templateReadCapacity({ ...version, contentReadBytes }, baseline);
+		templateReadCapacity({ ...version, contentReadBytes }, templateSource);
 		await ctx.db.patch('templateVersions', version._id, {
 			contentReadBytes,
 			headReadBytes,
@@ -259,7 +267,10 @@ export const finish = internalMutation({
 	args: { companyId: v.id('company') },
 	returns: progress,
 	handler: async (ctx, { companyId }) => {
-		const { migration, version, baseline, pointer, certificate } = await captured(ctx, companyId);
+		const { migration, version, templateSource, pointer, certificate } = await captured(
+			ctx,
+			companyId
+		);
 		if (migration.state === 'complete')
 			return {
 				state: 'complete' as const,
@@ -269,7 +280,7 @@ export const finish = internalMutation({
 		if (
 			migration.state !== 'certify' ||
 			migration.nextItem !== version.itemCount ||
-			!validationCertified(baseline, certificate)
+			!validationCertified(templateSource, certificate)
 		)
 			throw unavailable();
 		const heads = await ctx.db
@@ -294,13 +305,13 @@ export const finish = internalMutation({
 			) !== version.structureResultBytes
 		)
 			throw unavailable();
-		templateReadCapacity(version, baseline);
-		authoringReadCapacity(version, baseline, certificate);
+		templateReadCapacity(version, templateSource);
+		authoringReadCapacity(version, templateSource, certificate);
 		const authoringGeneration = migration.generation + 1,
 			structuralGeneration =
 				(pointer.structuralGeneration ?? version.structuralGeneration ?? 0) + 1;
 		await ctx.db.patch('templateVersions', version._id, {
-			validation: { format: VALIDATION_CODEC_VERSION, fingerprint: baseline.fingerprint },
+			validation: { format: VALIDATION_CODEC_VERSION, fingerprint: templateSource.fingerprint },
 			authoringGeneration,
 			structuralGeneration
 		});

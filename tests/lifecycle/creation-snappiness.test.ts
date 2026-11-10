@@ -1,7 +1,7 @@
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DocumentResources } from '../../src/lib/document/runtime/resources.svelte';
-import { createContractWorkspace } from '../../src/lib/document/runtime/workspace-factory';
+import { createDocumentWorkspace } from '../../src/lib/document/runtime/workspace-factory';
 import Harness from './CreationSnappinessHarness.svelte';
 import { csmState } from './csm-state.svelte';
 import { deferred, documentFixture, readyContract, settle } from './snappiness-fixtures';
@@ -36,7 +36,7 @@ it('Create adopts the prepared preview without another template load, workspace 
 	const data = documentFixture(20),
 		saved = readyContract(data),
 		layout = layoutFixture();
-	const factory = vi.fn(createContractWorkspace),
+	const factory = vi.fn(createDocumentWorkspace),
 		resources = new DocumentResources(layout.profiles, () => factory);
 	cleanups.push(() => {
 		resources.destroy();
@@ -52,7 +52,7 @@ it('Create adopts the prepared preview without another template load, workspace 
 		isDeleted: () => false
 	};
 	context.cache = cache;
-	context.client = { mutation };
+	context.client = { mutation, onUpdate: (_ref: unknown, _args: unknown, accept: (value: unknown) => void) => { queueMicrotask(() => accept({ versionId: 'version' })); return () => {}; } };
 	component = mount(Harness, {
 		target: document.body,
 		props: { state: csmState(), resources, onOpen }

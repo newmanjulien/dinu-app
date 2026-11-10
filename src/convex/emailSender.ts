@@ -7,7 +7,7 @@ import type { emailAttempt, EmailOutcome, EmailSelection } from './emailValidato
 import { configuration, send, diagnostics, failure } from './loopsEmail';
 import type { EmailNotification } from './emailNotifications';
 
-// Space this deployment's requests below Loops' shared ten-per-second baseline.
+// Space this deployment's requests below Loops' shared ten-per-second templateSource.
 // Reservations bound waiting to one minute; this is a provider-work budget.
 const rateLimiter = new RateLimiter(components.rateLimiter, {
 	loops: { kind: 'token bucket', rate: 8, period: 1000, capacity: 1, maxReserved: 480 }

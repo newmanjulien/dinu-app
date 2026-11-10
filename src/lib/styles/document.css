@@ -9,12 +9,18 @@
 	--document-highlight-search-active: rgba(249, 115, 22, 0.72);
 }
 
-.contract-document {
+.viewer-root[data-instruction-audience='rep'] {
+	--document-highlight-trigger: color-mix(in srgb, var(--color-accent) 16%, transparent);
+	--document-highlight-trigger-hover: color-mix(in srgb, var(--color-accent) 22%, transparent);
+	--document-highlight-trigger-selected: color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.document-content {
 	font-weight: 400;
 	font-style: normal;
-	font-family: var(--contract-font);
-	font-size: var(--contract-font-size);
-	line-height: var(--contract-line-height);
+	font-family: var(--document-font);
+	font-size: var(--document-font-size);
+	line-height: var(--document-line-height);
 	letter-spacing: normal;
 	text-align: left;
 	color: var(--color-ink);
@@ -22,15 +28,15 @@
 	white-space: pre-line;
 }
 
-.admin-selection-enabled .contract-document::selection,
-.admin-selection-enabled .contract-document ::selection {
+.template-selection-enabled .document-content::selection,
+.template-selection-enabled .document-content ::selection {
 	background: var(--document-highlight-selection);
 }
 
-.contract-document,
-.contract-document *,
-.contract-document *::before,
-.contract-document *::after {
+.document-content,
+.document-content *,
+.document-content *::before,
+.document-content *::after {
 	box-sizing: border-box;
 }
 
@@ -59,7 +65,7 @@
 	width: 100%;
 }
 
-.contract-document .contract-block {
+.document-content .document-block {
 	flex: 0 0 auto;
 	margin: var(--document-block-margin-before, 0px) 0 0;
 	font: inherit;
@@ -155,26 +161,26 @@
 		sans-serif;
 }
 
-.contract-document .contract-heading {
-	font-size: var(--contract-heading-font-size);
+.document-content .document-heading {
+	font-size: var(--document-heading-font-size);
 }
 
-.contract-document .is-title {
-	font-size: var(--contract-title-font-size);
-	line-height: var(--contract-title-line-height);
+.document-content .is-title {
+	font-size: var(--document-title-font-size);
+	line-height: var(--document-title-line-height);
 	font-weight: 400;
 	text-align: center;
 	white-space: pre-line;
 }
 
-.contract-table {
+.document-table {
 	width: 100%;
 	border-collapse: collapse;
 	table-layout: fixed;
 }
 
-.contract-table th,
-.contract-table td {
+.document-table th,
+.document-table td {
 	height: 44px;
 	padding: 8px;
 	border: 1px solid currentColor;
@@ -183,7 +189,7 @@
 	overflow-wrap: anywhere;
 }
 
-.contract-table th {
+.document-table th {
 	font-weight: 400;
 	background: var(--color-fill-subtle);
 }

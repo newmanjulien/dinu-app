@@ -10,7 +10,7 @@ const templateEnv = {
 };
 // These are transactional templates. Contact and event fallbacks belong to
 // campaign/workflow messages and make this request needlessly ambiguous.
-const fallbackFields = ['dataVariablesFallbacks'];
+const fallbackFields = /** @type {const} */ (['dataVariablesFallbacks']);
 const updateFields = new Set([
 	'expectedRevisionId',
 	'subject',
@@ -68,28 +68,28 @@ Deployment activation is separate. See docs/email-delivery.md.`);
  * Content API reads that provider default back as a top-level Style block, so
  * it is omitted only when the repository deliberately has no Style of its own.
  */
+/** @param {string} source */
 function canonicalLmx(source, { omitTopLevelStyle = false } = {}) {
+	/** @type {unknown[]} */
 	const tokens = [];
 	let depth = 0;
+	/** @type {number|undefined} */
 	let omittedStyleDepth;
+	/** @type {string[]} */
 	const tags = [];
 	const parser = new SaxesParser();
 	parser.on('opentag', (tag) => {
 		depth++;
 		tags.push(tag.name);
 		const omitted =
-			omittedStyleDepth !== undefined ||
-			(omitTopLevelStyle && depth === 2 && tag.name === 'Style');
+			omittedStyleDepth !== undefined || (omitTopLevelStyle && depth === 2 && tag.name === 'Style');
 		if (omitted && omittedStyleDepth === undefined) omittedStyleDepth = depth;
 		if (depth > 1 && !omitted)
 			tokens.push(['open', tag.name, Object.entries(tag.attributes).sort()]);
 	});
 	parser.on('text', (text) => {
 		if (depth > 1 && omittedStyleDepth === undefined)
-			tokens.push([
-				'text',
-				tags.includes('CodeBlock') ? text : text.replace(/\s+/g, ' ')
-			]);
+			tokens.push(['text', tags.includes('CodeBlock') ? text : text.replace(/\s+/g, ' ')]);
 		else if (text.trim()) throw new SetupError('LMX contains text outside a block.');
 	});
 	parser.on('closetag', (tag) => {
@@ -103,6 +103,7 @@ function canonicalLmx(source, { omitTopLevelStyle = false } = {}) {
 	return JSON.stringify(tokens);
 }
 
+/** @param {string} source */
 function hasTopLevelStyle(source) {
 	let depth = 0;
 	let hasStyle = false;
@@ -116,7 +117,9 @@ function hasTopLevelStyle(source) {
 }
 
 /** Safe source-shape diagnostic: never includes provider copy or addresses. */
+/** @param {string} source */
 function lmxShape(source) {
+	/** @type {string[]} */
 	const blocks = [];
 	let textLength = 0;
 	let depth = 0;
@@ -131,12 +134,16 @@ function lmxShape(source) {
 	parser.write(`<Document>${source}</Document>`).close();
 	const variables = [
 		...new Set(
-			Array.from(source.matchAll(/\{(?:data\.|DATA_VARIABLE:)([a-zA-Z0-9_-]+)\}/g), (match) => match[1])
+			Array.from(
+				source.matchAll(/\{(?:data\.|DATA_VARIABLE:)([a-zA-Z0-9_-]+)\}/g),
+				(match) => match[1]
+			)
 		)
 	].sort();
 	return `blocks ${blocks.join(', ') || 'none'}; variables ${variables.join(', ') || 'none'}; text ${textLength} characters`;
 }
 
+/** @param {unknown} value */
 function id(value) {
 	if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(value))
 		throw new SetupError('Invalid Loops resource ID.');
@@ -144,20 +151,25 @@ function id(value) {
 }
 
 /** Classify an error without printing provider content, addresses or credentials. */
+/** @param {string} response */
 function providerFailureArea(response) {
+	/** @type {unknown} */
 	let value;
 	try {
 		value = JSON.parse(response);
 	} catch {
 		return 'no safely reportable validation area';
 	}
+	/** @type {Record<string,unknown>[]} */
 	const candidates = [];
+	/** @param {unknown} candidate */
 	const collect = (candidate) => {
-		if (!candidate || typeof candidate !== 'object') return;
-		candidates.push(candidate);
-		if (candidate.error) collect(candidate.error);
-		if (Array.isArray(candidate.errors)) candidate.errors.forEach(collect);
-		if (Array.isArray(candidate.issues)) candidate.issues.forEach(collect);
+		if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+		const row = /** @type {Record<string,unknown>} */ (candidate);
+		candidates.push(row);
+		if (row.error) collect(row.error);
+		if (Array.isArray(row.errors)) row.errors.forEach(collect);
+		if (Array.isArray(row.issues)) row.issues.forEach(collect);
 	};
 	collect(value);
 	for (const candidate of candidates) {
@@ -181,17 +193,33 @@ function providerFailureArea(response) {
 	return 'no safely reportable validation area';
 }
 
+/** @typedef {{subject:string;lmx:string;dataVariablesFallbacks:Record<string,string|null>;[key:string]:unknown}} Settings */
+/** @typedef {{kind:keyof typeof templateEnv;name:string;variables:string[];settings:Settings;resource?:Record<string,unknown>;draft?:{messageId:string;revisionId:string};expected?:Settings}} Template */
+/** @param {unknown} value @returns {Record<string,unknown>} */
+function object(value) {
+	if (!value || typeof value !== 'object' || Array.isArray(value))
+		throw new SetupError('Unexpected object shape.');
+	return /** @type {Record<string,unknown>} */ (value);
+}
+/** @template T @param {T | null | undefined} value @returns {T} */
+function required(value) {
+	if (value == null) throw new SetupError('Template preparation is incomplete.');
+	return value;
+}
+/** @param {string|undefined} mode */
 async function main(mode) {
-	const manifest = JSON.parse(
-		await readFile(new URL('../emails/templates.json', import.meta.url), 'utf8')
+	const manifest = object(
+		JSON.parse(await readFile(new URL('../emails/templates.json', import.meta.url), 'utf8'))
 	);
 	if (Object.keys(manifest).sort().join(',') !== Object.keys(templateEnv).sort().join(','))
 		throw new SetupError(
 			'The repo must define exactly invitation, approval and decision templates.'
 		);
+	/** @type {Template[]} */
 	const templates = await Promise.all(
 		Object.entries(manifest).map(async ([kind, definition]) => {
-			const { name, ...settings } = definition;
+			const { name, ...settings } = object(definition);
+			if (!Object.hasOwn(templateEnv, kind)) throw new SetupError('Unknown template kind.');
 			const lmx = (
 				await readFile(new URL(`../emails/${kind}.lmx`, import.meta.url), 'utf8')
 			).trim();
@@ -203,13 +231,13 @@ async function main(mode) {
 					Array.from(
 						[lmx, settings.subject, settings.ccEmail ?? '']
 							.join('\n')
-						.matchAll(/\{(?:data\.|DATA_VARIABLE:)([a-zA-Z0-9_-]+)\}/g),
+							.matchAll(/\{(?:data\.|DATA_VARIABLE:)([a-zA-Z0-9_-]+)\}/g),
 						(match) => match[1]
 					)
 				)
 			].sort();
 			return {
-				kind,
+				kind: /** @type {keyof typeof templateEnv} */ (kind),
 				name,
 				variables,
 				settings: {
@@ -219,6 +247,7 @@ async function main(mode) {
 					dataVariablesFallbacks: {},
 					emailFormat: 'plain',
 					...settings,
+					subject: settings.subject,
 					lmx
 				}
 			};
@@ -241,6 +270,7 @@ async function main(mode) {
 			'Set LOOPS_SENDER_LOCAL_PART to the mailbox before @ on your verified Loops domain.'
 		);
 
+	/** @param {string} path @param {string} [method] @param {unknown} [body] */
 	async function request(path, method = 'GET', body) {
 		let response;
 		try {
@@ -269,6 +299,7 @@ async function main(mode) {
 				`Loops ${method} returned HTTP ${response.status}. ${guidance}${diagnostic}`
 			);
 		}
+		/** @type {unknown} */
 		let value;
 		try {
 			value = await response.json();
@@ -279,21 +310,27 @@ async function main(mode) {
 		}
 		if (!value || typeof value !== 'object' || Array.isArray(value))
 			throw new SetupError(`Loops ${method} returned an unexpected response.`);
-		return value;
+		return object(value);
 	}
 
+	/** @type {Record<string,unknown>[]} */
 	const resources = [];
 	const cursors = new Set();
+	/** @type {string|null|undefined} */
 	let cursor;
 	do {
 		const query = new URLSearchParams({ perPage: '50', ...(cursor ? { cursor } : {}) });
 		const page = await request(`transactional-emails?${query}`);
 		if (!Array.isArray(page.data) || !page.pagination)
 			throw new SetupError('Loops returned an invalid template page.');
-		resources.push(...page.data);
-		cursor = page.pagination.nextCursor;
-		if (cursor !== null && (typeof cursor !== 'string' || !cursor || cursors.has(cursor)))
+		resources.push(...page.data.map(object));
+		const nextCursor = object(page.pagination).nextCursor;
+		if (
+			nextCursor !== null &&
+			(typeof nextCursor !== 'string' || !nextCursor || cursors.has(nextCursor))
+		)
 			throw new SetupError('Loops returned an invalid pagination cursor.');
+		cursor = nextCursor;
 		if (cursor) cursors.add(cursor);
 	} while (cursor);
 
@@ -312,11 +349,11 @@ async function main(mode) {
 		if (
 			template.resource &&
 			(template.resource.name !== template.name ||
-				(explicitId && template.resource.id !== explicitId))
+				(explicitId && required(template.resource).id !== explicitId))
 		)
 			throw new SetupError(`The explicit ${template.kind} ID belongs to a different template.`);
 		if (template.resource) {
-			const resourceId = id(template.resource.id);
+			const resourceId = id(required(template.resource).id);
 			if (chosenIds.has(resourceId))
 				throw new SetupError('Each notification requires its own transactional ID.');
 			chosenIds.add(resourceId);
@@ -324,8 +361,10 @@ async function main(mode) {
 			throw new SetupError(`The ${template.kind} template does not exist.`);
 	}
 
+	/** @param {Record<string,unknown>} message @param {Settings} expected */
 	function difference(message, expected) {
 		// The editor's stored header spelling and LMX namespaces refer to the same variables.
+		/** @param {unknown} value */
 		const header = (value) =>
 			typeof value === 'string'
 				? value.replace(/\{DATA_VARIABLE:([a-zA-Z0-9_-]+)\}/g, '{data.$1}')
@@ -333,6 +372,7 @@ async function main(mode) {
 		for (const [key, value] of Object.entries(expected)) {
 			const actual = message[key];
 			if (key === 'lmx') {
+				if (typeof value !== 'string') throw new SetupError('Invalid LMX source.');
 				if (
 					typeof actual !== 'string' ||
 					canonicalLmx(actual, { omitTopLevelStyle: !hasTopLevelStyle(value) }) !==
@@ -354,6 +394,7 @@ async function main(mode) {
 		}
 		return null;
 	}
+	/** @param {Record<string,unknown>} message @param {string} messageId @param {string} transactionalId */
 	function verifyMessage(message, messageId, transactionalId) {
 		if (message.id !== messageId || message.transactionalId !== transactionalId)
 			throw new SetupError('Loops returned an email message with a different identity.');
@@ -364,6 +405,7 @@ async function main(mode) {
 			throw new SetupError('Loops returned unverified compiler warnings; publication stopped.');
 		return message;
 	}
+	/** @param {string} messageId @param {string} transactionalId */
 	async function readMessage(messageId, transactionalId) {
 		return verifyMessage(
 			await request(`email-messages/${id(messageId)}`),
@@ -371,12 +413,16 @@ async function main(mode) {
 			transactionalId
 		);
 	}
+	/** @param {Template} template @param {Record<string,unknown>} transactional @param {{messageId:string;revisionId:string}} [draft] */
 	async function publishedDifference(template, transactional, draft) {
 		if (!transactional.publishedEmailMessageId) return 'publication';
-		const message = await readMessage(transactional.publishedEmailMessageId, transactional.id);
+		const message = await readMessage(
+			id(transactional.publishedEmailMessageId),
+			id(transactional.id)
+		);
 		if (draft && (message.id !== draft.messageId || message.contentRevisionId !== draft.revisionId))
 			return 'published draft/revision';
-		const changed = difference(message, template.expected);
+		const changed = difference(message, required(template.expected));
 		if (changed) return changed;
 		if (
 			!Array.isArray(transactional.dataVariables) ||
@@ -385,8 +431,11 @@ async function main(mode) {
 			return 'data variables';
 		return null;
 	}
+	/** @param {Template} template */
 	async function validateDraft(template) {
-		const { resource, draft, expected } = template;
+		const resource = required(template.resource),
+			draft = required(template.draft),
+			expected = required(template.expected);
 		const current = await request(`transactional-emails/${id(resource.id)}`);
 		if (
 			current.id !== resource.id ||
@@ -394,14 +443,14 @@ async function main(mode) {
 			current.draftEmailMessageId !== draft.messageId
 		)
 			throw new SetupError(`The ${template.kind} draft identity changed; publication stopped.`);
-		const message = await readMessage(draft.messageId, resource.id);
+		const message = await readMessage(draft.messageId, id(resource.id));
 		if (message.contentRevisionId !== draft.revisionId)
 			throw new SetupError(`The ${template.kind} draft revision changed; publication stopped.`);
 		const changed = difference(message, expected);
 		if (changed) {
 			const diagnostic =
 				mode === '--diagnose' && changed === 'lmx'
-					? ` Expected ${lmxShape(expected.lmx)}. Stored ${lmxShape(message.lmx)}.`
+					? ` Expected ${lmxShape(expected.lmx)}. Stored ${lmxShape(typeof message.lmx === 'string' ? message.lmx : '')}.`
 					: '';
 			throw new SetupError(
 				`The saved ${template.kind} draft differs from the repo in ${changed}; publication stopped.${diagnostic}`
@@ -452,7 +501,12 @@ async function main(mode) {
 			const update = { ...expected, expectedRevisionId: before.contentRevisionId };
 			for (const field of fallbackFields)
 				update[field] = {
-					...Object.fromEntries(Object.keys(before[field] ?? {}).map((key) => [key, null])),
+					...Object.fromEntries(
+						Object.keys(before[field] == null ? {} : object(before[field])).map((key) => [
+							key,
+							null
+						])
+					),
 					...expected[field]
 				};
 			const updated = verifyMessage(
@@ -467,7 +521,7 @@ async function main(mode) {
 			template.resource = draft;
 			template.draft = { messageId, revisionId: updated.contentRevisionId };
 		} else {
-			console.log(`${templateEnv[template.kind]}=${id(transactional.id)}`);
+			console.log(`${templateEnv[template.kind]}=${id(required(transactional).id)}`);
 			console.log(`Published ${template.kind} template matches the repo.`);
 		}
 	}
@@ -481,9 +535,9 @@ async function main(mode) {
 			// but require an exclusive publisher: this is not an atomic revision lock.
 			await validateDraft(template);
 			attempted.push(template.kind);
-			await request(`transactional-emails/${id(template.resource.id)}/publish`, 'POST');
-			const published = await request(`transactional-emails/${id(template.resource.id)}`);
-			if (published.id !== template.resource.id || published.name !== template.name)
+			await request(`transactional-emails/${id(required(template.resource).id)}/publish`, 'POST');
+			const published = await request(`transactional-emails/${id(required(template.resource).id)}`);
+			if (published.id !== required(template.resource).id || published.name !== template.name)
 				throw new SetupError('Loops returned a different published template identity.');
 			const changed = await publishedDifference(template, published, template.draft);
 			if (changed)

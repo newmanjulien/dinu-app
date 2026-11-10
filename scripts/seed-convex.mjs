@@ -1,15 +1,20 @@
 import { isDeepStrictEqual } from 'node:util';
-import { readFile } from 'node:fs/promises';
+import { createServer } from 'vite';
+import { readSeed } from './reconcile-production-seed.mjs';
 import { companyArguments, companyDeployment } from './company-convex.mjs';
 
 const { companyId } = companyArguments();
-async function readRows(name) {
-	const source = (await readFile(`data/convex/${name}.jsonl`, 'utf8')).trim();
-	if (!source) throw new Error(`${name} import records are empty.`);
-	return source.split('\n').map((row) => JSON.parse(row));
-}
-const blocks = await readRows('contractBlocks');
-const items = await readRows('playbookItems');
+const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
+const { blocks, items } = await (async () => {
+	try {
+		return {
+			blocks: await readSeed(server, 'templateSourceBlocks'),
+			items: await readSeed(server, 'playbookItems')
+		};
+	} finally {
+		await server.close();
+	}
+})();
 const deployment = await companyDeployment({ companyId });
 await deployment.run('operator:bootstrap', { companyId, blocks, items });
 const actual = await deployment.run('operator:readSeed', { companyId });

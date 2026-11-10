@@ -3,13 +3,15 @@
 A SvelteKit / Svelte 5 contract workspace backed by Convex.
 
 For production configuration and the coordinated Vercel/Convex release process,
-see [Production releases](docs/deployment.md).
+see [Production releases](docs/deployment.md). Existing data needs the [template terminology cutover](docs/template-terminology-rollout.md) before deploying this schema.
 
-The immutable contract source is separate from the Playbook. A Playbook Item has
+A **template** is the reusable company setup: its source document and instructions/concessions. A **contract** is a buyer-specific document created from a captured template version. Shared rendering, formatting, import and export code uses **document** terminology.
+
+The immutable template source is separate from the Playbook. A Playbook Item has
 one Trigger, optional instructions, an explicit approval policy, and negotiation concessions. Each
 concession applies an atomic set of source-coordinate Contract Changes.
 
-`/` owns a `RepWorkspace` and `RepPlaybookPanel`. `/admin` owns an `AdminWorkspace`
+`/contracts/[id]` owns a `RepWorkspace` and `RepPlaybookPanel`. `/template` owns a `TemplateWorkspace`
 and `PlaybookEditor`. Both share the document viewer, chrome and rendering
 machinery. The viewer receives only the derived document overlay, not instructions,
 draft state or save operations.
@@ -202,3 +204,5 @@ runtime records. Archived inline bold/italic formatting is discarded; concession
 store their current description and contract changes.
 See the [current seed and activation status](docs/production-data-reconciliation.md). The seed command requires an explicit company and matching development/local
 target; it cannot load production or overwrite existing edited content.
+
+Loading regression checks are included in `npm run verify`: server-rendered pending frames, exact-fixture hydration, account/region recovery, existing lifecycle/performance/HubSpot suites, type checks/build and emitted heavy-module boundaries. Use `npm run test:lifecycle` for SSR plus DOM/state tests, and `npm run verify:loading-bundles` after a production build. Browser paint/layout, native dialog/focus and deployed streaming remain manual checks; see [performance checks](docs/performance-checks.md).

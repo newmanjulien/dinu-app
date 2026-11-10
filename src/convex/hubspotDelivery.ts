@@ -21,62 +21,87 @@ export const pool = new Workpool(components.hubspotPool, {
 	maxParallelism: 5,
 	retryActionsByDefault: false
 });
+const pumpStatuses = ['pending', 'uncertain', 'working', 'blocked'] as const;
+/** Each fixed-cutoff pass advances past skipped rows before visiting the next status. */
 export const pump = internalMutation({
-	args: {},
+	args: {
+		status: v.optional(v.union(...pumpStatuses.map((status) => v.literal(status)))),
+		cutoff: v.optional(v.number()),
+		cursor: v.optional(v.string())
+	},
 	returns: v.null(),
-	handler: async (ctx) => {
+	handler: async (ctx, args) => {
 		if (env.HUBSPOT_ENABLED !== 'true' || env.HUBSPOT_DELIVERY_ENABLED !== 'true') return null;
 		const now = Date.now();
-		for (const status of ['pending', 'uncertain', 'working', 'blocked'] as const) {
-			const rows = await ctx.db
-				.query('hubspotEvents')
-				.withIndex('by_status_and_dueAt', (q) => q.eq('status', status).lte('dueAt', now))
-				.take(20);
-			for (const row of rows) {
-				if (!(await availableCompany(ctx, row.companyId))) continue;
-				// Cancellation cannot stop a running action. Its lease and request reserve must retire first.
-				if (row.workId && (row.leaseUntil ?? row.dueAt) + 30_000 > now) continue;
-				if (row.workId) await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
-				const mode = deliveryMode(row, await deliveryFacts(ctx, row), now);
-				const reset = {
-					workId: undefined,
-					execution: undefined,
-					claim: undefined,
-					leaseUntil: undefined
-				};
-				if (mode !== 'fresh' && mode !== 'observe') {
-					await ctx.db.patch('hubspotEvents', row._id, {
-						...reset,
-						status: mode,
-						dueAt: now + CLAIM_MS,
-						diagnostic:
-							mode === 'paused'
-								? 'Linked HubSpot deal unavailable or replaced'
-								: mode === 'attention'
-									? 'Original write observation horizon ended'
-									: 'Reconnect HubSpot'
-					});
-					continue;
-				}
-				const execution = `${row._id}:${now}:${Math.random()}`;
-				const workId = await pool.enqueueAction(
-					ctx,
-					internal.hubspotSender.send,
-					{ id: row._id, execution },
-					{
-						retry: false,
-						onComplete: internal.hubspotDelivery.completed,
-						context: { id: row._id, execution }
-					}
-				);
+		const cutoff = args.cutoff ?? now;
+		const status = args.status ?? pumpStatuses[0];
+		const page = await ctx.db
+			.query('hubspotEvents')
+			.withIndex('by_status_and_dueAt', (q) => q.eq('status', status).lte('dueAt', cutoff))
+			.paginate({
+				cursor: args.cursor ?? null,
+				numItems: 20,
+				maximumRowsRead: 20,
+				maximumBytesRead: 1024 * 1024
+			});
+		for (const row of page.page) {
+			if (!(await availableCompany(ctx, row.companyId))) continue;
+			// Cancellation cannot stop a running action. Its lease and request reserve must retire first.
+			if (row.workId && (row.leaseUntil ?? row.dueAt) + 30_000 > now) continue;
+			if (row.workId) await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
+			const mode = deliveryMode(row, await deliveryFacts(ctx, row), now);
+			const reset = {
+				workId: undefined,
+				execution: undefined,
+				claim: undefined,
+				leaseUntil: undefined
+			};
+			if (mode !== 'fresh' && mode !== 'observe') {
 				await ctx.db.patch('hubspotEvents', row._id, {
 					...reset,
-					execution,
-					workId,
-					status: row.dispatch ? 'uncertain' : 'pending',
-					dueAt: now + CLAIM_MS
+					status: mode,
+					dueAt: now + CLAIM_MS,
+					diagnostic:
+						mode === 'paused'
+							? 'Linked HubSpot deal unavailable or replaced'
+							: mode === 'attention'
+								? 'Original write observation horizon ended'
+								: 'Reconnect HubSpot'
 				});
+				continue;
 			}
+			const execution = `${row._id}:${now}:${Math.random()}`;
+			const workId = await pool.enqueueAction(
+				ctx,
+				internal.hubspotSender.send,
+				{ id: row._id, execution },
+				{
+					retry: false,
+					onComplete: internal.hubspotDelivery.completed,
+					context: { id: row._id, execution }
+				}
+			);
+			await ctx.db.patch('hubspotEvents', row._id, {
+				...reset,
+				execution,
+				workId,
+				status: row.dispatch ? 'uncertain' : 'pending',
+				dueAt: now + CLAIM_MS
+			});
+		}
+		if (!page.isDone)
+			await ctx.scheduler.runAfter(0, internal.hubspotDelivery.pump, {
+				status,
+				cutoff,
+				cursor: page.continueCursor
+			});
+		else {
+			const nextStatus = pumpStatuses[pumpStatuses.indexOf(status) + 1];
+			if (nextStatus)
+				await ctx.scheduler.runAfter(0, internal.hubspotDelivery.pump, {
+					status: nextStatus,
+					cutoff
+				});
 		}
 		return null;
 	}
@@ -178,6 +203,8 @@ export const checkpoint = internalMutation({
 			!(await availableCompany(ctx, row.companyId))
 		)
 			return false;
+		const connection = await ctx.db.get('hubspotConnections', row.destination.connectionId);
+		if (!connection || connection.status === 'retiring') return false;
 		await ctx.db.patch('hubspotEvents', row._id, { observation: args.observation });
 		return true;
 	}
@@ -290,15 +317,18 @@ export const settle = internalMutation({
 				await ctx.db.patch('hubspotEvents', row._id, {
 					...clear,
 					fileId: args.remoteId,
-					status: canContinue
-						? 'working'
-						: !facts.linkValid
-							? 'paused'
-							: observationExpired(row, now)
-								? 'attention'
-								: facts.accountValid && facts.connection?.status === 'connected'
-									? 'pending'
-									: 'blocked',
+					status:
+						!facts.connection || facts.connection.status === 'retiring'
+							? 'retired'
+							: canContinue
+								? 'working'
+								: !facts.linkValid
+									? 'paused'
+									: observationExpired(row, now)
+										? 'attention'
+										: facts.accountValid && facts.connection?.status === 'connected'
+											? 'pending'
+											: 'blocked',
 					...(!canContinue ? { claim: undefined, leaseUntil: undefined } : {}),
 					diagnostic: canContinue
 						? undefined

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { env } from '$env/dynamic/public';
-	import { isTextTarget } from '$lib/contract/source-model';
+	import { isTextTarget } from '$lib/document/source-model';
 	import type { InlineToken } from '$lib/document/pagination/types';
 	let {
 		tokens,
@@ -20,15 +20,16 @@
 
 <!-- Measurement needs the same spans and text, but never reads interaction metadata.
      Set the diagnostic flag to 1 to profile source metadata. -->
-{#if profileMode && env.PUBLIC_CONTRACT_PROFILE_METADATA !== '1'}
-	{#each tokens as token}<span data-contract-token="" class:select-none={token.lineAnchor}
+{#if profileMode && env.PUBLIC_DOCUMENT_PROFILE_METADATA !== '1'}
+	{#each tokens as token}<span data-document-token="" class:select-none={token.lineAnchor}
 			>{token.value}</span
 		>{/each}
 {:else}
+	<!-- Token elements provide DOM boundaries for native selection, provenance mapping and range highlights. -->
 	{#each tokens as token}
 		{@const source = visualRange(token)}
 		<span
-			data-contract-token=""
+			data-document-token=""
 			data-selection-token-index={profileMode ? undefined : tokenIndices?.get(token)}
 			data-selection-line-anchor={token.lineAnchor ? '' : undefined}
 			aria-hidden={token.lineAnchor ? true : undefined}
@@ -42,7 +43,11 @@
 			data-visual-source-start-offset={source?.start.offset}
 			data-visual-source-end-key={source?.end.sourceKey}
 			data-visual-source-end-offset={source?.end.offset}
+			data-discussion={token.discussion ? JSON.stringify(token.discussion) : undefined}
 			data-generated-offset={token.generatedOffset}
+			data-generated-origin={token.generatedOrigin
+				? JSON.stringify(token.generatedOrigin)
+				: undefined}
 			data-source-kind={token.sourceKind}
 			data-generated={token.generated}
 			data-revision={token.revision}>{token.value}</span

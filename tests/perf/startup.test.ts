@@ -4,11 +4,14 @@ import { convexTest } from 'convex-test';
 import type { FunctionReturnType } from 'convex/server';
 import { expect, it, vi } from 'vitest';
 import { api } from '../../src/convex/_generated/api';
-import { baselineIntegrity, writeBaselineChunks } from '../../src/convex/baselineStorage';
+import {
+	templateSourceIntegrity,
+	writeTemplateSourceChunks
+} from '../../src/convex/templateSourceStorage';
 import schema from '../../src/convex/schema';
 import { AccountNavigation } from '../../src/lib/auth/account-navigation';
 import { AccountPreparation } from '../../src/lib/auth/account-preparation';
-import { DOCX_PARSER_VERSION } from '../../src/lib/contract/import/limits';
+import { DOCX_PARSER_VERSION } from '../../src/lib/document/import/limits';
 import { block, identity, initializeViewer } from './fixtures';
 const modules = import.meta.glob('../../src/convex/**/*.*s');
 function liveAccount(client: {
@@ -46,7 +49,7 @@ it('navigates once for repeated requests to open the same account', async () => 
 	expect(navigate).toHaveBeenCalledTimes(1);
 	const next = navigation.open('next-session', '//external.example');
 	await Promise.resolve();
-	expect(navigate).toHaveBeenLastCalledWith('/');
+	expect(navigate).toHaveBeenLastCalledWith('/contracts');
 	finish();
 	await next;
 });
@@ -83,7 +86,7 @@ it('reads returning accounts and provisions missing state once without restartin
 				type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 			})
 		);
-		const baselineId = await db.insert('baselines', {
+		const templateSourceId = await db.insert('templateSources', {
 			companyId: company!._id,
 			source: 'docx',
 			state: 'prepared',
@@ -93,16 +96,20 @@ it('reads returning accounts and provisions missing state once without restartin
 			parserVersion: DOCX_PARSER_VERSION,
 			uploaderId: company!.ownerProfileId!,
 			expiresAt: Date.now() + 3_600_000,
-			...baselineIntegrity([block]),
+			...templateSourceIntegrity([block]),
 			issues: [],
 			blockCount: 1,
 			chunkCount: 0,
 			chunkReadBytes: 0
 		});
 		await db.patch(
-			'baselines',
-			baselineId,
-			await writeBaselineChunks(ctx, { companyId: company!._id, baselineId, blocks: [block] })
+			'templateSources',
+			templateSourceId,
+			await writeTemplateSourceChunks(ctx, {
+				companyId: company!._id,
+				templateSourceId,
+				blocks: [block]
+			})
 		);
 	});
 	const prepared = await prepare();
@@ -112,4 +119,28 @@ it('reads returning accounts and provisions missing state once without restartin
 	expect(await t.run(({ db }) => db.system.query('_scheduled_functions').collect())).toHaveLength(
 		0
 	);
+});
+
+it('scopes independent Home assistance to the authenticated membership and excludes advisory hints from admission', async () => {
+	const t = convexTest(schema, modules).withIdentity(identity);
+	await t.run(async (ctx) => {
+		await initializeViewer(ctx);
+	});
+	const viewer = await t.query(api.accounts.viewer, {});
+	expect(viewer).not.toHaveProperty('hasCreatedContract');
+	expect(viewer).not.toHaveProperty('colleaguesInvited');
+	const home = await t.query(api.accounts.startupHome, {});
+	expect(home.scope).toEqual({
+		profileId: viewer!.profile.id,
+		membershipId: viewer!.membership!.id,
+		companyId: viewer!.company!.id
+	});
+	expect(home).toMatchObject({ search: '', cursor: null, numItems: 24 });
+	const hints = await t.query(api.accounts.setupHints, { membershipId: viewer!.membership!.id });
+	expect(hints).toEqual({ complete: false, nextStep: 'template', contractId: null });
+	await expect(
+		t
+			.withIdentity({ ...identity, subject: 'other', tokenIdentifier: 'other' })
+			.query(api.accounts.setupHints, { membershipId: viewer!.membership!.id })
+	).rejects.toThrow();
 });

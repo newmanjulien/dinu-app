@@ -5,7 +5,7 @@
 		$props();
 </script>
 
-<h1 class="m-0 text-[26px] font-[450] leading-[1.08] tracking-[-0.02em] text-ink">
+<h1 class="m-0 text-2xl font-[450] leading-[1.08] tracking-[-0.02em] text-ink">
 	{title}
 </h1>
 {#if description}

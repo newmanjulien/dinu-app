@@ -1,7 +1,7 @@
-import type { ResolvedBlock } from '$lib/contract/model';
-import type { StructuralBoundary } from '$lib/contract/source-index';
-import { complete } from '$lib/contract/iteration';
-import { contractFlowRole, ContractSpacing, type ContractFlowRole } from '$lib/contract/format';
+import type { ResolvedBlock } from '$lib/document/model';
+import type { StructuralBoundary } from '$lib/document/source-index';
+import { complete } from '$lib/document/iteration';
+import { documentFlowRole, DocumentSpacing, type DocumentFlowRole } from '$lib/document/format';
 import { iterateInlineTokens } from './tokenize';
 import type { InlineToken, PageFragment, ParagraphFragment } from './types';
 
@@ -9,7 +9,7 @@ import type { InlineToken, PageFragment, ParagraphFragment } from './types';
 // Prepared object identity also guards page content and provenance reuse.
 export interface PreparedBlock {
 	readonly fragment: PageFragment;
-	readonly flowRole: ContractFlowRole;
+	readonly flowRole: DocumentFlowRole;
 	readonly geometryFingerprint: string;
 	/** Composition supplies the real owner; pagination never infers it from nearby output. */
 	readonly boundariesAfter?: readonly StructuralBoundary[];
@@ -36,7 +36,7 @@ export class LayoutPreparationEngine {
 		private readonly blocks = new WeakMap<
 			ResolvedBlock,
 			{
-				role: ContractFlowRole;
+				role: DocumentFlowRole;
 				variants: Map<number, PreparedBlock>;
 			}
 		>()
@@ -47,17 +47,17 @@ export class LayoutPreparationEngine {
 	preparedCount = 0;
 	tokenCount = 0;
 	reusedCount = 0;
-	prepare(block: ResolvedBlock, spacing = new ContractSpacing()): PreparedBlock {
+	prepare(block: ResolvedBlock, spacing = new DocumentSpacing()): PreparedBlock {
 		return complete(this.iterate(block, spacing));
 	}
 	*iterate(
 		block: ResolvedBlock,
-		spacing = new ContractSpacing()
+		spacing = new DocumentSpacing()
 	): Generator<undefined, PreparedBlock> {
 		let entry = this.blocks.get(block);
 		if (!entry) {
 			entry = {
-				role: contractFlowRole({
+				role: documentFlowRole({
 					kind: block.kind,
 					...(block.kind !== 'table'
 						? {
@@ -118,6 +118,7 @@ export class LayoutPreparationEngine {
 			const inline = yield* tokens(block.content);
 			fragment = {
 				type: 'paragraph',
+				...(block.discussionRemoved ? { discussionRemoved: true as const } : {}),
 				role: block.role,
 				anchor: block.anchor ?? (block.role !== 'body' ? block.blockKey : undefined),
 				interval: { start: 0, end: inline.length },

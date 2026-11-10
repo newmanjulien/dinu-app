@@ -1,13 +1,37 @@
 # CSM setup and support calls
 
-Before a company books its setup call, **Delegate setup** appears only on `/admin`
-for admins with an active template. After booking, **Get support** appears on every
-workspace route for all members. `WorkspaceShell` owns one shared modal host for both launchers and the setup-call
-bar. It opens `CsmBookingModal.svelte`, retaining the
-mode-specific title, Julien's introduction, the app's success message and manual
-Close. Completion collapses the launcher; closing restores focus to its icon.
-Support can be booked again after an earlier attempt settles, even when another
-call is still upcoming. Cancellation never restores setup mode.
+One Lifebuoy **support** widget appears for admins on the Contracts cards page,
+signed-in Links, Template, Template Upload, and Integrations (including detail
+pages). Reps have no support widget or booking access. Support is hidden inside
+new and saved contract editors, on public buyer links, Settings, Manage team,
+and contract settings. Admins can book support immediately, before uploading
+a template or booking any earlier call. New bookings use `support`; the legacy
+`setup` booking mode remains for stored calls and their replacement flow.
+
+During setup, the launcher, Julien’s introduction, temporary embedded video, and
+scheduling explanation differ by section. Template Upload has its own content;
+the upload fallback on `/contracts/new` has no support. Videos have controls and never
+autoplay. `csm-support.ts` owns this content and the supported-section resolver.
+`WorkspaceShell` owns the single dialog host. Opening freezes its content; route
+or role changes close it, while completing setup takes effect on the next opening.
+Booking success keeps the confirmation, collapses the launcher, and restores focus
+on close. Support can be booked again after an earlier attempt settles.
+
+Setup uses one workspace-owned `accounts.setupHints` subscription shared with the
+setup prompt. Both roles require a template, instructions, and a contract they
+created. Reps also copy a buyer link; admins install an integration and invite
+colleagues. `accounts.completeSetup` authenticates the membership and rechecks all
+facts before recording optional `memberships.setupCompletedAt`. Completion is
+sticky per membership across visits and devices; later deletions/disconnections
+do not restart setup. Existing eligible memberships are detected on their next
+workspace visit. Unknown or failed reads never count as completed. After completion,
+the prompt disappears and admins see a plain support message and calendar across
+supported sections, without a video.
+
+Only successful new-company onboarding sends a membership-scoped welcome handoff
+to the upload page. The modal opens once after that page paints and consumes the
+history-state handoff when its frame opens. Upload completion, ordinary visits,
+joining an existing company, and setup completion never auto-open the modal.
 
 ## Calendar and loading
 
@@ -29,21 +53,20 @@ columns when space permits and stacks on smaller screens. The modal owns scrolli
 
 `WorkspaceShell` owns one in-memory availability resource for the live session,
 transport, profile, membership and company. The widget still mounts after primary
-content success or terminal-error paint and requires an active template in setup
-mode. Primary paint is recorded even before the widget is eligible. Modal code
+content success or terminal-error paint on a supported section. Primary paint is recorded even before the widget is eligible. Modal code
 imports share one promise; warming never mounts a hidden picker.
 
 Actual times and modal code preload at these boundaries, after primary paint:
 
-| Trigger                               | Policy                                                                                                                                                                                                                                                           |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/admin` setup visit                  | Automatically once per continuous eligible visit for a safe prepared admin with `manageTemplate`, including before the first template upload. Failure, paint revisions and TTL expiry do not create a retry loop. Leaving and returning permits another attempt. |
-| Valid authenticated contract upload   | On `/admin` and `/contracts/new`, dispatch the upload POST first and then warm missing/expired times. One upload-refresh attempt per owner across file retries.                                                                                                  |
-| Valid Continue                        | Warm missing/expired times alongside commit and navigation. Calendar work is never awaited and cannot fail the upload/commit.                                                                                                                                    |
-| Explicit small→large widget expansion | Warm both setup and support before the focus continuation, without waiting. Restored expansion and onboarding card expansion are not this trigger.                                                                                                               |
-| Modal opening                         | Import code immediately; the admitted frame starts or joins the frozen mode/month/timezone read before the body or receipt loads. Mobile direct-open follows this path.                                                                                          |
+| Trigger                               | Policy                                                                                                                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Template Upload visit                 | Automatically once per continuous `/template` upload visit for a safe prepared admin membership. Failure, paint revisions and TTL expiry do not create a retry loop. Leaving and returning permits another attempt. |
+| Valid authenticated template upload   | On `/template`, dispatch the upload POST first and then warm missing/expired times. One upload-refresh attempt per owner across file retries. No calendar warming on `/contracts/new`.                              |
+| Valid Continue                        | Warm missing/expired times alongside commit and navigation. Calendar work is never awaited and cannot fail the upload/commit.                                                                                       |
+| Explicit small→large widget expansion | Warm support before the focus continuation, without waiting. Restored expansion and onboarding card expansion are not this trigger.                                                                                 |
+| Modal opening                         | Import code immediately; the admitted frame starts or joins the frozen mode/month/timezone read before the body or receipt loads. Mobile direct-open follows this path.                                             |
 
-Support has no unsolicited route or restored-state preload. A Map keyed by mode,
+Outside the upload surface, calendar times have no unsolicited route or restored-state preload. A Map keyed by mode,
 replacement purpose/appointment/UID, month and exact timezone retains pending requests and ready results (including
 empty months) for two minutes after completion, with at most eight entries in
 access order. Upload, Continue, expansion, opening, closing and same-owner
@@ -60,6 +83,26 @@ live ownership prevent late reinsertion after invalidation, eviction or replacem
 Unsafe session, deletion, lost eligibility, ownership replacement and shell teardown
 dispose the resource. Closing and route changes release UI subscriptions/deadlines.
 
+Support videos have a separate, section-specific preparation lifecycle. After
+primary paint on an eligible admin page with accepted incomplete setup progress,
+connection hints and an image preload prepare only that section's thumbnail.
+Unknown or failed initial setup status admits no speculative video preparation.
+Hover, keyboard focus, explicit widget expansion or modal opening starts the
+YouTube player. The first-upload welcome handoff is an exception: it can prepare
+after primary paint while setup status is pending, without delaying the proactive modal.
+Reps, unsupported routes and completed-setup support prepare no video.
+
+The prepared player lives inside a closed `ModalShell`. Opening reveals that same
+iframe; closing pauses playback and retains it for reopening on the same page.
+Only the player is retained: the booking picker and receipt subscriptions mount
+when the modal opens and are released on close, together with the host's booking
+request references. Navigation, changed ownership, lost eligibility or a different
+video disposes the player. An already-open modal
+keeps its frozen content when setup completes. An explicit open and an already
+prepared player remain independent of setup query retries. The thumbnail covers
+player startup; player failures offer a YouTube link. Players never autoplay. Preparation loads
+the player, not a guaranteed buffer of the video stream.
+
 Fresh times can appear immediately while the live receipt subscription is pending,
 but date/month/timezone/slot/booking interaction requires a usable current receipt.
 Receipt failure blocks booking with Retry; unresolved and success states take
@@ -71,14 +114,14 @@ Ignored observations and status timeouts cannot clear it. The first unseen
 unresolved receipt may still race one speculative read.
 
 The two-minute/eight-entry policy is an initial bound, not a measured optimum.
-Abandoned uploads and automatic setup visits may spend provider quota. Starting
+Abandoned uploads and automatic upload visits may spend provider quota. Starting
 work without awaiting it does not reserve quota or guarantee upload network/CPU
 priority; achieved latency and real provider behavior require separate measurement.
 
 ## Setup-call bar
 
-`CsmSetupCallBar.svelte` appears beneath navigation on every workspace route for
-**company admins only**, independently of the Delegate/Support launcher. It subscribes
+`CsmSetupCallBar.svelte` appears beneath navigation on supported sections for
+**company admins only**, alongside the support launcher. It subscribes
 after the primary surface paints and clears with company/profile/session/transport
 changes, closing or deletion. Support bookings never create or select a bar.
 
@@ -90,8 +133,8 @@ Anchor UID breaks equal-time ties deterministically. It stays through an in-prog
 call and disappears at its scheduled end, without asserting attendance. A cancellation
 notice stays until a verified provider successor or successful app replacement
 supersedes it (subject to the same selection policy). Only cancellations show
-**Reschedule**, which opens the existing calendar in setup-replacement mode on any
-workspace route. The launcher stays in Support mode.
+**Reschedule**, which opens the existing calendar in setup-replacement mode on a supported
+section. The launcher continues to open support calls.
 Stale/unresolved status says that details are being checked and never presents an
 old time as current. Verified cancellations can remain visible without a current time.
 
@@ -122,7 +165,7 @@ Source proof, event configuration and fresh duration-aware slots fit within the
 a final claim before expiry; no long snapshot-quota wait is inherited. The existing
 55-second watchdog remains. Final transactional claim applies the same scoped chain
 proof/revision/lease/generation/pending checks as refresh and rechecks current admin,
-company, source profile, baseline, target and reservation. A real provider successor
+company, source profile, template source, target and reservation. A real provider successor
 updates the source and stops new creation. Cal edits between that GET and the
 independent POST remain possible: there is no cross-service atomicity or automatic
 cancellation of either booking.
@@ -297,7 +340,9 @@ or provider mutation is automatic during local development.
 `juliennewman/julien` event (ID **2928313**). No client-supplied attendee, event or
 company is authoritative. Setup display reads require `manageTemplate` and no
 completed setup booking, and may run before a template exists. New setup bookings
-additionally require an active template; support requires completed setup. Reads and mutations derive membership from authentication.
+additionally require an active template. Support requires an admin membership,
+with no template or prior-booking prerequisite. Reads and mutations derive
+membership from authentication.
 Scheduled senders recheck the original profile, membership, company, deletion
 markers and purpose directly, since scheduled functions do not inherit JWT auth.
 

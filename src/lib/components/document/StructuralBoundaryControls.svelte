@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { getAnnotationLabel } from '$lib/document/annotation-label';
+	const annotationLabel = getAnnotationLabel();
 	import type { AnnotationActivation } from '$lib/document/annotation-anchor';
 	import { getAnnotationRegistry } from '$lib/document/annotation-registry';
 	import type { AnnotationMembership } from '$lib/playbook/document-overlay';
@@ -34,8 +36,8 @@
 	} = $props();
 	const protect = protectedInteraction(),
 		registry = getAnnotationRegistry();
-	let trigger = $state<HTMLButtonElement>(),
-		chooser = $state<HTMLDivElement>();
+	let trigger = $state<HTMLButtonElement | null>(),
+		chooser = $state<HTMLDivElement | null>();
 	let open = $state(false);
 	const saved = $derived.by(() => {
 		const seen = new Set<string>();
@@ -95,7 +97,7 @@
 			type="button"
 			class="structural-boundary-control structural-boundary-control--gutter"
 			data-document-control
-			aria-label="Open saved instructions"
+			aria-label={`Open ${annotationLabel}`}
 			aria-expanded={open}
 			aria-disabled={!interactive || !canOpenPlaybookItems}
 			onclick={(event) => {
@@ -131,7 +133,7 @@
 		open={true}
 		{trigger}
 		role="group"
-		label="Saved instructions"
+		label={annotationLabel}
 		placement="bottom-start"
 		dismissOnFocus
 		onClose={close}

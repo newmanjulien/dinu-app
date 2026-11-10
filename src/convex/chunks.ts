@@ -2,7 +2,7 @@ import { getConvexSize, getDocumentSize, type Value } from 'convex/values';
 import {
 	MAX_STORAGE_ARRAY_ENTRIES,
 	MAX_STORAGE_DOCUMENT_BYTES
-} from '../lib/contract/storage-limits';
+} from '../lib/document/storage-limits';
 
 export const CHUNK_TARGET_BYTES = 128 * 1024;
 // Read one sentinel row beyond the supported envelope of at most 31 chunks.

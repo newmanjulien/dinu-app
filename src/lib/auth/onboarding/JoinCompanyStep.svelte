@@ -1,13 +1,13 @@
 <script lang="ts">
+	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { untrack } from 'svelte';
 	import UsersIcon from 'phosphor-svelte/lib/UsersIcon';
-	import { useQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { useAccount, useViewerSession } from '../viewer-session.svelte';
 	import OnboardingStepFrame from './OnboardingStepFrame.svelte';
 	import AuthButton from '../components/AuthButton.svelte';
-	import LoadingState from '$lib/ui/LoadingState.svelte';
+	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 
 	let {
 		pending,
@@ -22,18 +22,9 @@
 	} = $props();
 	const account = useAccount();
 	const session = useViewerSession();
-	const invitations = useQuery(api.companyInvitations.inbox, () =>
+	const invitations = useReadQuery(api.companyInvitations.inbox, () =>
 		account()?.membership ? 'skip' : {}
 	);
-	let timedOut = $state(false);
-	$effect(() => {
-		void session.transportGeneration;
-		const loading = invitations.isLoading;
-		untrack(() => (timedOut = false));
-		if (account()?.membership || !loading) return;
-		const timer = setTimeout(() => (timedOut = true), 15_000);
-		return () => clearTimeout(timer);
-	});
 </script>
 
 <OnboardingStepFrame
@@ -41,9 +32,9 @@
 	description="Accept an invitation to work with your colleagues on Dinu."
 >
 	<div class="mx-auto grid max-w-92 gap-3.5 text-left">
-		{#if invitations.error || timedOut}
+		{#if invitations.error}
 			<p role="alert" class="text-center text-sm text-danger">Unable to load invitations.</p>
-			<button class="text-sm underline" onclick={() => session.retryAuth()}>Try again</button>
+			<button class="text-sm underline" onclick={() => invitations.retry()}>Try again</button>
 		{:else if invitations.data?.length}
 			{#each invitations.data as invitation (invitation.id)}
 				<div class="rounded-xl border-hairline border-edge bg-surface p-5 shadow-card">
@@ -66,7 +57,17 @@
 				</p>
 			</div>
 		{:else}
-			<LoadingState label="Loading invitations" />
+			<span role="status" class="sr-only">Loading invitations</span>
+			{#each [0, 1] as card (card)}
+				<div
+					aria-hidden="true"
+					class="rounded-xl border-hairline border-edge bg-surface p-5 shadow-card"
+				>
+					<SkeletonBlock class="h-5 w-36 max-w-full" />
+					<SkeletonBlock class="mt-1 mb-5 h-5 w-48 max-w-full" />
+					<SkeletonBlock class="h-button-sm w-full rounded-button-lg" />
+				</div>
+			{/each}
 		{/if}
 		{#if error}<p role="alert" class="text-center text-sm leading-5 text-danger">{error}</p>{/if}
 	</div>
