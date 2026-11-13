@@ -3,11 +3,13 @@
 	let {
 		owner,
 		active,
-		onDismiss
+		onDismiss,
+		deferEscape
 	}: {
 		owner: symbol;
 		active: boolean;
 		onDismiss: (restoreFocus: boolean) => void;
+		deferEscape?: () => boolean;
 	} = $props();
 	const interactions = getInteractionController();
 	$effect(() => {
@@ -15,6 +17,7 @@
 		return interactions.register({
 			id: owner,
 			kind: 'panel',
+			deferEscape: () => deferEscape?.() ?? false,
 			elements: () => [],
 			close: (reason) => onDismiss(reason === 'escape')
 		});

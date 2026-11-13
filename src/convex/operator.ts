@@ -22,7 +22,87 @@ import {
 import { templateItem } from '../lib/playbook/validators';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { MAX_SNAPSHOT_BYTES, templateRejected } from './templateCapacity';
-import { currentPointer, saveTemplateVersion, readLiveSnapshot } from './templates';
+import {
+	currentPointer,
+	saveTemplateVersion,
+	readLiveSnapshot,
+	activatePendingTemplate
+} from './templates';
+import { currentPendingTemplate } from './templateUploads';
+import { pendingTemplateMetadata } from './templateUploadValidators';
+import { resolveSetupBooking } from './csmSetupState';
+
+/** Trusted, company-scoped inspection; original bytes are never exposed by customer status. */
+export const inspectPendingTemplate = internalQuery({
+	args: { companyId: v.id('company') },
+	returns: v.object({
+		companyId: v.id('company'),
+		releasedTemplateSourceId: v.union(v.id('templateSources'), v.null()),
+		booking: v.union(
+			v.object({ kind: v.literal('initial') }),
+			v.object({ kind: v.literal('unavailable') }),
+			v.object({
+				kind: v.union(v.literal('confirmed'), v.literal('cancelled')),
+				appointmentId: v.id('csmSetupAppointments'),
+				currentUid: v.string()
+			})
+		),
+		pending: v.union(
+			v.null(),
+			pendingTemplateMetadata.extend({
+				fingerprint: v.string(),
+				originalUrl: v.union(v.string(), v.null())
+			})
+		)
+	}),
+	handler: async (ctx, { companyId }) => {
+		const company = await requireCompany(ctx, companyId);
+		const [booking, source] = await Promise.all([
+			resolveSetupBooking(ctx, company),
+			currentPendingTemplate(ctx, company)
+		]);
+		return {
+			companyId,
+			releasedTemplateSourceId: company.templateSourceId ?? null,
+			booking:
+				booking.kind === 'confirmed' || booking.kind === 'cancelled'
+					? {
+							kind: booking.kind,
+							appointmentId: booking.appointment._id,
+							currentUid: booking.appointment.currentUid
+						}
+					: { kind: booking.kind },
+			pending: source
+				? {
+						pendingTemplateSourceId: source._id,
+						fingerprint: source.fingerprint,
+						filename: source.filename,
+						uploadedAt: source.uploadedAt,
+						expiresAt: source.expiresAt,
+						issues: source.issues,
+						originalUrl: await ctx.storage.getUrl(source.originalFileId)
+					}
+				: null
+		};
+	}
+});
+
+/** Only internal/admin-tool access may release the exact inspected pending source. */
+export const releasePendingTemplate = internalMutation({
+	args: {
+		companyId: v.id('company'),
+		pendingTemplateSourceId: v.id('templateSources'),
+		expectedFingerprint: v.string()
+	},
+	returns: v.object({
+		templateSourceId: v.id('templateSources'),
+		versionId: v.id('templateVersions')
+	}),
+	handler: async (ctx, args) => ({
+		templateSourceId: args.pendingTemplateSourceId,
+		versionId: await activatePendingTemplate(ctx, args)
+	})
+});
 
 const seedProjection = v.object({ blocks: v.array(sourceBlock), items: v.array(templateItem) });
 const refuseOverwrite = () =>

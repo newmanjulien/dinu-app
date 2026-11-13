@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SettingsLayout from '$lib/components/workspace/SettingsLayout.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { onDestroy } from 'svelte';
 	import { useConvexClient } from 'convex-svelte';
@@ -54,41 +55,46 @@
 
 <WorkspacePresentationReporter outcome="success" />
 
-<section
-	class="flex min-h-[calc(100dvh-var(--app-header-height))] w-full bg-page pt-8 md:pt-10"
+<SettingsLayout
+	role={viewer().membership.role}
+	editCompanyProfile={viewer().permissions.editCompanyProfile}
 >
-	<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 md:gap-7">
-		<h1 class="text-lg font-medium">Settings</h1>
-		<fieldset disabled={Boolean(viewer().company.deletionPending)} class="contents">
-			<SettingsTextFieldCard
-				kind="personal-name"
-				title="Your name"
-				description="This is your visible name in Dinu."
-				fieldId="personal-name"
-				label="Your name"
-				value={viewer().profile.name}
-				footerText="We display your email if you don't provide a name."
-				saving={busy.name}
-				errorText={errors.name}
-				onSave={(name) => perform('name', () => client.mutation(api.profiles.setName, { name }))}
-			/>
-			<SettingsReadonlyFieldCard
-				title="Sign-in email"
-				description="This is the email address you use to sign in to Dinu."
-				fieldId="sign-in-email"
-				label="Email address"
-				value={viewer().profile.email}
-				footerText="You cannot change this email."
-			/>
-			{#if viewer().permissions.editCompanyProfile}
+	{#snippet field(card)}
+		<fieldset
+			disabled={card.id !== 'danger' && Boolean(viewer().company.deletionPending)}
+			class="contents"
+		>
+			{#if card.id === 'name'}
+				<SettingsTextFieldCard
+					kind="personal-name"
+					title={card.title}
+					description={card.description}
+					footerText={card.footerText}
+					fieldId="personal-name"
+					label="Your name"
+					value={viewer().profile.name}
+					saving={busy.name}
+					errorText={errors.name}
+					onSave={(name) => perform('name', () => client.mutation(api.profiles.setName, { name }))}
+				/>
+			{:else if card.id === 'email'}
+				<SettingsReadonlyFieldCard
+					title={card.title}
+					description={card.description}
+					footerText={card.footerText}
+					fieldId="sign-in-email"
+					label="Email address"
+					value={viewer().profile.email}
+				/>
+			{:else if card.id === 'companyName'}
 				<SettingsTextFieldCard
 					kind="company-name"
-					title="Company name"
-					description="This is your company's visible name in Dinu."
+					title={card.title}
+					description={card.description}
+					footerText={card.footerText}
 					fieldId="company-name"
 					label="Company name"
 					value={viewer().company.name}
-					footerText="Use the company or department name your team recognizes."
 					saving={busy.companyName}
 					errorText={errors.companyName}
 					onSave={(name) =>
@@ -96,14 +102,15 @@
 							client.mutation(api.companies.setName, { membershipId, name })
 						)}
 				/>
+			{:else if card.id === 'approvalEmail'}
 				<SettingsTextFieldCard
 					kind="approval-email"
-					title="Approval email"
-					description="Contract approval requests are sent to this address."
+					title={card.title}
+					description={card.description}
+					footerText={card.footerText}
 					fieldId="approval-email"
 					label="Approval email"
 					value={viewer().company.approvalEmail ?? ''}
-					footerText="Defaults to the company creator's email. You can change the recipient here."
 					saving={busy.approvalEmail}
 					errorText={errors.approvalEmail}
 					onSave={(email) =>
@@ -111,34 +118,36 @@
 							client.mutation(api.companies.setApprovalEmail, { membershipId, email })
 						)}
 				/>
-			{/if}
-			<SettingsRoleCard
-				value={viewer().membership.role}
-				saving={busy.role}
-				disabled={session.blocked}
-				errorText={errors.role}
-				onSave={(role) => perform('role', () => client.mutation(api.memberships.setRole, { role }))}
-			/>
-			<SettingsAvatarCard
-				title="Your avatar"
-				description={['This is your personal avatar.']}
-				footerText="An avatar is optional but helps team members recognize you."
-				ariaLabel="Upload your avatar"
-				uploading={busy.avatar}
-				errorText={errors.avatar}
-				onFileSelected={(file) => upload(file, false)}
-			>
-				{#snippet preview()}<Avatar
-						name={viewer().profile.name || viewer().profile.email}
-						avatarUrl={viewer().profile.avatarUrl}
-						class="size-17"
-					/>{/snippet}
-			</SettingsAvatarCard>
-			{#if viewer().permissions.editCompanyProfile}
+			{:else if card.id === 'role'}
+				<SettingsRoleCard
+					value={viewer().membership.role}
+					saving={busy.role}
+					disabled={session.blocked}
+					errorText={errors.role}
+					onSave={(role) =>
+						perform('role', () => client.mutation(api.memberships.setRole, { role }))}
+				/>
+			{:else if card.id === 'avatar'}
 				<SettingsAvatarCard
-					title="Company avatar"
-					description={["This is your company's avatar."]}
-					footerText="An avatar is optional."
+					title={card.title}
+					description={[card.description]}
+					footerText={card.footerText}
+					ariaLabel="Upload your avatar"
+					uploading={busy.avatar}
+					errorText={errors.avatar}
+					onFileSelected={(file) => upload(file, false)}
+				>
+					{#snippet preview()}<Avatar
+							name={viewer().profile.name || viewer().profile.email}
+							avatarUrl={viewer().profile.avatarUrl}
+							class="size-17"
+						/>{/snippet}
+				</SettingsAvatarCard>
+			{:else if card.id === 'companyAvatar'}
+				<SettingsAvatarCard
+					title={card.title}
+					description={[card.description]}
+					footerText={card.footerText}
 					ariaLabel="Upload company avatar"
 					uploading={busy.companyAvatar}
 					errorText={errors.companyAvatar}
@@ -151,8 +160,9 @@
 							class="size-17"
 						/>{/snippet}
 				</SettingsAvatarCard>
+			{:else}
+				<SettingsDangerCard />
 			{/if}
 		</fieldset>
-		<SettingsDangerCard />
-	</div>
-</section>
+	{/snippet}
+</SettingsLayout>

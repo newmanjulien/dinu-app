@@ -1,8 +1,7 @@
-import { getContext, setContext, type Snippet } from 'svelte';
+import { getContext, setContext } from 'svelte';
 
 const key = Symbol('entryPresentation');
 export class EntryPresentation {
-	footer = $state<Snippet>();
 	showFooter = $state(true);
 	signupStep = $state<1 | 2 | 3>();
 }

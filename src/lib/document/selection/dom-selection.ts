@@ -168,7 +168,10 @@ export function readSelectedDomEnvelope(
 		!root.contains(range.endContainer)
 	)
 		return false;
-	const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+	const ancestor = range.commonAncestorContainer;
+	// A paragraph selection should not walk every text node in the contract.
+	const scope = ancestor.nodeType === Node.TEXT_NODE ? ancestor.parentNode! : ancestor;
+	const walker = root.ownerDocument.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
 	try {
 		for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 			const text = node as Text;

@@ -16,7 +16,8 @@ const docx = common.extend({
 	filename: v.string(),
 	fileHash: v.string(),
 	parserVersion: v.string(),
-	uploaderId: v.id('profiles')
+	uploaderId: v.id('profiles'),
+	uploadedAt: v.number()
 });
 const seed = common.extend({
 	source: v.literal('seed'),
@@ -26,7 +27,7 @@ const seed = common.extend({
 
 export const storedTemplateSource = v.union(
 	docx.extend({
-		state: v.literal('prepared'),
+		state: v.literal('pending'),
 		expiresAt: v.number()
 	}),
 	docx.extend({

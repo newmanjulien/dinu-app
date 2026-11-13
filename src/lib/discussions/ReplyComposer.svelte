@@ -1,6 +1,8 @@
 <script lang="ts">
-	import { focusComposer } from './focus-composer';
-	import { autosizeTextarea } from './textarea-autosize';
+	import TextArea from '$lib/ui/TextArea.svelte';
+	import Button from '$lib/ui/Button.svelte';
+	import { composerTextarea } from './composer-textarea.svelte';
+	import { DISCUSSION_TEXT_LIMIT, validDiscussionText } from './limits';
 
 	let {
 		id,
@@ -16,35 +18,35 @@
 		pending?: boolean;
 		errorMessage?: string;
 		onTextChange: (text: string) => void;
-		onCancel: () => void;
+		onCancel: (restoreFocus: boolean) => void;
 		onSubmit: () => void;
 	} = $props();
 
 	let rootElement = $state<HTMLDivElement>();
-	let textareaElement = $state<HTMLTextAreaElement>();
-	let hasFocus = $state(false);
-	let canSubmit = $derived(Boolean(text.trim()));
-
-	function handleFocusIn() {
-		hasFocus = true;
-	}
+	const errorId = $props.id();
+	const textareaAttachment = composerTextarea(() => text);
+	let canSubmit = $derived(validDiscussionText(text));
 
 	function handleFocusOut(event: FocusEvent) {
-		if (!rootElement?.contains(event.relatedTarget as Node | null)) hasFocus = false;
+		if (!pending && !rootElement?.contains(event.relatedTarget as Node | null)) onCancel(false);
 	}
 
 	function handleInput(event: Event & { currentTarget: HTMLTextAreaElement }) {
 		onTextChange(event.currentTarget.value);
 	}
 
-	function handleKeydown(event: KeyboardEvent) {
+	function handleEscape(event: KeyboardEvent) {
 		if (event.key === 'Escape') {
 			event.preventDefault();
 			event.stopPropagation();
-			onCancel();
-			textareaElement?.blur();
-			return;
+			onCancel(true);
+			return true;
 		}
+		return false;
+	}
+
+	function handleKeydown(event: KeyboardEvent) {
+		if (handleEscape(event)) return;
 
 		const shouldSubmit = event.key === 'Enter' && !event.shiftKey && !event.isComposing;
 
@@ -55,33 +57,32 @@
 	}
 </script>
 
-<div bind:this={rootElement} onfocusin={handleFocusIn} onfocusout={handleFocusOut}>
-	<textarea
-		use:focusComposer
+<div bind:this={rootElement} data-discussion-reply onfocusout={handleFocusOut}>
+	<TextArea
+		attachment={textareaAttachment}
 		{id}
-		class="block min-h-10 w-full resize-none appearance-none overflow-y-hidden rounded-input border border-line bg-surface px-3 py-2 text-sm leading-[1.45] text-ink shadow-none placeholder:text-ink-muted focus:border-accent focus:outline-2 focus:outline-offset-1 focus:outline-accent/18 disabled:cursor-wait"
-		rows="1"
+		class="min-h-0 resize-none overflow-y-hidden"
+		rows={1}
 		value={text}
-		use:autosizeTextarea={{ value: text, maxHeight: 160 }}
+		maxlength={DISCUSSION_TEXT_LIMIT}
 		placeholder="Reply…"
 		aria-label="Write a reply"
+		aria-describedby={errorMessage ? errorId : undefined}
 		disabled={pending}
-		bind:this={textareaElement}
 		oninput={handleInput}
-		onkeydown={handleKeydown}></textarea>
+		onkeydown={handleKeydown}
+	/>
 	{#if errorMessage}
-		<p class="mt-2 mb-0 text-xs leading-[1.35] text-ink-secondary" role="alert">{errorMessage}</p>
+		<p class="mt-2 mb-0 text-xs leading-[1.35] text-danger" id={errorId} role="alert">
+			{errorMessage}
+		</p>
 	{/if}
-	{#if hasFocus}
-		<div class="mt-3 flex justify-end">
-			<button
-				class="h-10 cursor-pointer rounded-button-lg border border-line bg-surface px-3.5 text-[15px] font-medium text-ink-secondary hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-default disabled:bg-surface disabled:text-ink-muted"
-				type="button"
-				disabled={pending || !canSubmit}
-				onclick={onSubmit}
-			>
-				Reply
-			</button>
-		</div>
-	{/if}
+	<div class="mt-3 flex justify-end">
+		<Button
+			variant="secondary"
+			disabled={pending || !canSubmit}
+			onkeydown={handleEscape}
+			onclick={onSubmit}>Reply</Button
+		>
+	</div>
 </div>

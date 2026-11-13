@@ -23,5 +23,6 @@ export function beginCreation(prepared = false) {
 	Object.assign(window, { __contractCreationTimings: traces });
 }
 export function creationPhase(phase: Phase) {
+	// 'displayed' marks the first exact mounted DOM, before complete interaction or physical paint.
 	if (current && current.phases[phase] === undefined) current.phases[phase] = performance.now();
 }

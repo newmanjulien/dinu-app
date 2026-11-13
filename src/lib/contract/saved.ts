@@ -6,15 +6,17 @@ import type {
 	saveResult
 } from '../../convex/savedContractValidators';
 import type { Id } from '../../convex/_generated/dataModel';
+import type { ApprovedContractDocument } from './document-preview';
 import type { TemplateContent } from '../template/model';
 export type ReadyContract = {
 	id: string;
 	status: 'ready';
 	snapshot: TemplateContent;
+	approved?: ApprovedContractDocument;
 	contract: Infer<typeof contractMetadata>;
 };
 export type ContractState = Infer<typeof contractState>;
-export type LiveContractState = Infer<typeof liveContractMetadata>;
+export type LiveContractState = Omit<Infer<typeof liveContractMetadata>, 'buyerName'>;
 export type ContractSaveResult = Infer<typeof saveResult>;
 export type ContractDestination = { kind: 'new' } | { kind: 'saved'; id: string };
 export type ContractSnapshotResult =
@@ -55,7 +57,7 @@ export function isHubSpotInstallationRetired(error: unknown) {
 
 /** Canonical metadata has one freshness version, independent of business revisions. */
 export function olderContractState(next: ContractState, current: ContractState) {
-	return next.stateVersion < current.stateVersion;
+	return next.stateRevision < current.stateRevision;
 }
 
 export type ContractCreationInput =

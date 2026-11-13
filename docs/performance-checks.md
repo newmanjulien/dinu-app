@@ -5,12 +5,13 @@ Current automated guarantee reference; see the [data model](data-model.md) and
 separate verification.
 
 Run `npm run test:perf` for the performance suite. Use this same command when CI is
-introduced; no CI configuration is currently added. Vitest runs saving and CSM provider tests in
-the edge runtime through `convex-test`, and scheduling/cache/startup tests in Node with
+introduced; no CI configuration is currently added. Vitest runs creation, saving, account startup and CSM provider tests in
+the edge runtime through `convex-test`, and scheduling/cache/availability tests in Node with
 controlled browser callbacks and fake IndexedDB. Fixtures are synthetic; no browser
 harness, backend, seed data, or elapsed-time thresholds are required.
 
-Run `npm run verify` for SSR, lifecycle, performance, HubSpot, type checks, production build and emitted loading-dependency boundaries. `npm run test:lifecycle` first runs server compilation and generates pending HTML fixtures, then uses browser-compiled Svelte components and
+Tests are grouped by execution boundary and feature; see [the test guide](../tests/README.md).
+Run `npm test` for every existing test, or `npm run verify` for those tests, the focused performance suite, type checks, production build and emitted loading-dependency boundaries. `npm run test:lifecycle` first runs server compilation and generates pending HTML fixtures, then uses browser-compiled Svelte components and
 controllers in jsdom with controlled transport responses and a lightweight viewer.
 It checks route teardown, background writes and rapid reopening, early metadata
 acknowledgement, journal and approval identity, recovery deadlines/concurrency,
@@ -50,25 +51,29 @@ browser automation are introduced.
 
 CSM loading has dedicated deterministic checks:
 
-- `tests/perf/csm-availability.test.ts`: real resource coalescing, completion-based
+- `tests/client/csm-availability.test.ts`: real resource coalescing, completion-based
   two-minute TTL, ready empty months, failed/unavailable eviction, eight-entry
   access ordering, A → B → A reuse, owner/invalidation/late-result fences, and a
   terminal waiter deadline with accepted work remaining reusable. Consumption
   filters elapsed starts without mutating snapshots.
-- `tests/perf/csm-provider.test.ts`: real Convex auth/provider parsing with the
+- `tests/backend/csm/provider.test.ts`: real Convex auth/provider parsing with the
   installed rate-limiter test adapter and mocked fetch. Checks pre-template setup
   display vs strict new booking, foreign/rep/support/deletion/credential refusal,
   configuration/slots overlap, prompt invalid-configuration exit with slots pending,
   omitted browse duration and duration mismatch rejection, exact replay/unresolved
   adoption, fresh explicit-duration sender reads and no create after revoked access.
-- `tests/lifecycle/csm-preload.test.ts`: actual shell/presentation reporter, upload
+- `tests/components/csm/csm-preload.test.ts`: actual shell/presentation reporter, upload
   form, widget, modal and picker in jsdom; unrelated header/status rendering is
-  stubbed. Checks paint/route/mode admission, pre-template preload and visit retry
-  bounds, upload dispatch before calendar work on both entry routes, Continue/open
-  reuse and independent upload errors, explicit setup/support expansion with focus
-  continuation, restored-support idleness, early disabled times and live receipt
+  stubbed. Checks primary-paint/route admission and blocked-owner refusal,
+  pre-template preload and visit retry bounds, upload dispatch before calendar work
+  on both entry routes, Continue/open reuse and independent upload errors,
+  restored-support idleness, early disabled times and live receipt
   failure, unresolved-hint suppression, mismatched receipt rejection, success after
   company promotion, teardown and transport replacement.
+
+Expansion focus/prewarming/expiry reuse and automatic-warming policy for rep/support
+modes are no longer independently checked at the shell level. Resource TTL and backend
+eligibility checks remain; they protect different boundaries.
 
 These assert request counts and controlled event order, not elapsed-time targets.
 They do not certify real Cal defaults/quotas, upload contention, achieved latency,
@@ -81,22 +86,29 @@ parsing and Word generation live under `src/lib/server/contract`; importing them
 from browser code, directly or indirectly, fails the build. Shared document logic,
 upload limits, and the browser download helper remain outside that directory.
 
-| Group      | Automated guarantees                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one-selection saves skip template source reads and compilation, validate membership, and advance state. Replays succeed; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. A changed two-selection save confirms the read/compiler observers execute real code. |
-| Scheduling | Foreground dispatches before queued background work. Aborted queued callbacks never run. Destroy rejects queued work and cancels dispatch.                                                                                                                                                                                                                                                                                                                       |
-| Caching    | Compact metadata and an immutable template load once through Convex; the snapshot reopens from memory without another request, then from IndexedDB after memory release without downloading. Confirmed state updates survive reopening without rewriting the immutable snapshot store.                                                                                                                                                                           |
-| Creation   | Creation writes the contract and receipt, freezes a mutable version on first capture, and adds one compact directory write without template-content reads or compilation (four writes on first capture, three when already frozen). Existing checks cover template save replay, rollback, immutable versions, import races, creation retries, and saved-version reads.                                                                                           |
-| Startup    | Repeated opening requests navigate once. Returning accounts do not provision; confirmed missing state initializes once per transport generation without unnecessary initialization writes.                                                                                                                                                                                                                                                                       |
+| Group      | Automated guarantees                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one-selection saves skip template source reads and compilation, validate membership, and advance state. Replays succeed; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. A changed two-selection save confirms the read/compiler observers execute real code.                                      |
+| Scheduling | Foreground dispatches before queued background work. Aborted queued callbacks never run. Destroy rejects queued work and cancels dispatch.                                                                                                                                                                                                                                                                                                                                                                   |
+| Caching    | Compact metadata and an immutable template load once through Convex; the snapshot reopens from memory without another request, then from IndexedDB after memory release without downloading. Confirmed state updates survive reopening without rewriting the immutable snapshot store.                                                                                                                                                                                                                       |
+| Creation   | Creation owns one contract root and approved document, freezes a mutable template version on its first contract capture, and reuses already frozen versions. The existing frozen-template fixture checks two root writes, two other writes, one directory write, one source-content read and three document writes. Existing checks also cover template save replay, exhausted-capacity rejection, frozen content after later authoring/deletion, import races, creation retries and saved-version reads. |
+| Startup    | Repeated opening requests navigate once. Returning accounts do not provision; confirmed missing state initializes once per transport generation without unnecessary initialization writes.                                                                                                                                                                                                                                                                                                                   |
 
 Saving observers count directory writes separately while preserving the original
 contract-write assertions. Unchanged saves and replays perform zero writes to either
-table; the changed-save fixture performs one contract write and one directory write.
+table; changed saves classify root/head/receipt work and approved document materialization
+separately, preserving exact operation counts. See the
+[contract model](data-model.md#contracts-documents-and-review) for their ownership.
 
 Unchanged saves do not consume operation IDs: repeating one at the same revision
 remains a no-op, and repeating it after an intervening change follows conflict rules.
 This intentionally differs from changed saves, which advance revision and record
 the operation. The mutation response shape is unchanged.
+
+The capacity fixture checks the application's exhausted transaction-budget rejection;
+it no longer stages writes across multiple tables to check platform rollback. Startup
+checks no longer construct an unattached prepared DOCX or assert its non-adoption and
+absence of scheduled work. Prepared-creation resource adoption remains checked separately.
 
 Tests observe work at database/compiler/storage boundaries, retain real
 implementations, and restore timers, globals, cache ownership, and isolated storage.
@@ -110,14 +122,31 @@ reader to certify in the current model.
 Saving races and subscription ownership have focused lifecycle
 coverage in the separate Svelte suite.
 
-These checks do not certify server Word generation, approval/export readiness in the
-browser, simultaneous version consumers, or browser download behavior.
+The export suite (`npm run test:exports`) additionally generates and parses real DOCX packages, checks
+effective saved wording, numbering and references, tables and signature layout
+instructions, and exercises the Word action's immutable retries and approval fences.
+Buyer endpoint tests use real generation and in-memory authorization, including
+contract changes, revocation and deletion between snapshot acquisition and final
+authorization. Quotes checks cover create/readback, deduplication, uncertain writes,
+altered terms and destinations, approval gates, payload limits and reservation
+ownership. Refresh and removal checks cover credential rotation, concurrent refresh,
+temporary failure recovery, retired work, reinstall, active leases and shared portals.
+
+The lifecycle suite mounts the seller workspace with presentation components and
+transport controlled. It checks save-before-generation ordering, stable pending and
+failed-fetch retries, acknowledgment after the download callback, and cancellation
+on navigation, session replacement, approval changes and unmount. Buyer download
+controller checks cover identity/permission changes, foreground/connection loss,
+teardown, timeout and retry.
+
+These checks do not certify live HubSpot behavior, Word's visual rendering or actual
+browser download behavior. Simultaneous version consumers remain unverified.
 
 Admin authoring now uses compact certified structure, revision-authoritative details, atomic
 changed-body/version deltas and template source-lived rendering artifacts. Save publishes pending
 annotation state immediately and closes the editor; workspace ownership retains submitted work
 through navigation. Snappiness checks now exercise opening/preloading, immediate Save feedback
-and annotation-only rendering independence, alongside the existing replay, rollback, history,
+and annotation-only rendering independence, alongside the existing replay, capacity, history,
 saving, scheduling, caching and account-lifecycle guarantees. They do not exhaustively exercise
 the admin operation reducer, separate detail acknowledgement, recovery handoff
 or extreme codec/native-capacity boundaries. Native
@@ -128,10 +157,10 @@ representation adapter documented in `docs/rendering-snappiness.md`.
 
 Buyer implementation changes retain the existing saving/scheduling/caching guarantees;
 run `npm run test:perf`, Convex TypeScript checks and the production build. The existing
-suite does not establish public-token authorization/replacement races, effective-view edge cases, or
-failure-response privacy.
+suite now checks public download authorization/replacement races; it does not
+exhaustively cover effective-view edge cases or every failure-response privacy case.
 Clipboard, modal/focus behavior, responsive bar/sheet/widget geometry and DOCX appearance
-remain manual acceptance checks. No new tests or browser automation were added.
+remain manual acceptance checks. No browser automation was added.
 
 Buyer history keeps every loaded native cursor interval subscribed under explicit
 row/byte budgets and resolves required/recommended splits before advancing. Frozen
@@ -141,7 +170,12 @@ recovery or observer cancellation, and query-cost savings remain unmeasured.
 
 ## Loading regression guarantees
 
-`test:loading:ssr` renders pending Home/settings/team/integration/document, entry and buyer frames without authentication or private serialization. Lifecycle checks hydrate the exact produced workspace HTML, then exercise the real account driver, auth context, private admission and region subscription with Clerk/backend stages unresolved. They check public node retention, form retention, no pre-auth private reads, local read timeout/retry and confirmed access withdrawal. The external Clerk/Convex service boundary is controlled; actual account/admission components run.
+`test:loading:ssr` renders representative pending workspace (`/contracts`), entry (`/login`) and buyer (`/contract`) frames without authentication or private serialization. Lifecycle checks hydrate the exact produced workspace HTML, then exercise the real account driver, auth context, private admission and region subscription with Clerk/backend stages unresolved. They check public node retention, form retention, no pre-auth private reads, local read timeout/retry and confirmed access withdrawal. The external Clerk/Convex service boundary is controlled; actual account/admission components run.
+
+Route-specific skeleton variants and remembered-role presentation, hint-fetch
+deduplication, stale hint results and role-specific skeleton copy are no longer
+independently checked. These hints affect provisional presentation; the live-account
+admission and access-withdrawal checks above remain.
 
 Recovery checks cover shared hung deal-request eviction and late-result fencing, snapshot acquisition cancellation/deadline, retained history plus access rejection, buyer resource/scheduler retention, and clipboard callback/latest-success dismissal. Existing Home, editor, creation, CSM and save/cache/scheduling assertions remain required. Startup server-load checks prove independently settling account/cards and bounded streamed invitation preview; backend tests verify assistance scope and setup-hint authorization.
 

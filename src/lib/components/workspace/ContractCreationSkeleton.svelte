@@ -34,7 +34,9 @@
 	{#snippet footer()}
 		<div class="ml-auto flex gap-2">
 			<Button variant="secondary" onclick={onClose}>Cancel</Button>
-			<Button disabled>Create contract</Button>
+			<SkeletonBlock class="h-button-sm rounded-button-lg px-[13px] py-[7.5px] text-[12.5px]"
+				>Create contract</SkeletonBlock
+			>
 		</div>
 	{/snippet}
 </ModalShell>

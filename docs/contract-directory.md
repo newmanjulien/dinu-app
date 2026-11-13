@@ -8,6 +8,10 @@ contract's original creation time. Selections, review state and immutable templa
 content remain outside the directory. There is no readiness flag, source-selection
 argument, fallback reader or backfill worker.
 
+One contract root owns the current approved document and native change heads; see the
+[contract model](data-model.md#contracts-documents-and-review). Approved changes and
+output reservations preserve this directory identity.
+
 Creation, changed saving, renaming and deletion maintain the projection in the same
 transaction as the contract. Unchanged saves and replayed operations preserve their
 zero-write behavior. A source-contract company index remains for deletion; browse

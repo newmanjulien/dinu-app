@@ -6,27 +6,35 @@ import { DocumentViewerState } from './viewer.svelte';
 import type { DocumentWorkspace } from './workspace-context';
 
 function querySnapshot(input: DocumentSourceInput): DocumentSourceInput {
-	const contract = input.contract;
-	const blocks = { data: input.blocks.data, error: input.blocks.error };
+	const materialized = input.materialized?.data;
+	const common = input.contract
+		? {
+				contract: true as const,
+				materialized: {
+					data: materialized
+						? { document: materialized.document, baseline: materialized.baseline }
+						: undefined,
+					error: input.materialized.error
+				}
+			}
+		: { blocks: { data: input.blocks.data, error: input.blocks.error } };
 	switch (input.kind) {
 		case 'records':
 			return {
 				kind: input.kind,
-				contract,
-				blocks,
+				...common,
 				items: { data: input.items.data, error: input.items.error }
 			};
 		case 'structure':
 			return {
 				kind: input.kind,
-				contract,
-				blocks,
+				...common,
 				structure: { data: input.structure.data, error: input.structure.error },
 				details: input.details,
 				pendingRenderKey: input.pendingRenderKey
 			};
 		case 'overlays':
-			return { kind: input.kind, contract, blocks, overlays: input.overlays };
+			return { kind: input.kind, ...common, overlays: input.overlays };
 	}
 }
 
@@ -48,8 +56,11 @@ export function createDocumentWorkspace(
 				!prior ||
 				prior.kind !== current.kind ||
 				prior.contract !== current.contract ||
-				prior.blocks.data !== current.blocks.data ||
-				prior.blocks.error !== current.blocks.error ||
+				prior.blocks?.data !== current.blocks?.data ||
+				prior.blocks?.error !== current.blocks?.error ||
+				prior.materialized?.data?.document !== current.materialized?.data?.document ||
+				prior.materialized?.data?.baseline !== current.materialized?.data?.baseline ||
+				prior.materialized?.error !== current.materialized?.error ||
 				prior.items?.data !== current.items?.data ||
 				prior.items?.error !== current.items?.error ||
 				prior.structure?.data !== current.structure?.data ||

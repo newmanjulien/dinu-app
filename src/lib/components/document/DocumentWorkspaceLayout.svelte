@@ -3,6 +3,7 @@
 	import DocumentPageFrame from './DocumentPageFrame.svelte';
 	import DocumentPaperSkeleton from './DocumentPaperSkeleton.svelte';
 	import DocumentPanelSkeleton from './DocumentPanelSkeleton.svelte';
+	import DocumentPanelRail from './DocumentPanelRail.svelte';
 	import { protectedInteraction } from '$lib/components/ui/interactions';
 	const protect = protectedInteraction();
 
@@ -80,41 +81,13 @@
 
 	{#if hasPanel && loading && !panelResolved}<DocumentPanelSkeleton />
 	{:else if hasPanel && panelResolved}
-		<div
-			class={`pointer-events-none absolute top-(--panel-top) right-(--panel-gap) z-5 w-(--panel-width) animate-[panel-in_140ms_ease_both] @min-[1150px]:right-auto @min-[1150px]:left-[calc(var(--page-left)+var(--page-width)+var(--panel-gap))] @max-[1150px]:fixed @max-[1150px]:inset-x-0 @max-[1150px]:top-auto @max-[1150px]:bottom-[var(--buyer-link-bar-height,0px)] @max-[1150px]:z-30 @max-[1150px]:w-auto @max-[1150px]:animate-[sheet-in_140ms_ease_both] motion-reduce:animate-none ${followScroll ? '@min-[1150px]:bottom-0' : ''} ${animatePanelPosition ? 'motion-safe:@min-[1150px]:transition-[top] motion-safe:@min-[1150px]:duration-180 motion-safe:@min-[1150px]:ease-[cubic-bezier(0.22,1,0.36,1)]' : ''}`}
-			data-workspace-panel-rail
+		<DocumentPanelRail
+			top={panelTop}
+			{followScroll}
+			animatePosition={animatePanelPosition}
+			{interactive}
 		>
-			<div
-				use:protect={interactive}
-				class={`pointer-events-auto @max-[1150px]:[&>aside]:max-h-[min(65dvh,calc(100dvh-var(--app-header-height)-var(--buyer-link-bar-height,0px)-24px))] ${followScroll ? '@min-[1150px]:sticky @min-[1150px]:top-[calc(var(--app-header-height)+var(--document-viewport-gap))] @min-[1150px]:[&>aside]:max-h-[calc(100dvh-var(--app-header-height)-2*var(--document-viewport-gap))] @min-[1150px]:[&>aside]:overflow-y-auto @min-[1150px]:[&>aside]:overscroll-contain' : ''}`}
-				data-workspace-panel
-			>
-				{@render panelContent()}
-			</div>
-		</div>
+			{@render panelContent()}
+		</DocumentPanelRail>
 	{/if}
 </div>
-
-<style>
-	@keyframes -global-panel-in {
-		from {
-			opacity: 0;
-			transform: translateY(3px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
-
-	@keyframes -global-sheet-in {
-		from {
-			opacity: 0;
-			transform: translateY(16px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
-</style>

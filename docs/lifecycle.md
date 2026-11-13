@@ -1,8 +1,20 @@
 # Saved contract navigation and saving
 
 Current names and ownership are documented in [the data model](data-model.md).
-Contract persistence uses one applications map, distinct local intent, and one
-outstanding request. `savePending()` initiates contract saving. Account exits use
+
+One current contract root owns editing and review state for its whole lifetime. Its approved document is shared by the seller dashboard and buyer link. Word and HubSpot reserve immutable evidence on their original operation receipts. `prepareContractAction` flushes the initiating editor, waits for acknowledgment and fetches current source expectations before first share or seller output. Unresolved intent/conflicts block. Copying an existing buyer link retains its small fast path.
+
+Mutable source pointers refresh on open; approved document/template caches follow immutable identities. The shared bounded cache prefetches current transport and focused preview bases while preserving coherent content during refresh. Current intent uses `dinu:drafts:v6`, envelope 10, with user/deployment/membership/contract ownership. Old version/intent namespaces are never translated or replayed. Preserve current pending bytes and original operation IDs across reloads and account/deployment boundaries. Exceptional preparation remains owned by that same operation until its business commit.
+
+Successful clipboard writes follow `BuyerLinkController.onCopied` through
+`BuyerLinkCopyFeedback.show` to the single `WorkspaceShell.CopyConfirmation` host.
+“Latest link copied” shares the save status area, raised 8px above Home search and
+expires 2.5 seconds after the latest copy, including above Past links. Contract-bar
+errors replace its explanatory sentence in red for five seconds; card errors use the
+same bubble in red for five seconds. Clipboard failure has no manual-copy field/modal.
+
+Contract persistence keeps confirmed native Playbook state, distinct local intent and one
+immutable outstanding request. `savePending()` initiates contract saving. Account exits use
 `prepareToLeave()`; authoring flushes only already submitted work and never submits an unsent draft.
 
 The contracts layout reads its own `ContractDestination` load data. Each keyed saved
@@ -51,8 +63,10 @@ foreground opening is immediate and version reads use the existing shared cache.
 Initialization has a 15-second deadline and failures remain pending until Retry or
 explicit discard. Saving and recovery require no document viewer or document host.
 
-The registry has one reactive map. Detached sessions release full template references
-independently of save and flush lifetimes. Validated template identity and approval
+The registry has one reactive map. Final view detachment clears the snapshot and retained
+selected definitions, then evaluates every lazy view projection to replace its cached
+payload with empty data. Save and flush lifetimes retain no old editor projection payloads;
+separately bounded document resources keep their own retention policy. Validated template identity and approval
 requirements survive releasing rendering data; reattachment can reload the snapshot
 without replacing a healthy subscription. A failure to reload rendering data reaches
 the view's retry handling while saving continues. Unchanged readiness notifications
@@ -89,7 +103,7 @@ reset an active view's local choices.
 
 `WorkspaceScope` also owns a lightweight `TemplateAuthoringSession`, above both the header
 and `/template`. It creates its draft controller lazily and subscribes only while authoring
-is attached or submitted/recovery work remains. Detachment releases source/viewer callbacks
+is attached, an admitted opening retains reads, or submitted/recovery work remains. Detachment releases source/viewer callbacks
 and unsent local state while retaining the immutable submitted payload, operation UUID and
 expected revision. Save closes a valid editor synchronously and publishes a dashed pending
 annotation. A single outstanding operation/recovery slot permits navigation and unrelated
@@ -261,7 +275,7 @@ automation are required by this implementation. Report actual check results sepa
   source/generated fragments. Check Enter/Space, source/priority order, dirty geometry,
   repagination, boundary controls, headings, pending disabled state and existing selection.
 - Cold native focus reveals the measured owner; programmatic close/post-commit focus preserves
-  scroll. With fonts/commit delaying geometry, focus/semantics persist. Later paint must not
+  scroll. With content commits delaying geometry, focus/semantics persist. Later paint must not
   steal focus or reveal after a newer keyboard, pointer, wheel or touch intent.
 - Check query errors/refresh, account/company exit and unload protection, plus the temporary
   company-hold Settings detour. Ordinary departure confirms only unsent abandonment.
@@ -271,8 +285,8 @@ results do not measure perceived first-Save latency, CPU/frame time, heap or liv
 
 ## Backend contract
 
-`playbookItems.savePlaybookItem` checks authorization, replay, missing records and expected
-content revisions before changed-body validation. Instruction-only saves read metadata and
+`playbookItems.saveTemplateItem` checks authorization, replay, missing records and expected
+content revisions before changed-body validation. Wording-only saves read metadata and
 one head/body. Geometry changes additionally validate against certified compact source facts
 and heads, including trigger uniqueness/overlap, boundaries, references and ownership effects.
 The head, changed revision body, receipt, ordered manifest, counters and pointer commit
@@ -449,38 +463,13 @@ once independently of parent content. The geometry memo retains original failure
 the context derives safe loading/size, translated geometry or fallback reason
 strings. Revalidation does not erase transport outcomes.
 
-## Contract concession reviews
+## Contract change reviews
 
-Each required concession application has an `applicationId`, stored beside the concession in the
-contract applications map. Changing, removing, or reapplying a choice creates a new application;
-renaming the buyer or saving another choice preserves existing decisions. Required
-choices applied by reps start pending; choices applied by admins start approved and
-record the admin's decision. Stored-format conversion preserves existing application identities and decisions.
+Native Playbook options and buyer proposals share immutable changes, exact current/applied heads and admin decisions. Permitted actions apply immediately. Restricted additions, removals and switches leave their applied predecessor visible until approved. Withdrawing pending/declined transitions restores that predecessor. Admin approval and undo check exact current change/decision/document expectations and inverse/dependency eligibility; applied buyer undo never requires its source thread. Pending alternatives stay in focused comparisons while every main view renders approved text.
 
-Current review state lives on the saved contract. Admin decisions validate company
-access, the immutable template's approval requirement, and the current selection and
-lifecycle. Decisions update only review metadata, without advancing the selection
-revision or invalidating document rendering and Word preparation. Live subscriptions
-carry decisions to both roles; same-revision save responses cannot replace a newer
-live decision. Each decision also appends the admin's identity, previous and resulting
-status, and timestamp to `concessionDecisions`. Scoped operation receipts make retries
-idempotent even after another admin decides; distinct committed decisions use the
-latest status. Automatic approval receipts and review receipts have separate namespaces.
-Live confirmation retires an ambiguous client attempt, so a later override uses a
-fresh operation rather than replaying its earlier receipt.
+The `playbook` and `buyer-link` contexts have independent semantic freshness tokens, requests and completions. Explicit submission freezes exact pending entries; cancellation intersects each entry with its effective current head, preserving unrelated coverage. Completion checks the current token/counts and retains the existing notification choice. Delivery filters bounded immutable snapshot pages and rechecks its source/support fences before the send lease. No-op/replay receipts preserve original operation ownership without adding a second semantic decision.
 
-Review generation is separate from selection revision and advances for changed
-saves and explicit changed decisions. Only an explicit decision that completes
-all required reviews enters awaiting confirmation. Explicit completion confirmation
-queues the summary to the creator, with the
-triggering reviewer's current same-company address in CC. That authenticated
-reviewer ID belongs to the delivery event, including retries. Email preparation
-and immutable byte-bounded status snapshots are separate from it. Claiming dispatch
-checks that generation and current recipient membership again. Current reviews
-contain only concession, lifecycle and status; complete immutable decision receipts
-retain historical admin identity. No separate current-attribution storage remains.
-Delivery attempts, persistence retries, and recovery are shared with approval
-requests and invitations. No batching timer is used.
+Approved changes synchronously update document identity, effective cancellations, context counts and the exact unread projection. Discussion source edits/deletion withdraw only the exact pending support; replies do not. Physical cleanup later normalizes stale heads before maps retire. First link and seller output require exact readiness; existing links and buyer displayed-byte downloads remain usable independently of private pending work. Output reservations own paged proof separately from the contract and source discussions.
 
 Each applied concession owns one review state and one tab per affected part. Edits
 owned by the same instruction trigger share a location; changes outside its triggers
@@ -498,10 +487,10 @@ pages only scans the new content; scale changes reuse page-local
 coordinates. Status changes update labels without remeasuring text, and only the
 open review menu is mounted.
 Admins can change either decision using the same menu; reps see read-only status and
-remove a rejected choice to clear it. Reviews are disabled until the current application
+remove a rejected choice to clear it. Reviews are disabled until the current change
 is saved. Word download requires every selected required concession to be approved.
 
-An explicit approval request freezes the pending applications and reviewed context
+An explicit approval request freezes the pending native changes and reviewed context
 into the existing recoverable email dispatch. Sending an email never changes review
 status. Its `?review=1` link waits for current state and mounted pages, then focuses the
 first pending concession's tab. A stale link reports that nothing is waiting and focuses the first
@@ -523,3 +512,38 @@ tests exercise the contract registry; they do not certify these new admin flows.
 Public route children survive session startup. The authenticated sibling driver owns one backend-auth publisher and a replaceable transport; the admitted content scope installs the shared proxy without another auth setup. Identity/membership/company determine private ownership; a transport revision determines read freshness and never keys an editor. Same-scope account uncertainty freezes actions and retains draft/save owners; explicit replacement/revocation removes unauthorized display.
 
 Local region attempts own their deadlines, retry subscriptions and stale callbacks. Timeout can retain accepted display but cannot authorize actions or cancel submitted writes. Delivered query rejection clears sensitive region data. Saved-contract opening attempts no longer key RepWorkspace; compatible buyer opening recovery preserves its accepted host/scheduler/resource. Token replacement or unusable construction replaces the buyer resource. Keep all existing save-before-leave, immutable operation IDs and uncertainty reconciliation contracts.
+
+## Document opening reads
+
+Template intent downloads editor and construction code only. Once the template destination
+is admitted, Workspace retains compact structure reads for its selected audience and a
+membership-owned template source subscription shared by both audience sessions. Mounted
+authoring takes its own read lease. Both leases can coexist; the session's positive reader
+count keeps one underlying source lease and compact structure subscription. The mounted
+lease survives the retained Settings detour. WorkspaceScope alone constructs, configures
+and destroys the shared source; audience sessions only retain/release it. Neither opening demand nor imports create drafts,
+controllers, selections or optional instruction-body reads. Hold/access/transport changes
+retain their existing authority over these lifetimes.
+
+Saved-contract activation capture reserves only the intended card's existing download
+before Home pauses background work. The reservation becomes navigation-owned in
+beforeNavigate, with token-specific completion/cancellation cleanup. Capture-only intent
+expires after 1,500 ms; repeated activation of the same flight preserves an established
+navigation reservation and its token without adding an expiry. A genuine superseding
+navigation gets a new cleanup token. Post-guard demand
+acquires that flight before releasing the reservation; peers remain cancellable.
+
+ContractRoute owns an editor view lease while destination code and the document host load.
+The same editor supplies state, frozen content and bounded retained selected definitions to
+the mounted screen. Complete source input reaches retained and fallback workspaces before
+activation; missing selected wording stays pending or reports its existing error. A cold
+selected-definition failure keeps the viewer's Retry available before any render source
+exists, using SavedContract's opening/deadline reset and editor retry. One editor-root
+derived readiness result serves input admission, required reviews and mounted consumers. Home
+keeps frozen downloads without preparing selections whose bodies are absent. Save-only
+and link reservations do not acquire the selected-definition subscription.
+
+Buyer entry downloads viewer code alongside status. Status still admits content, mounting,
+activity and tools, and revocation still releases them. Document geometry depends on
+mounted surfaces, style identity and content commits, independently of global web-font
+activity. Newsreader readiness belongs to the support widget alone.

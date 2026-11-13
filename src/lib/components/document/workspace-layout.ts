@@ -1,3 +1,6 @@
+/** Contracts reserve desktop review space before review data is available. */
+export type DocumentLayout = 'standard' | 'contract';
+
 export const REVIEW_GUTTER_WIDTH = 100;
 export const RAIL_SAFE_GUTTER = 88;
 export const PANEL_MIN_WIDTH = 336;

@@ -1,3 +1,4 @@
+import { cancelPreparationJobs } from './csmMeetingPreparation';
 import { paginationResultValidator } from 'convex/server';
 import { v } from 'convex/values';
 import { internal } from './_generated/api';
@@ -9,10 +10,42 @@ import { PREPARATION_TTL, RECONCILIATION_PAGE_SIZE } from './deletionPolicy';
 import { retireCompanyHubSpot } from './hubspotCleanup';
 import { deletionIdentity, companyCleanupPhases as phases } from './deletionValidators';
 import { cancelAppointmentJobs } from './csmSetupAppointments';
+import { clearSetupAppointment } from './csmSetupState';
 import { activeJob, cancelJob, RETIRED_DELIVERY_RECHECK } from './emailDeliveries';
 import { retireDelivery } from './emailDisposal';
 import { deleteUnownedFile } from './storageOwnership';
 import { resetQuota } from './buyerActivityQuota';
+import { cleanupCompanyOperations } from './operationReceipts';
+import { cleanupCompanyExports } from './contractExports';
+
+async function cleanupCompanyContractState(
+	ctx: MutationCtx,
+	companyId: Doc<'company'>['_id'],
+	budget: ReturnType<typeof cleanupBudget>
+) {
+	const { drain } = budget;
+	// Retained output operations own immutable document evidence until company erasure.
+	if (!(await cleanupCompanyExports(ctx, companyId, budget))) return false;
+	for (const table of [
+		'contractChangeHeads',
+		'contractChangeDecisions',
+		'hubspotLinkBlocks',
+		'contractChangeContents',
+		'contractChanges',
+		'contractDocuments',
+		'contractDocumentChunks',
+		'contractHubspotAssociations',
+		'contractBuyerRefreshes'
+	] as const)
+		if (
+			!(await drain(
+				table,
+				ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			))
+		)
+			return false;
+	return true;
+}
 
 async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>, delay = 0) {
 	const generation = marker.cleanupGeneration + 1;
@@ -146,7 +179,8 @@ export const clean = internalMutation({
 		if (!marker || marker.status !== 'cleaning' || marker.cleanupGeneration !== generation)
 			return null;
 		const companyId = marker.companyId;
-		const { exhausted, drain } = cleanupBudget(ctx);
+		const budget = cleanupBudget(ctx);
+		const { exhausted, drain } = budget;
 		let phase = marker.phase;
 		let retryDelay = 0;
 		while (!(await exhausted())) {
@@ -162,8 +196,21 @@ export const clean = internalMutation({
 					);
 					break;
 				case 'hubspot':
-					drained = await retireCompanyHubSpot(ctx, companyId);
+					drained = await retireCompanyHubSpot(ctx, companyId, budget);
 					if (!drained) retryDelay = 60_000;
+					break;
+				case 'operationReceipts':
+					drained = await drain(
+						'contractCleanups',
+						ctx.db
+							.query('contractCleanups')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+					);
+					if (drained) drained = await cleanupCompanyOperations(ctx, companyId, budget);
+					break;
+				case 'exports':
+					drained = await cleanupCompanyExports(ctx, companyId, budget);
 					break;
 				case 'approvals':
 					drained = await drain(
@@ -199,9 +246,9 @@ export const clean = internalMutation({
 					break;
 				case 'decisions':
 					drained = await drain(
-						'concessionDecisions',
+						'contractChangeDecisions',
 						ctx.db
-							.query('concessionDecisions')
+							.query('contractChangeDecisions')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
@@ -274,15 +321,15 @@ export const clean = internalMutation({
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
-				case 'contractBuyerState':
-					drained = await drain(
-						'contractBuyerState',
-						ctx.db
-							.query('contractBuyerState')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
 				case 'discussions':
+					drained = await drain(
+						'discussionUnreadControls',
+						ctx.db
+							.query('discussionUnreadControls')
+							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+						{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+					);
+					if (!drained) break;
 					drained = await drain(
 						'discussionQuotaKeys',
 						ctx.db
@@ -292,13 +339,13 @@ export const clean = internalMutation({
 					);
 					if (!drained) break;
 					for (const table of [
+						'discussionInvalidations',
+						'discussionTransitionMapChunks',
+						'discussionUnreadNodes',
+						'discussionPassageClaims',
 						'discussionMessages',
 						'discussionThreads',
-						'discussionReceipts',
-						'proposalApplications',
-						'contractConcessions',
-						'publicationAcknowledgments',
-						'contractAccess'
+						'discussionReceipts'
 					] as const) {
 						if (
 							!(await drain(
@@ -318,6 +365,9 @@ export const clean = internalMutation({
 							.query('savedContracts')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
+					break;
+				case 'contractState':
+					drained = await cleanupCompanyContractState(ctx, companyId, budget);
 					break;
 				case 'contractDirectory':
 					drained = await drain(
@@ -422,6 +472,9 @@ export const clean = internalMutation({
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
 						{
 							afterDelete: async (row) => {
+								const company = await ctx.db.get('company', companyId);
+								if (company?.pendingTemplateSourceId === row._id)
+									await ctx.db.patch('company', companyId, { pendingTemplateSourceId: undefined });
 								if (row.source === 'docx') await deleteUnownedFile(ctx, row.originalFileId);
 							}
 						}
@@ -438,13 +491,38 @@ export const clean = internalMutation({
 				case 'csmBookings':
 					drained =
 						(await drain(
+							'csmMeetingPreparations',
+							ctx.db
+								.query('csmMeetingPreparations')
+								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+							{ beforeDelete: (row) => cancelPreparationJobs(ctx, row) }
+						)) &&
+						(await drain(
+							'csmWebhookEvidence',
+							ctx.db
+								.query('csmWebhookEvidence')
+								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+							{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+						)) &&
+						(await drain(
+							'csmErasedInitialGuards',
+							ctx.db
+								.query('csmErasedInitialGuards')
+								.withIndex('by_companyId_and_blocking', (q) => q.eq('companyId', companyId))
+						)) &&
+						(await drain(
 							'csmSetupAppointments',
 							ctx.db
 								.query('csmSetupAppointments')
 								.withIndex('by_companyId_and_selection_and_sortAt_and_anchorUid', (q) =>
 									q.eq('companyId', companyId)
 								),
-							{ beforeDelete: (row) => cancelAppointmentJobs(ctx, row) }
+							{
+								beforeDelete: async (row) => {
+									await cancelAppointmentJobs(ctx, row);
+									await clearSetupAppointment(ctx, row);
+								}
+							}
 						)) &&
 						(await drain(
 							'csmBookingAttempts',
@@ -455,6 +533,7 @@ export const clean = internalMutation({
 								beforeDelete: async (row) => {
 									await cancelJob(ctx, row.sendJobId);
 									await cancelJob(ctx, row.watchdogJobId);
+									await cancelJob(ctx, row.recoveryJobId);
 								}
 							}
 						));
@@ -468,12 +547,36 @@ export const clean = internalMutation({
 					);
 					break;
 				case 'company': {
-					if (!(await retireCompanyHubSpot(ctx, companyId))) {
+					if (!(await retireCompanyHubSpot(ctx, companyId, budget))) {
 						drained = false;
 						retryDelay = 60_000;
 						break;
 					}
 					// Workers already beyond a newly added phase must still drain its children.
+					if (
+						!(await drain(
+							'csmMeetingPreparations',
+							ctx.db
+								.query('csmMeetingPreparations')
+								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+							{ beforeDelete: (row) => cancelPreparationJobs(ctx, row) }
+						))
+					) {
+						drained = false;
+						break;
+					}
+
+					if (
+						!(await cleanupCompanyOperations(ctx, companyId, budget)) ||
+						!(await cleanupCompanyExports(ctx, companyId, budget))
+					) {
+						drained = false;
+						break;
+					}
+					if (!(await cleanupCompanyContractState(ctx, companyId, budget))) {
+						drained = false;
+						break;
+					}
 					if (
 						!(await drain(
 							'csmSetupAppointments',
@@ -482,7 +585,12 @@ export const clean = internalMutation({
 								.withIndex('by_companyId_and_selection_and_sortAt_and_anchorUid', (q) =>
 									q.eq('companyId', companyId)
 								),
-							{ beforeDelete: (row) => cancelAppointmentJobs(ctx, row) }
+							{
+								beforeDelete: async (row) => {
+									await cancelAppointmentJobs(ctx, row);
+									await clearSetupAppointment(ctx, row);
+								}
+							}
 						))
 					) {
 						drained = false;

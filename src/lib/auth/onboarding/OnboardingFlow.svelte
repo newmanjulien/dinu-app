@@ -14,7 +14,7 @@
 	import CreateCompanyStep from './CreateCompanyStep.svelte';
 	import JoinCompanyStep from './JoinCompanyStep.svelte';
 	import RouteTitle from '../RouteTitle.svelte';
-	import AuthProgressDots from '../components/AuthProgressDots.svelte';
+	import OnboardingLayout from './OnboardingLayout.svelte';
 
 	type Step = 'choose' | 'create' | 'join';
 	const account = useAccount();
@@ -26,7 +26,6 @@
 	let pending = $state(false);
 	let error = $state('');
 	let completionDestination: string | undefined;
-	let welcomeUpload = false;
 	let alive = true;
 	let completionAttempted = false;
 	const title = $derived(
@@ -51,13 +50,13 @@
 	// This flow owns completion. Additional setup steps belong here before workspace navigation.
 	async function complete() {
 		const generation = session.transportGeneration;
-		if (completionAttempted || session.blocked || !current(generation)) return;
+		if (completionAttempted || !account()?.membership || session.blocked || !current(generation))
+			return;
 		// A cancelled navigation must not restart when mutation or session state changes.
 		completionAttempted = true;
 		try {
 			await goto(completionDestination ?? destination, {
-				replaceState: true,
-				state: welcomeUpload ? { supportWelcomeMembershipId: account()?.membership?.id } : {}
+				replaceState: true
 			});
 		} catch {
 			if (current(generation)) error = 'We couldn’t open your workspace. Please reload.';
@@ -83,7 +82,7 @@
 		step = next;
 	}
 
-	async function run(work: () => Promise<unknown>, nextDestination = destination, welcome = false) {
+	async function run(work: () => Promise<unknown>, nextDestination = destination) {
 		if (pending || session.blocked) return;
 		const generation = session.transportGeneration;
 		pending = true;
@@ -92,11 +91,11 @@
 			await work();
 			if (current(generation)) {
 				completionDestination = nextDestination;
-				welcomeUpload = welcome;
 			}
 		} catch (e) {
 			if (current(generation))
-				error = e instanceof Error ? e.message : 'Unable to join your company. Please try again.';
+				error =
+					e instanceof Error ? e.message : 'Unable to finish company setup. Please try again.';
 		} finally {
 			if (alive) pending = false;
 		}
@@ -104,10 +103,6 @@
 </script>
 
 <RouteTitle {title} />
-
-{#if !account()?.membership}
-	<AuthProgressDots step={3} />
-{/if}
 
 {#if step === 'create' && !account()?.membership}
 	<div class="absolute inset-x-6 top-8 mx-auto h-5 max-w-190 sm:top-12">
@@ -122,41 +117,42 @@
 	</div>
 {/if}
 
-<div class="m-auto w-full max-w-190 pt-7 pb-15 text-center">
-	{#if account()?.membership}
-		<LoadingState label="Opening your workspace" />
-		{#if error}<p role="alert" class="text-center text-sm text-danger">{error}</p>{/if}
-	{:else if step === 'choose'}
-		<ChooseCompanyStep
+<OnboardingLayout showProgress={!account()?.membership}>
+	{#snippet children()}
+		{#if account()?.membership}
+			<LoadingState label="Opening your workspace" />
+			{#if error}<p role="alert" class="text-center text-sm text-danger">{error}</p>{/if}
+		{:else if step === 'choose'}
+			<ChooseCompanyStep
+				disabled={pending || session.blocked}
+				oncreate={() => showStep('create')}
+				onjoin={() => showStep('join')}
+			/>
+		{:else if step === 'create'}
+			<CreateCompanyStep
+				bind:name
+				{pending}
+				{error}
+				blocked={session.blocked}
+				onsubmit={(name) =>
+					void run(() => client.mutation(api.companies.create, { name }), '/template')}
+			/>
+		{:else}
+			<JoinCompanyStep
+				{pending}
+				{error}
+				onjoin={(invitationId) =>
+					void run(() => client.mutation(api.companyInvitations.accept, { invitationId }))}
+				oncreate={() => showStep('create')}
+			/>
+		{/if}
+	{/snippet}
+	{#snippet footer()}
+		<button
+			type="button"
+			class="mt-1 cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted"
 			disabled={pending || session.blocked}
-			oncreate={() => showStep('create')}
-			onjoin={() => showStep('join')}
-		/>
-	{:else if step === 'create'}
-		<CreateCompanyStep
-			bind:name
-			{pending}
-			{error}
-			blocked={session.blocked}
-			onsubmit={(name) =>
-				void run(() => client.mutation(api.companies.create, { name }), '/template', true)}
-		/>
-	{:else}
-		<JoinCompanyStep
-			{pending}
-			{error}
-			onjoin={(invitationId) =>
-				void run(() => client.mutation(api.companyInvitations.accept, { invitationId }))}
-			oncreate={() => showStep('create')}
-		/>
-	{/if}
-</div>
-
-<footer class="translate-y-2 text-center text-xs leading-5 text-ink-muted">
-	<button
-		type="button"
-		class="mt-1 cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted"
-		disabled={pending || session.blocked}
-		onclick={() => void session.signOut()}>Sign out</button
-	>
-</footer>
+			onclick={() => void session.signOut()}>Sign out</button
+		>
+	{/snippet}
+</OnboardingLayout>

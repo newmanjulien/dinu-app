@@ -1,117 +1,81 @@
 <script lang="ts">
-	const helpScope = useHelpPreferenceScope();
 	import { recordColdStart } from '$lib/document/runtime/render-perf';
 	import { DocumentSearchSession } from '$lib/document/search/search-session.svelte';
 	import UtilityRail from '$lib/components/chrome/UtilityRail.svelte';
-	import HeaderContent from '$lib/components/chrome/HeaderContent.svelte';
+	import type { DocumentToolControls } from './document-tools';
+	import UtilityPanel, { type UtilityPanelName } from './UtilityPanel.svelte';
 	import DocumentSearchPanel from '$lib/components/search/DocumentSearchPanel.svelte';
 	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
 	import { helpContent, type HelpVariant } from '$lib/components/ui/modal/help-content';
-	import { isHelpHidden, useHelpPreferenceScope } from '$lib/components/ui/modal/help-storage';
+	import type { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
 	import { onMount, tick } from 'svelte';
 	import { getDocumentWorkspace } from '$lib/document/runtime/workspace-context';
-	import {
-		getInteractionController,
-		getInteractionOwner,
-		protectedInteraction
-	} from '$lib/components/ui/interactions';
+	import { getInteractionController, getInteractionOwner } from '$lib/components/ui/interactions';
 	const interactions = getInteractionController();
 	const owner = getInteractionOwner();
-	const searchId = Symbol('document-search');
-	const protect = protectedInteraction();
 	let {
 		active = true,
 		isAdmin = false,
 		helpVariant,
 		helpReady,
+		help,
 		onDownload,
 		downloadReason = null,
-		settingsHref
+		settingsHref,
+		onTools
 	}: {
 		active?: boolean;
 		isAdmin?: boolean;
 		helpVariant: HelpVariant;
 		helpReady: boolean;
+		help: HelpSession;
 		onDownload?: () => void;
 		downloadReason?: string | null;
 		settingsHref?: string;
+		onTools?: (tools: DocumentToolControls) => () => void;
 	} = $props();
 	const { source, renderer, viewer } = getDocumentWorkspace();
-	let helpInitialized = $state(false);
-	let helpOpen = $state(false);
 	const documentAvailable = $derived(
 		active && viewer.pagesVisible && !source.issue && !renderer.error && !viewer.preparationBlocked
 	);
-	const helpEnabled = $derived(helpInitialized && documentAvailable);
+	const helpEnabled = $derived(documentAvailable);
 	$effect(() => {
-		if (!helpReady || !documentAvailable) return;
-		// Rep and buyer help open once per document opening; template help is manual.
-		if (helpInitialized) return;
-		helpInitialized = true;
-		helpOpen =
-			(helpVariant === 'rep' || helpVariant === 'buyer') && !isHelpHidden(helpVariant, helpScope());
+		if (helpReady && documentAvailable) help.considerAutomatic();
 	});
 	$effect(() => {
-		if (!active) helpOpen = false;
+		if (!active) help.close();
 	});
 	function openHelp() {
-		if (!helpEnabled) return;
-		helpOpen = true;
+		if (helpEnabled) help.openManually();
 	}
 	const searchEnabled = $derived(
 		Boolean(active && viewer.displayedSnapshot && viewer.pagesVisible)
 	);
 	const searchSession = new DocumentSearchSession();
-	let searchOpen = $state(false);
-	let searchPanelElement = $state<HTMLElement>();
+	let activePanel = $state<UtilityPanelName | null>(null);
+	let panel = $state<UtilityPanel>();
+	const searchOpen = $derived(activePanel === 'search');
+	let panelElement = $state<HTMLElement>();
 	let searchInputElement = $state<HTMLInputElement | null>();
-	$effect(() => searchSession.setPanel(searchPanelElement));
-	let searchButton: HTMLButtonElement | undefined;
-	let desktopSearchButton = $state<HTMLButtonElement | null>();
-	let mobileSearchButton = $state<HTMLButtonElement | null>();
-	let utilityRailElement = $state<HTMLElement>();
+	$effect(() => searchSession.setPanel(searchOpen ? panelElement : undefined));
+	let desktopRailElement = $state<HTMLElement>();
+	let mobileRailElement = $state<HTMLElement>();
 	$effect(() => {
-		if (!searchOpen) return;
-		return interactions.register({
-			id: searchId,
-			owner,
-			kind: 'utility',
-			elements: () => [
-				searchPanelElement ?? undefined,
-				mobileSearchButton ?? undefined,
-				utilityRailElement ?? undefined
-			],
-			close: (reason) => closeSearch(reason === 'escape')
-		});
+		if (!active) closePanel(false);
 	});
-
-	function visibleSearchButton() {
-		return [searchButton, mobileSearchButton, desktopSearchButton].find(
-			(button) => button?.isConnected && button.getClientRects().length
-		);
+	function closePanel(restoreFocus = true) {
+		panel?.close(restoreFocus);
 	}
-
-	function closeSearch(restoreFocus = true) {
-		if (!searchOpen) return;
-		searchOpen = false;
-		searchSession.clear();
-		searchPanelElement = undefined;
-		searchInputElement = undefined;
-		if (restoreFocus) void tick().then(() => visibleSearchButton()?.focus({ preventScroll: true }));
+	function openSearch(trigger?: HTMLButtonElement) {
+		panel?.show('search', trigger);
 	}
-
 	function toggleSearch(trigger: HTMLButtonElement) {
 		if (!searchEnabled) return;
 		if (searchOpen) {
-			closeSearch();
+			closePanel();
 			return;
 		}
-		searchButton = trigger;
-		searchOpen = true;
-	}
-
-	function focusSearchInput() {
-		void tick().then(() => searchInputElement?.focus({ preventScroll: true }));
+		openSearch(trigger);
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -124,18 +88,13 @@
 
 		if (isFindShortcut) {
 			event.preventDefault();
-			if (!searchOpen) {
-				searchButton = visibleSearchButton() ?? undefined;
-				searchOpen = true;
-			}
-			focusSearchInput();
-			return;
+			openSearch(panel?.visibleButton('search'));
 		}
 	}
 
 	$effect(() => {
 		const target = searchEnabled ? viewer.documentStageElement : undefined;
-		if (!searchEnabled) closeSearch(false);
+		if (!searchEnabled && searchOpen) closePanel(false);
 		void viewer.displayedSnapshot?.id;
 		const pages = viewer.displayedSnapshot?.pages ?? [];
 		let cancelled = false;
@@ -151,6 +110,25 @@
 		};
 	});
 
+	$effect(() => {
+		if (!onTools || !active) return;
+		return onTools({
+			owner,
+			get searchOpen() {
+				return activePanel === 'search';
+			},
+			searchEnabled,
+			helpEnabled,
+			onSearchToggle: toggleSearch,
+			onOpenHelp: openHelp,
+			closePanel,
+			setRails: (desktop, mobile) => {
+				desktopRailElement = desktop;
+				mobileRailElement = mobile;
+			}
+		});
+	});
+
 	onMount(() => {
 		const releaseShortcut = interactions.shortcut(handleKeydown);
 		return () => {
@@ -160,36 +138,42 @@
 	});
 </script>
 
-{#if searchOpen}
-	<HeaderContent>
-		<div
-			use:protect
-			class="pointer-events-auto absolute top-0 left-[84px] w-[378px] max-[999px]:static max-[999px]:w-full"
-		>
-			<DocumentSearchPanel
-				session={searchSession}
-				bind:panelElement={searchPanelElement}
-				bind:inputElement={searchInputElement}
-			/>
-		</div>
-	</HeaderContent>
+<UtilityPanel
+	bind:this={panel}
+	bind:activePanel
+	bind:element={panelElement}
+	{owner}
+	desktop={desktopRailElement}
+	mobile={mobileRailElement}
+	onLeave={(name) => {
+		if (name === 'search') searchSession.clear();
+	}}
+	focusTarget={() => ({
+		element: searchInputElement,
+		preventScroll: true
+	})}
+>
+	{#snippet children()}
+		<DocumentSearchPanel session={searchSession} bind:inputElement={searchInputElement} />
+	{/snippet}
+</UtilityPanel>
+
+{#if !onTools}
+	<UtilityRail
+		{searchOpen}
+		bind:desktopElement={desktopRailElement}
+		bind:mobileElement={mobileRailElement}
+		{searchEnabled}
+		onSearchToggle={toggleSearch}
+		{helpEnabled}
+		helpLabel={helpContent[helpVariant].title}
+		{onDownload}
+		{downloadReason}
+		{settingsHref}
+		onOpenHelp={openHelp}
+	/>
 {/if}
 
-<UtilityRail
-	{searchOpen}
-	bind:desktopElement={utilityRailElement}
-	bind:desktopSearchElement={desktopSearchButton}
-	bind:mobileSearchElement={mobileSearchButton}
-	{searchEnabled}
-	onSearchToggle={toggleSearch}
-	{helpEnabled}
-	helpLabel={`Help: ${helpContent[helpVariant].title}`}
-	{onDownload}
-	{downloadReason}
-	{settingsHref}
-	onOpenHelp={openHelp}
-/>
-
-{#if helpEnabled && helpOpen}
-	<HelpModal variant={helpVariant} {isAdmin} onClose={() => (helpOpen = false)} />
+{#if helpEnabled && help.open}
+	<HelpModal variant={helpVariant} {isAdmin} {help} onClose={() => help.close()} />
 {/if}

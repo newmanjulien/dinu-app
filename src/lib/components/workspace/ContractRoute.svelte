@@ -11,17 +11,54 @@
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
-	import LoadingPagination from '$lib/components/document/LoadingPagination.svelte';
+	import { loadSavedContract } from '$lib/auth/destination-code';
+	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import NewContract from './NewContract.svelte';
+	import { getContractEditors } from '$lib/contract/editors.svelte';
 	const documentNavigation = getDocumentNavigation();
 	const runtime = getWorkspaceRuntime();
 	const presentation = useWorkspacePresentation();
 	const session = useViewerSession();
+	const editors = getContractEditors();
 	let { data }: { data: ContractDestination } = $props();
+	const savedKey = $derived(data.kind === 'saved' ? data.id : '');
 	let savedRequested = $state(false);
+	let savedOwner = $state.raw<{ id: string }>();
+	// Teardown can expose old reactive values; ownership uses the current plain token.
+	let savedOwnerToken: object | undefined;
+	function acquiredSaved(id: string) {
+		const owner = { id };
+		savedOwnerToken = owner;
+		savedOwner = owner;
+		return () => {
+			if (savedOwnerToken !== owner) return;
+			savedOwnerToken = undefined;
+			savedOwner = undefined;
+		};
+	}
+	function prepareSavedEditor(id: Id<'savedContracts'>) {
+		const opening = editors.acquire(id);
+		// Explicit opening retries already have a saved component retaining this editor.
+		if (savedOwnerToken && savedOwner?.id === id) opening.release();
+		return opening.release;
+	}
+	$effect(() => {
+		if (data.kind !== 'saved' || runtime.paused || savedOwner?.id === savedKey) return;
+		const id = data.id;
+		let active = true;
+		let opening: ReturnType<typeof editors.acquire> | undefined;
+		// The membership-owned editor must not inherit this short-lived route effect.
+		queueMicrotask(() => {
+			if (active) opening = editors.acquire(id);
+		});
+		return () => {
+			active = false;
+			opening?.release();
+		};
+	});
 	const saved = loadComponent(
-		() => import('./SavedContract.svelte'),
+		loadSavedContract,
 		() => data.kind === 'saved' || savedRequested,
 		() => session.transportGeneration
 	);
@@ -56,6 +93,7 @@
 			return false;
 		}
 		completion?.(false);
+		if (attempt > 0) editors.retry(id);
 		const currentAttempt = ++attempt;
 		const opened = new Promise<boolean>((resolve) => {
 			completion = resolve;
@@ -104,12 +142,13 @@
 </script>
 
 {#if data.kind === 'saved' && (!creating || (creationTarget && attempt > 0))}
-	{#if SavedContract && runtime.hostReady}{#key `${data.id}:${attempt}`}
+	{#if SavedContract && runtime.hostReady}{#key `${savedKey}:${attempt}`}
 			{@const mountedId = data.id}
 			{@const mountedAttempt = attempt}
 			<!-- Preparation can finish before the naming dialog hands off the workspace. -->
 			<SavedContract
 				id={mountedId}
+				onAcquired={() => acquiredSaved(savedKey)}
 				interactionAdmitted={!creating}
 				onVisible={() => visible(mountedId, mountedAttempt)}
 				onFailure={() => failure(mountedId, mountedAttempt)}
@@ -127,12 +166,14 @@
 				}}>Try again</button
 			>
 		</LoadingState>
-	{:else}<WorkspacePresentationReporter active={!creating} outcome="pending" /><LoadingPagination
+	{:else}<WorkspacePresentationReporter active={!creating} outcome="pending" /><DocumentSkeleton
+			layout="contract"
 			label="Loading contract"
 		/>{/if}
 {/if}
 {#if creating}<NewContract
 		onOpen={openSaved}
 		onCreate={prepareSaved}
+		onPrepareSaved={prepareSavedEditor}
 		showPreview={!creationTarget}
 	/>{/if}

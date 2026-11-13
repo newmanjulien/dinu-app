@@ -41,16 +41,21 @@ containing auxiliary words such as “is”.
 Formatting evidence is retained only for top-level paragraphs; cell runs still
 receive all formatting and structure checks.
 
-A prepared upload has immutable automatically classified blocks, a parse
+A pending upload has immutable automatically classified blocks, a parse
 fingerprint, and conversion diagnostics. Reuploading the same file and parser
-generation reuses the preparation. Successful uploads show “Your template is
-ready”; “Go to last step” activates the prepared template without a role-editing
-step. Analysis decisions are not persisted on the preparation.
+generation by the same uploader reuses the current pending source without extending
+its expiry. A successful upload becomes company-owned pending data retained for
+90 days from upload, including after the uploader leaves. The customer waits for
+Julien; upload success does not unlock the editor. Analysis decisions are not
+persisted on the source.
 
-Activation validates canonical blocks and accounting, preserves roles and chunks,
-and creates the first template version atomically. Identical activation retries
-return that version; expired uploads and other uploaders are rejected. Original-file
-ownership and the 24-hour preparation expiry remain in force. Existing active
+Trusted release binds the exact company, current pending source and fingerprint,
+validates canonical blocks and accounting, preserves roles and chunks, and creates
+the first template version atomically. Identical release retries return that
+version; expired or replaced pending uploads are rejected. Release does not require
+the original uploader. The pending source owns its original file until release or
+reference-safe cleanup. See [assisted template setup](assisted-template-setup.md)
+for booking requirements and privileged inspection/release commands. Existing active
 templateSources retain their canonical roles, including earlier manual corrections.
 
 ## Editing and Word output

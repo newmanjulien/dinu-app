@@ -43,11 +43,8 @@
 			data-visual-source-start-offset={source?.start.offset}
 			data-visual-source-end-key={source?.end.sourceKey}
 			data-visual-source-end-offset={source?.end.offset}
-			data-discussion={token.discussion ? JSON.stringify(token.discussion) : undefined}
+			data-source-origin={token.sourceOrigin ? JSON.stringify(token.sourceOrigin) : undefined}
 			data-generated-offset={token.generatedOffset}
-			data-generated-origin={token.generatedOrigin
-				? JSON.stringify(token.generatedOrigin)
-				: undefined}
 			data-source-kind={token.sourceKind}
 			data-generated={token.generated}
 			data-revision={token.revision}>{token.value}</span

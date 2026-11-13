@@ -84,6 +84,7 @@
 			: verification.errorText
 	);
 	const verificationTitle = $derived(getVerificationTitle(verification.factor));
+	const isEmailVerification = $derived(verification.factor?.strategy === 'email_code');
 	const verificationDescription = $derived(getVerificationDescription(verification.factor));
 	const verificationInputType = $derived(
 		verification.factor?.strategy === 'password' ? 'password' : 'text'
@@ -376,9 +377,9 @@
 				<p class="text-sm leading-6 text-ink-secondary">
 					{#if combined}
 						You are the last member of <strong>{options.data.companyName}</strong>. This permanently
-						deletes your account and company, including all contracts, your company’s template and
-						instructions, and their history, approval records, invitations, and the company avatar.
-						This cannot be undone.
+						deletes your account and company, including all contracts, your company’s template, rep
+						instructions, buyer explanations, their history, approval records, invitations, and the
+						company avatar. This cannot be undone.
 					{:else}
 						This permanently deletes your account. Company contracts and other shared data remain
 						available to your colleagues.
@@ -409,10 +410,12 @@
 			{/if}
 		{:else}
 			<div>
-				<h3 class="text-sm leading-tight font-medium text-ink">
-					{verificationTitle}
-				</h3>
-				<p class="mt-2 text-sm leading-6 text-ink-secondary">
+				{#if !isEmailVerification}
+					<h3 class="text-sm leading-tight font-medium text-ink">
+						{verificationTitle}
+					</h3>
+				{/if}
+				<p class="text-sm leading-6 text-ink-secondary" class:mt-2={!isEmailVerification}>
 					{verificationDescription}
 				</p>
 			</div>
@@ -421,7 +424,10 @@
 				<p class="text-[0.72rem] leading-5 text-ink-muted">Preparing verification...</p>
 			{:else if showVerificationInput}
 				<div>
-					<label for="delete-account-verification" class="block text-xs text-ink">
+					<label
+						for="delete-account-verification"
+						class={isEmailVerification ? 'sr-only' : 'block text-xs text-ink'}
+					>
 						{verificationTitle}
 					</label>
 					<TextInput
@@ -430,7 +436,7 @@
 						bind:value={verification.input}
 						autocomplete={verificationAutocomplete}
 						inputmode={verificationInputMode}
-						class="mt-2"
+						class={isEmailVerification ? undefined : 'mt-2'}
 						disabled={verification.busy || deleting}
 						oninput={() => {
 							verification.clearError();

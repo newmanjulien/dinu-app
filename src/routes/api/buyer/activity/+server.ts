@@ -2,6 +2,7 @@ import { env as privateEnv } from '$env/dynamic/private';
 import { env } from '$env/dynamic/public';
 import { readActivity } from '$lib/buyer/activity-transport';
 import { saveActivityBrowser } from '$lib/server/activity-browser';
+import { buyerCredential } from '$lib/server/buyer-token';
 import type { RequestHandler } from './$types';
 
 function deviceCategory(headers: Headers) {
@@ -22,19 +23,26 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch }) => 
 	if (!privateEnv.BUYER_LINK_INGEST_SECRET || !env.PUBLIC_CONVEX_SITE_URL)
 		return new Response(null, { status: 503, headers });
 	try {
+		const credential = await buyerCredential(request, url.origin, fetch);
+		// Retry uncertain accounts rather than recording them as anonymous.
+		if (credential.kind === 'unknown') return new Response(null, { status: 503, headers });
 		const device = deviceCategory(request.headers);
+		const city = body.kind === 'open' ? request.headers.get('x-vercel-ip-city') : null;
 		const response = await fetch(`${env.PUBLIC_CONVEX_SITE_URL}/buyer/activity`, {
 			method: 'POST',
 			signal: AbortSignal.timeout(6000),
 			headers: {
 				'Content-Type': 'application/json',
 				'X-Buyer-Ingest-Secret': privateEnv.BUYER_LINK_INGEST_SECRET,
-				...(device ? { 'X-Buyer-Device': device } : {})
+				...(credential.kind === 'account' ? { Authorization: `Bearer ${credential.token}` } : {}),
+				...(device ? { 'X-Buyer-Device': device } : {}),
+				...(city && city.length <= 768 ? { 'X-Buyer-City': city } : {})
 			},
 			body: JSON.stringify(body)
 		});
-		if (response.ok && body.kind === 'open') {
+		if (response.ok && response.status !== 204) {
 			const result: { expiresAt: number } = await response.json();
+			if (body.kind !== 'open') return new Response(null, { status: 503, headers });
 			if (!Number.isFinite(result.expiresAt)) return new Response(null, { status: 503, headers });
 			saveActivityBrowser(
 				cookies,

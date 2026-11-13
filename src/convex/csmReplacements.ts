@@ -3,8 +3,10 @@ import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import { liveProfile, type CompanyAccess } from './auth';
 import { setupReplacement } from './csmBookingValidators';
+import { safeFailedEvidence } from './csmAttemptState';
 import { validBookingUid } from './csmCal';
 import { retireSupersededSetupAppointment } from './csmSetupLifecycle';
+import { readConfirmedSetupBooking, resolveSetupBooking } from './csmSetupState';
 
 export type Replacement = Infer<typeof setupReplacement>;
 type Appointment = Doc<'csmSetupAppointments'>;
@@ -14,7 +16,7 @@ export const replacementProgress = v.object({
 		v.literal('ready'),
 		v.literal('in-progress'),
 		v.literal('uncertain'),
-		v.literal('replaced'),
+		v.literal('completed'),
 		v.literal('unavailable')
 	),
 	// A private receipt locator is returned only to its owner.
@@ -27,11 +29,18 @@ export function replacementAware(a: Appointment) {
 	return !!(a.replacementAttemptId || a.superseded || a.erasedReplacementUncertain);
 }
 export async function replacementSource(ctx: QueryCtx, owner: CompanyAccess, target: Replacement) {
-	if (owner.membership.role !== 'admin' || !validBookingUid(target.currentUid))
+	if (
+		owner.membership.role !== 'admin' ||
+		owner.company.templateSourceId ||
+		!validBookingUid(target.currentUid)
+	)
 		throw new ConvexError('This setup call is unavailable.');
-	const source = await ctx.db.get('csmSetupAppointments', target.appointmentId);
+	const booking = await resolveSetupBooking(ctx, owner.company);
+	const source = booking.kind === 'cancelled' ? booking.appointment : null;
 	if (
 		!source ||
+		source._id !== target.appointmentId ||
+		source.currentUid !== target.currentUid ||
 		source.companyId !== owner.companyId ||
 		!(await liveProfile(ctx, source.profileId))
 	)
@@ -40,7 +49,7 @@ export async function replacementSource(ctx: QueryCtx, owner: CompanyAccess, tar
 }
 /** Missing receipts and historical failures without noncreation proof must fail closed. */
 export async function replacementState(ctx: QueryCtx, source: Appointment) {
-	if (source.superseded) return { state: 'replaced' as const };
+	if (source.superseded) return { state: 'completed' as const };
 	if (source.erasedReplacementUncertain) return { state: 'uncertain' as const };
 	if (source.replacementAttemptId) {
 		const attempt = await ctx.db.get('csmBookingAttempts', source.replacementAttemptId);
@@ -52,23 +61,40 @@ export async function replacementState(ctx: QueryCtx, source: Appointment) {
 		)
 			return { state: 'uncertain' as const };
 		if (attempt.state === 'booked' && attempt.confirmation)
-			return { state: 'replaced' as const, attempt };
+			return { state: 'completed' as const, attempt };
 		if (attempt.state === 'queued' || attempt.state === 'submitting')
 			return { state: 'in-progress' as const, attempt };
-		if (attempt.state !== 'failed' || !attempt.failureBasis)
-			return { state: 'uncertain' as const, attempt };
+		if (!safeFailedEvidence(attempt)) return { state: 'uncertain' as const, attempt };
 	}
-	return { state: source.status === 'cancelled' ? ('ready' as const) : ('unavailable' as const) };
+	return {
+		state:
+			source.status === 'cancelled' &&
+			(await readConfirmedSetupBooking(ctx, source))?.status === 'cancelled'
+				? ('ready' as const)
+				: ('unavailable' as const)
+	};
 }
 export async function sharedReplacement(
 	ctx: QueryCtx,
 	owner: CompanyAccess,
 	target: Replacement
 ): Promise<Infer<typeof replacementProgress>> {
-	const source = await replacementSource(ctx, owner, target);
+	// Rendering a frozen historical target is independent from new-creation eligibility.
+	const source = await ctx.db.get('csmSetupAppointments', target.appointmentId);
+	if (
+		!source ||
+		owner.membership.role !== 'admin' ||
+		source.companyId !== owner.companyId ||
+		!validBookingUid(target.currentUid)
+	)
+		return { state: 'unavailable' };
 	const progress = await replacementState(ctx, source);
 	return {
-		state: source.currentUid !== target.currentUid ? 'unavailable' : progress.state,
+		state:
+			source.currentUid !== target.currentUid &&
+			!('attempt' in progress && sameReplacement(progress.attempt?.replacement, target))
+				? 'unavailable'
+				: progress.state,
 		...('attempt' in progress &&
 		progress.attempt?.membershipId === owner.membership._id &&
 		progress.attempt.profileId === owner.profile._id &&
@@ -88,7 +114,7 @@ export async function eraseReplacementAttempt(ctx: MutationCtx, attempt: Attempt
 	)
 		return;
 	const succeeded = attempt.state === 'booked' && !!attempt.confirmation;
-	const safe = attempt.state === 'queued' || (attempt.state === 'failed' && !!attempt.failureBasis);
+	const safe = attempt.state === 'queued' || safeFailedEvidence(attempt);
 	if (succeeded) await retireSupersededSetupAppointment(ctx, source);
 	await ctx.db.patch('csmSetupAppointments', source._id, {
 		replacementAttemptId: undefined,

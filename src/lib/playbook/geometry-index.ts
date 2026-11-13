@@ -10,7 +10,7 @@ import {
 	triggersIntersect,
 	validateTriggerRange
 } from './geometry';
-import type { PlaybookItem, SourceTarget, Trigger } from './model';
+import type { RepInstruction, SourceTarget, Trigger } from './model';
 import { playbookStructure, type ChangeStructure, type ItemStructure } from './structure';
 import { validateChangeGeometry, validateTriggers } from './validation';
 import { PlaybookValidationError } from './validation-error';
@@ -306,7 +306,7 @@ export class PlaybookGeometryIndex {
 			failure: { diagnostic: unknown } | undefined;
 		return (
 			exclude: string | undefined,
-			item: DeepReadonly<Pick<PlaybookItem, 'trigger' | 'concessions'>>
+			item: DeepReadonly<Pick<RepInstruction, 'trigger' | 'concessions'>>
 		) => {
 			const facts = playbookStructure(item);
 			const key = JSON.stringify([this.version, exclude, playbookGeometryKey(facts)]);

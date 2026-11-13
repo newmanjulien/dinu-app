@@ -1,6 +1,6 @@
-import type { Infer } from 'convex/values';
+import { ConvexError, type Infer } from 'convex/values';
 import type { TemplateItem } from '../lib/playbook/model';
-import type { TemplateDetailRecord as DetailRecord } from '../lib/playbook/structure';
+import type { TemplateDetailRecord } from '../lib/playbook/structure';
 import { playbookStructure } from '../lib/playbook/structure';
 import { encodeStructure, decodeStructure } from '../lib/playbook/structure-codec';
 import type { Doc, Id } from './_generated/dataModel';
@@ -9,6 +9,30 @@ import type { historicalItem } from './playbookValidators';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 
 export type HistoricalItem = Infer<typeof historicalItem>;
+
+/** Re-read the authoritative owner at every mutable-body write boundary. */
+async function currentMutableVersion(
+	ctx: MutationCtx,
+	companyId: Id<'company'>,
+	versionId: Id<'templateVersions'>
+) {
+	const [pointer, version] = await Promise.all([
+		ctx.db
+			.query('currentTemplate')
+			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.unique(),
+		ctx.db.get('templateVersions', versionId)
+	]);
+	if (
+		!pointer ||
+		pointer.versionId !== versionId ||
+		!version ||
+		version.companyId !== companyId ||
+		version.mutability !== 'mutable'
+	)
+		throw new ConvexError('This template revision is no longer mutable.');
+	return version;
+}
 
 /** Project the business fields without persistence metadata. */
 export function businessItem(item: TemplateItem): TemplateItem {
@@ -32,7 +56,7 @@ export function snapshotItem(item: HistoricalItem): HistoricalItem {
 	};
 }
 export function itemRevision(
-	saved: HistoricalItem & Partial<Pick<DetailRecord, 'lastOperation' | 'renderKey'>>
+	saved: HistoricalItem & Partial<Pick<TemplateDetailRecord, 'lastOperation' | 'renderKey'>>
 ) {
 	return {
 		companyId: saved.companyId,
@@ -55,9 +79,10 @@ export function historicalRevision(saved: Doc<'playbookItemRevisions'>): Histori
 }
 export async function storeItemRevision(
 	ctx: MutationCtx,
-	saved: HistoricalItem & Partial<Pick<DetailRecord, 'lastOperation' | 'renderKey'>>,
+	saved: HistoricalItem & Partial<Pick<TemplateDetailRecord, 'lastOperation' | 'renderKey'>>,
 	mutableVersionId?: Id<'templateVersions'>
 ) {
+	if (mutableVersionId) await currentMutableVersion(ctx, saved.companyId, mutableVersionId);
 	const contentRevision = { ...itemRevision(saved), mutableVersionId };
 	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(contentRevision) });
 	return ctx.db.insert('playbookItemRevisions', contentRevision);
@@ -67,9 +92,23 @@ export async function storeItemRevision(
 export async function replaceDraftItemRevision(
 	ctx: MutationCtx,
 	revisionId: Id<'playbookItemRevisions'>,
-	saved: HistoricalItem & Partial<Pick<DetailRecord, 'lastOperation' | 'renderKey'>>,
+	saved: HistoricalItem & Partial<Pick<TemplateDetailRecord, 'lastOperation' | 'renderKey'>>,
 	mutableVersionId: Id<'templateVersions'>
 ) {
+	const [version, previous] = await Promise.all([
+		currentMutableVersion(ctx, saved.companyId, mutableVersionId),
+		ctx.db.get('playbookItemRevisions', revisionId)
+	]);
+	if (
+		!previous ||
+		previous.companyId !== saved.companyId ||
+		previous.itemId !== saved._id ||
+		previous.mutableVersionId !== mutableVersionId ||
+		previous.itemCreatedAt !== saved._creationTime ||
+		saved.contentRevision !== previous.contentRevision + 1 ||
+		!version.items.some((item) => item.itemId === saved._id && item.revisionId === revisionId)
+	)
+		throw new ConvexError('This template revision cannot be replaced.');
 	const contentRevision = { ...itemRevision(saved), mutableVersionId };
 	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(contentRevision) });
 	await ctx.db.replace('playbookItemRevisions', revisionId, contentRevision);
@@ -83,7 +122,16 @@ export async function markDraftItemRevision(
 	mutableVersionId: Id<'templateVersions'>
 ) {
 	const contentRevision = await ctx.db.get('playbookItemRevisions', revisionId);
-	if (!contentRevision || contentRevision.mutableVersionId) return 0;
+	if (!contentRevision) throw new ConvexError('This template revision is unavailable.');
+	const version = await currentMutableVersion(ctx, contentRevision.companyId, mutableVersionId);
+	if (
+		(contentRevision.mutableVersionId && contentRevision.mutableVersionId !== mutableVersionId) ||
+		!version.items.some(
+			(item) => item.itemId === contentRevision.itemId && item.revisionId === revisionId
+		)
+	)
+		throw new ConvexError('This template revision does not belong to its mutable owner.');
+	if (contentRevision.mutableVersionId) return 0;
 	const beforeBytes = documentBytes(contentRevision);
 	const afterBytes = documentBytes({ ...contentRevision, mutableVersionId });
 	await assertStorageCapacity(ctx, {
@@ -95,7 +143,7 @@ export async function markDraftItemRevision(
 }
 
 /** Compact heads are the only live storage format written by canonical writers. */
-export function compactHead(saved: DetailRecord) {
+export function compactHead(saved: TemplateDetailRecord) {
 	return {
 		format: 1 as const,
 		companyId: saved.companyId,
@@ -109,7 +157,7 @@ export function compactHead(saved: DetailRecord) {
 export function headStructure(head: Doc<'playbookItems'>) {
 	return 'format' in head ? decodeStructure(head.structure) : playbookStructure(head);
 }
-export function liveRevision(revision: Doc<'playbookItemRevisions'>): DetailRecord {
+export function liveRevision(revision: Doc<'playbookItemRevisions'>): TemplateDetailRecord {
 	return {
 		...historicalRevision(revision),
 		currentRevisionId: revision._id,
@@ -121,7 +169,7 @@ export async function hydrateHead(
 	ctx: QueryCtx,
 	head: Doc<'playbookItems'>,
 	knownRevision?: Doc<'playbookItemRevisions'> | null
-): Promise<DetailRecord> {
+): Promise<TemplateDetailRecord> {
 	const revision =
 		knownRevision === undefined
 			? head.currentRevisionId
@@ -147,10 +195,10 @@ export async function createAuthoringItem(
 	ctx: MutationCtx,
 	content: TemplateItem & {
 		companyId: Id<'company'>;
-		lastOperation?: DetailRecord['lastOperation'];
+		lastOperation?: TemplateDetailRecord['lastOperation'];
 		renderKey?: string;
 	}
-): Promise<DetailRecord> {
+): Promise<TemplateDetailRecord> {
 	const initial = {
 		format: 1 as const,
 		companyId: content.companyId,
@@ -167,7 +215,7 @@ export async function createAuthoringItem(
 	});
 	const id = await ctx.db.insert('playbookItems', initial);
 	const head = (await ctx.db.get('playbookItems', id))!;
-	const saved: DetailRecord = {
+	const saved: TemplateDetailRecord = {
 		...businessItem(content),
 		_id: id,
 		_creationTime: head._creationTime,

@@ -9,33 +9,71 @@
 	import { preloadDestination } from './destination-code';
 	import { useStartupPreparation } from './startup-preparation';
 	import { useStartupData } from './startup-data';
-	import { WorkspaceRole, setWorkspaceRole } from './workspace-role.svelte';
+	import { WorkspaceHints, setWorkspaceHints } from './workspace-hints.svelte';
 	import { onDestroy, untrack, type Snippet } from 'svelte';
 	let { children }: { children: Snippet } = $props();
 	const session = useViewerSession();
 	const clerk = useClerkContext();
 	const owner = setAccountContext();
 	setAccount(() => (owner.identity === identity ? (owner.account ?? undefined) : undefined));
-	const roles = new WorkspaceRole();
+	const hints = new WorkspaceHints();
 	const startup = useStartupData();
-	session.registerResources(roles);
-	setWorkspaceRole(() => {
-		if (session.closing) return undefined;
-		return roleViewer !== undefined
-			? roleViewer?.membership?.role
-			: roles.roleFor(userId, identity);
+	session.registerResources(hints);
+	setWorkspaceHints({
+		get role() {
+			if (session.closing) return undefined;
+			return workspaceViewer !== undefined
+				? workspaceViewer?.membership?.role
+				: hints.roleFor(userId, identity);
+		},
+		get templateReady() {
+			if (session.closing) return undefined;
+			return workspaceViewer !== undefined
+				? workspaceViewer?.membership
+					? workspaceViewer.templateReady
+					: undefined
+				: hints.templateReadyFor(userId, identity);
+		},
+		get hasBuyerLinks() {
+			const membership = workspaceViewer?.membership;
+			if (session.closing || (workspaceViewer !== undefined && !membership)) return undefined;
+			return hints.buyerLinksFor(
+				userId,
+				identity,
+				membership ? { membershipId: membership.id, companyId: membership.companyId } : undefined
+			);
+		},
+		rememberBuyerLinks(scope, present) {
+			const viewer = workspaceViewer;
+			const membership = viewer?.membership;
+			if (
+				session.closing ||
+				!viewer ||
+				!userId ||
+				!identity ||
+				membership?.id !== scope.membershipId ||
+				membership.companyId !== scope.companyId
+			)
+				return;
+			hints.rememberBuyerLinks(
+				userId,
+				identity,
+				{ ...scope, role: membership.role, templateReady: viewer.templateReady },
+				present
+			);
+		}
 	});
 	const preparation = useStartupPreparation();
 	const identity = $derived(clerk.auth.sessionId ?? clerk.session?.id);
 	const userId = $derived(clerk.auth.userId ?? clerk.user?.id);
-	const roleViewer = $derived(
+	const workspaceViewer = $derived(
 		owner.identity === identity && owner.account !== undefined ? owner.account : startup()?.viewer
 	);
 	const required = $derived(!['/login', '/join'].includes(page.url.pathname));
 	const workspaceRoute = $derived(page.route.id?.startsWith('/(workspace)') ?? false);
 	const account = loadComponent(
 		() => import('./AuthenticatedAccount.svelte'),
-		() => browser && required && (workspaceRoute || Boolean(identity)),
+		() => browser && (workspaceRoute || Boolean(identity)),
 		() => session.transportGeneration
 	);
 	const AuthenticatedAccount = $derived(account.component);
@@ -44,27 +82,28 @@
 		const user = userId;
 		const closing = session.closing;
 		const generation = session.transportGeneration;
-		const value = roleViewer;
+		const value = workspaceViewer;
 		if (!browser) return;
 		untrack(() => {
-			if (!active || active.id !== identity || !user || closing) roles.clear();
+			if (!active || active.id !== identity || !user || closing) hints.clear();
 			else if (value !== undefined)
-				roles.confirm(
+				hints.confirm(
 					user,
 					active.id,
 					value?.membership
 						? {
 								membershipId: value.membership.id,
 								companyId: value.membership.companyId,
-								role: value.membership.role
+								role: value.membership.role,
+								templateReady: value.templateReady
 							}
 						: null
 				);
 			else
-				roles.prepare(user, active.id, generation, () => active.getToken({ template: 'convex' }));
+				hints.prepare(user, active.id, generation, () => active.getToken({ template: 'convex' }));
 		});
 	});
-	onDestroy(() => roles.clear());
+	onDestroy(() => hints.clear());
 	$effect(() => {
 		if (!browser) return;
 		if (account.failed || (clerk.isLoaded && !identity)) preparation.cancel();

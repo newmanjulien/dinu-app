@@ -10,6 +10,8 @@ export interface Interaction {
 	elements: () => readonly (HTMLElement | undefined)[];
 	close: (reason: CloseReason) => void;
 	dismissOnFocus?: boolean;
+	/** Let a focused control handle Escape before dismissing its containing panel. */
+	deferEscape?: () => boolean;
 	visible?: () => boolean;
 }
 
@@ -130,6 +132,7 @@ export class InteractionController {
 						entries.find((entry) => entry.kind === 'tooltip') ??
 						entries.find((entry) => entry.kind !== 'panel') ??
 						entries.find((entry) => entry.kind === 'panel');
+					if (target?.deferEscape?.()) return;
 					if (target) {
 						event.preventDefault();
 						event.stopPropagation();
@@ -170,11 +173,12 @@ export function getInteractionInputCapture(): ((event: Event) => void) | undefin
 export function protectedInteraction() {
 	const controller = getInteractionController();
 	const owner = getInteractionOwner();
-	return (element: HTMLElement, enabled = true) => {
+	return (element: HTMLElement, enabled: boolean | symbol = true) => {
 		let release: (() => void) | undefined;
-		const update = (next = true) => {
+		const update = (next: boolean | symbol = true) => {
 			release?.();
-			release = next && owner ? controller.protect(element, owner) : undefined;
+			const currentOwner = typeof next === 'symbol' ? next : owner;
+			release = next && currentOwner ? controller.protect(element, currentOwner) : undefined;
 		};
 		update(enabled);
 		return { update, destroy: () => release?.() };

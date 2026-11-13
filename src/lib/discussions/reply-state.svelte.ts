@@ -1,3 +1,4 @@
+import { subscribeNativePage } from '../native-pagination';
 import type { ConvexClient } from 'convex/browser';
 import type { Infer } from 'convex/values';
 import { api } from '../../convex/_generated/api';
@@ -31,10 +32,12 @@ export class ReplyDiscussion {
 		private threadId: Id<'discussionThreads'>
 	) {
 		this.feed = new LiveDiscussionPages(
-			(opts, receive, fail) =>
-				client.onUpdate(
+			(receive, fail) =>
+				subscribeNativePage(
+					client,
 					api.discussions.replies,
-					{ access, threadId, paginationOpts: opts },
+					{ access, threadId },
+					20,
 					receive,
 					fail
 				),
@@ -58,8 +61,9 @@ export class ReplyDiscussion {
 		this.reconcile();
 	}
 	retry() {
-		this.setActive(false);
-		this.setActive(true);
+		if (!this.active) return;
+		this.feed.retry();
+		this.reconcile();
 	}
 	showCreated(id: Id<'discussionMessages'>) {
 		if (!this.created.has(id)) this.created.set(id, undefined);
@@ -79,7 +83,8 @@ export class ReplyDiscussion {
 		stop?.();
 	}
 	private reconcile() {
-		if (!this.active || !this.feed.authorized || this.feed.done) this.releaseTail();
+		if (!this.active || !this.feed.authorized || !this.feed.firstPageAccepted || this.feed.done)
+			this.releaseTail();
 		else if (!this.tailOwner) {
 			const owner = (this.tailOwner = Symbol('reply-tail'));
 			const current = () => this.tailOwner === owner && this.active && this.feed.authorized;

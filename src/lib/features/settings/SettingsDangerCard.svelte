@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { settingsFields } from './settings-fields';
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
 	import { Button } from '$lib/ui';
 	import DeleteAccountModal from './DeleteAccountModal.svelte';
@@ -15,18 +16,16 @@
 	}
 </script>
 
-<SettingsCard title="Delete account" description="Permanently remove your account">
+<SettingsCard title={settingsFields.danger.title} description={settingsFields.danger.description}>
 	<div
 		class="mt-4 flex min-h-9 items-center gap-2 rounded-button-lg bg-canvas px-3 text-[0.74rem] leading-5 text-ink-muted"
 	>
 		<InfoIcon weight="regular" class="size-[15px] shrink-0 text-ink-muted" />
-		<p>
-			If you are the last member, deleting your account also deletes your company and all its data.
-		</p>
+		<p>{settingsFields.danger.warning}</p>
 	</div>
 
 	{#snippet footer()}
-		<p>This action is not reversible</p>
+		<p>{settingsFields.danger.footerText}</p>
 	{/snippet}
 
 	{#snippet action()}

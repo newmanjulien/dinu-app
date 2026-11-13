@@ -7,7 +7,7 @@
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import type { DeepReadonly } from '../../immutable';
-	import type { Concession } from '$lib/playbook/model';
+	import { isRepItem, type Concession } from '$lib/playbook/model';
 	import { instructionsFields } from '$lib/playbook/instructions-fields';
 	import type { AuthoringController } from '$lib/playbook/authoring-controller.svelte';
 	import ConcessionCreationEditor from './ConcessionCreationEditor.svelte';
@@ -18,14 +18,12 @@
 	import PlaybookSection from './PlaybookSection.svelte';
 	let {
 		controller,
-		buyerTemplate = false,
 		animateContent = false,
 		onCancel,
 		onPrimary,
 		onDelete
 	}: {
 		controller: AuthoringController;
-		buyerTemplate?: boolean;
 		animateContent?: boolean;
 		onCancel: () => void;
 		onPrimary: () => void;
@@ -33,6 +31,8 @@
 	} = $props();
 	const entry = $derived(controller.entry);
 	const draft = $derived(controller.draft!);
+	const repDraft = $derived(isRepItem(draft) ? draft : null);
+	const copy = $derived(controller.copy);
 	const creating = $derived(controller.creating);
 	const canCancel = $derived(controller.canCancel);
 	const step = $derived(controller.step);
@@ -86,7 +86,7 @@
 	});
 </script>
 
-<PlaybookCard label="Instruction box editor">
+<PlaybookCard label={copy.editorLabel}>
 	{#key entry}
 		{#if !creating && draft.persistedId}
 			<div
@@ -95,15 +95,13 @@
 					animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
 				]}
 			>
-				<span class="min-w-0 text-[14px] font-medium text-ink-secondary"
-					>Edit the instructions {buyerTemplate ? 'buyers' : 'reps'} see</span
-				>
+				<span class="min-w-0 text-[14px] font-medium text-ink-secondary">{copy.editingTitle}</span>
 				<div class="flex shrink-0 items-center gap-1">
 					<div>
 						<SquareIconButton
 							class="size-[27px]"
 							type="button"
-							aria-label="Instruction box options"
+							aria-label={copy.optionsLabel}
 							disabled={!controller.canDelete}
 							aria-haspopup="menu"
 							aria-expanded={menuOpen}
@@ -124,7 +122,7 @@
 							trigger={menuButton ?? undefined}
 							onClose={() => (menuOpen = false)}
 							id={menuId}
-							label="Instruction box options"
+							label={copy.optionsLabel}
 						>
 							{#snippet children(activate)}
 								<MenuItem
@@ -133,7 +131,7 @@
 									onclick={() => {
 										activate();
 										onDelete();
-									}}>Delete instruction box</MenuItem
+									}}>{copy.deleteAction}</MenuItem
 								>
 							{/snippet}
 						</Menu>
@@ -147,13 +145,7 @@
 					animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
 				]}
 			>
-				<span class="min-w-0"
-					>{buyerTemplate
-						? 'Explain this clause for buyers'
-						: stagedCreation
-							? stepTitle
-							: 'Explain this clause for reps'}</span
-				>
+				<span class="min-w-0">{stagedCreation ? stepTitle : copy.creationTitle}</span>
 			</div>
 		{/if}
 		<fieldset
@@ -165,14 +157,21 @@
 					'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]'
 			]}
 		>
-			{#if !creating || !creationConcession}
+			{#if !isRepItem(draft)}
 				<TextArea
-					aria-label={buyerTemplate ? 'Explanation' : 'Summary for this clause'}
-					placeholder={buyerTemplate
-						? 'Explain this clause in plain English for buyers'
-						: instructionsFields[0].placeholder}
+					aria-label="Explanation"
+					placeholder="Explain this clause in plain English for buyers"
 					bind:value={
-						() => draft.instructions.summary ?? '',
+						() => (!isRepItem(draft) ? draft.explanation : ''),
+						(text) => controller.setExplanation(text)
+					}
+				/>
+			{:else if !creating || !creationConcession}
+				<TextArea
+					aria-label="Summary for this clause"
+					placeholder={instructionsFields[0].placeholder}
+					bind:value={
+						() => repDraft?.instructions.summary ?? '',
 						(text) => controller.setInstruction('summary', text)
 					}
 				/>
@@ -207,7 +206,7 @@
 					/>
 				</div>
 			{/if}
-			{#if !creating && !buyerTemplate}
+			{#if !creating && repDraft}
 				<div class="flex min-w-0 flex-col gap-2 text-[14px] leading-[1.45] text-ink-muted">
 					{#each instructionsFields.slice(1) as field}
 						<PlaybookSection value={field.key} label={field.label} bind:open>
@@ -215,14 +214,14 @@
 								aria-label={`${field.label} for this clause`}
 								placeholder={field.placeholder}
 								bind:value={
-									() => draft.instructions[field.key] ?? '',
+									() => repDraft?.instructions[field.key] ?? '',
 									(text) => controller.setInstruction(field.key, text)
 								}
 							/>
 						</PlaybookSection>
 					{/each}
 					{#each tiers as tier}
-						{@const concessions = draft.concessions.filter(
+						{@const concessions = repDraft.concessions.filter(
 							(concession) => concession.tier === tier
 						)}
 						<PlaybookSection

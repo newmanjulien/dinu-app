@@ -3,7 +3,7 @@ import type { DeepReadonly } from '$lib/immutable';
 import { measureStartupWork, recordColdStart, recordDomainWork } from './render-perf';
 import type { SourceBlock } from '$lib/document/model';
 import type { CompiledDocument } from '$lib/document/compiled-document';
-import type { ContractItemRecord } from '$lib/playbook/model';
+import type { DocumentItemRecord, ResolvedContractItem } from '$lib/contract/items';
 import type { PlaybookGeometryIndex } from '$lib/playbook/geometry-index';
 import { DocumentDomain } from '../domain/document-domain';
 import type { DocumentRenderSource, SourceIssue } from './types';
@@ -13,12 +13,19 @@ import type { DocumentAnnotationItem, DocumentOverlayItem } from '$lib/playbook/
 import { DocumentArtifacts } from './artifacts';
 
 type QueryValue<T> = { data?: T; error?: unknown };
-type CommonSourceInput = { blocks: QueryValue<SourceBlock[]>; contract?: boolean };
+type CommonSourceInput =
+	| { blocks: QueryValue<SourceBlock[]>; contract?: false; materialized?: never }
+	| {
+			contract: true;
+			/** Only ready document + projection inputs may replace the accepted contract. */
+			materialized: QueryValue<NonNullable<DocumentRenderSource['materialized']>>;
+			blocks?: never;
+	  };
 export type DocumentSourceInput = CommonSourceInput &
 	(
 		| {
 				kind: 'records';
-				items: QueryValue<DeepReadonly<ContractItemRecord[]>>;
+				items: QueryValue<DeepReadonly<DocumentItemRecord[]>>;
 				structure?: never;
 				details?: never;
 				pendingRenderKey?: never;
@@ -27,7 +34,7 @@ export type DocumentSourceInput = CommonSourceInput &
 		| {
 				kind: 'structure';
 				structure: QueryValue<StructureSnapshot>;
-				details?: DeepReadonly<ContractItemRecord[]>;
+				details?: DeepReadonly<DocumentItemRecord[]>;
 				pendingRenderKey?: string;
 				items?: never;
 				overlays?: never;
@@ -46,7 +53,7 @@ export type DocumentSourceInput = CommonSourceInput &
 export class DocumentSourceController {
 	itemsCurrent = $state(false);
 	compactStructure = $state(false);
-	items = $state.raw<DeepReadonly<ContractItemRecord[]> | null>(null);
+	items = $state.raw<DeepReadonly<ResolvedContractItem[]> | null>(null);
 	structuralItems = $state.raw<DeepReadonly<StructureItem<ContractItemId>[]> | null>(null);
 	annotations = $state.raw<readonly DocumentAnnotationItem[]>([]);
 	contentOverlays = $state.raw<readonly DocumentOverlayItem[]>([]);
@@ -57,6 +64,7 @@ export class DocumentSourceController {
 	issue = $state.raw<SourceIssue | null>(null);
 	private selection: ConcessionSelection = {};
 	private contentKey = '';
+	private materialized?: DocumentRenderSource['materialized'];
 	private artifacts?: DocumentArtifacts;
 
 	constructor(readonly domain = new DocumentDomain()) {}
@@ -76,13 +84,24 @@ export class DocumentSourceController {
 				item.concessions.filter((concession) => concession.id === this.selection[item.itemId])
 			])
 		);
-		if (this.renderSource?.sourceIndex === this.compiled.index && key === this.contentKey) return;
+		if (
+			this.renderSource?.sourceIndex === this.compiled.index &&
+			this.renderSource.materialized?.document === this.materialized?.document &&
+			this.renderSource.materialized?.baseline === this.materialized?.baseline &&
+			key === this.contentKey
+		)
+			return;
 		this.contentKey = key;
-		if (this.artifacts?.source.sourceIndex !== this.compiled.index) {
+		if (
+			this.artifacts?.source.sourceIndex !== this.compiled.index ||
+			this.artifacts?.source.materialized?.document !== this.materialized?.document ||
+			this.artifacts?.source.materialized?.baseline !== this.materialized?.baseline
+		) {
 			this.artifacts?.destroy();
 			this.artifacts = undefined;
 		}
 		const source: DocumentRenderSource = Object.freeze({
+			materialized: this.materialized,
 			revision: (this.renderSource?.revision ?? 0) + 1,
 			blocks: this.compiled.blocks,
 			items,
@@ -111,8 +130,31 @@ export class DocumentSourceController {
 	}
 
 	#accept(input: DocumentSourceInput) {
+		const materialized = input.contract ? input.materialized.data : undefined;
+		const blocks = input.contract
+			? { data: materialized?.document.blocks, error: input.materialized.error }
+			: input.blocks;
+		const itemError =
+			input.kind === 'records'
+				? input.items.error
+				: input.kind === 'structure'
+					? input.structure.error
+					: undefined;
+		const projectionReady =
+			input.kind === 'overlays' ||
+			(input.kind === 'records' ? Boolean(input.items.data) : input.structure.data?.ready);
+		// Refresh/error inputs retain accepted geometry, artifacts and pages.
+		if (input.contract && (!materialized || !projectionReady || blocks.error || itemError)) {
+			this.itemsCurrent = false;
+			this.issue =
+				blocks.error || itemError
+					? { blocksFailed: Boolean(blocks.error), itemsFailed: Boolean(itemError) }
+					: null;
+			return;
+		}
+		const rollback = input.contract ? this.domain.checkpoint() : undefined;
 		this.compactStructure = input.kind === 'structure';
-		let blocksFailed = Boolean(input.blocks.error),
+		let blocksFailed = Boolean(blocks.error),
 			itemsFailed = Boolean(
 				input.kind === 'structure'
 					? input.structure.error
@@ -120,11 +162,12 @@ export class DocumentSourceController {
 						? input.items.error
 						: false
 			);
-		if (input.blocks.data && !blocksFailed) {
+		if (blocks.data && !blocksFailed) {
 			try {
 				this.domain.acceptBlocks(
-					input.blocks.data,
-					input.kind === 'overlays' ? 'defer-to-overlays' : 'empty'
+					blocks.data,
+					input.kind === 'overlays' ? 'defer-to-overlays' : 'empty',
+					materialized?.document
 				);
 			} catch {
 				blocksFailed = true;
@@ -150,6 +193,16 @@ export class DocumentSourceController {
 			} catch {
 				itemsFailed = true;
 			}
+		}
+		if (rollback && (blocksFailed || itemsFailed)) {
+			rollback();
+			this.itemsCurrent = false;
+			this.issue = { blocksFailed, itemsFailed };
+			return;
+		}
+		if (!blocksFailed && blocks.data) {
+			if (this.materialized?.document !== materialized?.document) this.contentKey = '';
+			this.materialized = materialized;
 		}
 		this.itemsCurrent =
 			Boolean(

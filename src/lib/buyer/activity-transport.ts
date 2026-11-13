@@ -6,6 +6,12 @@ import { validTrackingId } from './tracking';
 
 export const activityRequest = v.union(
 	v.object({
+		kind: v.literal('active'),
+		token: v.string(),
+		browserId: v.string(),
+		openingId: v.string()
+	}),
+	v.object({
 		kind: v.literal('open'),
 		token: v.string(),
 		browserId: v.string(),
@@ -29,7 +35,7 @@ export function validActivity(request: BuyerActivityRequest) {
 		isBuyerToken(request.token) &&
 		validTrackingId(request.browserId) &&
 		validTrackingId(request.openingId) &&
-		(request.kind === 'open' ||
+		(request.kind !== 'clause' ||
 			(validTrackingId(request.eventId) &&
 				Number.isSafeInteger(request.sequence) &&
 				request.sequence > 0 &&

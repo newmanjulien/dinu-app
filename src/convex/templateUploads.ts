@@ -1,6 +1,6 @@
 import { requireTerminologyReady } from './terminologyMaintenance';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { ConvexError, v } from 'convex/values';
+import { ConvexError, v, type Infer } from 'convex/values';
 import {
 	TEMPLATE_SOURCE_MAX_BLOCKS,
 	TEMPLATE_SOURCE_MAX_BYTES,
@@ -10,11 +10,12 @@ import {
 import { sourceBlock } from '../lib/document/source-validators';
 import { validateDocumentSource } from '../lib/document/validate-source';
 import { internal } from './_generated/api';
-import type { Id } from './_generated/dataModel';
+import type { Doc, Id } from './_generated/dataModel';
 import {
 	httpAction,
 	internalMutation,
 	internalQuery,
+	query,
 	type ActionCtx,
 	type QueryCtx
 } from './_generated/server';
@@ -24,8 +25,11 @@ import { CLEANUP_DISCOVERY_PAGE_SIZE, cleanupBudget } from './cleanup';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { deleteUnownedFile } from './storageOwnership';
 import { currentPointer } from './templates';
+import { pendingInitialSetup, resolveSetupBooking } from './csmSetupState';
+import { blockingInitialGuard } from './csmErasureGuards';
+import { replacementState } from './csmReplacements';
 
-import { DOCX_TYPE, issue, preparation } from './templateUploadValidators';
+import { DOCX_TYPE, issue, preparation, templateSetupStatus } from './templateUploadValidators';
 import {
 	uploadErrorMessage as message,
 	readUploadBody,
@@ -33,10 +37,70 @@ import {
 	uploadPreflightResponse
 } from './uploadHttp';
 
-const UPLOAD_TTL = 24 * 60 * 60_000;
-async function emptyCompany(ctx: QueryCtx, companyId: Id<'company'>) {
-	const [company, pointer, versions, items, templateSources] = await Promise.all([
-		ctx.db.get('company', companyId),
+const UPLOAD_TTL = 90 * 24 * 60 * 60_000;
+/** The company owns this source even when its uploader has left. Never scan upload history. */
+export async function currentPendingTemplate(ctx: QueryCtx, company: Doc<'company'>) {
+	if (!company.pendingTemplateSourceId) return null;
+	const source = await ctx.db.get('templateSources', company.pendingTemplateSourceId);
+	if (
+		!source ||
+		source.companyId !== company._id ||
+		source.source !== 'docx' ||
+		source.state !== 'pending'
+	)
+		throw new ConvexError('The pending upload is unavailable. Reload and try again.');
+	return source;
+}
+export const status = query({
+	args: { membershipId: v.id('memberships') },
+	returns: templateSetupStatus,
+	handler: async (ctx, { membershipId }): Promise<Infer<typeof templateSetupStatus>> => {
+		const { company } = await requirePermission(ctx, 'manageTemplate', membershipId);
+		if (company.templateSourceId) return { kind: 'released' };
+		const [booking, source] = await Promise.all([
+			resolveSetupBooking(ctx, company),
+			currentPendingTemplate(ctx, company)
+		]);
+		const pending = source ? { filename: source.filename } : null;
+		if (booking.kind === 'confirmed')
+			return pending ? { kind: 'waiting', pending } : { kind: 'upload' };
+		if (booking.kind === 'initial') {
+			const attempt = await pendingInitialSetup(ctx, company._id);
+			return {
+				kind: 'booking',
+				booking: {
+					kind: 'initial',
+					state: (await blockingInitialGuard(ctx, company._id))
+						? 'uncertain'
+						: !attempt
+							? 'ready'
+							: attempt.state === 'unknown'
+								? 'uncertain'
+								: 'in-progress'
+				},
+				pending
+			};
+		}
+		if (booking.kind === 'cancelled')
+			return {
+				kind: 'booking',
+				booking: {
+					kind: 'replacement',
+					appointmentId: booking.appointment._id,
+					currentUid: booking.appointment.currentUid,
+					state: (await replacementState(ctx, booking.appointment)).state
+				},
+				pending
+			};
+		return { kind: 'booking', booking: { kind: 'unavailable' }, pending };
+	}
+});
+
+async function uploadCompany(ctx: QueryCtx, membershipId: Id<'memberships'>) {
+	const access = await requirePermission(ctx, 'manageTemplate', membershipId);
+	const { company, companyId } = access;
+	const [booking, pointer, versions, items, active, revisions, receipts] = await Promise.all([
+		resolveSetupBooking(ctx, company),
 		currentPointer(ctx, companyId),
 		ctx.db
 			.query('templateVersions')
@@ -48,59 +112,66 @@ async function emptyCompany(ctx: QueryCtx, companyId: Id<'company'>) {
 			.take(1),
 		ctx.db
 			.query('templateSources')
+			.withIndex('by_companyId_and_state', (q) =>
+				q.eq('companyId', companyId).eq('state', 'active')
+			)
+			.first(),
+		ctx.db
+			.query('playbookItemRevisions')
 			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-			.take(17)
+			.take(1),
+		ctx.db
+			.query('playbookItemCreationReceipts')
+			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.take(1)
 	]);
 	if (
-		company?.templateSourceId ||
+		company.templateSourceId ||
 		pointer ||
 		versions.length ||
 		items.length ||
-		templateSources.some((b) => b.state === 'active' || b.source !== 'docx')
+		active ||
+		revisions.length ||
+		receipts.length
 	)
 		throw new ConvexError(
 			'This company already has a template source or an import in progress. Its template source cannot be replaced.'
 		);
-	return templateSources;
+	if (booking.kind !== 'confirmed')
+		throw new ConvexError('Confirm your setup call before uploading a template.');
+	return { access, pending: await currentPendingTemplate(ctx, company) };
 }
 export const authorize = internalQuery({
 	args: { membershipId: v.id('memberships') },
 	returns: v.null(),
 	handler: async (ctx, { membershipId }) => {
-		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
-		await emptyCompany(ctx, access.companyId);
+		await uploadCompany(ctx, membershipId);
 		return null;
 	}
 });
 function reusable(
-	prepared: Awaited<ReturnType<typeof emptyCompany>>,
+	pending: Awaited<ReturnType<typeof currentPendingTemplate>>,
 	uploaderId: Id<'profiles'>,
 	fileHash: string
 ) {
-	return prepared.find(
-		(b) =>
-			b.state === 'prepared' &&
-			b.source === 'docx' &&
-			b.uploaderId === uploaderId &&
-			b.fileHash === fileHash &&
-			b.parserVersion === DOCX_PARSER_VERSION &&
-			b.expiresAt > Date.now()
-	);
+	return pending &&
+		pending.uploaderId === uploaderId &&
+		pending.fileHash === fileHash &&
+		pending.parserVersion === DOCX_PARSER_VERSION &&
+		pending.expiresAt > Date.now()
+		? pending
+		: null;
 }
 // This authoritative transaction rechecks reuse after the bytes have been hashed.
 export const reuse = internalMutation({
 	args: { membershipId: v.id('memberships'), fileHash: v.string() },
 	returns: v.union(v.null(), preparation),
 	handler: async (ctx, { membershipId, fileHash }) => {
-		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
-		const existing = reusable(
-			await emptyCompany(ctx, access.companyId),
-			access.profile._id,
-			fileHash
-		);
+		const { access, pending } = await uploadCompany(ctx, membershipId);
+		const existing = reusable(pending, access.profile._id, fileHash);
 		return existing
 			? {
-					preparedTemplateSourceId: existing._id,
+					pendingTemplateSourceId: existing._id,
 					blockCount: existing.blockCount,
 					issues: existing.issues
 				}
@@ -117,10 +188,9 @@ export const prepare = internalMutation({
 		blocks: v.array(sourceBlock),
 		issues: v.array(issue)
 	},
-	returns: v.object({ preparedTemplateSourceId: v.id('templateSources') }),
+	returns: v.object({ pendingTemplateSourceId: v.id('templateSources') }),
 	handler: async (ctx, args) => {
-		const access = await requirePermission(ctx, 'manageTemplate', args.membershipId);
-		const prepared = await emptyCompany(ctx, access.companyId);
+		const { access, pending } = await uploadCompany(ctx, args.membershipId);
 		validateDocumentSource(args.blocks);
 		if (args.blocks.length > TEMPLATE_SOURCE_MAX_BLOCKS)
 			throw new ConvexError('The prepared document failed validation. Select the DOCX again.');
@@ -149,16 +219,23 @@ export const prepare = internalMutation({
 			).join('') !== args.fileHash
 		)
 			throw new ConvexError('The uploaded Word file is unavailable. Select it again.');
-		const existing = reusable(prepared, access.profile._id, args.fileHash);
+		const existing = reusable(pending, access.profile._id, args.fileHash);
 		if (existing && existing.fingerprint !== integrity.fingerprint)
 			throw new ConvexError('The prepared document is inconsistent.');
-		if (existing) return { preparedTemplateSourceId: existing._id };
-		if (prepared.length >= 16)
+		if (existing) return { pendingTemplateSourceId: existing._id };
+		const deleting = await ctx.db
+			.query('templateSources')
+			.withIndex('by_companyId_and_state', (q) =>
+				q.eq('companyId', access.companyId).eq('state', 'deleting')
+			)
+			.take(16);
+		if (deleting.length + Number(!!pending) >= 16)
 			throw new ConvexError('Too many unfinished uploads. Try again after they expire.');
-		const expiresAt = Date.now() + UPLOAD_TTL;
-		const preparedTemplateSource = {
+		const uploadedAt = Date.now();
+		const expiresAt = uploadedAt + UPLOAD_TTL;
+		const pendingTemplateSource = {
 			companyId: access.companyId,
-			state: 'prepared' as const,
+			state: 'pending' as const,
 			source: 'docx' as const,
 			originalFileId: args.originalFileId,
 			filename: args.filename,
@@ -166,6 +243,7 @@ export const prepare = internalMutation({
 			...integrity,
 			parserVersion: DOCX_PARSER_VERSION,
 			uploaderId: access.profile._id,
+			uploadedAt,
 			issues: args.issues,
 			blockCount: args.blocks.length,
 			chunkCount: 0,
@@ -174,23 +252,37 @@ export const prepare = internalMutation({
 		};
 		await assertStorageCapacity(ctx, {
 			documents: 1,
-			bytes: documentBytes(preparedTemplateSource)
+			bytes: documentBytes(pendingTemplateSource)
 		});
-		const preparedTemplateSourceId = await ctx.db.insert('templateSources', preparedTemplateSource);
+		const pendingTemplateSourceId = await ctx.db.insert('templateSources', pendingTemplateSource);
 		const counters = await writeTemplateSourceChunks(ctx, {
 			companyId: access.companyId,
-			templateSourceId: preparedTemplateSourceId,
+			templateSourceId: pendingTemplateSourceId,
 			blocks: args.blocks
 		});
 		await assertStorageCapacity(ctx, {
 			documents: 1,
-			bytes: documentBytes({ ...preparedTemplateSource, ...counters })
+			bytes: documentBytes({ ...pendingTemplateSource, ...counters })
 		});
-		await ctx.db.patch('templateSources', preparedTemplateSourceId, counters);
+		await ctx.db.patch('templateSources', pendingTemplateSourceId, counters);
+		await assertStorageCapacity(ctx, {
+			documents: 1,
+			bytes: documentBytes({ ...access.company, pendingTemplateSourceId })
+		});
+		await ctx.db.patch('company', access.companyId, { pendingTemplateSourceId });
+		if (pending) {
+			await ctx.db.patch('templateSources', pending._id, {
+				state: 'deleting',
+				expiresAt: uploadedAt
+			});
+			await ctx.scheduler.runAfter(0, internal.templateUploads.expire, {
+				templateSourceId: pending._id
+			});
+		}
 		await ctx.scheduler.runAfter(UPLOAD_TTL, internal.templateUploads.expire, {
-			templateSourceId: preparedTemplateSourceId
+			templateSourceId: pendingTemplateSourceId
 		});
-		return { preparedTemplateSourceId };
+		return { pendingTemplateSourceId };
 	}
 });
 
@@ -271,12 +363,16 @@ export const expire = internalMutation({
 		if (
 			!templateSource ||
 			templateSource.source !== 'docx' ||
-			(templateSource.state !== 'prepared' && templateSource.state !== 'deleting') ||
+			(templateSource.state !== 'pending' && templateSource.state !== 'deleting') ||
 			typeof templateSource.expiresAt !== 'number' ||
 			!Number.isFinite(templateSource.expiresAt) ||
 			templateSource.expiresAt > Date.now()
 		)
 			return null;
+		const company = await ctx.db.get('company', templateSource.companyId);
+		if (company?.templateSourceId === templateSourceId) return null;
+		if (company?.pendingTemplateSourceId === templateSourceId)
+			await ctx.db.patch('company', company._id, { pendingTemplateSourceId: undefined });
 		await ctx.db.patch('templateSources', templateSourceId, { state: 'deleting' });
 		const { drain } = cleanupBudget(ctx);
 		let drained = await drain(
@@ -314,16 +410,16 @@ export const expire = internalMutation({
 		return null;
 	}
 });
-export const expirePrepared = internalMutation({
+export const expirePending = internalMutation({
 	args: {
-		state: v.optional(v.union(v.literal('prepared'), v.literal('deleting'))),
+		state: v.optional(v.union(v.literal('pending'), v.literal('deleting'))),
 		cursor: v.optional(v.union(v.string(), v.null()))
 	},
 	returns: v.null(),
 	handler: async (ctx, { state, cursor }) => {
 		requireTerminologyReady();
 		if (!state) {
-			for (const state of ['prepared', 'deleting'] as const) {
+			for (const state of ['pending', 'deleting'] as const) {
 				const expired = await ctx.db
 					.query('templateSources')
 					.withIndex('by_state_and_expiresAt', (q) =>
@@ -331,7 +427,7 @@ export const expirePrepared = internalMutation({
 					)
 					.first();
 				if (expired)
-					await ctx.scheduler.runAfter(0, internal.templateUploads.expirePrepared, { state });
+					await ctx.scheduler.runAfter(0, internal.templateUploads.expirePending, { state });
 			}
 			return null;
 		}
@@ -352,7 +448,7 @@ export const expirePrepared = internalMutation({
 					templateSourceId: templateSource._id
 				});
 		if (!result.isDone)
-			await ctx.scheduler.runAfter(0, internal.templateUploads.expirePrepared, {
+			await ctx.scheduler.runAfter(0, internal.templateUploads.expirePending, {
 				state,
 				cursor: result.continueCursor
 			});

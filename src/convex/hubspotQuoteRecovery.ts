@@ -6,6 +6,7 @@ import { installation } from './hubspotInstallation';
 import { connectionToken, hubspot } from './hubspotApi';
 import schema from './schema';
 import { activeQuote, numericQuoteId, quotePath, quoteUrl } from './hubspotQuoteProvider';
+import { outputReservation } from './outputProof';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
 
 const evidence = (value: string) => {
@@ -29,6 +30,7 @@ export const data = internalQuery({
 			!['unknown', 'attention', 'verified'].includes(push.state)
 		)
 			throw new ConvexError('This push is not available for operator recovery.');
+		await outputReservation(ctx, push);
 		const connection = await installation(ctx, push.companyId);
 		if (!connection || connection.accountId !== push.destination.accountId)
 			throw new ConvexError('Connect the original HubSpot account before reconciliation.');

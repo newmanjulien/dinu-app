@@ -44,9 +44,12 @@
 		type ViewerBindings
 	} from '$lib/document/runtime/resources.svelte';
 	import {
+		createPanelOpenSample,
 		recordColdStart,
 		recordDocumentReady,
-		recordPageMount
+		recordPageMount,
+		recordPanelReadiness,
+		type PanelOpenPerfSample
 	} from '$lib/document/runtime/render-perf';
 	import { prewarmSavedConcessions } from '$lib/document/runtime/prewarm';
 	import {
@@ -74,6 +77,7 @@
 		type LayoutProfileSurface as ProfileSurface
 	} from '$lib/document/pagination/profiler';
 	import DocumentWorkspaceGeometry from './DocumentWorkspaceGeometry.svelte';
+	import type { DocumentLayout } from './workspace-layout';
 	import DocumentPage from './DocumentPage.svelte';
 	import LayoutProfileSurface from './LayoutProfileSurface.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
@@ -83,17 +87,18 @@
 	import type { ReviewTag, ReviewDecision, ReviewNavigation } from '$lib/contract/approval';
 	const annotationRegistry = setAnnotationRegistry();
 	let {
+		layout = 'standard',
 		active = true,
-		instructionAudience = 'rep',
 		interactive = true,
 		retained = false,
 		prepare = true,
-		instructionPreload,
+		itemPreload,
 		priority = () => 'foreground',
 		hasPanel = false,
 		followScroll = false,
 		panelContent,
 		footerContent,
+		documentActions,
 		reviewTags = [],
 		reviewGutter = 0,
 		reviewNavigation,
@@ -110,6 +115,7 @@
 		sourceSelectionEnabled = false,
 		playbookNavigationReady = true,
 		onSelect,
+		onItemIntent,
 		onDocumentBackground,
 		onPresentation,
 		onRetry,
@@ -118,19 +124,22 @@
 		annotationItems,
 		discussions
 	}: {
+		layout?: DocumentLayout;
 		discussions?: DiscussionSession;
-		instructionAudience?: 'rep' | 'buyer';
 		annotationItems?: readonly import('$lib/playbook/document-overlay').DocumentAnnotationItem[];
 		active?: boolean;
 		interactive?: boolean;
 		retained?: boolean;
 		prepare?: boolean;
-		instructionPreload?: ViewerBindings['instructionPreload'];
+		itemPreload?: ViewerBindings['itemPreload'];
 		priority?: Priority;
 		hasPanel?: boolean;
 		followScroll?: boolean;
 		panelContent: Snippet;
 		footerContent?: Snippet;
+		documentActions?: Snippet<
+			[HTMLElement, HTMLElement, DocumentHighlightController | undefined, unknown, unknown, boolean]
+		>;
 		reviewTags?: readonly ReviewTag[];
 		reviewGutter?: number;
 		reviewNavigation?: ReviewNavigation;
@@ -147,6 +156,7 @@
 		allowPlaybookNavigation?: boolean;
 		sourceSelectionEnabled?: boolean;
 		playbookNavigationReady?: boolean;
+		onItemIntent?: (itemId: string) => void;
 		onSelect: (itemId: string, annotationId: string) => AnnotationAdmission | boolean | void;
 		onDocumentBackground?: () => void;
 		onPresentation?: (
@@ -217,26 +227,34 @@
 	$effect(() => {
 		const controller = highlights;
 		if (!controller) return;
-		controller.setStructuralBoundaryGroup(
-			'saved-structural-instructions',
-			'trigger',
-			[...structuralBoundaryAnnotations]
-				.filter(([, memberships]) =>
-					memberships.some(
-						(member) =>
-							member.target.kind === 'boundary' && (member.kind === 'trigger' || member.applied)
-					)
+		const selections = [...structuralBoundaryAnnotations].flatMap(([key, memberships]) => {
+			const owner = memberships
+				.filter(
+					(member) =>
+						member.target.kind === 'boundary' && (member.kind === 'trigger' || member.applied)
 				)
-				.map(([key]) => ({ key }))
-		);
+				.sort(
+					(a, b) =>
+						Number(a.kind !== 'trigger') - Number(b.kind !== 'trigger') || a.id.localeCompare(b.id)
+				)[0];
+			return owner ? [{ key, kind: owner.highlightKind }] : [];
+		});
+		for (const kind of ['rep-attachment', 'buyer-attachment'] as const)
+			controller.setStructuralBoundaryGroup(
+				`saved-structural-${kind}`,
+				kind,
+				selections.filter((selection) => selection.kind === kind).map(({ key }) => ({ key }))
+			);
 	});
 	let mountedGeneration = $state(0);
+	let flushedGeneration = $state(0);
 	$effect(() => {
 		if (!active) activationComplete = false;
 		else if (viewer.layoutPrepared && viewer.pagesVisible) activationComplete = true;
 	});
 	let highlights = $state<DocumentHighlightController>();
 	let documentGestures = $state<DocumentGestureInteractions>();
+	let discussionLayer = $state<DiscussionLayer>();
 	let highlightRects = $state.raw<PageHighlights>(new Map());
 	let annotationProjection = $state.raw<DocumentAnnotationProjection>();
 	$effect(() => {
@@ -297,7 +315,12 @@
 		const stage = viewer.documentStageElement,
 			controller = highlights;
 		if (!active || !stage || !controller) return;
-		const interactions = new DocumentGestureInteractions(stage, controller, handleDocumentIntent);
+		const interactions = new DocumentGestureInteractions(
+			stage,
+			controller,
+			handleDocumentIntent,
+			(itemId) => onItemIntent?.(itemId)
+		);
 		documentGestures = interactions;
 		return () => {
 			interactions.destroy();
@@ -356,7 +379,7 @@
 		highlights?.projectionChanged();
 	});
 	$effect(() => {
-		const report = instructionPreload,
+		const report = itemPreload,
 			controller = highlights,
 			annotations = displayedAnnotations,
 			commit = pageElementsSnapshot,
@@ -378,7 +401,7 @@
 			if (
 				cancelled ||
 				!active ||
-				instructionPreload !== report ||
+				itemPreload !== report ||
 				highlights !== controller ||
 				displayedAnnotations !== annotations ||
 				pageElementsSnapshot !== commit ||
@@ -737,10 +760,12 @@
 	const canOpenPlaybookItems = $derived(
 		interacting && viewer.layoutPrepared && current && navigationCapable && playbookNavigationReady
 	);
+	$effect(() => recordPanelReadiness(canOpenPlaybookItems));
 	const documentBackgroundDismissalEnabled = $derived(hasPanel && Boolean(onDocumentBackground));
 	$effect(() => {
 		documentGestures?.setPolicy({
 			clauseActivation: canOpenPlaybookItems,
+			discussionActivation: active && Boolean(discussions?.active) && !loading,
 			backgroundActivation: documentBackgroundDismissalEnabled
 		});
 	});
@@ -756,6 +781,15 @@
 		layout: HTMLDivElement;
 	}>();
 	let panelRequestGeneration = 0;
+	let panelOpenPerf = $state.raw<
+		| {
+				sample: PanelOpenPerfSample;
+				annotationId: string;
+				selectionToken?: object;
+				source: typeof source.renderSource;
+		  }
+		| undefined
+	>();
 	let pendingPanelSwitch: {
 		from: SourceTarget;
 		annotationId: string;
@@ -843,6 +877,27 @@
 	function restoreAnnotationFocus() {
 		captureAnnotationFocus()();
 	}
+	function currentPanelOpenPerf() {
+		const available = active,
+			open = hasPanel,
+			annotationId = selectedAnnotationId,
+			selectionToken = selectionRequest?.token,
+			renderSource = source.renderSource,
+			owner = panelOpenPerf;
+		if (!owner) return;
+		if (
+			!available ||
+			!open ||
+			owner.annotationId !== annotationId ||
+			owner.selectionToken !== selectionToken ||
+			owner.source !== renderSource ||
+			owner.sample.contentMountedAt !== undefined
+		) {
+			panelOpenPerf = undefined;
+			return;
+		}
+		return owner.sample;
+	}
 	function panelPositionRequest(generation: number) {
 		const target = positioningTarget,
 			stage = viewer.documentStageElement,
@@ -876,6 +931,7 @@
 			generation,
 			index: commit.source.sourceIndex,
 			layoutEpoch: commit.layoutEpoch,
+			perf: untrack(currentPanelOpenPerf),
 			selectionToken: selectionRequest?.token,
 			annotationId: selectedAnnotationId
 		};
@@ -903,6 +959,20 @@
 			selectedAnnotationId === request.annotationId
 		);
 	}
+	function heldPanelPositionMatchesRequest(
+		held: typeof panelPosition,
+		request: NonNullable<ReturnType<typeof panelPositionRequest>>
+	) {
+		return Boolean(
+			held &&
+			sameSourceTarget(held.target, request.target) &&
+			held.index === request.index &&
+			held.layoutEpoch === request.layoutEpoch &&
+			held.scale === request.scale &&
+			held.stage === request.stage &&
+			held.layout === request.layout
+		);
+	}
 	function finishPanelSwitch(target: SourceTarget) {
 		const intent = pendingPanelSwitch;
 		if (!intent) return;
@@ -913,13 +983,26 @@
 		pendingPanelSwitch = null;
 	}
 	async function positionPanel(request: NonNullable<ReturnType<typeof panelPositionRequest>>) {
+		let perf = request.perf;
+		if (perf && currentPanelOpenPerf() !== perf) perf = undefined;
+		if (perf) perf.positionRequestedAt = performance.now();
 		await tick();
+		if (perf && currentPanelOpenPerf() !== perf) perf = undefined;
 		if (!panelPositionRequestIsCurrent(request)) return;
+		if (perf) perf.domReadyAt = performance.now();
+		const lookupStarted = perf ? performance.now() : 0;
 		const bounds = panelTargetBounds(request.stage, request.target, request.commit);
+		if (perf) {
+			perf.lookupMs = performance.now() - lookupStarted;
+			perf.preparedSourceFacts = request.commit.panelSourceFacts ? 1 : 0;
+			perf.effective = request.commit.view === 'effective' ? 1 : 0;
+		}
 		// Keep the editor mounted through switches, missing DOM and invalid dirty-draft targets.
 		// Only initial opening waits without a fallback position.
 		if (!bounds) return;
+		const geometryStarted = perf ? performance.now() : 0;
 		const top = Math.max(0, bounds.top - request.layout.getBoundingClientRect().top);
+		if (perf) perf.geometryMs = performance.now() - geometryStarted;
 		panelPosition = {
 			target: request.target,
 			top,
@@ -929,6 +1012,7 @@
 			stage: request.stage,
 			layout: request.layout
 		};
+		if (perf) perf.resolvedAt = performance.now();
 		finishPanelSwitch(request.target);
 	}
 	function selectAnnotation(
@@ -937,10 +1021,28 @@
 		activation: AnnotationActivation
 	) {
 		if (!canOpenPlaybookItems) return;
+		const perf = createPanelOpenSample();
+		const activationSource = source.renderSource;
+		panelOpenPerf = undefined;
 		const occurrence = annotationOccurrence(annotationRegistry, annotationId, activation);
 		const admission = onSelect(itemId, annotationId);
+		if (perf) {
+			perf.admissionMs = performance.now() - perf.at;
+			perf.accepted =
+				admission === false || (typeof admission === 'object' && admission.status === 'rejected')
+					? 0
+					: 1;
+			if (perf.accepted) perf.admittedAt = performance.now();
+		}
 		if (admission === false || (typeof admission === 'object' && admission.status === 'rejected'))
 			return;
+		if (perf)
+			panelOpenPerf = {
+				sample: perf,
+				annotationId,
+				selectionToken: typeof admission === 'object' ? admission.token : undefined,
+				source: activationSource
+			};
 		if (typeof admission === 'object' && admission.status === 'accepted')
 			admittedOccurrence = { token: admission.token, annotationId, occurrence };
 		else {
@@ -958,6 +1060,10 @@
 	function handleDocumentIntent(intent: DocumentGestureIntent) {
 		if (intent.kind === 'activate-background') {
 			if (hasPanel) onDocumentBackground?.();
+			return;
+		}
+		if (intent.kind === 'activate-discussion') {
+			discussionLayer?.activate(intent.discussionId, true);
 			return;
 		}
 		selectAnnotation(intent.itemId, intent.annotationId, intent.activation);
@@ -1003,15 +1109,14 @@
 			}
 			if (!request) return;
 			const held = panelPosition;
-			if (
-				held &&
-				sameSourceTarget(held.target, request.target) &&
-				held.index === request.index &&
-				held.layoutEpoch === request.layoutEpoch &&
-				held.scale === request.scale &&
-				held.stage === request.stage &&
-				held.layout === request.layout
-			) {
+			if (heldPanelPositionMatchesRequest(held, request)) {
+				if (request.perf && currentPanelOpenPerf() === request.perf) {
+					if (request.perf.resolvedAt === undefined) {
+						request.perf.heldPosition = 1;
+						request.perf.resolvedAt = performance.now();
+					}
+					recordPanelContentMounted(request.perf);
+				}
 				finishPanelSwitch(request.target);
 				return;
 			}
@@ -1021,6 +1126,40 @@
 		return () => {
 			panelRequestGeneration++;
 		};
+	});
+	function recordPanelContentMounted(perf: PanelOpenPerfSample | undefined) {
+		if (
+			perf &&
+			currentPanelOpenPerf() === perf &&
+			perf.resolvedAt !== undefined &&
+			perf.contentMountedAt === undefined &&
+			layoutElement?.querySelector('[data-workspace-panel]')
+		) {
+			perf.contentMountedAt = performance.now();
+			panelOpenPerf = undefined;
+		}
+	}
+	$effect(() => {
+		// Effects run after the existing DOM update; diagnostics add no tick or paint wait.
+		// Track ownership here without adding dependencies to panel positioning.
+		const perf = currentPanelOpenPerf(),
+			held = panelPosition;
+		if (perf && held)
+			untrack(() => {
+				if (perf.resolvedAt === undefined) {
+					const request = panelPositionRequest(panelRequestGeneration);
+					if (
+						!request ||
+						request.perf !== perf ||
+						!panelPositionRequestIsCurrent(request) ||
+						!heldPanelPositionMatchesRequest(held, request)
+					)
+						return;
+					perf.heldPosition = 1;
+					perf.resolvedAt = performance.now();
+				}
+				recordPanelContentMounted(perf);
+			});
 	});
 	async function keepPanelVisible() {
 		const panel = layoutElement?.querySelector<HTMLElement>('[data-workspace-panel]');
@@ -1154,7 +1293,7 @@
 		)
 			return;
 		const artifacts = renderer.artifacts;
-		if (!artifacts || artifacts.source.sourceIndex !== commit.source.sourceIndex) return;
+		if (!artifacts?.compatible(commit.source) || commit.source.materialized) return;
 		const focusedItemId = hasPanel
 			? displayedAnnotations.find((item) =>
 					item.annotations.some((annotation) => annotation.id === selectedAnnotationId)
@@ -1189,6 +1328,7 @@
 				untrack(() => {
 					mountedPages = [];
 					mountedGeneration = 0;
+					flushedGeneration = 0;
 					pageElementsSnapshot = null;
 				});
 			return;
@@ -1205,6 +1345,7 @@
 					mountedPages = available;
 					mountedGeneration = generation;
 					await tick();
+					if (!abort.signal.aborted) flushedGeneration = generation;
 					if (!abort.signal.aborted)
 						recordPageMount(generation, startedAt, mountedPages.length, true);
 				}
@@ -1216,6 +1357,7 @@
 					mountedPages = [];
 					pageElementsSnapshot = null;
 					mountedGeneration = generation;
+					flushedGeneration = 0;
 				}
 				while (mountedPages.length < available.length) {
 					await layoutProfiler.scheduler.run(
@@ -1226,6 +1368,7 @@
 							const pageCount = mountedPages.length + 1;
 							mountedPages = available.slice(0, pageCount);
 							await tick();
+							if (!abort.signal.aborted) flushedGeneration = generation;
 							if (!abort.signal.aborted) recordPageMount(generation, startedAt, pageCount);
 						},
 						abort.signal,
@@ -1265,6 +1408,31 @@
 				: null;
 	});
 	$effect(() => {
+		const display = current ? snapshot : partialEligible ? renderer.pending : null;
+		const generation = display && ('id' in display ? display.id : display.generation);
+		viewer.publishExactDisplay(
+			active &&
+				prepare &&
+				!source.issue &&
+				!failure &&
+				!renderer.error &&
+				pageViewport &&
+				display?.layoutEpoch &&
+				mountedPages.length &&
+				mountedPages[0] === display.pages[0] &&
+				mountedGeneration === generation &&
+				flushedGeneration === generation
+				? {
+						source: display.source,
+						concessions: display.concessions,
+						previewChanges: display.previewChanges,
+						generation,
+						layoutEpoch: display.layoutEpoch
+					}
+				: null
+		);
+	});
+	$effect(() => {
 		if (!viewer.pagesVisible) return;
 		const abort = new AbortController();
 		void afterPaint(abort.signal)
@@ -1302,12 +1470,19 @@
 		}
 		if (prepared) lastReadySnapshot = snapshot;
 	});
+	const hasWorkspacePanel = $derived(
+		hasPanel ||
+			Boolean(
+				active && discussions?.active && (discussions.threads.length || discussions.visibleComposer)
+			)
+	);
 	onDestroy(() => {
 		panelRequestGeneration++;
 		pendingPanelSwitch = null;
 		viewer.interactionEnabled = false;
 		viewer.pagesVisible = false;
 		viewer.displayedSnapshot = null;
+		viewer.publishExactDisplay(null);
 		viewer.documentStageElement = undefined;
 		viewer.retry = undefined;
 		viewer.restoreAnnotationFocus = undefined;
@@ -1336,27 +1511,28 @@
 		continue.
 		{#each requestedModel.conflicts as conflict}
 			{@const item = source.items?.find((item) => item._id === conflict.itemId)}
-			{@const concession = item?.concessions.find(
+			{@const concession = item?.choices.find(
 				(concession) => concession.id === conflict.concession.id
 			)}
 			<button
 				class="ml-2 underline"
 				onclick={interacting ? () => onRemoveConcession(conflict.itemId) : undefined}
-				>Remove “{concession?.description ?? conflict.concession.id}”{item?.instructions?.summary
-					? ` — ${item.instructions.summary}`
+				>Remove “{concession?.description ?? conflict.concession.id}”{item?.origin.kind ===
+					'template' && item.origin.instructions?.summary
+					? ` — ${item.origin.kind === 'template' ? item.origin.instructions?.summary : ''}`
 					: ''}</button
 			>{/each}
 	</div>
 {/if}
 {#if !sharedProfiles}<LayoutProfileSurface bind:surface />{/if}
 <DocumentWorkspaceGeometry
+	{layout}
 	{reviewGutter}
-	hasPanel={hasPanel || Boolean(discussions)}
+	hasPanel={hasWorkspacePanel}
 	onPageResize={(width) => (displayWidth = width)}
 >
 	<div
-		class={`viewer-root w-full ${active && hasPanel ? '[overflow-anchor:none]' : ''}`}
-		data-instruction-audience={instructionAudience}
+		class={`viewer-root relative w-full ${active && hasPanel ? '[overflow-anchor:none]' : ''}`}
 		data-document-commit={targetGeneration}
 		data-page-count={mountedPages.length}
 		style:--document-page-width={`${PAGE_FORMAT.width}px`}
@@ -1447,14 +1623,26 @@
 			{panelContent}
 			{footerContent}
 		/>
+		{#if documentActions && layoutElement && viewer.documentStageElement}
+			{@render documentActions(
+				viewer.documentStageElement,
+				layoutElement,
+				highlights,
+				pageElementsSnapshot,
+				mountedPages,
+				active && interactive && !loading && viewer.interactionEnabled
+			)}
+		{/if}
 		{#if discussions && layoutElement && viewer.documentStageElement}
 			<DiscussionLayer
+				bind:this={discussionLayer}
+				{highlights}
 				session={discussions}
 				documentRoot={viewer.documentStageElement}
 				layout={layoutElement}
 				renderRevision={pageElementsSnapshot}
 				domRevision={mountedPages}
-				active={active && !loading}
+				active={active && discussions.active && !loading}
 				obscured={hasPanel}
 				onActivate={() => onDocumentBackground?.()}
 			/>

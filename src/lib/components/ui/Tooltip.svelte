@@ -146,7 +146,7 @@
 			settle();
 		}}
 		class={cn(
-			'rounded-base border-0 bg-ink-secondary px-2.5 py-2 text-left text-xs leading-[1.4] text-surface',
+			'rounded-md border-hairline border-edge bg-surface px-2 py-1 text-left text-xs leading-[1.4] text-ink shadow-floating',
 			className
 		)}
 	>

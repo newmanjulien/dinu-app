@@ -4,13 +4,43 @@
 	import EraserIcon from 'phosphor-svelte/lib/EraserIcon';
 	import type { DiscussionSession } from './session.svelte';
 	import type { DiscussionAnchor } from './validators';
-	import { setDiscussionHighlights, clearDiscussionHighlights } from './highlights';
+	import type { DocumentHighlightController } from '$lib/document/highlights/controller';
+	import DocumentPanelRail from '$lib/components/document/DocumentPanelRail.svelte';
+	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
+	import InlineAction from '$lib/components/playbook/InlineAction.svelte';
+	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
+	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import { captureDiscussionAnchor, discussionDomRange, indexDiscussionDom } from './dom-anchor';
 	import { packAnnotationRail } from './annotation-rail-layout';
 	import DiscussionThread from './DiscussionThread.svelte';
 	import MessageComposer from './MessageComposer.svelte';
+	import SelectionToolbar from '$lib/components/document/SelectionToolbar.svelte';
+	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
+	import { setInteractionOwner, type CloseReason } from '$lib/components/ui/interactions';
+	import type { FloatingVirtualAnchor } from '$lib/components/ui/floating';
+	const interactionOwner = setInteractionOwner(Symbol('discussions'));
+	let openingTrigger: HTMLElement | undefined;
+	function rememberTrigger() {
+		const focused = document.activeElement;
+		if (focused instanceof HTMLElement && !rail?.contains(focused)) openingTrigger = focused;
+		if (!openingTrigger || openingTrigger === document.body)
+			openingTrigger = documentRoot ?? undefined;
+	}
+	function dismissPanel(restore: boolean) {
+		if (!restore && !session.replyingTo && !session.editingMessage) return;
+		if (session.selected === 'composer') {
+			if (!restore || session.drafts.submitting) return;
+			session.cancel();
+		} else {
+			session.closeEditors();
+			session.selected = null;
+		}
+		if (restore && openingTrigger?.isConnected) openingTrigger.focus({ preventScroll: true });
+	}
+
 	let {
 		session,
+		highlights,
 		documentRoot,
 		layout,
 		renderRevision,
@@ -20,6 +50,7 @@
 		onActivate
 	}: {
 		session: DiscussionSession;
+		highlights?: DocumentHighlightController;
 		documentRoot?: HTMLElement | null;
 		layout?: HTMLElement | null;
 		renderRevision: unknown;
@@ -34,22 +65,35 @@
 		resolved = $state.raw<Set<string>>(new Set()),
 		bottom = $state(0);
 	let toolbar = $state.raw<{
-		left: number;
-		top: number;
-		above: boolean;
+		reference: FloatingVirtualAnchor;
 		anchor: DiscussionAnchor;
 	} | null>(null);
+	const selectionGeometryListeners = new Set<() => void>();
+	let dismissedSelection: string | undefined;
 	let alive = true;
-	const highlightOwner = Symbol('discussion-highlights');
-	let ranges = new Map<string, Range>();
-	let paperRight = $state(0),
-		documentBottom = $state(0);
+	let ranges = $state.raw(new Map<string, Range>());
+	let documentBottom = $state(0);
+	$effect(() => {
+		if (!active || obscured) session.closeEditors();
+	});
 	let frame: number | undefined,
 		selectionPointer: number | null = null;
 	const cards = $derived([
-		...session.threads.map((t) => ({ id: t.id, anchor: t.anchor, type: t.type })),
-		...(session.composer
-			? [{ id: 'composer', anchor: session.composer.anchor, type: session.composer.type }]
+		...session.threads.map((t) => ({
+			id: t.id,
+			anchor: t.anchor,
+			type: t.type,
+			available: session.feed.authorized
+		})),
+		...(session.visibleComposer
+			? [
+					{
+						id: 'composer',
+						anchor: session.visibleComposer.anchor,
+						type: session.visibleComposer.type,
+						available: session.visibleComposer.contentIdentity === session.contentIdentity()
+					}
+				]
 			: [])
 	]);
 	let domCache:
@@ -66,8 +110,7 @@
 		void domRevision;
 		void active;
 		domCache = undefined;
-		ranges.clear();
-		untrack(() => clearDiscussionHighlights(highlightOwner));
+		toolbar = null;
 	});
 	function index() {
 		if (!documentRoot) return;
@@ -86,44 +129,108 @@
 		return domCache.index;
 	}
 
+	$effect(() => {
+		void renderRevision;
+		void domRevision;
+		const root = documentRoot;
+		const items = cards;
+		ranges =
+			active && root
+				? new Map(
+						items.flatMap((card) => {
+							if (!card.available) return [];
+							const range = discussionDomRange(root, card.anchor, index()!);
+							return range ? [[card.id, range] as const] : [];
+						})
+					)
+				: new Map();
+	});
+	function groupName(id: string) {
+		return `discussion:${id}`;
+	}
+	$effect(() => {
+		const controller = highlights;
+		const element = rail;
+		if (!controller || !element || !active) return;
+		const groups = new Map<string, HTMLElement>();
+		$effect(() => {
+			const currentRanges = ranges;
+			const selected = session.selected;
+			const items = cards;
+			untrack(() => {
+				const desired = new Set<string>();
+				const selectionChanged = new Set<string>();
+				for (const card of items) {
+					const range = currentRanges.get(card.id);
+					const owner = element.querySelector<HTMLElement>(
+						`[data-discussion-card="${CSS.escape(card.id)}"]`
+					);
+					if (!range || !owner) continue;
+					const name = groupName(card.id);
+					const previousOwner = groups.get(name);
+					if (previousOwner && previousOwner !== owner) controller.clearGroup(name);
+					const selectedFlag = String(card.id === selected);
+					if (previousOwner === owner && owner.dataset.annotationSelected !== selectedFlag)
+						selectionChanged.add(name);
+					owner.dataset.annotationId = name;
+					owner.dataset.annotationSelected = selectedFlag;
+					owner.dataset.annotationPriority = '-1';
+					owner.dataset.discussionId = card.id;
+					controller.setGroup(
+						name,
+						card.id === 'composer'
+							? 'authoring-selection'
+							: card.type === 'proposal'
+								? 'discussion-proposal'
+								: 'buyer-attachment',
+						[range],
+						undefined,
+						owner
+					);
+					if (card.id === selected) controller.ensureRangeGeometry(range);
+					groups.set(name, owner);
+					desired.add(name);
+				}
+				for (const name of groups.keys()) {
+					if (desired.has(name)) continue;
+					controller.clearGroup(name);
+					groups.delete(name);
+				}
+				if (selectionChanged.size) controller.annotationsChanged(selectionChanged);
+				schedule();
+			});
+		});
+		return () => {
+			for (const name of groups.keys()) controller.clearGroup(name);
+		};
+	});
+	$effect(() => highlights?.subscribeGeometry(() => schedule()));
+
 	function schedule() {
 		if (!alive || frame !== undefined) return;
 		frame = requestAnimationFrame(() => {
 			frame = undefined;
 			measure();
+			for (const update of selectionGeometryListeners) update();
 		});
 	}
 	function measure() {
-		if (!alive || !active || !layout?.isConnected || !documentRoot?.isConnected) {
-			clearDiscussionHighlights(highlightOwner);
+		if (!alive || !active || !layout?.isConnected || !documentRoot?.isConnected || !cards.length) {
+			anchors = {};
+			resolved = new Set();
+			positions = {};
+			bottom = 0;
+			documentBottom = active ? (layout?.getBoundingClientRect().height ?? 0) : 0;
 			return;
 		}
 		const base = layout.getBoundingClientRect(),
-			next: Record<string, number> = {},
-			found = new Set<string>();
-		paperRight = documentRoot.getBoundingClientRect().right - base.left;
+			next: Record<string, number> = {};
 		documentBottom = base.height;
-		ranges = new Map();
-		const highlights = {
-			comment: [] as Range[],
-			proposal: [] as Range[],
-			activeComment: [] as Range[],
-			activeProposal: [] as Range[]
-		};
-		const domIndex = index()!;
 		const items = cards.map((card, order) => {
-			const range = discussionDomRange(documentRoot!, card.anchor, domIndex),
-				rect = range?.getClientRects()[0];
-			if (rect && range) {
-				ranges.set(card.id, range);
-				const thread = card.id === 'composer' ? undefined : card;
-				if (card.id === session.selected)
-					highlights[card.type === 'proposal' ? 'activeProposal' : 'activeComment'].push(range);
-				else if (thread)
-					highlights[thread.type === 'proposal' ? 'proposal' : 'comment'].push(range);
-				found.add(card.id);
-				next[card.id] = Math.max(0, rect.top - base.top);
-			}
+			const rect = card.available
+				? highlights?.annotationAnchorRect(groupName(card.id))
+				: undefined;
+			if (rect) next[card.id] = Math.max(0, rect.top - base.top);
 			const node = rail?.querySelector<HTMLElement>(
 				`[data-discussion-card="${CSS.escape(card.id)}"]`
 			);
@@ -140,19 +247,24 @@
 				? { id: session.selected, targetTop: next[session.selected] }
 				: null
 		);
-		setDiscussionHighlights(highlightOwner, highlights);
 		anchors = next;
-		resolved = found;
+		resolved = new Set(ranges.keys());
 		positions = packed.placements;
 		bottom = packed.bottom;
 	}
+
 	$effect(() => {
 		void renderRevision;
 		void domRevision;
+		void documentRoot;
+		void layout;
+		void obscured;
 		void cards;
 		void session.selected;
 		void active;
-		if (!active) untrack(() => clearDiscussionHighlights(highlightOwner));
+		if (!active) {
+			toolbar = null;
+		}
 		untrack(() => void tick().then(schedule));
 	});
 	function selectionChanged() {
@@ -161,11 +273,13 @@
 		if (
 			!active ||
 			!session.active ||
+			session.readOnly ||
 			!selection ||
 			selection.isCollapsed ||
 			!selection.rangeCount ||
 			!documentRoot
 		) {
+			dismissedSelection = undefined;
 			toolbar = null;
 			return;
 		}
@@ -178,6 +292,11 @@
 			toolbar = null;
 			return;
 		}
+		if (JSON.stringify(anchor) === dismissedSelection) {
+			toolbar = null;
+			return;
+		}
+		dismissedSelection = undefined;
 		const rects = [...range.getClientRects()].filter((r) => r.width && r.height),
 			first = rects[0],
 			last = rects.at(-1);
@@ -185,25 +304,61 @@
 			toolbar = null;
 			return;
 		}
-		const below = last.bottom + 49 < window.innerHeight;
 		toolbar = {
 			anchor,
-			left: Math.min(window.innerWidth - 40, Math.max(40, last.left + last.width / 2)),
-			top: below ? last.bottom + 10 : first.top - 10,
-			above: !below
+			reference: {
+				subscribe: (update) => {
+					selectionGeometryListeners.add(update);
+					return () => {
+						selectionGeometryListeners.delete(update);
+					};
+				},
+				contextElement: range.endContainer.parentElement ?? documentRoot,
+				getBoundingClientRect: () => {
+					const rects = [...range.getClientRects()].filter((rect) => rect.width && rect.height);
+					return rects.at(-1) ?? new DOMRect();
+				}
+			}
 		};
 	}
+	function dismissToolbar(reason: CloseReason) {
+		dismissedSelection = toolbar ? JSON.stringify(toolbar.anchor) : undefined;
+		toolbar = null;
+		if (reason !== 'outside-pointer') window.getSelection()?.removeAllRanges();
+	}
 	function begin(type: 'comment' | 'proposal') {
-		if (!toolbar) return;
+		if (session.readOnly || !toolbar) return;
+		rememberTrigger();
 		onActivate?.();
 		session.begin(toolbar.anchor, type);
+		focusDraft();
 		toolbar = null;
 		window.getSelection()?.removeAllRanges();
 	}
-	function activate(id: string) {
+	function focusDraft() {
+		const current = session.captureWriteAccess();
+		void tick().then(() => {
+			if (
+				current() &&
+				active &&
+				!obscured &&
+				session.selected === 'composer' &&
+				!session.drafts.submitting
+			)
+				rail
+					?.querySelector<HTMLTextAreaElement>('[data-discussion-card="composer"] textarea')
+					?.focus({ preventScroll: true });
+		});
+	}
+	export function activate(id: string, restoreToDocument = false) {
+		if (session.readOnly && id === 'composer') return;
+		rememberTrigger();
+		if (restoreToDocument || !openingTrigger || openingTrigger === document.body)
+			openingTrigger = documentRoot ?? undefined;
 		onActivate?.();
 		session.selected = id;
-		void session.loadBuyerViewer();
+		if (id === 'composer') focusDraft();
+		if (!session.readOnly) void session.loadBuyerViewer();
 	}
 	onMount(() => {
 		let selectionFrame: number | undefined;
@@ -216,6 +371,7 @@
 		};
 		const pointerDown = (event: PointerEvent) => {
 			if (event.isPrimary && event.button === 0 && documentRoot?.contains(event.target as Node)) {
+				dismissedSelection = undefined;
 				selectionPointer = event.pointerId;
 				toolbar = null;
 			}
@@ -234,32 +390,7 @@
 			schedule();
 			updateSelection();
 		};
-		const openAtPoint = (event: MouseEvent) => {
-			if (!active || !window.getSelection()?.isCollapsed) return;
-			const found = [...ranges].find(
-				([id, range]) =>
-					id !== 'composer' &&
-					[...range.getClientRects()].some(
-						(rect) =>
-							event.clientX >= rect.left &&
-							event.clientX <= rect.right &&
-							event.clientY >= rect.top &&
-							event.clientY <= rect.bottom
-					)
-			);
-			if (found) {
-				event.stopPropagation();
-				activate(found[0]);
-			}
-		};
-		const escape = (event: KeyboardEvent) => {
-			if (event.key === 'Escape' && toolbar) {
-				toolbar = null;
-				window.getSelection()?.removeAllRanges();
-			}
-		};
-		documentRoot?.addEventListener('click', openAtPoint, true);
-		document.addEventListener('keydown', escape);
+
 		const observer = new ResizeObserver(schedule);
 		if (rail) observer.observe(rail);
 		if (layout) observer.observe(layout);
@@ -269,19 +400,15 @@
 		window.addEventListener('pointercancel', pointerUp);
 		window.addEventListener('blur', blur);
 		window.addEventListener('resize', resize);
-		window.addEventListener('scroll', updateSelection, true);
 		schedule();
 		return () => {
 			observer.disconnect();
-			documentRoot?.removeEventListener('click', openAtPoint, true);
-			document.removeEventListener('keydown', escape);
 			document.removeEventListener('selectionchange', updateSelection);
 			document.removeEventListener('pointerdown', pointerDown);
 			window.removeEventListener('pointerup', pointerUp);
 			window.removeEventListener('pointercancel', pointerUp);
 			window.removeEventListener('blur', blur);
 			window.removeEventListener('resize', resize);
-			window.removeEventListener('scroll', updateSelection, true);
 			if (selectionFrame !== undefined) cancelAnimationFrame(selectionFrame);
 		};
 	});
@@ -293,202 +420,177 @@
 	}
 	onDestroy(() => {
 		alive = false;
+		selectionGeometryListeners.clear();
 		domCache = undefined;
-		ranges.clear();
-		clearDiscussionHighlights(highlightOwner);
 		if (frame !== undefined) cancelAnimationFrame(frame);
 	});
 </script>
 
+<BoxDismissal
+	owner={interactionOwner}
+	active={active && !obscured && Boolean(session.selected)}
+	onDismiss={dismissPanel}
+	deferEscape={() => {
+		const focused = document.activeElement;
+		return Boolean(
+			rail?.contains(focused) &&
+			(focused instanceof HTMLTextAreaElement ||
+				focused?.closest('[data-discussion-reply], [data-discussion-composer]'))
+		);
+	}}
+/>
+
+{#snippet recovery()}
+	<div class="flex flex-col gap-2 text-xs">
+		<p class="text-danger">Your draft is still here. Reconnect your account, then retry.</p>
+		<div class="flex flex-wrap gap-x-3 gap-y-2">
+			<InlineAction href="/login" target="_blank">Sign in in another tab</InlineAction>
+			<InlineAction onclick={() => session.loadBuyerViewer()}>Retry account</InlineAction>
+			<InlineAction disabled={!session.canContinueAsBuyer} onclick={() => session.continueAsBuyer()}
+				>Continue as Buyer</InlineAction
+			>
+		</div>
+		<p class="text-ink-muted">
+			Continue as Buyer changes the author for new messages. Pending account submissions and
+			account-owned edits still need that account.
+		</p>
+	</div>
+{/snippet}
+
 {#if active}
-	{#if toolbar}<div
-			class={[
-				'fixed z-50 flex h-[31px] w-[58px] -translate-x-1/2 items-center justify-center rounded-[5px] border border-line bg-surface shadow-floating',
-				toolbar.above && '-translate-y-full'
+	{#if !session.readOnly && toolbar}
+		<SelectionToolbar
+			anchor={toolbar.reference}
+			onClose={dismissToolbar}
+			actions={[
+				{
+					id: 'comment',
+					label: 'Add comment',
+					icon: ChatCenteredTextIcon,
+					onSelect: () => begin('comment')
+				},
+				{
+					id: 'proposal',
+					label: 'Propose change',
+					icon: EraserIcon,
+					onSelect: () => begin('proposal')
+				}
 			]}
-			style:left={`${toolbar.left}px`}
-			style:top={`${toolbar.top}px`}
-			role="group"
-			aria-label="Text selection actions"
-			data-document-control
-		>
-			<button
-				type="button"
-				aria-label="Add comment"
-				title="Add comment"
-				class="flex size-7 cursor-pointer items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent"
-				onpointerdown={(event) => event.preventDefault()}
-				onclick={() => begin('comment')}><ChatCenteredTextIcon size={20} /></button
-			>
-			<button
-				type="button"
-				aria-label="Propose change"
-				title="Propose change"
-				class="flex size-7 cursor-pointer items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent"
-				onpointerdown={(event) => event.preventDefault()}
-				onclick={() => begin('proposal')}><EraserIcon size={20} /></button
-			>
-		</div>{/if}
-	{#if session.threads.length || session.error}
+		/>
+	{/if}
+	{#if session.threads.length || session.visibleComposer || session.error || (!session.loading && !session.done)}
 		<div
-			class="pointer-events-auto absolute inset-x-3 z-10 flex items-center justify-end gap-3 text-xs text-ink-muted @min-[1150px]:hidden"
-			style:top={`${documentBottom + 8}px`}
+			class="pointer-events-auto absolute inset-x-3 z-10 flex flex-wrap items-center justify-end gap-3 text-xs text-ink-muted"
+			style:top={`${Math.max(documentBottom, bottom) + 8}px`}
 		>
-			{#if session.threads.length}<button
-					type="button"
-					class="cursor-pointer underline"
-					onclick={() => activate(session.threads[0].id)}>View discussions</button
+			{#if session.visibleComposer && session.selected !== 'composer'}
+				<InlineAction onclick={() => activate('composer')}>Continue draft</InlineAction>
+			{/if}
+			{#if session.threads.length}<span class="@min-[1150px]:hidden"
+					><InlineAction onclick={() => activate(session.threads[0].id)}
+						>View discussions</InlineAction
+					></span
 				>{/if}
-			{#if !session.done}<button
-					type="button"
-					class="cursor-pointer underline"
+			{#if !session.done && !session.error}<InlineAction
 					disabled={session.loading}
-					onclick={() => session.loadMore()}
-					>{session.loading ? 'Loading…' : 'More discussions'}</button
+					onclick={() => session.loadMore()}>More discussions</InlineAction
 				>{/if}
-			{#if session.error}<button
-					type="button"
-					class="cursor-pointer underline"
-					onclick={() => session.retry()}>Retry discussions</button
-				>{/if}
+			{#if session.error}<p role="alert" class="text-danger">{session.error}</p>
+				<InlineAction onclick={() => session.retry()}>Retry discussions</InlineAction>{/if}
 		</div>
 	{/if}
-	<div class="pointer-events-none absolute inset-0 z-10" aria-label="Discussion markers">
-		{#each session.threads as thread (thread.id)}{#if resolved.has(thread.id)}<button
-					type="button"
-					class="pointer-events-auto absolute flex size-6 cursor-pointer items-center justify-center rounded-full border border-line bg-surface text-ink-secondary focus-visible:outline-2 focus-visible:outline-accent"
-					style:left={`${paperRight - 24}px`}
-					style:top={`${anchors[thread.id]}px`}
-					aria-label={`Open ${thread.type === 'proposal' ? 'proposed change' : 'comment'}: ${thread.anchor.quote.slice(0, 80)}`}
-					onclick={() => activate(thread.id)}><ChatCenteredTextIcon size={14} /></button
-				>{/if}{/each}
-	</div>
 {/if}
-<div
-	bind:this={rail}
-	class="pointer-events-none absolute top-0 left-[calc(var(--page-left)+var(--page-width)+var(--panel-gap))] z-20 w-(--panel-width) @max-[1150px]:fixed @max-[1150px]:inset-x-0 @max-[1150px]:top-auto @max-[1150px]:bottom-[var(--buyer-link-bar-height,0px)] @max-[1150px]:z-30 @max-[1150px]:w-auto @max-[1150px]:h-auto!"
-	style:height={`${bottom}px`}
-	class:hidden={!active || obscured}
-	aria-label="Contract discussions"
+<DocumentPanelRail
+	bind:element={rail}
+	height={bottom}
+	active={active && !obscured}
+	label="Contract discussions"
 >
-	{#each session.threads as thread (thread.id)}
+	{#each session.threads as thread, index (thread.id)}
+		{@const showRecovery =
+			!session.readOnly &&
+			session.authRequired &&
+			(session.selected === thread.id ||
+				(!session.selected && !session.drafts.composer && index === 0))}
 		<div
 			use:observeCard
 			data-discussion-card={thread.id}
 			class={[
-				'pointer-events-auto absolute inset-x-0 top-0 @min-[1150px]:translate-y-(--discussion-top) @max-[1150px]:static @max-[1150px]:max-h-[65dvh] @max-[1150px]:overflow-y-auto',
-				session.selected !== thread.id && '@max-[1150px]:hidden'
+				'pointer-events-auto absolute inset-x-0 top-0 @min-[1150px]:translate-y-(--discussion-top) @max-[1150px]:static',
+				session.selected !== thread.id && !showRecovery && '@max-[1150px]:hidden'
 			]}
 			style:--discussion-top={`${positions[thread.id] ?? 0}px`}
 		>
-			{#if session.selected === thread.id}
-				{@const index = session.threads.findIndex((t) => t.id === thread.id)}
-				<div
-					class="flex items-center justify-end gap-3 rounded-t-[9px] bg-surface px-3 py-1 text-xs text-ink-muted @min-[1150px]:hidden"
-				>
-					<button
-						type="button"
-						class="cursor-pointer underline disabled:opacity-50"
-						disabled={index === 0}
-						onclick={() => activate(session.threads[index - 1].id)}>Previous</button
+			<DiscussionThread
+				{thread}
+				{session}
+				canRead={active && !obscured}
+				onActivate={() => {
+					rememberTrigger();
+					onActivate?.();
+				}}
+				orphaned={!resolved.has(thread.id)}
+				recovery={showRecovery ? recovery : undefined}
+			>
+				{#snippet header()}
+					<div
+						class="flex items-center justify-end gap-3 px-3 pt-2 pb-1 text-xs @min-[1150px]:hidden"
 					>
-					<button
-						type="button"
-						class="cursor-pointer underline disabled:opacity-50"
-						disabled={index === session.threads.length - 1}
-						onclick={() => activate(session.threads[index + 1].id)}>Next</button
-					>
-					<button type="button" class="cursor-pointer" onclick={() => (session.selected = null)}
-						>Close</button
-					>
-				</div>
-			{/if}
-			<DiscussionThread {thread} {session} orphaned={!resolved.has(thread.id)} />
+						<InlineAction
+							disabled={index === 0}
+							onclick={() => activate(session.threads[index - 1].id)}>Previous</InlineAction
+						>
+						<InlineAction
+							disabled={index === session.threads.length - 1}
+							onclick={() => activate(session.threads[index + 1].id)}>Next</InlineAction
+						>
+						<SquareIconButton aria-label="Close discussion" onclick={() => dismissPanel(true)}
+							><XIcon aria-hidden="true" class="size-5.5" /></SquareIconButton
+						>
+					</div>
+				{/snippet}
+			</DiscussionThread>
 		</div>
 	{/each}
-	{#if session.composer}
+	{#if session.visibleComposer}
 		<div
 			use:observeCard
 			data-discussion-card="composer"
-			class="pointer-events-auto absolute inset-x-0 top-0 @min-[1150px]:translate-y-(--discussion-top) rounded-[9px] border border-line bg-surface p-3.5 @max-[1150px]:static @max-[1150px]:max-h-[65dvh] @max-[1150px]:overflow-y-auto"
+			class={[
+				'pointer-events-auto absolute inset-x-0 top-0 @min-[1150px]:translate-y-(--discussion-top) @max-[1150px]:static',
+				session.selected !== 'composer' && '@max-[1150px]:hidden'
+			]}
 			style:--discussion-top={`${positions.composer ?? 0}px`}
+			onfocusin={() => (session.selected = 'composer')}
 		>
-			<MessageComposer
-				text={session.text}
-				author={session.viewer}
-				viewerKey={session.viewer?.key}
-				title={session.composer.type === 'proposal' ? 'Propose change' : 'Add comment'}
-				placeholder={session.composer.type === 'proposal'
-					? 'Write the proposed wording or change…'
-					: 'Write a comment…'}
-				submitLabel={session.composer.type === 'proposal' ? 'Propose change' : 'Comment'}
-				cancelLabel="Cancel"
-				submitOnEnter
-				pending={session.submitting}
-				errorMessage={session.composeError ?? session.error ?? ''}
-				onTextChange={(text) => (session.text = text)}
-				onCancel={() => session.cancel()}
-				onSubmit={() => void session.submit()}
-			/>
+			<PlaybookCard
+				label={session.visibleComposer.type === 'proposal' ? 'Propose change' : 'Add comment'}
+			>
+				{#if session.authRequired && (session.selected === 'composer' || !session.threads.length)}{@render recovery()}{/if}
+				<div data-discussion-composer>
+					<MessageComposer
+						allowDeletion={session.visibleComposer.type === 'proposal'}
+						text={session.drafts.text}
+						author={session.viewer}
+						viewerKey={session.viewer?.key}
+						title={session.visibleComposer.type === 'proposal' ? 'Propose change' : 'Add comment'}
+						placeholder={session.visibleComposer.type === 'proposal'
+							? 'Write the proposed wording or change…'
+							: 'Write a comment…'}
+						submitLabel={session.visibleComposer.type === 'proposal' ? 'Propose change' : 'Comment'}
+						cancelLabel="Cancel"
+						submitOnEnter
+						pending={session.drafts.submitting}
+						errorMessage={session.drafts.composeError ?? session.error ?? ''}
+						onTextChange={(text) => (session.drafts.text = text)}
+						onCancel={() => session.cancel()}
+						onSubmit={() => void session.submit()}
+					/>
+				</div>
+			</PlaybookCard>
 		</div>
 	{/if}
-	{#if session.authRequired}<div
-			class="pointer-events-auto relative z-30 rounded-lg border border-line bg-surface p-3 text-xs"
-		>
-			<p>Your draft is still here. Reconnect your account, then retry.</p>
-			<a href="/login" target="_blank" rel="noopener noreferrer" class="mt-2 inline-block underline"
-				>Sign in in another tab</a
-			><button type="button" class="ml-3 underline" onclick={() => session.loadBuyerViewer()}
-				>Retry account</button
-			><button
-				type="button"
-				disabled={!session.canContinueAsBuyer}
-				class="mt-2 block underline disabled:opacity-50"
-				onclick={() => session.continueAsBuyer()}>Continue as Buyer</button
-			>
-			<p class="mt-2 text-ink-muted">
-				Continue as Buyer changes the author for new messages. Pending account submissions and
-				account-owned edits still need that account.
-			</p>
-		</div>{/if}
-	{#if !session.done || session.error}<div
-			class="pointer-events-auto absolute inset-x-0 rounded-[9px] bg-surface p-3 text-xs text-ink-muted @max-[1150px]:hidden"
-			style:top={`${bottom + 8}px`}
-		>
-			{#if session.error}<p role="alert">{session.error}</p>
-				<button
-					class="cursor-pointer underline"
-					onclick={() => {
-						session.setActive(false);
-						session.setActive(true);
-					}}>Retry</button
-				>
-			{:else}<button
-					class="cursor-pointer underline"
-					disabled={session.loading}
-					onclick={() => session.loadMore()}
-					>{session.loading ? 'Loading discussions…' : 'More discussions'}</button
-				>{/if}
-		</div>{/if}
-</div>
-
-<style>
-	:global(::highlight(dinu-discussion-comment)) {
-		background: #d2e3fc;
-		color: inherit;
-	}
-	:global(::highlight(dinu-discussion-proposal)) {
-		background: rgba(95, 99, 104, 0.1);
-		color: var(--color-ink-muted);
-		text-decoration: line-through;
-	}
-	:global(::highlight(dinu-discussion-active-comment)) {
-		background: #b7d0fa;
-		color: inherit;
-	}
-	:global(::highlight(dinu-discussion-active-proposal)) {
-		background: rgba(95, 99, 104, 0.18);
-		color: var(--color-ink-muted);
-		text-decoration: line-through;
-	}
-</style>
+	{#if !session.readOnly && session.authRequired && !session.threads.length && !session.drafts.composer}
+		<PlaybookCard label="Reconnect your account">{@render recovery()}</PlaybookCard>
+	{/if}
+</DocumentPanelRail>

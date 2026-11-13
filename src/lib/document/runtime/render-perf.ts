@@ -43,6 +43,43 @@ export function countSearchWork(name: SearchWork, count = 1) {
 	counters[name] = (counters[name] ?? 0) + count;
 }
 
+/** Opening milestones only; DOM readiness is not a physical paint measurement. */
+export interface PanelOpenPerfSample {
+	at: number;
+	admissionMs?: number;
+	accepted?: 0 | 1;
+	admittedAt?: number;
+	positionRequestedAt?: number;
+	domReadyAt?: number;
+	lookupMs?: number;
+	geometryMs?: number;
+	heldPosition?: 0 | 1;
+	preparedSourceFacts?: 0 | 1;
+	effective?: 0 | 1;
+	resolvedAt?: number;
+	contentMountedAt?: number;
+}
+export function createPanelOpenSample(): PanelOpenPerfSample | undefined {
+	if (!enabled() || typeof window === 'undefined') return;
+	const target = window as typeof window & { __documentPanelOpenPerf?: PanelOpenPerfSample[] };
+	const samples = (target.__documentPanelOpenPerf ??= []);
+	const sample: PanelOpenPerfSample = { at: performance.now() };
+	samples.push(sample);
+	if (samples.length > 100) samples.shift();
+	return sample;
+}
+
+/** Includes admission becoming available after rendering/preparation; retains numbers only. */
+export function recordPanelReadiness(ready: boolean) {
+	if (!enabled() || typeof window === 'undefined') return;
+	const target = window as typeof window & {
+		__documentPanelReadiness?: { at: number; ready: 0 | 1 }[];
+	};
+	const samples = (target.__documentPanelReadiness ??= []);
+	samples.push({ at: performance.now(), ready: ready ? 1 : 0 });
+	if (samples.length > 100) samples.shift();
+}
+
 /** Aggregate template editor lifetime counters; no departed component or query references. */
 function templateQueryCounters() {
 	if (!enabled() || typeof window === 'undefined') return;
@@ -253,6 +290,12 @@ export interface RenderPerfSample extends LayoutProfileMetrics {
 	preparedArtifactsReused: number;
 	containerArtifactsReused: number;
 	resolvedArtifactsReused: number;
+	panelSourcePrepareMs: number;
+	panelSourcePreparationSlices: number;
+	maxPanelSourcePreparationSliceMs: number;
+	panelSourceFactsReused: number;
+	panelSourcePreparationFailed: number;
+	panelSourceReadyAt?: number;
 	paginationRestartPage: number;
 	paginationStopPage: number;
 	generation: number;
@@ -311,6 +354,11 @@ export function createPerfSample(
 		preparedArtifactsReused: 0,
 		containerArtifactsReused: 0,
 		resolvedArtifactsReused: 0,
+		panelSourcePrepareMs: 0,
+		panelSourcePreparationSlices: 0,
+		maxPanelSourcePreparationSliceMs: 0,
+		panelSourceFactsReused: 0,
+		panelSourcePreparationFailed: 0,
 		paginationRestartPage: 1,
 		paginationStopPage: 0,
 		maxProfileTransactionMs: 0,

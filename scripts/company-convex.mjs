@@ -20,11 +20,10 @@ export function companyArguments({ audit = false } = {}) {
 	return { companyId, exactSeed };
 }
 
-/** @param {{companyId:string;readOnly?:boolean;readabilityConversion?:boolean;paragraphRoles?:boolean;authoringMigration?:boolean}} options */
+/** @param {{companyId:string;readOnly?:boolean;paragraphRoles?:boolean;authoringMigration?:boolean}} options */
 export async function companyDeployment({
 	companyId,
 	readOnly = false,
-	readabilityConversion = false,
 	paragraphRoles = false,
 	authoringMigration = false
 }) {
@@ -94,12 +93,6 @@ export async function companyDeployment({
 		 */
 		async run(functionName, args) {
 			/** @type {Partial<Record<import('./operator-types').OperatorName, string>>} */
-			const conversionFunctions = {
-				'readabilityMigration:convertBatch': 'mutation',
-				'readabilityMigration:versions': 'query',
-				'readabilityMigration:accountVersion': 'mutation'
-			};
-			/** @type {Partial<Record<import('./operator-types').OperatorName, string>>} */
 			const roleFunctions = {
 				'templateSourceFormatting:inspectSource': 'query',
 				'templateSourceParser:analyzeExisting': 'action',
@@ -122,15 +115,11 @@ export async function companyDeployment({
 						(!readOnly || roleFunctions[functionName] !== 'mutation')
 						? roleFunctions[functionName]
 						: null
-					: readabilityConversion
-						? !readOnly && Object.hasOwn(conversionFunctions, functionName)
-							? conversionFunctions[functionName]
-							: null
-						: functionName === 'operator:readSeed'
-							? 'query'
-							: !readOnly && functionName === 'operator:bootstrap'
-								? 'mutation'
-								: null;
+					: functionName === 'operator:readSeed'
+						? 'query'
+						: !readOnly && functionName === 'operator:bootstrap'
+							? 'mutation'
+							: null;
 			if (!operation || args.companyId !== companyId)
 				throw new Error('This operator allows only its explicitly scoped functions.');
 			if (useDevCli) {

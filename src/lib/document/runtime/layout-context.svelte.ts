@@ -2,7 +2,7 @@ import { getContext, setContext } from 'svelte';
 import { DocumentScheduler } from './scheduler';
 import type { LayoutProfiler, LayoutProfileSurface } from '../pagination/profiler';
 const LAYOUT_PROFILES = Symbol('document-layout-profiles');
-/** One live browser/font environment. Contains geometry only, never a view snapshot. */
+/** One live mounted layout environment. Contains geometry only, never a view snapshot. */
 export class DocumentLayoutProfiles {
 	private implementation = $state.raw<typeof LayoutProfiler>();
 	constructor(readonly scheduler = new DocumentScheduler()) {}

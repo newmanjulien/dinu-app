@@ -1,16 +1,11 @@
 import { contractItemId } from '../lib/contract/item-identity';
 import { v } from 'convex/values';
-import {
-	appliedConcessions,
-	approvalState,
-	reviewDecision,
-	reviewStatus
-} from '../lib/contract/applications';
 
 import { hubspotLink } from './hubspotValidators';
+import { approvalContext } from '../lib/contract/changes';
+export { contractRenderTransport } from '../lib/document/contract-document-validators';
 
 export const selections = v.record(contractItemId, v.string());
-export { reviewDecision, reviewStatus } from '../lib/contract/applications';
 export const reviewCompletion = v.union(
 	v.object({
 		kind: v.literal('awaitingConfirmation'),
@@ -21,47 +16,70 @@ export const reviewCompletion = v.union(
 		deliveryId: v.id('emailDeliveries')
 	})
 );
-export const storedContract = v.object({
-	hubspot: v.optional(hubspotLink),
+export const contractBuyer = v.union(
+	v.object({ kind: v.literal('manual') }),
+	v.object({
+		kind: v.literal('hubspot'),
+		company: v.union(v.object({ id: v.string(), name: v.string() }), v.null())
+	})
+);
+export const contextCompletion = v.object({
+	reviewIdentity: v.string(),
+	completion: reviewCompletion
+});
+/** documentId is null only within the atomic root/document creation transaction. */
+export const contractRoot = v.object({
 	companyId: v.id('company'),
 	creatorId: v.id('profiles'),
 	templateVersionId: v.id('templateVersions'),
-	buyerCompanyName: v.string(),
+	title: v.string(),
+	buyer: contractBuyer,
+	documentId: v.union(v.id('contractDocuments'), v.null()),
+	documentRevision: v.number(),
+	stateRevision: v.number(),
+	playbookSelectionCount: v.number(),
+	playbookReviewCount: v.number(),
+	playbookPendingCount: v.number(),
+	playbookDeclinedCount: v.number(),
+	playbookReviewIdentity: v.string(),
+	buyerLinkReviewIdentity: v.string(),
 	savedAt: v.number(),
-	applications: appliedConcessions,
-	editRevision: v.number(),
-	reviewGeneration: v.number(),
-	reviewCompletion: v.optional(reviewCompletion),
-	stateVersion: v.number(),
-	// A replay identity is absent or complete; its caller is always server-derived.
-	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') }))
+	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') })),
+	playbookCompletion: v.optional(contextCompletion),
+	buyerLinkCompletion: v.optional(contextCompletion)
 });
-export const storedDecision = v.object({
+export const storedContractHubspotAssociation = hubspotLink.extend({
+	companyId: v.id('company'),
+	contractId: v.id('savedContracts')
+});
+export const buyerRefreshTiming = v.object({
+	attempt: v.string(),
+	leaseUntil: v.number(),
+	dueAt: v.number(),
+	installedAt: v.number(),
+	capabilities: v.string(),
+	suppressed: v.boolean()
+});
+export const contractBuyerRefresh = buyerRefreshTiming.extend({
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	itemId: contractItemId,
-	concessionId: v.string(),
-	applicationId: v.string(),
-	adminId: v.id('profiles'),
-	adminName: v.string(),
-	adminEmail: v.string(),
-	operationId: v.string(),
-	previousStatus: reviewStatus,
-	status: reviewDecision,
-	decidedAt: v.number(),
-	changed: v.boolean()
+	associationId: v.id('contractHubspotAssociations'),
+	connectionId: v.id('hubspotConnections'),
+	accountId: v.string(),
+	dealId: v.string(),
+	generation: v.number()
 });
-// The item identity is resolved within this contract's immutable snapshot, even
-// when the corresponding live playbook item has been deleted.
-export const approvalSelection = v.object({
-	itemId: contractItemId,
-	concessionPosition: v.number(),
-	approval: v.optional(approvalState)
-});
+export const storedContract = contractRoot;
 export const approvalRequest = v.object({
 	id: v.string(),
-	buyerCompanyName: v.string(),
-	selectedConcessions: v.array(approvalSelection),
+	context: approvalContext,
+	identity: v.string(),
+	cutoff: v.number(),
+	title: v.string(),
+	count: v.number(),
+	coveredPendingCount: v.number(),
+	unsubmittedPendingCount: v.number(),
+	active: v.boolean(),
 	status: v.union(
 		v.literal('sending'),
 		v.literal('sent'),
@@ -75,8 +93,12 @@ export const approvalRequest = v.object({
 	retryEligible: v.boolean()
 });
 export const storedApprovalRequest = v.object({
+	context: approvalContext,
+	identity: v.string(),
+	cutoff: v.number(),
+	count: v.number(),
 	id: v.string(),
-	buyerCompanyName: v.string(),
+	title: v.string(),
 	recipientEmail: v.string(),
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),

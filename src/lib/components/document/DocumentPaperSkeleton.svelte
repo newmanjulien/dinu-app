@@ -15,16 +15,17 @@
 		style:--paper-ratio={`${PAGE_FORMAT.width} / ${PAGE_FORMAT.height}`}
 		style:--paper-padding={`${(PAGE_FORMAT.horizontalPadding / PAGE_FORMAT.width) * 100}%`}
 		style:--paper-top-padding={`${(PAGE_FORMAT.firstTopPadding / PAGE_FORMAT.width) * 100}%`}
+		style:font-size={`calc(var(--paper-width) * 16 / ${PAGE_FORMAT.width})`}
 	>
 		<div class="px-(--paper-padding) py-(--paper-top-padding)">
-			<SkeletonBlock class="mx-auto mb-10 h-[23px] w-1/2" />
+			<SkeletonBlock class="mx-auto mb-[2.5em] h-[1.4375em] w-1/2" />
 			{#each [0, 1, 2, 3] as paragraph (paragraph)}
-				<div class="mb-8 space-y-3">
-					<SkeletonBlock class="mb-4 h-[17px] w-1/3" />
-					<SkeletonBlock class="h-[13px] w-full" />
-					<SkeletonBlock class="h-[13px] w-[95%]" />
-					<SkeletonBlock class="h-[13px] w-full" />
-					<SkeletonBlock class="h-[13px] w-3/4" />
+				<div class="mb-[2em] space-y-[0.75em]">
+					<SkeletonBlock class="mb-[1em] h-[1.0625em] w-1/3" />
+					<SkeletonBlock class="h-[0.8125em] w-full" />
+					<SkeletonBlock class="h-[0.8125em] w-[95%]" />
+					<SkeletonBlock class="h-[0.8125em] w-full" />
+					<SkeletonBlock class="h-[0.8125em] w-3/4" />
 				</div>
 			{/each}
 		</div>

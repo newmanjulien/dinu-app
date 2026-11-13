@@ -4,7 +4,8 @@ import type {
 	AnnotationAdmission,
 	AuthoringSelectionRequest
 } from '$lib/playbook/authoring-selection';
-import { concessionSelections } from '$lib/contract/applications';
+import { prepareApprovedDocument } from '$lib/contract/document-preview';
+import { resolveTemplateItem } from '$lib/contract/items';
 import type { ReviewDecision, ReviewNavigation, ReviewTag } from '$lib/contract/approval';
 import type { ReadyContract } from '$lib/contract/saved';
 import { getContractOpenings } from '$lib/contract/snapshot-cache';
@@ -18,25 +19,58 @@ import type { DocumentSourceInput } from './source.svelte';
 import { type ConcessionSelection } from './types';
 import type { DocumentWorkspace } from './workspace-context';
 import type { createDocumentWorkspace } from './workspace-factory';
+import type { DocumentLayout } from '$lib/components/document/workspace-layout';
+
+function appliedOptions(data: ReadyContract): Record<string, string> {
+	return Object.fromEntries(
+		data.contract.playbook
+			.filter((item) => item.appliedOptionId !== null)
+			.map((item) => [item.itemId, item.appliedOptionId!])
+	);
+}
+const approvedInputs = new WeakMap<
+	NonNullable<ReadyContract['approved']>,
+	{ snapshot: ReadyContract['snapshot']; input: DocumentSourceInput }
+>();
+function approvedInput(data: ReadyContract): DocumentSourceInput {
+	const cached = data.approved ? approvedInputs.get(data.approved) : undefined;
+	if (cached?.snapshot === data.snapshot) return cached.input;
+	const rendered = data.approved
+		? prepareApprovedDocument(
+				data.approved,
+				data.snapshot.items.filter(isRepItem).map(resolveTemplateItem)
+			)
+		: undefined;
+	const input: DocumentSourceInput = {
+		kind: 'records',
+		contract: true,
+		materialized: {
+			data: rendered ? { document: rendered.document, baseline: data.snapshot.blocks } : undefined
+		},
+		items: { data: rendered?.items }
+	};
+	if (data.approved) approvedInputs.set(data.approved, { snapshot: data.snapshot, input });
+	return input;
+}
 
 const isTemplateResource = (id: string) => id === 'template' || id === 'template:buyer';
 
 export interface ViewerBindings {
-	instructionAudience?: 'rep' | 'buyer';
+	layout?: DocumentLayout;
 	onRetry?: () => void;
 	failure?: { message: string };
-	discussions?: import('$lib/discussions/session.svelte').DiscussionSession;
 	onPresentation?: (
 		outcome: import('$lib/auth/workspace-presentation.svelte').PresentationOutcome
 	) => void;
 	active?: boolean;
 	prepare?: boolean;
-	/** Demand only; instruction bodies and subscriptions belong to the authoring session. */
-	instructionPreload?: (ids: readonly string[]) => void;
+	/** Demand only; item bodies and subscriptions belong to the authoring session. */
+	itemPreload?: (ids: readonly string[]) => void;
 	reviewTags?: readonly ReviewTag[];
-	/** Reserved by the workspace before document pagination or review-tag projection. */
+	/** Space for compact review controls; desktop reservation follows the layout policy. */
 	reviewGutter?: number;
 	reviewNavigation?: ReviewNavigation;
+	onItemIntent?: (itemId: string) => void;
 	onReviewDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
 	panelContent: Snippet;
 	footerContent?: Snippet;
@@ -89,6 +123,9 @@ export class DocumentResource {
 			? ('foreground' as const)
 			: ('background' as const);
 	id = $state('');
+	get layout(): DocumentLayout {
+		return isTemplateResource(this.id) || this.id.startsWith('draft:') ? 'standard' : 'contract';
+	}
 	constructor(
 		id: string,
 		input: DocumentSourceInput,
@@ -124,6 +161,7 @@ export class DocumentResources {
 	#rank: readonly string[] = [];
 	#preparationBudget = 0;
 	#failed = new Set<string>();
+	#incomplete = new Set<string>();
 	#clock = 0;
 	#destroyed = false;
 	#attachments = new Map<DocumentResource, DocumentAttachment>();
@@ -273,13 +311,9 @@ export class DocumentResources {
 			throw new Error('Draft is unavailable.');
 		const existing = this.entries.find((current) => current !== entry && current.id === data.id);
 		if (existing) this.evict(existing.id);
-		entry.workspace.accept({
-			kind: 'records',
-			blocks: { data: data.snapshot.blocks },
-			items: { data: data.snapshot.items.filter(isRepItem) }
-		});
+		entry.workspace.accept(approvedInput(data));
 		entry.id = data.id;
-		entry.confirmedChoices = concessionSelections(data.contract.applications);
+		entry.confirmedChoices = appliedOptions(data);
 		this.update(entry, entry.confirmedChoices);
 		// The mounted viewer owns the render mode and its first-page paint handshake.
 		if (entry.workspace.renderer.error) entry.workspace.viewer.retry?.();
@@ -289,13 +323,9 @@ export class DocumentResources {
 		if (entry.id.startsWith('draft:')) this.evict(entry.id);
 		else this.#trim();
 	}
-	acquireContract(data: ReadyContract) {
-		const entry = this.acquire(data.id, {
-			kind: 'records',
-			blocks: { data: data.snapshot.blocks },
-			items: { data: data.snapshot.items.filter(isRepItem) }
-		});
-		entry.confirmedChoices = concessionSelections(data.contract.applications);
+	acquireContract(data: ReadyContract, input: DocumentSourceInput = approvedInput(data)) {
+		const entry = this.acquire(data.id, input);
+		entry.confirmedChoices = appliedOptions(data);
 		if (!entry.active) this.update(entry, entry.confirmedChoices);
 		return entry;
 	}
@@ -403,13 +433,19 @@ export class DocumentResources {
 			)
 			.map((entry) => entry.id);
 		const ids = ranked
-			.filter((id) => !this.#failed.has(id) && (reserved.includes(id) || reserved.length < 4))
+			.filter(
+				(id) =>
+					!this.#failed.has(id) &&
+					!this.#incomplete.has(id) &&
+					(reserved.includes(id) || reserved.length < 4)
+			)
 			.slice(0, budget);
 		if (!sameOrder(this.#candidates, ids)) this.#candidates = [...ids];
 		const pending = this.#pending.filter((data) => ids.includes(data.id));
 		if (!sameOrder(this.#pending, pending)) this.#pending = pending;
 		for (const id of this.#failed)
 			if (!isTemplateResource(id) && !ranked.includes(id)) this.#failed.delete(id);
+		for (const id of this.#incomplete) if (!ranked.includes(id)) this.#incomplete.delete(id);
 		for (const entry of this.entries)
 			if (
 				!isTemplateResource(entry.id) &&
@@ -434,10 +470,22 @@ export class DocumentResources {
 	}
 	prepare(data: ReadyContract) {
 		if (this.#destroyed) return;
+		const choices = appliedOptions(data);
 		const entry = this.entries.find((entry) => entry.id === data.id);
+		if (entry) entry.confirmedChoices = choices;
+		if (!data.approved) {
+			if (entry?.active || entry?.opening || entry?.draftOwned) return;
+			this.#incomplete.add(data.id);
+			this.#pending = this.#pending.filter((pending) => pending.id !== data.id);
+			this.candidates(this.#rank);
+			return;
+		}
+		if (this.#incomplete.delete(data.id)) this.candidates(this.#rank);
 		if (entry) {
-			entry.confirmedChoices = concessionSelections(data.contract.applications);
-			if (!entry.active) this.update(entry, entry.confirmedChoices);
+			if (!entry.active) {
+				entry.workspace.accept(approvedInput(data));
+				this.update(entry, entry.confirmedChoices);
+			}
 			return;
 		}
 		if (this.#failed.has(data.id) || !this.#candidates.includes(data.id)) return;
@@ -453,6 +501,7 @@ export class DocumentResources {
 		this.candidates(this.#rank);
 	}
 	remove(id: string) {
+		this.#incomplete.delete(id);
 		this.evict(id);
 		this.candidates(this.#rank.filter((candidate) => candidate !== id));
 	}

@@ -1,5 +1,9 @@
 import { paginationResultValidator } from 'convex/server';
-import { v } from 'convex/values';
+import { ConvexError, v } from 'convex/values';
+import { itemAudience } from '../lib/playbook/model';
+import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/validation';
+import { headStructure } from './playbookItemRevisions';
+import type { Id } from './_generated/dataModel';
 import { mutation, query, type QueryCtx } from './_generated/server';
 import { viewerResult } from './accountViews';
 import {
@@ -11,29 +15,42 @@ import {
 } from './auth';
 import { installation, lifecycle } from './hubspotInstallation';
 import { readDirectory } from './contractDirectory';
+import { linkFor } from './buyerCurrent';
 import { hasInvitedColleagues } from './invitationDeliverySummary';
 import { permissionsForRole, role } from './permissions';
 import { contractCard } from './savedContractValidators';
+import { resolveSetupBooking, setupCallFor } from './csmSetupState';
+
+async function hasRepInstructions(ctx: QueryCtx, companyId: Id<'company'>) {
+	let count = 0;
+	for await (const head of ctx.db
+		.query('playbookItems')
+		.withIndex('by_companyId', (q) => q.eq('companyId', companyId))) {
+		if (++count > MAX_PLAYBOOK_ITEMS)
+			throw new ConvexError('The playbook list exceeds supported size.');
+		if (itemAudience(headStructure(head)) === 'rep') return true;
+	}
+	return false;
+}
 
 export async function readViewer(ctx: QueryCtx) {
 	const { identity, profile } = await readAccount(ctx);
 	if (!profile) return null;
 	const membership = await membershipForProfile(ctx, profile._id);
 	const company = membership ? await ctx.db.get('company', membership.companyId) : null;
-	const [profileAvatar, companyAvatar, deletion, instruction] = await Promise.all([
+	const [profileAvatar, companyAvatar, deletion, instruction, setupBooking] = await Promise.all([
 		profile.avatarId ? ctx.storage.getUrl(profile.avatarId) : null,
 		company?.avatarId ? ctx.storage.getUrl(company.avatarId) : null,
 		company ? companyDeletion(ctx, company._id) : null,
-		company?.templateSourceId
-			? ctx.db
-					.query('playbookItems')
-					.withIndex('by_companyId', (q) => q.eq('companyId', company._id))
-					.first()
+		company?.templateSourceId ? hasRepInstructions(ctx, company._id) : false,
+		company && membership?.role === 'admin' && !company.templateSourceId
+			? resolveSetupBooking(ctx, company)
 			: null
 	]);
 	const isOwner = company?.ownerProfileId === profile._id;
 	const role = membership && company ? membership.role : 'rep';
 	return {
+		helpPreferences: profile.helpPreferences,
 		profile: {
 			id: profile._id,
 			name: profile.name,
@@ -50,7 +67,7 @@ export async function readViewer(ctx: QueryCtx) {
 					name: company.name,
 					avatarUrl: companyAvatar,
 					approvalEmail: company.approvalEmail ?? null,
-					csmCallBooked: company.csmCallBookedAt !== undefined,
+					setupCall: setupCallFor(setupBooking),
 					deletionPending: Boolean(deletion)
 				}
 			: null,
@@ -159,24 +176,24 @@ async function readSetupProgress(ctx: QueryCtx, access: CompanyAccess) {
 	});
 	if (access.membership.setupCompletedAt !== undefined) return result(null);
 	if (!access.company.templateSourceId) return result('template');
-	const instruction = await ctx.db
-		.query('playbookItems')
-		.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
-		.first();
-	if (!instruction) return result('instructions');
+	if (!(await hasRepInstructions(ctx, access.companyId))) return result('instructions');
 	const contract = await ctx.db
 		.query('contractDirectory')
-		.withIndex('by_companyId_and_creatorId', (q) =>
+		.withIndex('by_companyId_and_creatorId_and_createdAt', (q) =>
 			q.eq('companyId', access.companyId).eq('creatorId', access.profile._id)
 		)
 		.order('desc')
 		.first();
 	if (!contract) return result('contract');
-	if (access.membership.role === 'rep')
-		return result(
-			access.membership.buyerLinkCopiedAt === undefined ? 'buyer-link' : null,
-			contract.contractId
-		);
+	const buyerLink = await ctx.db
+		.query('buyerLinks')
+		.withIndex('by_companyId_and_creatorId', (q) =>
+			q.eq('companyId', access.companyId).eq('creatorId', access.profile._id)
+		)
+		.first();
+	if (!buyerLink && !(await linkFor(ctx, contract.contractId)))
+		return result('buyer-link', contract.contractId);
+	if (access.membership.role === 'rep') return result(null, contract.contractId);
 	// The catalog counts both connected and reconnect installations as installed.
 	const [connection, state] = await Promise.all([
 		installation(ctx, access.companyId),
@@ -209,16 +226,5 @@ export const completeSetup = mutation({
 		if ((await readSetupProgress(ctx, access)).nextStep !== null) return false;
 		await ctx.db.patch('memberships', access.membershipId, { setupCompletedAt: Date.now() });
 		return true;
-	}
-});
-
-export const recordBuyerLinkCopy = mutation({
-	args: { membershipId: v.id('memberships') },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const { membership } = await requireMembership(ctx, args.membershipId);
-		if (membership.buyerLinkCopiedAt === undefined)
-			await ctx.db.patch('memberships', membership._id, { buyerLinkCopiedAt: Date.now() });
-		return null;
 	}
 });

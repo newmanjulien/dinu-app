@@ -33,6 +33,10 @@ type Env = {
   readonly APP_URL: string | undefined;
   readonly BUYER_LINK_INGEST_SECRET: string | undefined;
   readonly CAL_API_KEY: string | undefined;
+  readonly CAL_EVENT_TYPE_ID: string | undefined;
+  readonly CAL_LEGACY_METADATA_SECRET: string | undefined;
+  readonly CAL_METADATA_SIGNING_SECRET: string | undefined;
+  readonly CAL_ORGANIZER_ID: string | undefined;
   readonly CAL_WEBHOOK_SECRET: string | undefined;
   readonly CLERK_JWT_ISSUER_DOMAIN: string | undefined;
   readonly CLERK_SECRET_KEY: string | undefined;

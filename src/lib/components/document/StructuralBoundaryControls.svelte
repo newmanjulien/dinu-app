@@ -43,7 +43,7 @@
 		const seen = new Set<string>();
 		return options.flatMap(({ boundary, label }) =>
 			(annotations.get(boundary.afterBlockKey) ?? []).flatMap((annotation) => {
-				if (seen.has(annotation.id)) return [];
+				if (annotation.passive || seen.has(annotation.id)) return [];
 				seen.add(annotation.id);
 				return [{ boundary, annotation, label }];
 			})

@@ -76,7 +76,7 @@ export async function consumeActivityQuota(ctx: MutationCtx, link: Link, browser
 }
 
 /** Essential discussion state has its own component names, owner table and company budget. */
-export async function consumeDiscussionQuota(ctx: MutationCtx, link: Link, actorKey: string) {
+export async function prepareDiscussionQuota(ctx: MutationCtx, link: Link, actorKey: string) {
 	const common = { companyId: link.companyId, expiresAt: Date.now() + REFILL_MS };
 	const owners: Infer<typeof discussionQuotaKey>[] = [
 		{
@@ -88,19 +88,23 @@ export async function consumeDiscussionQuota(ctx: MutationCtx, link: Link, actor
 		{ ...common, name: 'discussionCompany', key: link.companyId }
 	];
 	for (const { name, key } of owners)
-		if (!(await limiter.check(ctx, name, { key })).ok) return false;
-	await assertStorageCapacity(ctx, { documents: 4, bytes: 16_000, queries: 16, readDocuments: 16 });
-	for (const owner of owners) {
-		if (!(await limiter.limit(ctx, owner.name, { key: owner.key })).ok)
-			throw new Error('Discussion quota changed inside its transaction.');
-		const existing = await ctx.db
-			.query('discussionQuotaKeys')
-			.withIndex('by_name_and_key', (q) => q.eq('name', owner.name).eq('key', owner.key))
-			.unique();
-		if (existing) await ctx.db.replace('discussionQuotaKeys', existing._id, owner);
-		else await ctx.db.insert('discussionQuotaKeys', owner);
-	}
-	return true;
+		if (!(await limiter.check(ctx, name, { key })).ok)
+			throw new ConvexError('Too many messages. Try again shortly.');
+	return {
+		work: { documents: 4, bytes: 16_000, queries: 16, readDocuments: 16, readBytes: 32_000 },
+		commit: async () => {
+			for (const owner of owners) {
+				if (!(await limiter.limit(ctx, owner.name, { key: owner.key })).ok)
+					throw new Error('Discussion quota changed inside its transaction.');
+				const existing = await ctx.db
+					.query('discussionQuotaKeys')
+					.withIndex('by_name_and_key', (q) => q.eq('name', owner.name).eq('key', owner.key))
+					.unique();
+				if (existing) await ctx.db.replace('discussionQuotaKeys', existing._id, owner);
+				else await ctx.db.insert('discussionQuotaKeys', owner);
+			}
+		}
+	};
 }
 
 export async function resetQuota(

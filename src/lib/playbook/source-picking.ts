@@ -3,19 +3,20 @@ import { structuralBoundary, validateTarget } from '../document/ranges';
 import type { SourceIndex } from '../document/source-index';
 import { changesConflict } from './conflicts';
 import { changeStructure } from './structure';
-import type { PlaybookDraft } from './draft';
+import type { RepInstructionDraft } from './draft';
+import { templateCopy } from './template-copy';
 import { GeometryError, triggersIntersect } from './geometry';
 import type { PlaybookGeometryIndex } from './geometry-index';
-import type { Concession, ContractChange, SourceTarget } from './model';
+import type { Concession, ContractChange, SourceTarget, TemplateAudience } from './model';
 
 import {
 	shareBoundaryBreak,
 	type BreakPolicyContext
 } from '$lib/document/selection/selection-model';
 
-export type AuthoringMode = 'explain' | 'concession';
+export type AuthoringMode = 'add-item' | 'concession';
 export type SelectionIssue =
-	| { kind: 'instructions-overlap'; diagnostic?: unknown }
+	| { kind: 'item-overlap'; diagnostic?: unknown }
 	| { kind: 'primary-change-overlap' }
 	| { kind: 'cross-container' }
 	| { kind: 'unmappable'; diagnostic?: unknown }
@@ -28,10 +29,13 @@ export type SelectionEligibility =
 /** Action restrictions stay distinct from source/geometry failures. */
 export type SelectionAvailability = SelectionEligibility | { allowed: false; reason: string };
 
-export function selectionIssueMessage(issue: SelectionIssue): string {
+export function selectionIssueMessage(
+	issue: SelectionIssue,
+	audience: TemplateAudience = 'rep'
+): string {
 	switch (issue.kind) {
-		case 'instructions-overlap':
-			return "You can't highlight text that already has instructions attached";
+		case 'item-overlap':
+			return templateCopy(audience).selectionOverlap;
 		case 'primary-change-overlap':
 			return "You can't highlight text this concession already changes.";
 		case 'cross-container':
@@ -50,7 +54,7 @@ export function geometrySelectionIssue(diagnostic: GeometryError): SelectionIssu
 	switch (diagnostic.kind) {
 		case 'trigger-boundary':
 		case 'ambiguous-owner':
-			return { kind: 'instructions-overlap', diagnostic };
+			return { kind: 'item-overlap', diagnostic };
 		case 'invalid-slot':
 			return { kind: 'unmappable', diagnostic };
 	}
@@ -64,7 +68,9 @@ function failureIssue(diagnostic: unknown): SelectionIssue {
 
 function selectionActions(disabled: Partial<Record<AuthoringMode, string>> = {}): SelectionActions {
 	return {
-		explain: disabled.explain ? { enabled: false, reason: disabled.explain } : { enabled: true },
+		'add-item': disabled['add-item']
+			? { enabled: false, reason: disabled['add-item'] }
+			: { enabled: true },
 		concession: disabled.concession
 			? { enabled: false, reason: disabled.concession }
 			: { enabled: true }
@@ -87,7 +93,7 @@ function sourceIssue(index: SourceIndex, range: SourceTarget): SelectionIssue | 
 	}
 }
 
-function hasBreakInstructions(
+function hasBreakItems(
 	context: BreakPolicyContext,
 	target: SourceTarget,
 	geometry: PlaybookGeometryIndex,
@@ -117,7 +123,7 @@ function hasBreakInstructions(
 export function evaluateSecondarySelection(
 	index: SourceIndex,
 	range: SourceTarget,
-	draft: DeepReadonly<PlaybookDraft>,
+	draft: DeepReadonly<RepInstructionDraft>,
 	geometry: PlaybookGeometryIndex,
 	context: BreakPolicyContext,
 	concession: DeepReadonly<Concession> | undefined = draft.concessions[0]
@@ -138,16 +144,16 @@ export function evaluateSecondarySelection(
 			return { allowed: false, issue: { kind: 'primary-change-overlap' } };
 		if (
 			geometry.triggersIntersecting(range, draft.persistedId).length ||
-			hasBreakInstructions(context, range, geometry, draft.persistedId)
+			hasBreakItems(context, range, geometry, draft.persistedId)
 		)
-			return { allowed: false, issue: { kind: 'instructions-overlap' } };
+			return { allowed: false, issue: { kind: 'item-overlap' } };
 		if (
 			triggersIntersect(index, draft.trigger.target, range) ||
 			(draft.trigger.target.kind === 'boundary' &&
 				range.kind === 'boundary' &&
 				shareBoundaryBreak(context, draft.trigger.target, range))
 		)
-			return { allowed: false, issue: { kind: 'instructions-overlap' } };
+			return { allowed: false, issue: { kind: 'item-overlap' } };
 		geometry.validateTriggersReplacing(draft.persistedId, [draft.trigger]);
 		geometry.validateChanges(
 			[concession.changes[0], proposed].map(changeStructure),
@@ -157,7 +163,7 @@ export function evaluateSecondarySelection(
 		return {
 			allowed: true,
 			actions: selectionActions({
-				explain: 'Choose a new clause to explain.'
+				'add-item': 'Choose a new clause to add instructions.'
 			})
 		};
 	});
@@ -167,7 +173,7 @@ export function evaluateSecondarySelection(
 export function evaluateConcessionAddition(
 	index: SourceIndex,
 	range: SourceTarget,
-	draft: DeepReadonly<PlaybookDraft>,
+	draft: DeepReadonly<RepInstructionDraft>,
 	geometry: PlaybookGeometryIndex,
 	context: BreakPolicyContext
 ): SelectionEligibility {
@@ -175,8 +181,8 @@ export function evaluateConcessionAddition(
 		if (context.index !== index) return { allowed: false, issue: { kind: 'unavailable' } };
 		const issue = sourceIssue(index, range);
 		if (issue) return { allowed: false, issue };
-		if (hasBreakInstructions(context, range, geometry, draft.persistedId))
-			return { allowed: false, issue: { kind: 'instructions-overlap' } };
+		if (hasBreakItems(context, range, geometry, draft.persistedId))
+			return { allowed: false, issue: { kind: 'item-overlap' } };
 		geometry.validateTriggersReplacing(draft.persistedId, [draft.trigger]);
 		geometry.validateChanges(
 			[{ target: range, paragraphBreaks: 0, meaningful: false }],
@@ -186,7 +192,7 @@ export function evaluateConcessionAddition(
 		return {
 			allowed: true,
 			actions: selectionActions({
-				explain: 'Choose a new clause to explain.'
+				'add-item': 'Choose a new clause to add instructions.'
 			})
 		};
 	});
@@ -204,11 +210,8 @@ export function evaluateInitialSelection(
 		const issue = sourceIssue(index, range);
 		if (issue) return { allowed: false, issue };
 		const boundary = structuralBoundary(index, range);
-		if (
-			geometry.triggersIntersecting(range).length ||
-			hasBreakInstructions(context, range, geometry)
-		)
-			return { allowed: false, issue: { kind: 'instructions-overlap' } };
+		if (geometry.triggersIntersecting(range).length || hasBreakItems(context, range, geometry))
+			return { allowed: false, issue: { kind: 'item-overlap' } };
 		let id = 'candidate-trigger';
 		while (geometry.triggerIds.has(id)) id += '-';
 		const trigger = { id, target: range };

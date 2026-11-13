@@ -1,41 +1,40 @@
 import { v } from 'convex/values';
-import { releasedSelections } from '../lib/contract/released-selections';
-import { sourceBlock } from '../lib/document/source-validators';
-import { trigger, contractChange } from '../lib/playbook/validators';
+import { contractRenderTransport } from './contractValidators';
+import { sourceTarget } from '../lib/document/source-validators';
+import { trigger } from '../lib/playbook/validators';
+import { readiness } from '../lib/contract/changes';
 
+/** A small derived pointer, revoked synchronously by logical deletion. */
+export const buyerCurrentView = v.object({
+	documentId: v.id('contractDocuments'),
+	documentRevision: v.number(),
+	documentFingerprint: v.string(),
+	title: v.string(),
+	templateVersionId: v.id('templateVersions'),
+	buyerName: v.union(v.string(), v.null()),
+	displayIdentity: v.string()
+});
 export const buyerLink = v.object({
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
 	creatorId: v.id('profiles'),
 	token: v.string(),
-	createdAt: v.number()
-});
-export const buyerState = v.object({
-	companyId: v.id('company'),
-	contractId: v.id('savedContracts'),
-	templateVersionId: v.id('templateVersions'),
-	title: v.string(),
-	selections: releasedSelections,
-	buyerRevision: v.number()
-});
-export const buyerItem = v.object({
-	itemId: v.string(),
-	trigger,
-	concessions: v.array(v.object({ id: v.string(), changes: v.array(contractChange) }))
+	createdAt: v.number(),
+	currentView: v.union(buyerCurrentView, v.null())
 });
 export const buyerExplanation = v.object({
 	itemId: v.id('playbookItems'),
 	trigger,
 	explanation: v.string()
 });
-export const buyerContent = v.object({
+export const currentBuyerDocument = v.object({
 	title: v.string(),
-	buyerRevision: v.number(),
-	blocks: v.array(sourceBlock),
-	templateItems: v.array(buyerItem),
+	document: contractRenderTransport,
+	contentIdentity: v.id('contractDocuments'),
+	contentRevision: v.number(),
+	displayIdentity: v.string(),
 	explanations: v.array(buyerExplanation),
-	items: v.array(buyerItem),
-	selections: releasedSelections
+	annotationGroups: v.array(v.array(v.object({ target: sourceTarget })))
 });
 export const linkSummary = v.object({
 	id: v.id('buyerLinks'),
@@ -43,10 +42,19 @@ export const linkSummary = v.object({
 	createdAt: v.number()
 });
 export const linkPreparation = v.union(
-	v.object({ kind: v.literal('saved') }),
-	v.object({ kind: v.literal('flushed'), expectedEditRevision: v.number() })
+	v.object({ kind: v.literal('existing') }),
+	v.object({
+		kind: v.literal('prepared'),
+		expectedState: readiness.fields.expectation,
+		operationId: v.string()
+	})
 );
 export const publicStatus = v.union(
 	v.object({ kind: v.literal('unavailable') }),
-	v.object({ kind: v.literal('current'), title: v.string(), buyerRevision: v.number() })
+	v.object({
+		kind: v.literal('current'),
+		title: v.string(),
+		companyName: v.string(),
+		buyerName: v.union(v.string(), v.null())
+	})
 );

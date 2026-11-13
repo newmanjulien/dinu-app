@@ -1,4 +1,5 @@
 import { afterStartupPaint } from '$lib/auth/startup-perf';
+import { warmDocumentDestination } from '$lib/auth/destination-code';
 import { observeHomeWarming } from '$lib/document/runtime/render-perf';
 import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 import { onMount, untrack } from 'svelte';
@@ -56,7 +57,34 @@ export function createVisibleContractWarming() {
 	});
 	onMount(() => {
 		let cooldown: ReturnType<typeof setTimeout> | undefined;
-		const interaction = () => {
+		const interaction = (event: Event) => {
+			const activation =
+				event instanceof MouseEvent
+					? event.button === 0 &&
+						!event.metaKey &&
+						!event.ctrlKey &&
+						!event.shiftKey &&
+						!event.altKey
+					: event instanceof KeyboardEvent &&
+						event.key === 'Enter' &&
+						!event.metaKey &&
+						!event.ctrlKey &&
+						!event.shiftKey &&
+						!event.altKey;
+			const anchor =
+				event.target instanceof Element
+					? event.target.closest<HTMLAnchorElement>('a[data-contract-destination]')
+					: null;
+			if (
+				activation &&
+				anchor &&
+				(!anchor.target || anchor.target === '_self') &&
+				!anchor.hasAttribute('download') &&
+				new URL(anchor.href).origin === location.origin
+			) {
+				const id = anchor.dataset.contractDestination;
+				if (id) cache?.reserveIntent(id);
+			}
 			busy = true;
 			clearTimeout(cooldown);
 			cooldown = setTimeout(() => (busy = false), 250);
@@ -64,12 +92,12 @@ export function createVisibleContractWarming() {
 		const visibility = () => (hidden = document.visibilityState === 'hidden');
 		visibility();
 		const options = { passive: true, capture: true };
-		for (const event of ['scroll', 'keydown', 'pointerdown'])
+		for (const event of ['scroll', 'keydown', 'pointerdown', 'click'])
 			window.addEventListener(event, interaction, options);
 		document.addEventListener('visibilitychange', visibility);
 		return () => {
 			clearTimeout(cooldown);
-			for (const event of ['scroll', 'keydown', 'pointerdown'])
+			for (const event of ['scroll', 'keydown', 'pointerdown', 'click'])
 				window.removeEventListener(event, interaction, options);
 			document.removeEventListener('visibilitychange', visibility);
 		};
@@ -171,6 +199,7 @@ export function createVisibleContractWarming() {
 			candidates();
 		},
 		warm(id: string) {
+			warmDocumentDestination('saved');
 			resources?.promote(id);
 			promoted.add(id);
 			visible.add(id);

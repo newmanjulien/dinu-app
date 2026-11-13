@@ -1,4 +1,6 @@
 import { validBookingUid, type ProviderBooking } from './csmCal';
+import { historicalSuccessorHint } from './csmHistory';
+import { CalRateLimitError } from './csmProviderFailures';
 
 export type PendingSuccessors = { uids: string[]; overflow: boolean };
 type PendingRow = {
@@ -13,7 +15,7 @@ export function pendingSuccessors(row: PendingRow, hint?: string): PendingSucces
 		uids: [],
 		overflow: row.pendingSuccessors?.overflow ?? false
 	};
-	for (const uid of [...(row.pendingSuccessors?.uids ?? []), row.successorHint, hint]) {
+	for (const uid of [...(row.pendingSuccessors?.uids ?? []), historicalSuccessorHint(row), hint]) {
 		if (uid === undefined) continue;
 		if (!validBookingUid(uid)) pending.overflow = true;
 		else if (uid !== row.currentUid && !pending.uids.includes(uid)) {
@@ -144,6 +146,8 @@ export async function proveSetupChain(
 		};
 	} catch (error) {
 		if (error instanceof SetupDeferredError) return { kind: 'deferred', retryAt: error.retryAt };
+		if (error instanceof CalRateLimitError)
+			return { kind: 'deferred', retryAt: Date.now() + error.retryAfter };
 		return { kind: 'failure', issue: error instanceof SetupChainError ? error.issue : 'provider' };
 	}
 }

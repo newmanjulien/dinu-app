@@ -4,9 +4,6 @@ import type { FunctionArgs, FunctionReturnType } from 'convex/server';
 type Operators = {
 	'operator:readSeed': typeof internal.operator.readSeed;
 	'operator:bootstrap': typeof internal.operator.bootstrap;
-	'readabilityMigration:convertBatch': typeof internal.readabilityMigration.convertBatch;
-	'readabilityMigration:versions': typeof internal.readabilityMigration.versions;
-	'readabilityMigration:accountVersion': typeof internal.readabilityMigration.accountVersion;
 	'authoringMigration:begin': typeof internal.authoringMigration.begin;
 	'authoringMigration:step': typeof internal.authoringMigration.step;
 	'authoringMigration:finish': typeof internal.authoringMigration.finish;

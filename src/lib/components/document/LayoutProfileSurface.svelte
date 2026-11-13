@@ -1,5 +1,5 @@
 <script module lang="ts">
-	// Distinct mounts/handles cannot accidentally reuse a cache from fonts-0 of an old surface.
+	// Distinct mounts/handles cannot reuse geometry from a departed surface.
 	let epochRevision = 0;
 </script>
 
@@ -33,35 +33,22 @@
 		countStartupWork('profileSurfaceMount');
 		recordColdStart('profile-surface-mounted');
 		let mounted = true;
-		let epoch: string | undefined;
-		function publish() {
-			// Font completion events and fonts.ready can report the same settled cycle.
-			if (!mounted || document.fonts.status !== 'loaded' || epoch !== undefined) return;
-			recordColdStart('fonts-ready');
-			recordColdStart('layout-epoch-ready');
-			epoch = `${LAYOUT_EPOCH}:profiles-${epochRevision++}`;
-			surface = {
-				get epoch() {
-					return mounted && document.fonts.status === 'loaded' ? epoch : undefined;
-				},
-				withBlock<T>(
-					block: PreparedBlock,
-					expected: string,
-					detail: GeometryDetail,
-					visit: (profile: BlockLayoutProfile, readExact: () => BlockLayoutProfile) => T,
-					metrics?: LayoutProfileMetrics
-				): T {
-					return profile(block, expected, detail, visit, metrics);
-				}
-			};
-		}
-		function invalidate() {
-			recordColdStart(
-				mounted ? 'layout-epoch-invalidated-fonts' : 'layout-epoch-invalidated-unmount'
-			);
-			epoch = undefined;
-			surface = undefined;
-		}
+		const epoch = `${LAYOUT_EPOCH}:profiles-${epochRevision++}`;
+		surface = {
+			get epoch() {
+				return mounted ? epoch : undefined;
+			},
+			withBlock<T>(
+				block: PreparedBlock,
+				expected: string,
+				detail: GeometryDetail,
+				visit: (profile: BlockLayoutProfile, readExact: () => BlockLayoutProfile) => T,
+				metrics?: LayoutProfileMetrics
+			): T {
+				return profile(block, expected, detail, visit, metrics);
+			}
+		};
+		recordColdStart('layout-epoch-ready');
 		// Keep this synchronous: pagination may request exact geometry before the measured DOM is cleared.
 		function profile<T>(
 			prepared: PreparedBlock,
@@ -71,8 +58,7 @@
 			metrics?: LayoutProfileMetrics
 		): T {
 			const checkEpoch = () => {
-				if (!mounted || document.fonts.status !== 'loaded' || epoch !== expectedEpoch)
-					throw new StaleLayoutProfileError();
+				if (!mounted || epoch !== expectedEpoch) throw new StaleLayoutProfileError();
 			};
 			checkEpoch();
 			let blockReadMs = 0;
@@ -142,18 +128,10 @@
 			}
 		}
 
-		// Never publish fallback-font geometry as a ready epoch. A live getter also
-		// invalidates retained handles before a queued result can enter the cache.
-		void document.fonts.ready.then(publish);
-		document.fonts.addEventListener('loading', invalidate);
-		document.fonts.addEventListener('loadingdone', publish);
-		document.fonts.addEventListener('loadingerror', publish);
 		return () => {
 			mounted = false;
-			invalidate();
-			document.fonts.removeEventListener('loading', invalidate);
-			document.fonts.removeEventListener('loadingdone', publish);
-			document.fonts.removeEventListener('loadingerror', publish);
+			surface = undefined;
+			recordColdStart('layout-epoch-invalidated-unmount');
 		};
 	});
 </script>

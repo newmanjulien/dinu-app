@@ -1,0 +1,29 @@
+<script lang="ts">
+	import type { FunctionReturnType } from 'convex/server';
+	import type { api } from '../../../convex/_generated/api';
+	import type { Role } from '../../../convex/permissions';
+	import LinkActivity from '$lib/buyer/LinkActivity.svelte';
+	import BuyerLinksLayout from './BuyerLinksLayout.svelte';
+
+	let {
+		role,
+		links,
+		hasMore,
+		loading,
+		error,
+		onShowMore,
+		onRetry
+	}: {
+		role: Role;
+		links: FunctionReturnType<typeof api.buyerLinks.browse>['page'];
+		hasMore: boolean;
+		loading: boolean;
+		error: boolean;
+		onShowMore: () => void;
+		onRetry: () => void;
+	} = $props();
+</script>
+
+<BuyerLinksLayout {role} {links} {hasMore} {loading} {error} {onShowMore} {onRetry} initialLoading={false}>
+	{#snippet activity(id)}<LinkActivity {id} />{/snippet}
+</BuyerLinksLayout>

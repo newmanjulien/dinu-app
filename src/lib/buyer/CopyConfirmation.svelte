@@ -5,10 +5,12 @@
 </script>
 
 <!-- Keep the approved Changes saved style and Home search clearance. See AGENTS.md. -->
-{#key feedback.confirmation}
-	{#if feedback.confirmation}
+{#key feedback.notice}
+	{#if feedback.notice}
 		<div class="-translate-y-2">
-			<StatusBubble>{feedback.confirmation.message}</StatusBubble>
+			<StatusBubble urgent={feedback.notice.kind === 'error'}>
+				<span class:text-danger={feedback.notice.kind === 'error'}>{feedback.notice.message}</span>
+			</StatusBubble>
 		</div>
 	{/if}
 {/key}

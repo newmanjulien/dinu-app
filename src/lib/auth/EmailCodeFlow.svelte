@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import RouteTitle from './RouteTitle.svelte';
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -164,9 +163,6 @@
 			readiness.status !== 'error'
 	);
 
-	const joinHref = $derived(
-		`${resolve(joining ? '/login' : '/join')}?returnTo=${encodeURIComponent(returnTo)}` as const
-	);
 	const canContinue = $derived(
 		hydrated && email.trim().length > 0 && !isSubmittingEmail && !opening
 	);
@@ -271,7 +267,6 @@
 	}
 
 	$effect(() => {
-		presentation.footer = accountFooter;
 		presentation.showFooter = !invitation && step === 'login' && !opening && !ticketPending;
 		presentation.signupStep =
 			joining && !invitation && !authTicket && !clerk.session
@@ -280,11 +275,8 @@
 					: 1
 				: undefined;
 		return () => {
-			if (presentation.footer === accountFooter) {
-				presentation.footer = undefined;
-				presentation.showFooter = true;
-				presentation.signupStep = undefined;
-			}
+			presentation.showFooter = true;
+			presentation.signupStep = undefined;
 		};
 	});
 
@@ -304,18 +296,6 @@
 				? 'Create your account'
 				: 'Sign in'}
 />
-
-{#snippet accountFooter()}
-	<p class="m-0 text-[13px] leading-5 text-ink-muted">
-		{joining ? 'Already have an account?' : 'Need an account?'}
-		<a
-			href={joinHref}
-			class="text-ink-muted underline underline-offset-2 transition-colors hover:text-ink"
-		>
-			{joining ? 'Log in' : 'Join'}
-		</a>
-	</p>
-{/snippet}
 
 {#if opening || ticketPending}
 	<LoadingState label={opening ? 'Opening your account' : 'Signing in'} />

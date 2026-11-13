@@ -34,6 +34,11 @@ through their existing bounded cleanup and parent-deletion paths.
 
 ## Selective account erasure
 
+Current same-company attribution uses `buyerActivityOpenings.by_profileId`. Account
+cleanup drains these openings and their receipts/historical clause memberships using
+`by_openingId_and_itemId` before erasing the profile. This bounded pass runs independently
+of legacy progress, including when `legacyActivityPhase` is already `done`.
+
 Before enabling the indexed account eraser, confirm `buyerLinkOpens.by_profileId`,
 `buyerLinkOpens.by_visitorKey` and `buyerVisits.by_profileId` are ready in the selected
 deployment. Large inventories may require staged index backfill before reader cutover.

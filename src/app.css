@@ -24,6 +24,9 @@
 	--color-surface-hover: color-mix(in srgb, var(--color-canvas) 50%, var(--color-surface));
 	--color-field-hover: color-mix(in srgb, var(--color-surface-hover) 65%, var(--color-surface));
 	--color-fill-subtle: #e8eaed;
+	--color-skeleton: #e8eaed;
+	--color-skeleton-highlight: rgb(255 255 255 / 30%);
+	--animate-skeleton-shimmer: skeleton-shimmer 2s ease-in-out infinite;
 
 	--shadow-control: 0 1px 3px rgb(32 33 36 / 6%);
 	--shadow-card: 0 1px 3px rgb(32 33 36 / 4%), 0 3px 8px rgb(32 33 36 / 2%);
@@ -79,6 +82,15 @@
 	to {
 		opacity: 1;
 		transform: translateY(0);
+	}
+}
+
+@keyframes skeleton-shimmer {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(100%);
 	}
 }
 

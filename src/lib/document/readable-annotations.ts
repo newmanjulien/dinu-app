@@ -7,7 +7,7 @@ export function readableAnnotations(
 	items: readonly DocumentAnnotationItem[],
 	snapshot: RenderSnapshot | null
 ): readonly DocumentAnnotationItem[] {
-	if (!snapshot) return [];
+	if (!snapshot || !items.length) return [];
 	const index = snapshot.source.sourceIndex;
 	const intervals: { from: number; to: number }[] = [];
 	const boundaries = new Set<string>();

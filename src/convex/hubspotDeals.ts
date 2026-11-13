@@ -1,3 +1,4 @@
+import { requestBuyerRefresh } from './hubspotRecipients';
 import { ConvexError, v } from 'convex/values';
 import {
 	action,
@@ -20,15 +21,21 @@ import {
 	nextCursor as decodeNextCursor,
 	HubSpotError
 } from './hubspotApi';
-import { actionKey, activity, actorOf, receipt, remember, blockLink } from './hubspotRecords';
+import { activity, blockLink } from './hubspotRecords';
+import { actionKey, actorOf, receipt, remember } from './operationReceipts';
 import { createContract, metadataOf } from './contracts';
 import { contractMetadata } from './savedContractValidators';
-import { writeDirectory } from './contractDirectory';
 import { env } from './_generated/server';
 import schema from './schema';
 import { hubspotLink } from './hubspotValidators';
 import { installation, markDealUnavailable } from './contractPolicy';
 import { lifecycle } from './hubspotInstallation';
+import {
+	accessibleContractState,
+	hasOtherHubspotAssociation,
+	patchContract,
+	type Contract
+} from './contractState';
 
 const operationArgs = {
 	membershipId: v.id('memberships'),
@@ -57,9 +64,13 @@ async function receiptOutcome(ctx: QueryCtx, value: string, access: CompanyAcces
 	if (value === occupiedReceipt) return { status: 'deal-already-linked' as const };
 	if (value === retiredReceipt) return { status: 'installation-retired' as const };
 	const id = ctx.db.normalizeId('savedContracts', value);
-	const contract = id ? accessibleContract(await ctx.db.get('savedContracts', id), access) : null;
+	const contract = id ? await accessibleContractState(ctx, id, access) : null;
 	return contract
-		? { status: 'created' as const, id: contract._id, contract: metadataOf(contract) }
+		? {
+				status: 'created' as const,
+				id: contract.root._id,
+				contract: await metadataOf(ctx, contract)
+			}
 		: { status: 'deleted' as const };
 }
 function publicOutcome(outcome: import('convex/values').Infer<typeof linkOutcome>) {
@@ -149,7 +160,7 @@ export const commit = internalMutation({
 		)
 			throw new ConvexError('HubSpot changed. Try again.');
 		const current = args.contractId
-			? accessibleContract(await ctx.db.get('savedContracts', args.contractId), access)
+			? await accessibleContractState(ctx, args.contractId, access)
 			: null;
 		if (args.contractId) {
 			if (!current) throw new ConvexError('This contract was deleted.');
@@ -168,27 +179,24 @@ export const commit = internalMutation({
 		} else if (args.expectedGeneration !== undefined) {
 			throw new ConvexError('Invalid HubSpot creation request.');
 		}
-		// The range read shares the link transaction, so competing owners conflict.
-		const owners = await ctx.db
-			.query('savedContracts')
-			.withIndex('by_companyId_and_hubspot_connectionId_and_hubspot_dealId', (q) =>
-				q
-					.eq('companyId', access.companyId)
-					.eq('hubspot.connectionId', connection._id)
-					.eq('hubspot.dealId', args.dealId)
+		if (
+			await hasOtherHubspotAssociation(
+				ctx,
+				access.companyId,
+				{ connectionId: connection._id, dealId: args.dealId },
+				current?.root._id
 			)
-			.take(2);
-		if (owners.some((owner) => owner._id !== current?._id)) {
-			// Return rather than throw: the terminal refusal must survive an uncertain response.
+		) {
 			await remember(ctx, access.companyId, key, inputs, occupiedReceipt);
 			return { status: 'deal-already-linked' as const };
 		}
-		let contract: Doc<'savedContracts'>;
+		let contract: Contract;
 		if (current) {
 			if (current.hubspot)
-				await blockLink(ctx, current.companyId, current._id, current.hubspot.generation);
+				await blockLink(ctx, current.root.companyId, current.root._id, current.hubspot.generation);
 			const changes = {
-				buyerCompanyName: args.name,
+				title: args.name,
+				buyer: { kind: 'hubspot' as const, company: null },
 				hubspot: {
 					connectionId: connection._id,
 					accountId: connection.accountId,
@@ -196,11 +204,9 @@ export const commit = internalMutation({
 					generation: (current.hubspot?.generation ?? 0) + 1,
 					availability: 'available' as const
 				},
-				stateVersion: current.stateVersion + 1
+				stateRevision: current.root.stateRevision + 1
 			};
-			await ctx.db.patch('savedContracts', current._id, changes);
-			contract = { ...current, ...changes };
-			await writeDirectory(ctx, contract);
+			contract = await patchContract(ctx, current, changes);
 		} else {
 			contract = await createContract(ctx, access, args.name, {
 				connectionId: connection._id,
@@ -211,8 +217,13 @@ export const commit = internalMutation({
 			});
 			await activity(ctx, contract, actorOf(access.profile), key, 'created');
 		}
-		await remember(ctx, access.companyId, key, inputs, contract._id);
-		return { status: 'created' as const, id: contract._id, contract: metadataOf(contract) };
+		await requestBuyerRefresh(ctx, contract.root);
+		await remember(ctx, access.companyId, key, inputs, contract.root._id);
+		return {
+			status: 'created' as const,
+			id: contract.root._id,
+			contract: await metadataOf(ctx, contract)
+		};
 	}
 });
 export const link = action({
@@ -290,18 +301,14 @@ export const eligibility = query({
 			return null;
 		const ids = [...new Set(args.dealIds)];
 		const occupied = await Promise.all(
-			ids.map(async (id) => {
-				const owners = await ctx.db
-					.query('contractDirectory')
-					.withIndex('by_companyId_and_hubspot_connectionId_and_hubspot_dealId', (q) =>
-						q
-							.eq('companyId', access.companyId)
-							.eq('hubspot.connectionId', connection._id)
-							.eq('hubspot.dealId', id)
-					)
-					.take(2);
-				return owners.some((owner) => owner.contractId !== args.contractId);
-			})
+			ids.map((id) =>
+				hasOtherHubspotAssociation(
+					ctx,
+					access.companyId,
+					{ connectionId: connection._id, dealId: id },
+					args.contractId
+				)
+			)
 		);
 		return {
 			linkedDealIds: ids.filter((_, index) => occupied[index]),
@@ -405,10 +412,7 @@ export const checkTarget = internalQuery({
 	),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		const contract = accessibleContract(
-			await ctx.db.get('savedContracts', args.contractId),
-			access
-		);
+		const contract = await accessibleContractState(ctx, args.contractId, access);
 		if (!contract) throw new ConvexError('This contract was deleted.');
 		const connection = await installation(ctx, access.companyId);
 		if (
@@ -433,10 +437,7 @@ export const unavailable = internalMutation({
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		const contract = accessibleContract(
-			await ctx.db.get('savedContracts', args.contractId),
-			access
-		);
+		const contract = await accessibleContractState(ctx, args.contractId, access);
 		if (!contract) return false;
 		const connection = await installation(ctx, access.companyId);
 		const link = contract.hubspot;

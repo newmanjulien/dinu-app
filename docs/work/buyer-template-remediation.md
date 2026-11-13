@@ -1,0 +1,24 @@
+# Buyer template audit remediation
+
+Scope: implement the six remediation groups in `/tmp/oceans-buyer-audit-WXM56RFU/final-plan.md`. Preserve independent audiences, frozen contracts, copy/save behavior, and concurrent skeleton/menu/link-feedback work. No deployment, new tests, or browser automation.
+
+1. R-01: separate reactive previews from frozen-only snapshot cache; load captured contents before adoption; retire disposable disk format 11.
+2. R-02: derive setup readiness from rep heads.
+3. R-03: use the canonical item union in original-seed repair.
+4. R-04: remove obsolete buyer template-item transport and retain explanation annotation identity.
+5. R-05: align effective panel anchors with generated highlight eligibility; skip empty annotation preprocessing.
+6. R-06: remove unused detail observation and simplify saved Summary copy response.
+
+Implementation complete. Relevant instructions and Convex guidance read. Existing unrelated work preserved. Required final checks: existing performance suite and production build/type checks; maintain affected fixtures/assertions without weakening guarantees. Dynamic browser behavior and live rollout remain unverified.
+
+All six source changes implemented. Preview is a reactive direct query; shared loader uses a frozen-only endpoint and disk format 12; create adopts only the captured read. Readiness short-circuits indexed rep heads with a supported-domain overflow guard. Repair accepts the item union with unchanged exact fingerprints. Buyer DTO/client no longer transport or merge unselected reps; frozen explanations have their own derived identity. Generated panel anchors use the full visual source containment rule, and empty annotations return before traversal. Unused detail endpoint/type and copy metadata removed; docs updated. Existing fixtures adapted to renamed loader and response shape, retaining assertions. Validation is next.
+
+Remediation reconciliation: R-01 resolves C-01/Q-01; R-02 Q-02; R-03 Q-03; R-04 S-01/P-02/S-04; R-05 M-01/P-01; R-06 S-02/S-03. All accepted audit items implemented. Display-only accepted preview state retains the existing handoff presentation; it cannot enter the frozen cache.
+
+Final-state performance suite passed 37/37 tests across 7 files (log /tmp/oceans-remediation-perf.log). Final-state existing creation-snappiness and loading-recovery checks passed 6/6 across 2 files (log /tmp/oceans-remediation-handoff.log). Existing assertions still verify prepared workspace/page reuse, loading cancellation and recovery. An earlier broader selected lifecycle run passed 28/30; contracts.test.ts has two unrelated preexisting failures: clean-link request expects an operationId absent from both HEAD and current controller, and timeout retry expects a second action despite the controller retaining its in-flight result. These link behavior/assertions were preserved, with only cache fixture/preview query names adapted for this remediation; log /tmp/oceans-remediation-lifecycle.log. Do not weaken those assertions to mask the mismatch. Both integrated builds passed, including the final state after accepted-preview retention. Final npm run build completed application checks (0 errors, 0 warnings), tooling TypeScript checks and client/server production builds (log /tmp/oceans-remediation-build.log).
+
+Static acceptance: preview edits under an unchanged version ID invalidate the direct preview query; no preview feeds shared versions, flights, seed or disk. Frozen query checks ownership and phase within the version read. Capture outcome is loaded before resource adoption, with existing receipt/recovery and generation guards. Disposable IndexedDB format 12 recreates only snapshots/metadata; draft journal remains independently owned. Rep readiness handles buyer-first and last-rep deletion; seed fingerprint checks still use the complete unchanged item list. For anchor replacement [0,7) and buyer target [4,11), generated text is excluded and surviving original text remains eligible; full containment/equality, point targets, boundaries and redline priorities retain their rules.
+
+Unverified: new buyer-specific DOM/copy/highlight/panel behavior, multiuser scheduling, live stale-cache population, IndexedDB open-tab rollout, actual external endpoint consumers and measured performance. No browser, new tests, live repair or deployment. Release must provide the new backend queries before the client and account for open tabs; removed public contracts have no repository consumers. All concurrent link-feedback/menu/skeleton/guides work retained.
+
+Completion: all six remediation groups implemented; final performance, handoff/recovery, build/type checks and scoped diff whitespace check passed. The two separately documented preexisting buyer-link lifecycle failures remain outside these audit fixes. No assertions weakened or unrelated changes overwritten.

@@ -10,22 +10,22 @@ export type AuthoringInstructions = Instructions & { changesNeedApproval?: strin
 export type Instructions = Infer<typeof validators.instructions>;
 export type ContractChange = Infer<typeof validators.contractChange>;
 export type Concession = Infer<typeof validators.concession>;
-export type PlaybookItem = Infer<typeof validators.playbookItem>;
-export type InstructionAudience = Infer<typeof validators.instructionAudience>;
-export type BuyerInstruction = Infer<typeof validators.buyerInstruction>;
+export type RepInstruction = Infer<typeof validators.repInstruction>;
+export type TemplateAudience = Infer<typeof validators.templateAudience>;
+export type BuyerExplanation = Infer<typeof validators.buyerExplanation>;
 export type TemplateItem = Infer<typeof validators.templateItem>;
 export const isRepItem = <T extends { trigger: Trigger }>(
 	item: T
 ): item is Exclude<T, { audience: 'buyer' }> => !('audience' in item && item.audience === 'buyer');
-export const itemAudience = (item: { trigger: Trigger; audience?: 'buyer' }): InstructionAudience =>
+export const itemAudience = (item: { trigger: Trigger; audience?: 'buyer' }): TemplateAudience =>
 	item.audience ?? 'rep';
-export type PlaybookItemId = Id<'playbookItems'>;
+export type TemplateItemId = Id<'playbookItems'>;
 /** Identity shared by mutable heads and immutable snapshot entries. */
-export type PlaybookItemRecord<ItemId extends ContractItemId = Id<'playbookItems'>> = Pick<
+export type RepInstructionRecord<ItemId extends ContractItemId = Id<'playbookItems'>> = Pick<
 	Doc<'playbookItems'>,
 	'_creationTime' | 'contentRevision'
 > &
-	PlaybookItem & { _id: ItemId; renderKey?: string };
+	RepInstruction & { _id: ItemId; renderKey?: string };
 export type ConcessionSelection = Readonly<Record<string, string>>;
 export function sameSelection(a: ConcessionSelection, b: ConcessionSelection): boolean {
 	if (a === b) return true;
@@ -46,7 +46,7 @@ export const authoringInstructionKeys = [...instructionKeys, 'changesNeedApprova
 
 /** The existing text editor presents policy guidance; business rules read policy.kind. */
 export function authoringInstructions(
-	item: DeepReadonly<Pick<PlaybookItem, 'instructions' | 'approvalPolicy'>>
+	item: DeepReadonly<Pick<RepInstruction, 'instructions' | 'approvalPolicy'>>
 ): AuthoringInstructions {
 	return {
 		...item.instructions,
@@ -55,4 +55,4 @@ export function authoringInstructions(
 	};
 }
 
-export type ContractItemRecord = PlaybookItemRecord<ContractItemId>;
+export type ContractItemRecord = import('../contract/items').ResolvedContractItem;

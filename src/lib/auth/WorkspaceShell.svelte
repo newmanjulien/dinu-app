@@ -2,6 +2,9 @@
 	import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
 	import { navigating, page } from '$app/state';
 	import AppHeader from '$lib/components/chrome/AppHeader.svelte';
+	import NoticeBar from '$lib/components/chrome/NoticeBar.svelte';
+	import CsmSetupCallBar from '$lib/components/chrome/CsmSetupCallBar.svelte';
+	import { useSetupCallRefresh } from '$lib/components/chrome/csm-setup-call.svelte';
 	import WorkspaceSaveStatus from '$lib/components/chrome/WorkspaceSaveStatus.svelte';
 	import AppStatus from '$lib/components/chrome/AppStatus.svelte';
 	import WorkspaceStatus from '$lib/components/chrome/WorkspaceStatus.svelte';
@@ -30,9 +33,7 @@
 	const integrations = setIntegrationFeedback();
 	const hubspot = useHubSpotDeals().connection;
 	const confirmationAnnouncements = $derived(
-		copies.confirmation || integrations.confirmation
-			? [copies.confirmation, integrations.confirmation]
-			: null
+		copies.notice || integrations.confirmation ? [copies.notice, integrations.confirmation] : null
 	);
 	$effect(() => {
 		integrations.observe(hubspot.error || hubspot.isLoading ? undefined : hubspot.data);
@@ -50,15 +51,10 @@
 			!session.closing &&
 			!viewer().company.deletionPending
 	);
-	const setupAvailable = $derived(
-		supportAvailable &&
-			describeRoute(page.route.id).document === 'template' &&
-			viewer().templateReady
-	);
-	// This fact belongs to the membership, beyond a launcher or connection lifetime.
-	let optimisticSetupBooked = $state(false);
-	const setupBooked = $derived(viewer().company.csmCallBooked || optimisticSetupBooked);
+	const setupBooked = $derived(viewer().company.setupCall?.state === 'scheduled');
 	const eligible = $derived(supportAvailable && !!section);
+	const setupPending = $derived(eligible && !viewer().templateReady);
+	useSetupCallRefresh(() => supportAvailable && !viewer().templateReady);
 	const generation = $derived(`${session.preparedSessionId}:${session.transportGeneration}`);
 	const presentation = setWorkspacePresentation(
 		() =>
@@ -94,52 +90,39 @@
 	const support = $derived(eligible && section ? { section, complete: setup.complete } : undefined);
 	const preload = setCsmPreload(
 		() => eligible && presentation.canStart(),
-		() => setupBooked
+		() => setupBooked,
+		() =>
+			supportAvailable && session.preparedSessionId
+				? {
+						identity: JSON.stringify([
+							session.preparedSessionId,
+							session.transportGeneration,
+							viewer().profile.id,
+							viewer().membership.id,
+							viewer().company.id
+						]),
+						membershipId: viewer().membership.id,
+						manageSetup: viewer().permissions.manageTemplate && !viewer().templateReady
+					}
+				: undefined
 	);
 	$effect(() => {
 		preload.align();
 	});
 	const dialog = setCsmDialog(
 		() => eligible && presentation.canStart(),
-		() => setupAvailable,
-		() => (optimisticSetupBooked = true),
 		() => support
 	);
 	$effect(() => {
 		dialog.align();
 	});
 	onDestroy(() => preload.dispose());
-	let automaticOwner: ReturnType<typeof preload.align>;
-	let automaticAttempted = false;
-	$effect(() => {
-		const owner = preload.owner;
-		const admitted = section === 'upload' && supportAvailable && !!owner;
-		if (!admitted || automaticOwner !== owner) {
-			automaticOwner = owner;
-			automaticAttempted = false;
-		}
-		if (!admitted || automaticAttempted || !presentation.canStart()) return;
-		automaticAttempted = true;
-		untrack(() => {
-			preload.warm('support');
-		});
-	});
 	const widget = loadComponent(
 		() => import('$lib/components/chrome/CsmWidget.svelte'),
 		() => eligible && presentation.canStart(),
 		() => presentation.painted
 	);
 	const CsmWidget = $derived(widget.component);
-	const notice = loadComponent(
-		() => import('$lib/components/chrome/CsmSetupCallBar.svelte'),
-		() => eligible && presentation.canStart(),
-		() => presentation.painted
-	);
-	const CsmSetupCallBar = $derived(notice.component);
-	let noticeGeneration = $state<string>();
-	$effect(() => {
-		if (!eligible || noticeGeneration !== generation) noticeGeneration = undefined;
-	});
 	let initializedGeneration = $state<string>();
 	$effect(() => {
 		if (!eligible || initializedGeneration !== generation) initializedGeneration = undefined;
@@ -150,11 +133,14 @@
 
 <AppHeader>
 	{#snippet notice()}
-		{#if CsmSetupCallBar && eligible && (noticeGeneration === generation || presentation.canStart())}
-			{#key generation}
-				{@const mountedGeneration = generation}
-				<CsmSetupCallBar onReady={() => (noticeGeneration = mountedGeneration)} />
-			{/key}
+		{#if viewer().company.deletionPending}
+			<NoticeBar action={{ label: 'Open Settings', href: '/settings' }}>
+				Company activity is paused while account deletion is confirmed. Finish or cancel deletion in
+				Settings.
+			</NoticeBar>
+		{/if}
+		{#if setupPending}
+			<CsmSetupCallBar call={viewer().company.setupCall} />
 		{/if}
 		{#if header.notice}{@render header.notice()}{/if}
 	{/snippet}
@@ -189,11 +175,12 @@
 		{@const mountedGeneration = generation}
 		<CsmWidget
 			content={supportContent(support)}
-			upload={section === 'upload'}
 			onReady={() => (initializedGeneration = mountedGeneration)}
 			canStart={() => eligible && presentation.canStart()}
 		/>
 	{/key}
 {/if}
 
-<CsmDialogHost />
+{#if supportAvailable}
+	<CsmDialogHost />
+{/if}

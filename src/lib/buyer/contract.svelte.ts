@@ -1,4 +1,5 @@
 import { getContext, setContext } from 'svelte';
+import { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
 import type { SnapshotClient } from '$lib/query-once';
 import type { FunctionReturnType } from 'convex/server';
 import { api } from '../../convex/_generated/api';
@@ -8,15 +9,19 @@ import { afterPaint, DocumentScheduler, type Priority } from '$lib/document/runt
 import type { PresentationOutcome } from '$lib/auth/workspace-presentation.svelte';
 import { recordColdStart } from '$lib/document/runtime/render-perf';
 import { BuyerDownload } from './download.svelte';
+import { DiscussionRecovery } from '$lib/discussions/recovery.svelte';
+import type { DocumentToolControls } from '$lib/components/document/document-tools';
 
-type Content = FunctionReturnType<typeof api.buyerLinks.content>;
+type Content = FunctionReturnType<typeof api.buyerLinks.currentDocument>;
 type Host = typeof import('./BuyerDocumentHost.svelte').default;
 type FailureStage =
 	'content' | 'code' | 'construction' | 'source' | 'preparation' | 'page-mount' | 'opening';
 const key = Symbol('buyer-contract');
 
-/** One anonymous token, one immutable contract snapshot, and one preparation generation. */
+/** One buyer-link shell; each document opening owns its preparation and capabilities. */
 export class BuyerContract {
+	readonly help = new HelpSession();
+	buyerName = $state<string | null>(null);
 	content = $state.raw<Content>();
 	displayed = $state.raw<Content>();
 	private displayOwner?: symbol;
@@ -28,7 +33,7 @@ export class BuyerContract {
 			content !== this.content
 		)
 			return () => {};
-		const owner = (this.displayOwner = Symbol('displayed-publication'));
+		const owner = (this.displayOwner = Symbol('displayed-document'));
 		this.displayed = content;
 		return () => {
 			if (this.displayOwner === owner) {
@@ -43,20 +48,26 @@ export class BuyerContract {
 	connected = $state(false);
 	mountReady = $state(false);
 	error = $state<string | null>(null);
-	publicationError = $state<string | null>(null);
+	refreshError = $state<string | null>(null);
 	generation = $state(0);
 	scheduler = $state.raw(this.createScheduler());
 	readonly priority: Priority = () => 'foreground';
 	readonly download: BuyerDownload;
-	private stopPublication?: () => void;
-	private templateItems: Content['items'] = [];
-	private toolsOwner = $state.raw<symbol>();
+	private stopDocument?: () => void;
+	private readContent(signal: AbortSignal) {
+		return queryOnce(this.client, api.buyerLinks.currentDocument, { token: this.token }, signal);
+	}
+	readonly discussionRecovery = new DiscussionRecovery();
+	tools = $state.raw<DocumentToolControls>();
+	private toolsOwner?: symbol;
 	private lifetime?: AbortController;
 	private opening?: ReadAttempt;
 	private presentation: PresentationOutcome = 'pending';
 	private presentationRevision = 0;
 	private openedAt = 0;
 	private failureStage?: FailureStage;
+	private code?: Promise<Host>;
+	private destroyed = false;
 
 	constructor(
 		readonly token: string,
@@ -64,14 +75,13 @@ export class BuyerContract {
 	) {
 		this.download = new BuyerDownload(token, this);
 	}
-	get hasTools() {
-		return this.toolsOwner !== undefined;
-	}
-	registerTools() {
-		const owner = Symbol('buyer-tools');
-		this.toolsOwner = owner;
+	bindTools(generation: number, tools: DocumentToolControls) {
+		if (generation !== this.generation || !this.allowed || !this.foreground || this.error)
+			return () => {};
+		const owner = (this.toolsOwner = Symbol('buyer-tools'));
+		this.tools = tools;
 		return () => {
-			if (this.toolsOwner === owner) this.toolsOwner = undefined;
+			if (this.toolsOwner === owner) this.tools = undefined;
 		};
 	}
 	get foreground() {
@@ -80,18 +90,40 @@ export class BuyerContract {
 	private createScheduler() {
 		return new DocumentScheduler();
 	}
+	/** Shell speculation shares code only; access still owns every content/render lifetime. */
+	warmCode() {
+		if (this.destroyed) return;
+		void this.loadCode().catch(() => {});
+	}
+	private loadCode(): Promise<Host> {
+		if (!this.code) {
+			const startedAt = performance.now();
+			recordColdStart('buyer-viewer-code-start');
+			const code = import('./BuyerDocumentHost.svelte')
+				.then((module) => {
+					if (!this.destroyed) recordColdStart('buyer-viewer-code-ready', startedAt);
+					return module.default;
+				})
+				.catch((error) => {
+					if (this.code === code) this.code = undefined;
+					throw error;
+				});
+			this.code = code;
+		}
+		return this.code;
+	}
 	setAccess(allowed: boolean) {
 		if (this.allowed === allowed) return;
 		this.allowed = allowed;
 		if (!allowed) {
 			this.release();
 			this.content = undefined;
-			this.templateItems = [];
 			this.Host = undefined;
 			this.error = null;
 		} else if (this.foreground) this.start();
 	}
 	attach(target: HTMLElement) {
+		if (this.target && this.target !== target) this.release();
 		this.target = target;
 		this.scheduler.wake();
 		if (this.allowed && !this.error) {
@@ -102,13 +134,7 @@ export class BuyerContract {
 		return () => {
 			if (this.target !== target) return;
 			this.target = undefined;
-			this.stopPublication?.();
-			this.stopPublication = undefined;
-			this.download.reset();
-			this.displayed = undefined;
-			this.opening?.abort();
-			this.opening = undefined;
-			this.scheduler.wake();
+			this.release();
 		};
 	}
 	private beginOpening() {
@@ -127,24 +153,20 @@ export class BuyerContract {
 		);
 	}
 	private start() {
-		if (this.content && this.foreground) this.subscribePublication();
+		if (this.content && this.foreground) this.subscribeDocument();
 		if (!this.allowed || this.error || this.lifetime) return;
 		const lifetime = (this.lifetime = new AbortController());
 		const generation = this.generation;
 		const startedAt = performance.now();
 		if (this.foreground && !this.opening) this.beginOpening();
 		if (!this.content) recordColdStart('buyer-content-start');
-		if (!this.Host) recordColdStart('buyer-viewer-code-start');
 		const content = this.content
 			? Promise.resolve(this.content)
-			: queryOnce(this.client, api.buyerLinks.content, { token: this.token }, lifetime.signal)
+			: this.readContent(lifetime.signal)
 					.then((value) => {
 						if (this.isCurrent(generation, lifetime)) {
-							this.templateItems = value.templateItems;
-							const merged = new Map(this.templateItems.map((item) => [item.itemId, item]));
-							for (const item of value.items) merged.set(item.itemId, item);
-							this.content = { ...value, items: [...merged.values()] };
-							this.subscribePublication();
+							this.content = value;
+							this.subscribeDocument();
 							recordColdStart('buyer-content-ready', startedAt);
 						}
 					})
@@ -153,11 +175,10 @@ export class BuyerContract {
 					});
 		const code = this.Host
 			? Promise.resolve(this.Host)
-			: import('./BuyerDocumentHost.svelte')
-					.then((module) => {
+			: this.loadCode()
+					.then((Host) => {
 						if (this.isCurrent(generation, lifetime)) {
-							this.Host = module.default;
-							recordColdStart('buyer-viewer-code-ready', startedAt);
+							this.Host = Host;
 						}
 					})
 					.catch(() => {
@@ -182,36 +203,42 @@ export class BuyerContract {
 				if (this.isCurrent(generation, lifetime)) this.fail(generation, 'construction');
 			});
 	}
-	private subscribePublication() {
-		if (this.stopPublication || !this.allowed || !this.foreground || !this.content) return;
-		this.stopPublication = this.client.onUpdate(
-			api.buyerLinks.publication,
-			{ token: this.token },
-			(publication) => {
-				if (
-					!this.allowed ||
-					!this.foreground ||
-					!this.content ||
-					publication.buyerRevision < this.content.buyerRevision
-				)
-					return;
-				this.publicationError = null;
-				if (publication.buyerRevision === this.content.buyerRevision) return;
-				const items = new Map(this.templateItems.map((item) => [item.itemId, item]));
-				for (const item of publication.items) items.set(item.itemId, item);
-				this.content = { ...this.content, ...publication, items: [...items.values()] };
-			},
-			() => {
-				if (this.allowed && this.foreground)
-					this.publicationError = 'We couldn’t refresh this contract. Your draft is still here.';
-			}
-		);
+	private subscribeDocument() {
+		if (this.stopDocument || !this.allowed || !this.foreground || !this.content) return;
+		const generation = this.generation;
+		let active = true;
+		let unsubscribe: (() => void) | undefined;
+		this.stopDocument = () => {
+			active = false;
+			unsubscribe?.();
+		};
+		const receive = (value: Content) => {
+			if (
+				!active ||
+				generation !== this.generation ||
+				!this.allowed ||
+				!this.foreground ||
+				!this.content
+			)
+				return;
+			this.refreshError = null;
+			if (value.displayIdentity === this.content.displayIdentity) return;
+			this.content = value;
+		};
+		const fail = () => {
+			if (active && generation === this.generation && this.allowed && this.foreground)
+				this.refreshError = 'We couldn’t refresh this contract. Try again.';
+		};
+		const args = { token: this.token };
+		unsubscribe = this.client.onUpdate(api.buyerLinks.currentDocument, args, receive, fail);
+		if (!active) unsubscribe();
 	}
-	retryPublication() {
-		this.stopPublication?.();
-		this.stopPublication = undefined;
-		this.publicationError = null;
-		this.subscribePublication();
+
+	retryDocument() {
+		this.stopDocument?.();
+		this.stopDocument = undefined;
+		this.refreshError = null;
+		this.subscribeDocument();
 	}
 	private isCurrent(generation: number, lifetime: AbortController) {
 		return (
@@ -225,7 +252,7 @@ export class BuyerContract {
 		if (generation !== this.generation || !this.allowed || this.error) return;
 		const revision = ++this.presentationRevision;
 		this.presentation = outcome;
-		// A completed attempt has no timer. Font invalidation needs a new bounded attempt,
+		// A completed attempt has no timer. Layout invalidation needs a new bounded attempt,
 		// even if another success notification is still waiting for its paint opportunity.
 		if (outcome === 'pending' && !this.opening && this.foreground) this.beginOpening();
 		if (outcome === 'error') return this.fail(generation, 'preparation');
@@ -254,6 +281,7 @@ export class BuyerContract {
 	}
 	fail(generation: number, stage: FailureStage) {
 		if (!this.allowed || generation !== this.generation || this.error) return;
+		this.tools = undefined;
 		this.failureStage = stage;
 		// Never log the bearer token, document, or raw backend/render exception.
 		console.error('Buyer contract failed', { stage });
@@ -280,8 +308,10 @@ export class BuyerContract {
 		if (compatible) this.present(this.generation, this.presentation);
 	}
 	private release() {
-		this.stopPublication?.();
-		this.stopPublication = undefined;
+		this.tools = undefined;
+		this.toolsOwner = undefined;
+		this.stopDocument?.();
+		this.stopDocument = undefined;
 		this.download.reset();
 		this.displayed = undefined;
 		// Clear identity before aborting, so obsolete callbacks cannot fail the next generation.
@@ -297,13 +327,16 @@ export class BuyerContract {
 		this.scheduler = this.createScheduler();
 	}
 	destroy() {
+		this.help.destroy();
+		this.destroyed = true;
+		this.code = undefined;
 		this.allowed = false;
 		this.release();
 		this.download.destroy();
+		this.discussionRecovery.destroy();
 		this.toolsOwner = undefined;
 		this.scheduler.destroy();
 		this.content = undefined;
-		this.templateItems = [];
 		this.Host = undefined;
 		this.target = undefined;
 	}

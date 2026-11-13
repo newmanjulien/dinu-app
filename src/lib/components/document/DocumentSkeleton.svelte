@@ -3,8 +3,10 @@
 	import DocumentPanelSkeleton from './DocumentPanelSkeleton.svelte';
 	import DocumentPageFrame from './DocumentPageFrame.svelte';
 	import DocumentWorkspaceGeometry from './DocumentWorkspaceGeometry.svelte';
+	import type { DocumentLayout } from './workspace-layout';
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	let {
+		layout = 'standard',
 		template = false,
 		embedded = false,
 		reviewGutter = 0,
@@ -12,6 +14,7 @@
 		label = 'Loading document',
 		announce = true
 	}: {
+		layout?: DocumentLayout;
 		template?: boolean;
 		embedded?: boolean;
 		reviewGutter?: number;
@@ -37,7 +40,7 @@
 			<SkeletonBlock class="h-3 w-44" />
 		</div>
 	{/if}
-	<DocumentWorkspaceGeometry {reviewGutter} {hasPanel}>
+	<DocumentWorkspaceGeometry {layout} {reviewGutter} {hasPanel}>
 		<DocumentPageFrame>
 			<DocumentPaperSkeleton {label} announce={false} />
 		</DocumentPageFrame>

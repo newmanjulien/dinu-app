@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { flushDownloadAcks } from '$lib/contract/download-journal';
-	import { flushBuyerLinkCopy } from '$lib/buyer/copy-progress';
 	import { useConvexClient } from 'convex-svelte';
 	import { page } from '$app/state';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
@@ -9,6 +8,11 @@
 	import { DocumentResources, setDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { env } from '$env/dynamic/public';
 	import { loadComponent, loadModule } from './component-loader.svelte';
+	import {
+		loadDocumentHost,
+		loadDocumentWorkspace,
+		loadTemplateWorkspace
+	} from './destination-code';
 	import { recordStartup } from './startup-perf';
 	import WorkspacePresentationReporter from './WorkspacePresentationReporter.svelte';
 	import { useWorkspacePresentation } from './workspace-presentation.svelte';
@@ -27,11 +31,14 @@
 	import { describeRoute } from './routes';
 	import { setWorkspaceRuntime } from './workspace-context.svelte';
 	import { setDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
+	import { getTemplateAuthoringSession } from '$lib/playbook/template-authoring-session.svelte';
 	let { children }: { children: Snippet } = $props();
 	const session = useViewerSession();
 	const presentation = useWorkspacePresentation();
 	const viewer = useViewer();
 	const client = useConvexClient();
+	const repAuthoring = getTemplateAuthoringSession();
+	const buyerAuthoring = getTemplateAuthoringSession('buyer');
 	const cache = getContractSnapshotCache(client);
 	$effect(() => {
 		const membershipId = viewer().membership.id;
@@ -39,17 +46,27 @@
 		if (session.blocked || session.closing || viewer().company.deletionPending) return;
 		const flush = () => {
 			void flushDownloadAcks(client, membershipId);
-			void flushBuyerLinkCopy(client, membershipId);
 		};
 		untrack(flush);
 		const timer = setInterval(flush, 30_000);
 		return () => clearInterval(timer);
 	});
 	let navigationIntent = 0;
+	let openingDownload: AbortController | undefined;
 
 	beforeNavigate((navigation) => {
 		navigationIntent++;
 		if (navigation.to) recordDocumentNavigation(navigation.to.url.pathname);
+		const destination = describeRoute(navigation.to?.route.id ?? null);
+		const release = cache.reserveNavigation(
+			!deletionPending &&
+				!session.blocked &&
+				!navigation.willUnload &&
+				destination.document === 'saved'
+				? navigation.to?.params?.id
+				: undefined
+		);
+		void navigation.complete.then(release, release);
 	});
 	afterNavigate((navigation) => {
 		if (!navigation.to) return;
@@ -76,7 +93,7 @@
 		Boolean(resources?.backgroundEnabled && resources.preparationCandidates.length)
 	);
 	const workspaceModule = loadModule(
-		() => import('$lib/document/runtime/workspace-factory'),
+		loadDocumentWorkspace,
 		() =>
 			Boolean(layoutProfiles) && !deletionPending && (needsDocumentHost || backgroundPreparation),
 		() => session.transportGeneration
@@ -86,7 +103,7 @@
 			new DocumentResources(layoutProfiles, () => workspaceModule.module?.createDocumentWorkspace)
 		);
 	const host = loadComponent(
-		() => import('./DocumentHost.svelte'),
+		loadDocumentHost,
 		() => !deletionPending && (needsDocumentHost || backgroundPreparation),
 		() => session.transportGeneration
 	);
@@ -122,11 +139,25 @@
 	});
 	setDocumentNavigation();
 	const template = loadComponent(
-		() => import('$lib/components/workspace/TemplateWorkspace.svelte'),
+		loadTemplateWorkspace,
 		() => route.document === 'template' && !templatePending && !deletionPending,
 		() => session.transportGeneration
 	);
 	const TemplateWorkspace = $derived(template.component);
+	$effect(() => {
+		if (
+			route.document !== 'template' ||
+			templatePending ||
+			deletionPending ||
+			session.blocked ||
+			session.closing ||
+			viewer().membership.role !== 'admin'
+		)
+			return;
+		const audience = page.url.pathname === '/template/buyers' ? 'buyer' : 'rep';
+		const authoring = audience === 'buyer' ? buyerAuthoring : repAuthoring;
+		return untrack(() => authoring.retainReads());
+	});
 	let templateAudience = $state<'rep' | 'buyer'>(
 		untrack(() => (page.url.pathname === '/template/buyers' ? 'buyer' : 'rep'))
 	);
@@ -160,7 +191,7 @@
 			untrack(() => recordStartup('usable'));
 		}
 	});
-	onNavigate(({ to }) => {
+	onNavigate(({ to, complete }) => {
 		if (
 			to?.route.id === '/(workspace)/settings' &&
 			templateMounted &&
@@ -177,7 +208,24 @@
 				: destination.document === 'saved'
 					? to?.params?.id
 					: undefined;
-		if (id && id !== 'template' && id !== 'template:buyer' && id !== 'new') void cache.load(id);
+		const previousDownload = openingDownload;
+		openingDownload = undefined;
+		if (destination.document === 'saved' && id) {
+			const download = (openingDownload = new AbortController());
+			// Acquire incoming demand before releasing an interrupted navigation's owner.
+			void cache.load(id, undefined, { signal: download.signal }).finally(() => {
+				if (openingDownload === download) openingDownload = undefined;
+			});
+			void complete.then(
+				() => {
+					// A committed destination can still be waiting for its host/editor code.
+					if (page.params.id !== id || describeRoute(page.route.id).document !== 'saved')
+						download.abort();
+				},
+				() => download.abort()
+			);
+		}
+		previousDownload?.abort();
 		return id ? resources?.beginOpen(id) : undefined;
 	});
 	onMount(() =>
@@ -191,6 +239,7 @@
 	);
 	onDestroy(() => {
 		navigationIntent++;
+		openingDownload?.abort();
 		cache.cancelPending();
 		resources?.destroy();
 		layoutProfiles?.scheduler.destroy();
@@ -204,12 +253,6 @@
 	});
 </script>
 
-{#if deletionPending}
-	<div role="status" class="bg-canvas px-6 py-4 text-sm leading-6 text-ink-secondary">
-		Company activity is paused while account deletion is confirmed.
-		<a href="/settings" class="underline">Open Settings to finish or cancel deletion.</a>
-	</div>
-{/if}
 <div
 	hidden={deletionPending && !route.availableDuringHold}
 	inert={deletionPending && !route.availableDuringHold}
@@ -227,7 +270,10 @@
 {:else if route.document === 'template' && !templatePending && !deletionPending && runtime.hostReady}
 	<WorkspacePresentationReporter outcome={template.failed ? 'error' : 'pending'} />
 	{#if !template.failed}
-		<WorkspaceSkeleton label="Loading template editor" />
+		<WorkspaceSkeleton
+			label="Loading template editor"
+			hasPanel={(templateAudience === 'buyer' ? buyerAuthoring : repAuthoring).hasPanel}
+		/>
 	{:else}
 		<LoadingState layout="workspace">
 			<p role="alert" class="text-sm">Unable to load the template editor.</p>

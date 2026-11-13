@@ -1,17 +1,15 @@
 import type { ContractItemId } from './item-identity';
 import type { Id } from '../../convex/_generated/dataModel';
 import {
-	choicesOf,
-	concessionSelections,
-	sameApplications,
-	type ApplicationChoices
-} from './applications';
-import {
+	commandsMatch,
+	currentHead,
 	projectCommands,
+	selectedOptions,
 	MAX_ACTIVITY_COMMANDS,
 	MAX_SAVE_COMMANDS,
 	type ActivityCommand
 } from './activity-commands';
+import type { PlaybookCommand } from './changes';
 import type { ContractDraft } from './draft-recovery.svelte';
 import {
 	olderContractState,
@@ -21,57 +19,45 @@ import {
 	type LiveContractState
 } from './saved';
 import { MAX_SELECTED_CONCESSIONS } from '../document/selection-limits';
-import {
-	workBlockFromError,
-	workBlockMessage,
-	errorCode,
-	type ContractWorkBlock
-} from './work-policy';
+import { workBlockFromError, workBlockMessage, type ContractWorkBlock } from './work-policy';
 
 export type ContractSaveRequest = {
 	id: Id<'savedContracts'>;
-	choices: ApplicationChoices;
 	commands: ActivityCommand[];
-	expectedEditRevision: number;
 	operationId: string;
 };
-
-// Immutable snapshot requests are retained only for pre-command journal recovery.
-export type RetainedSaveRequest = Omit<ContractSaveRequest, 'commands'> & {
-	commands?: ActivityCommand[];
-};
-
-/** Owns persistence only. Document rendering never initiates a save. */
 type Resolution =
 	| { kind: 'current' }
 	| { kind: 'conflict'; message?: string }
 	| { kind: 'failed'; message: string }
 	| { kind: 'deleted' };
 
+/** One durable ordered journal. Only the server allocates change and approval identities. */
 export class ContractPersistence {
 	confirmed: ContractState;
 	private commands = $state.raw<ActivityCommand[]>([]);
-	intent = $state.raw<ApplicationChoices>({});
-	/** A rendering projection; approval identity lives in intent. */
-	choices = $derived(concessionSelections(this.intent));
-	request = $state.raw<RetainedSaveRequest | null>(null);
+	intent = $derived(projectCommands(this.commands));
+	choices = $derived.by(() => selectedOptions(this.confirmed.playbook, this.intent));
+	request = $state.raw<ContractSaveRequest | null>(null);
 	private policy = $state<ContractWorkBlock | null>(null);
 	private policyRefused = false;
-	private legacyRejected = false;
-	private legacyIntent = false;
+	private resolution = $state.raw<Resolution>({ kind: 'current' });
+	selectionLimitError = $state<string | null>(null);
+	private running = $state.raw<Promise<void> | null>(null);
+	inFlight = $derived(this.running !== null);
+	private active = $state(true);
+	private paused = $state(false);
+	private frozen = $state(false);
+	private adoptingConfirmed = $state(false);
+	private transportGeneration = 0;
+	private transport = new AbortController();
+	private recovery = $state.raw<ContractDraft | null>(null);
 	get workBlock() {
 		return this.policy;
 	}
 	get blockedReason() {
 		return this.policy ? workBlockMessage(this.policy) : null;
 	}
-	private acceptPolicy(block: ContractWorkBlock | null) {
-		if (block === this.policy) return;
-		this.policy = block;
-		if (this.policyRefused) this.clearError();
-		this.policyRefused = false;
-	}
-	private resolution = $state.raw<Resolution>({ kind: 'current' });
 	get error() {
 		return 'message' in this.resolution ? (this.resolution.message ?? null) : null;
 	}
@@ -84,69 +70,15 @@ export class ContractPersistence {
 	get recoveryPending() {
 		return this.recovery !== null;
 	}
-	private clearError() {
-		if (this.resolution.kind === 'failed') this.resolution = { kind: 'current' };
-		else if (this.resolution.kind === 'conflict') this.resolution = { kind: 'conflict' };
-	}
-	private fail(message: string) {
-		this.resolution = this.conflict ? { kind: 'conflict', message } : { kind: 'failed', message };
-	}
-	publicationConfirmationRequired = $state(false);
-	selectionLimitError = $state<string | null>(null);
-	private running = $state.raw<Promise<void> | null>(null);
-	inFlight = $derived(this.running !== null);
-	private active = $state(true);
-	private paused = $state(false);
-	private frozen = $state(false);
-	private adoptingConfirmed = $state(false);
-	private transportGeneration = 0;
-	private recovery = $state.raw<ContractDraft | null>(null);
-	private confirmedChoices = $derived.by(() => choicesOf(this.confirmed.applications));
-
-	constructor(
-		private id: Id<'savedContracts'>,
-		initial: ContractState,
-		private save: (request: RetainedSaveRequest) => Promise<ContractSaveResult>,
-		private checkpoint: (draft: ContractDraft | null) => void = () => {},
-		recovery: ContractDraft | null = null,
-		private required: ReadonlySet<string> = new Set()
-	) {
-		this.confirmed = $state.raw(initial);
-		this.acceptPolicy(initial.workBlock ?? null);
-		this.intent = choicesOf(initial.applications);
-		this.recovery = recovery;
-		if (recovery) this.restoreChoices(recovery);
-	}
-	private restoreChoices(draft: ContractDraft) {
-		this.intent = { ...draft.intent };
-		this.commands = draft.commands ?? [];
-		// Old snapshot drafts may contain more intent than the bounded command queue.
-		this.legacyIntent =
-			draft.version !== 6 &&
-			!sameApplications(
-				projectCommands(choicesOf(draft.base.applications), this.commands),
-				draft.intent
-			);
-	}
-	private useConfirmedChoices() {
-		if (!sameApplications(this.intent, this.confirmedChoices))
-			this.intent = { ...this.confirmedChoices };
-	}
-
 	get pending() {
 		return (
-			this.recoveryPending ||
-			this.conflict ||
-			Boolean(this.request) ||
-			this.commands.length > 0 ||
-			!sameApplications(this.intent, this.confirmedChoices)
+			this.recoveryPending || this.conflict || Boolean(this.request) || this.commands.length > 0
 		);
 	}
 	get editable() {
 		return (
 			this.canSave &&
 			!this.policy &&
-			!this.legacyIntent &&
 			!this.conflict &&
 			!this.frozen &&
 			this.commands.length < MAX_ACTIVITY_COMMANDS
@@ -157,10 +89,39 @@ export class ContractPersistence {
 			this.active &&
 			!this.paused &&
 			!this.adoptingConfirmed &&
-			(!this.conflict || Boolean(this.request?.commands)) &&
+			(!this.conflict || Boolean(this.request)) &&
 			!this.deleted &&
 			!this.recoveryPending
 		);
+	}
+
+	constructor(
+		private id: Id<'savedContracts'>,
+		initial: ContractState,
+		private save: (
+			request: ContractSaveRequest,
+			signal: AbortSignal
+		) => Promise<ContractSaveResult>,
+		private checkpoint: (draft: ContractDraft | null) => void = () => {},
+		recovery: ContractDraft | null = null
+	) {
+		this.confirmed = $state.raw(initial);
+		this.policy = initial.workBlock ?? null;
+		this.recovery = recovery;
+		if (recovery) this.commands = structuredClone(recovery.commands);
+	}
+	private clearError() {
+		if (this.resolution.kind === 'failed') this.resolution = { kind: 'current' };
+		else if (this.conflict) this.resolution = { kind: 'conflict' };
+	}
+	private fail(message: string) {
+		this.resolution = this.conflict ? { kind: 'conflict', message } : { kind: 'failed', message };
+	}
+	private acceptPolicy(block: ContractWorkBlock | null) {
+		if (block === this.policy) return;
+		this.policy = block;
+		if (this.policyRefused) this.clearError();
+		this.policyRefused = false;
 	}
 	private record() {
 		if (this.recoveryPending) return;
@@ -168,63 +129,55 @@ export class ContractPersistence {
 			this.deleted || !this.pending
 				? null
 				: {
-						version: this.legacyIntent || (this.request && !this.request.commands) ? 5 : 6,
+						version: 10,
 						commands: this.commands,
 						base: this.confirmed,
-						intent: this.intent,
 						request: this.request,
 						conflict: this.conflict
 					}
 		);
 	}
-
-	setRequired(ids: ReadonlySet<string>) {
-		this.required = ids;
+	setOption(itemId: ContractItemId, optionId: string | null) {
+		this.enqueue(itemId, { kind: 'set', optionId });
 	}
-	select(itemId: ContractItemId, concessionId: string | null) {
+	withdraw(itemId: ContractItemId) {
+		this.enqueue(itemId, { kind: 'withdraw' });
+	}
+	private enqueue(itemId: ContractItemId, action: PlaybookCommand['action']) {
 		if (!this.editable) return;
-		const next = { ...this.intent };
-		if (concessionId === null || next[itemId]?.concessionId === concessionId) delete next[itemId];
-		else {
-			if (!Object.hasOwn(next, itemId) && Object.keys(next).length >= MAX_SELECTED_CONCESSIONS) {
-				this.showSelectionLimit();
-				return;
-			}
-			next[itemId] = {
-				concessionId,
-				...(this.required.has(itemId) ? { applicationId: crypto.randomUUID() } : {})
-			};
+		const choices = selectedOptions(this.confirmed.playbook, { ...this.intent, [itemId]: action });
+		if (Object.keys(choices).length > MAX_SELECTED_CONCESSIONS) {
+			this.selectionLimitError = `You can select up to ${MAX_SELECTED_CONCESSIONS.toLocaleString('en-US')} Playbook options. Remove a selection before adding another.`;
+			return;
 		}
 		this.selectionLimitError = null;
-		if (sameApplications(next, this.intent)) return;
 		this.commands = [
 			...this.commands,
-			{ id: crypto.randomUUID(), itemId, choice: next[itemId] ?? null, occurredAt: Date.now() }
+			{
+				id: crypto.randomUUID(),
+				itemId,
+				expectedCurrentChangeId: currentHead(this.confirmed.playbook, itemId),
+				action,
+				occurredAt: Date.now()
+			}
 		];
-		this.intent = next;
 		this.record();
 		this.start();
 	}
-
-	/** Only the ordered live subscription may replace persistent installation policy. */
 	acceptLive(next: LiveContractState | null) {
 		if (!this.active || this.deleted) return;
 		if (next) this.acceptPolicy(next.workBlock);
 		this.accept(next);
-		this.start();
 	}
-
 	accept(next: ContractState | null) {
 		if (!this.active || this.deleted) return;
 		if (next === null) {
-			// Submitted mutations may still finish, but none can leave this terminal state.
-			this.transportGeneration++;
-			this.running = null;
+			this.replaceTransport();
 			this.request = null;
 			this.resolution = { kind: 'deleted' };
 			this.recovery = null;
+			this.commands = [];
 			this.selectionLimitError = null;
-			this.useConfirmedChoices();
 			this.record();
 			return;
 		}
@@ -233,95 +186,37 @@ export class ContractPersistence {
 			this.restore(next);
 			return;
 		}
-		const pending = this.pending;
-		const own = Boolean(this.request && next.lastOperationId === this.request.operationId);
-		if (next.editRevision > this.confirmed.editRevision && pending && !own)
-			this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
-		if (next.stateVersion !== this.confirmed.stateVersion)
-			this.confirmed = {
-				...next,
-				workBlock: this.policy
-			};
-		if (!pending && !this.conflict) this.useConfirmedChoices();
-		// A subscription can confirm an ambiguous failed response. Do not send a duplicate.
-		if (own && !this.running && !this.conflict) {
-			this.acknowledgeCommands();
+		const own =
+			this.request && next.lastOperationId === this.request.operationId ? this.request : null;
+		this.confirmed = { ...next, workBlock: this.policy };
+		if (own) {
+			this.acknowledgeCommands(own, next);
 			this.request = null;
 			this.clearError();
-			this.start();
-		}
+		} else if (this.commands.length && !commandsMatch(next.playbook, this.commands))
+			this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
 		this.record();
 		this.start();
 	}
 	private restore(next: ContractState) {
 		const draft = this.recovery!;
 		this.recovery = null;
-		this.confirmed = next;
-		this.restoreChoices(draft);
-		this.request = draft.request;
+		this.confirmed = { ...next, workBlock: this.policy };
+		this.commands = structuredClone(draft.commands);
+		this.request = draft.request ? structuredClone(draft.request) : null;
 		this.resolution = draft.conflict ? { kind: 'conflict' } : { kind: 'current' };
-		if (draft.request && next.lastOperationId === draft.request.operationId) {
-			// The interrupted operation committed; only newer local choices remain.
-			this.acknowledgeCommands();
+		if (this.request && next.lastOperationId === this.request.operationId) {
+			this.acknowledgeCommands(this.request, next);
 			this.request = null;
-		} else if (draft.request) {
-			// Equality of the latest choices is not an acknowledgement of this request.
-			// Replay its immutable arguments before saving any newer intent.
-			if (next.editRevision !== draft.request.expectedEditRevision)
-				this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
-		} else if (
-			next.editRevision !== draft.base.editRevision &&
-			!sameApplications(this.intent, choicesOf(next.applications))
-		)
-			this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
-		// Only genuinely unsubmitted old intent can become new commands automatically.
-		if (!this.request && !this.conflict && !this.commands.length) this.stageIntent(this.intent);
+		} else if (!commandsMatch(next.playbook, this.commands)) this.resolution = { kind: 'conflict' };
 		this.record();
 		this.start();
 	}
-	private intentCommands(base: ApplicationChoices, intent: ApplicationChoices): ActivityCommand[] {
-		const removals: ActivityCommand[] = [];
-		const applications: ActivityCommand[] = [];
-		for (const id of new Set([...Object.keys(base), ...Object.keys(intent)])) {
-			const itemId = id as ContractItemId;
-			if (
-				sameApplications(
-					base[itemId] ? { [id]: base[itemId] } : {},
-					intent[itemId] ? { [id]: intent[itemId] } : {}
-				)
-			)
-				continue;
-			const command = (choice: ActivityCommand['choice']): ActivityCommand => ({
-				id: crypto.randomUUID(),
-				itemId,
-				choice,
-				occurredAt: Date.now()
-			});
-			if (base[itemId]) removals.push(command(null));
-			if (intent[itemId]) applications.push(command(intent[itemId]));
-		}
-		// Inferred transitions must free every old range before occupying final ranges.
-		return [...removals, ...applications];
-	}
-	private stageIntent(target: ApplicationChoices) {
-		const key = (command: ActivityCommand) =>
-			`${command.choice ? 'apply' : 'remove'}:${command.itemId}`;
-		const retained = new Map(this.commands.map((command) => [key(command), command]));
-		const pending = this.intentCommands(this.confirmedChoices, target).map((command) => {
-			const original = retained.get(key(command));
-			return original &&
-				sameApplications(
-					original.choice ? { [command.itemId]: original.choice } : {},
-					command.choice ? { [command.itemId]: command.choice } : {}
-				)
-				? original
-				: command;
-		});
-		this.legacyIntent = pending.length > MAX_ACTIVITY_COMMANDS;
-		this.commands = pending.slice(0, MAX_ACTIVITY_COMMANDS);
-		this.intent = this.legacyIntent
-			? target
-			: projectCommands(this.confirmedChoices, this.commands);
+	recoverDraft(draft: ContractDraft) {
+		if (!this.active || this.pending || this.running) return false;
+		this.recovery = draft;
+		this.restore(this.confirmed);
+		return true;
 	}
 	applyRecovered() {
 		if (
@@ -329,46 +224,24 @@ export class ContractPersistence {
 			this.policy ||
 			this.frozen ||
 			!this.conflict ||
-			Boolean(this.request?.commands) ||
+			this.request ||
 			this.deleted ||
 			this.running ||
 			this.recoveryPending ||
 			this.adoptingConfirmed
 		)
 			return;
-		// Reapplying an old draft must not replace reset review identities for
-		// choices already present on the server. Different choices keep their identity.
-		const intent = { ...this.intent };
-		for (const [id, choice] of Object.entries(this.confirmedChoices)) {
-			if (intent[id as ContractItemId]?.concessionId === choice.concessionId)
-				intent[id as ContractItemId] = choice;
-		}
-		if (!this.commands.length || this.legacyIntent) this.stageIntent(intent);
-		else {
-			// Only the leading application epoch may already exist on the server.
-			// Explicit removals or different concessions keep their fresh identities.
-			const transitioned = new Set<ContractItemId>();
-			this.commands = this.commands.map((command) => {
-				const current = this.confirmedChoices[command.itemId];
-				if (
-					transitioned.has(command.itemId) ||
-					!current ||
-					command.choice?.concessionId !== current.concessionId
-				) {
-					transitioned.add(command.itemId);
-					return command;
-				}
-				return { ...command, choice: current };
-			});
-			this.intent = projectCommands(this.confirmedChoices, this.commands);
-		}
-		this.request = null;
+		// Explicit reapply gets new command identities. Original submitted bytes are never rewritten.
+		this.commands = this.commands.map((command) => ({
+			...command,
+			id: crypto.randomUUID(),
+			expectedCurrentChangeId: currentHead(this.confirmed.playbook, command.itemId),
+			occurredAt: Date.now()
+		}));
 		this.resolution = { kind: 'current' };
-		this.clearError();
 		this.record();
 		this.start();
 	}
-
 	private start() {
 		if (
 			!this.canSave ||
@@ -379,72 +252,55 @@ export class ContractPersistence {
 		)
 			return;
 		if (!this.request) {
-			if (!this.pending) return;
-			if (Object.keys(this.choices).length > MAX_SELECTED_CONCESSIONS) {
-				this.showSelectionLimit();
-				return;
-			}
-			this.selectionLimitError = null;
-			const batch = this.commands.slice(0, MAX_SAVE_COMMANDS);
-			this.request = {
+			if (!this.commands.length) return;
+			this.request = structuredClone({
 				id: this.id,
-				choices: projectCommands(this.confirmedChoices, batch),
-				commands: batch,
-				expectedEditRevision: this.confirmed.editRevision,
+				commands: this.commands.slice(0, MAX_SAVE_COMMANDS),
 				operationId: crypto.randomUUID()
-			};
+			});
 		}
 		const request = this.request;
 		this.record();
-		// Keep exactly one immutable operation until it is acknowledged or explicitly discarded.
-		this.running = this.send(request, this.transportGeneration);
+		this.running = this.send(request, this.transportGeneration, this.transport.signal);
 	}
-
-	private showSelectionLimit() {
-		this.selectionLimitError = `You can select up to ${MAX_SELECTED_CONCESSIONS.toLocaleString('en-US')} concessions. Remove a selection before adding another.`;
-	}
-
-	private async send(request: RetainedSaveRequest, generation: number) {
-		// Yield so `running` is assigned even if the transport throws synchronously.
+	private async send(request: ContractSaveRequest, generation: number, signal: AbortSignal) {
 		await Promise.resolve();
 		if (!this.active || generation !== this.transportGeneration || this.paused) {
-			if (generation === this.transportGeneration) {
-				this.running = null;
-			}
+			if (generation === this.transportGeneration) this.running = null;
 			return;
 		}
 		try {
-			const result = await this.save(request);
-			if (!this.active || generation !== this.transportGeneration) return;
+			const result = await this.save(request, signal);
+			if (
+				!this.active ||
+				generation !== this.transportGeneration ||
+				this.request?.operationId !== request.operationId
+			)
+				return;
+			if (result.status === 'preparing')
+				throw new Error('This contract change is still being prepared. Retry to check its result.');
 			if (result.status === 'deleted') this.accept(null);
 			else {
-				// Accept newer metadata without replacing a later subscription result.
-				this.accept(result.state);
-				if (result.status === 'conflict')
-					this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
+				// Receipts acknowledge exactly their commands, even after later subscription updates.
+				if (!olderContractState(result.state, this.confirmed))
+					this.confirmed = { ...result.state, workBlock: this.policy };
+				if (result.status === 'saved') this.acknowledgeCommands(request, result.state);
+				else this.resolution = { kind: 'conflict' };
+				this.request = null;
 			}
-			if (result.status === 'saved') {
-				this.acknowledgeCommands();
-				if (!this.conflict) this.resolution = { kind: 'current' };
-			}
-			this.request = null;
 		} catch (cause) {
-			if (!this.active || generation !== this.transportGeneration) return;
+			if (
+				!this.active ||
+				generation !== this.transportGeneration ||
+				this.request?.operationId !== request.operationId
+			)
+				return;
 			if (this.confirmed.lastOperationId === request.operationId) {
-				this.acknowledgeCommands();
+				this.acknowledgeCommands(request, this.confirmed);
 				this.request = null;
 			} else if (workBlockFromError(cause)) {
 				this.policyRefused = true;
 				this.fail(workBlockMessage(workBlockFromError(cause)!));
-			} else if (errorCode(cause) === 'PUBLICATION_CONFIRMATION_REQUIRED') {
-				this.publicationConfirmationRequired = true;
-				this.fail(saveError(cause, 'Confirm publication before saving these approvals.'));
-			} else if (errorCode(cause) === 'SAVE_PROTOCOL_REQUIRED') {
-				this.legacyRejected = true;
-				this.resolution = {
-					kind: 'conflict',
-					message: saveError(cause, 'Recover your draft before continuing.')
-				};
 			} else
 				this.fail(saveError(cause, 'We couldn’t save this contract. Your changes are still here.'));
 		} finally {
@@ -455,30 +311,27 @@ export class ContractPersistence {
 			}
 		}
 	}
-
-	private acknowledgeCommands() {
-		const ids = new Set(this.request?.commands?.map((c) => c.id) ?? []);
-		if (ids.size) this.commands = this.commands.filter((c) => !ids.has(c.id));
-		if (this.request && !this.request.commands) {
-			// Preserve only choices made after the old immutable snapshot request.
-			const delta = this.intentCommands(this.request.choices, this.intent);
-			this.stageIntent(projectCommands(this.confirmedChoices, delta));
-		} else if (this.legacyIntent) this.stageIntent(this.intent);
-		else this.intent = projectCommands(this.confirmedChoices, this.commands);
-		// A receipt resolves its own batch, not a conflict involving later local intent.
-		if (!this.commands.length && !this.legacyIntent) this.resolution = { kind: 'current' };
+	private acknowledgeCommands(request: ContractSaveRequest, committed: ContractState) {
+		const ids = new Set(request.commands.map((command) => command.id));
+		const touched = new Set(request.commands.map((command) => command.itemId));
+		this.commands = this.commands
+			.filter((command) => !ids.has(command.id))
+			.map((command) =>
+				touched.has(command.itemId)
+					? { ...command, expectedCurrentChangeId: currentHead(committed.playbook, command.itemId) }
+					: command
+			);
+		this.resolution = commandsMatch(this.confirmed.playbook, this.commands)
+			? { kind: 'current' }
+			: { kind: 'conflict' };
 	}
 	retry() {
 		if (!this.canSave || this.running) return;
 		this.policyRefused = false;
-		this.publicationConfirmationRequired = false;
 		this.clearError();
 		this.start();
 	}
-
 	async useConfirmedState() {
-		// A request already handed to Convex cannot be cancelled. Wait for its outcome
-		// before discarding intent so a late acknowledgement cannot start another save.
 		if (
 			!this.active ||
 			this.frozen ||
@@ -496,20 +349,12 @@ export class ContractPersistence {
 				this.deleted ||
 				generation !== this.transportGeneration ||
 				this.recoveryPending ||
-				(this.request &&
-					(Boolean(this.request.commands) ||
-						(!this.legacyRejected &&
-							this.confirmed.editRevision <= this.request.expectedEditRevision)))
+				this.request
 			)
 				return false;
-			// A newer edit revision prevents the old request from changing the server again.
-			this.request = null;
-			this.clearError();
+			this.commands = [];
 			this.resolution = { kind: 'current' };
 			this.selectionLimitError = null;
-			this.commands = [];
-			this.legacyIntent = false;
-			this.useConfirmedChoices();
 			this.record();
 			return true;
 		} finally {
@@ -520,48 +365,49 @@ export class ContractPersistence {
 	freeze(frozen: boolean) {
 		this.frozen = frozen;
 	}
-	/** An old client may have committed a request without delivering its response. */
+	private replaceTransport() {
+		this.transportGeneration++;
+		this.transport.abort();
+		this.transport = new AbortController();
+		this.running = null;
+	}
 	restartTransport() {
 		if (this.deleted) return;
-		this.transportGeneration++;
-		this.running = null;
+		this.replaceTransport();
 		this.clearError();
-		if (this.pending && !this.recoveryPending) {
+		if (this.pending && !this.recoveryPending)
 			this.recovery = {
-				version: this.legacyIntent || (this.request && !this.request.commands) ? 5 : 6,
+				version: 10,
 				commands: this.commands,
 				base: this.confirmed,
-				intent: this.intent,
 				request: this.request,
 				conflict: this.conflict
 			};
-		}
 	}
 	discard() {
-		this.transportGeneration++;
-		this.running = null;
+		this.replaceTransport();
 		this.recovery = null;
 		this.request = null;
-		this.clearError();
 		if (!this.deleted) this.resolution = { kind: 'current' };
 		this.commands = [];
-		this.legacyIntent = false;
-		this.useConfirmedChoices();
 		this.checkpoint(null);
 	}
-
 	pause() {
 		this.paused = true;
 	}
-
 	resume() {
 		this.paused = false;
 		this.start();
 	}
-
 	async savePending() {
 		const generation = this.transportGeneration;
-		while (this.active && !this.deleted && !this.conflict && !this.error && this.pending) {
+		while (
+			this.active &&
+			!this.deleted &&
+			!this.conflict &&
+			!this.error &&
+			(this.pending || this.running)
+		) {
 			this.start();
 			if (!this.running) return false;
 			await this.running;
@@ -573,13 +419,12 @@ export class ContractPersistence {
 			!this.conflict &&
 			!this.error &&
 			!this.pending &&
+			!this.running &&
 			!this.recoveryPending
 		);
 	}
-
 	destroy() {
 		this.active = false;
-		this.transportGeneration++;
-		this.running = null;
+		this.replaceTransport();
 	}
 }

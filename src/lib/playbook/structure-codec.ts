@@ -62,7 +62,7 @@ export function decodeStructure(bytes: ArrayBuffer): ItemStructure {
 	});
 	reader.end();
 	if (version === 2 && (concessions.length || trigger.target.kind !== 'text'))
-		throw new Error('Invalid buyer instruction structure');
+		throw new Error('Invalid buyer explanation structure');
 	return { ...(version === 2 ? { audience: 'buyer' as const } : {}), trigger, concessions };
 }
 

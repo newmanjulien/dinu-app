@@ -2,7 +2,7 @@ import { ConvexError, v } from 'convex/values';
 import { action, internalMutation, env } from './_generated/server';
 import { internal } from './_generated/api';
 import { requireMembership } from './auth';
-import { sha256 } from './hubspotRecords';
+import { sha256 } from './operationReceipts';
 import { tokenExchange } from './hubspotApi';
 import { hubspotConnection } from './hubspotValidators';
 import { portalLifecycle, requireInstallAllowed } from './hubspotInstallation';

@@ -9,7 +9,7 @@ type Ack = { id: Id<'hubspotExports'>; initiatedAt: number; retryAt?: number };
 const memory = new Map<string, Ack>(),
 	running = new Set<string>();
 function prefix(member: string) {
-	return `dinu:download-acks:${env.PUBLIC_CONVEX_URL}:${member}:`;
+	return `dinu:download-acks:v2:${env.PUBLIC_CONVEX_URL}:${member}:`;
 }
 function read(member: string) {
 	const name = prefix(member),

@@ -16,7 +16,7 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch }) => 
 	const existing = cookies.get('dinu_discussion_browser');
 	let browserId = existing && validTrackingId(existing) ? existing : undefined;
 	if (!browserId) {
-		if (body.kind === 'write')
+		if (body.kind !== 'viewer')
 			return failure('Reopen the discussion and try again. Your draft is still here.', 409);
 		const legacy = cookies.get('dinu_buyer_browser');
 		browserId = legacy && validTrackingId(legacy) ? legacy : crypto.randomUUID();
@@ -50,7 +50,19 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch }) => 
 			},
 			body: JSON.stringify({ ...body, browserId })
 		});
-		return new Response(await response.text(), {
+		const text = await response.text();
+		// Presentation author.buyer also includes signed-in external buyers. Keep
+		// transport classification from this trusted ingress for exact retries.
+		if (body.kind === 'viewer' && response.ok) {
+			const viewer: unknown = JSON.parse(text);
+			if (!viewer || typeof viewer !== 'object')
+				return failure('Comments are temporarily unavailable.', 503);
+			return Response.json(
+				{ ...viewer, account: jwt !== null },
+				{ headers: { 'Cache-Control': 'private, no-store' } }
+			);
+		}
+		return new Response(text, {
 			status: response.status,
 			headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store' }
 		});

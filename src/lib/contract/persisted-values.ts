@@ -1,8 +1,7 @@
+import type { ApprovedContractDocument } from './document-preview';
 import type { TemplateContent } from '../template/model';
 import { MAX_DOCUMENT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
-import type { ApplicationChoices, AppliedConcessions } from './applications';
 import type { ContractState, ReadyContract } from './saved';
-import { MAX_APPLICATION_ID_LENGTH, MAX_SELECTED_CONCESSIONS } from '../document/selection-limits';
 import { MAX_STORAGE_ARRAY_ENTRIES } from '../document/storage-limits';
 
 // Disk data is unknown even though network data is validated by Convex. These
@@ -27,48 +26,14 @@ function array(
 	for (const entry of value) if (!check(entry)) return false;
 	return true;
 }
-export function validApplicationId(value: unknown): value is string {
-	return text(value) && value.trim().length > 0 && value.length <= MAX_APPLICATION_ID_LENGTH;
-}
-export function validChoices(value: unknown): value is ApplicationChoices {
-	return (
-		object(value) &&
-		Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
-		Object.entries(value).every(
-			([id, choice]) =>
-				id.length > 0 &&
-				object(choice) &&
-				Object.keys(choice).every((key) => key === 'concessionId' || key === 'applicationId') &&
-				text(choice.concessionId) &&
-				(choice.applicationId === undefined || validApplicationId(choice.applicationId))
-		)
-	);
-}
-export function validApplications(value: unknown): value is AppliedConcessions {
-	return (
-		object(value) &&
-		Object.keys(value).length <= MAX_SELECTED_CONCESSIONS &&
-		Object.entries(value).every(
-			([id, application]) =>
-				id.length > 0 &&
-				object(application) &&
-				text(application.concessionId) &&
-				(application.approval === undefined ||
-					(object(application.approval) &&
-						validApplicationId(application.approval.applicationId) &&
-						(application.approval.status === 'pending' ||
-							application.approval.status === 'approved' ||
-							application.approval.status === 'rejected')))
-		)
-	);
-}
 function validCompletion(value: unknown) {
 	return (
 		value === null ||
 		(object(value) &&
-			!('generation' in value) &&
-			((value.kind === 'awaitingConfirmation' && text(value.reviewerId)) ||
-				(value.kind === 'queued' && text(value.deliveryId))))
+			text(value.reviewIdentity) &&
+			object(value.completion) &&
+			((value.completion.kind === 'awaitingConfirmation' && text(value.completion.reviewerId)) ||
+				(value.completion.kind === 'queued' && text(value.completion.deliveryId))))
 	);
 }
 function validHubSpot(value: unknown) {
@@ -86,20 +51,36 @@ function validHubSpot(value: unknown) {
 export function validContractState(value: unknown): value is ContractState {
 	return (
 		object(value) &&
-		text(value.buyerCompanyName) &&
+		text(value.title) &&
+		text(value.documentId) &&
+		text(value.playbookReviewIdentity) &&
+		text(value.buyerLinkReviewIdentity) &&
+		natural(value.documentRevision) &&
+		natural(value.stateRevision) &&
 		validHubSpot(value.hubspot) &&
 		(value.workBlock === undefined ||
 			value.workBlock === null ||
 			value.workBlock === 'association-required' ||
 			value.workBlock === 'deal-unavailable') &&
-		natural(value.editRevision) &&
-		natural(value.stateVersion) &&
-		natural(value.reviewGeneration) &&
-		validCompletion(value.reviewCompletion) &&
+		validCompletion(value.playbookCompletion) &&
+		validCompletion(value.buyerLinkCompletion) &&
 		(value.lastOperationId === null || text(value.lastOperationId)) &&
-		validApplications(value.applications)
+		array(
+			value.playbook,
+			(entry) =>
+				object(entry) &&
+				text(entry.itemId) &&
+				(entry.currentChangeId === null || text(entry.currentChangeId)) &&
+				(entry.appliedChangeId === null || text(entry.appliedChangeId)) &&
+				(entry.currentOptionId === null || text(entry.currentOptionId)) &&
+				(entry.appliedOptionId === null || text(entry.appliedOptionId)) &&
+				(entry.decisionId === null || text(entry.decisionId)) &&
+				(entry.status === 'pending' || entry.status === 'approved' || entry.status === 'rejected'),
+			MAX_PLAYBOOK_ITEMS
+		)
 	);
 }
+
 type Metadata = ReadyContract['contract'];
 export function validContractMetadata(value: unknown, id: string): value is Metadata {
 	return (
@@ -298,5 +279,60 @@ export function validSnapshot(value: unknown, id: string): value is ReadyContrac
 		value.id === id &&
 		validContractMetadata(value.contract, id) &&
 		validTemplate(value.snapshot, value.contract.companyId)
+	);
+}
+
+/** Immutable approved transport remains disposable and cannot authorize access or commands. */
+export function validApprovedDocument(
+	value: unknown,
+	documentId: string
+): value is ApprovedContractDocument {
+	if (
+		!object(value) ||
+		value.documentId !== documentId ||
+		!natural(value.documentRevision) ||
+		!text(value.displayIdentity) ||
+		!object(value.document)
+	)
+		return false;
+	const doc = value.document;
+	const interval = (value: unknown) =>
+		object(value) &&
+		text(value.sourceKey) &&
+		natural(value.start) &&
+		natural(value.end) &&
+		value.end >= value.start;
+	return (
+		array(doc.blocks, block, MAX_DOCUMENT_BLOCKS) &&
+		array(doc.pieceGroups, (group) =>
+			array(
+				group,
+				(piece) =>
+					object(piece) &&
+					text(piece.sourceKey) &&
+					interval(piece.origin) &&
+					(piece.originalRangeGroups === undefined ||
+						array(piece.originalRangeGroups, (ranges) => array(ranges, interval)))
+			)
+		) &&
+		array(doc.aliasGroups, (group) =>
+			array(group, (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(text))
+		) &&
+		array(doc.removedBlockGroups, (group) => array(group, text)) &&
+		Array.isArray(doc.blocks) &&
+		Array.isArray(doc.pieceGroups) &&
+		doc.blocks.length === doc.pieceGroups.length &&
+		array(value.hiddenItemIds, text) &&
+		array(
+			value.projectedTargets,
+			(entry) =>
+				object(entry) &&
+				text(entry.itemId) &&
+				sourceTarget(entry.trigger) &&
+				array(
+					entry.choices,
+					(choice) => object(choice) && text(choice.id) && array(choice.targets, sourceTarget)
+				)
+		)
 	);
 }

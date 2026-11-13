@@ -49,9 +49,9 @@ generated offsets and annotations follow the rules in
 ## Annotation updates
 
 `DocumentDomain` accepts compact structure separately from hydrated selected details.
-`/template` subscribes to `currentStructure` and keeps a bounded live instruction-detail pool.
+`/template` and `/template/buyers` each subscribe to `currentStructure` for their audience and keep a bounded live item-detail pool.
 It starts warming as soon as the template source matches ready structure, independently of renderer
-readiness: all fitting instructions, with 64 optional entries, eight first responses in flight
+readiness: all fitting items, with 64 optional entries, eight first responses in flight
 and a 4 MiB encoded retained-body budget (not a total-memory bound). Selected/editor/save
 targets are pinned outside those optional limits. Completed owner transitions immediately
 account for demoted records in the optional budget; pending switches retain the actual editor
@@ -104,7 +104,7 @@ Pointer hit testing uses exact projected intervals and existing drag/selection/o
 policy. Annotation IDs use immutable render keys, so a pending new item keeps its semantic
 owner after the database ID arrives. Pending targets have dashed paint and disabled activation.
 Structural gaps use their existing independent controls. Annotation DOM and state changes do
-not invalidate text layout; font/content changes retain the existing geometry invalidation.
+not invalidate text layout; content commits and layout epochs retain geometry invalidation.
 
 ## Browser geometry compilation
 
@@ -156,10 +156,13 @@ A remaining token spanning multiple visual lines fails explicitly. Validation ch
 numeric geometry, line order, token coverage, columns and rows. The 0.01 CSS-pixel tolerance
 compares equivalent observed coordinates only; page-fit arithmetic has no overflow allowance.
 
-The surface publishes readiness after fonts settle. Font loading immediately invalidates
-retained handles, and completion publishes a new epoch. Epochs distinguish surface mounts
-as well as layout policy. The profiler checks the live epoch before and after profiling
-and rejects stale results before cache insertion. A new epoch prevents old page reuse.
+The surface publishes readiness synchronously on mount. Documents explicitly use local
+Arial/Helvetica/sans-serif, so unrelated UI and Newsreader loading does not gate pagination
+or highlights. Epochs distinguish surface mounts and layout policy; unmount invalidates
+retained handles. The profiler checks the live epoch before and after profiling and
+rejects stale results before cache insertion. A new epoch prevents old page reuse.
+Highlights invalidate on actual content commits, changed pages, layout epochs and observed
+geometry changes. The support widget retains its own specific Newsreader wait.
 
 ## Pure pagination and reconciliation
 
@@ -228,7 +231,11 @@ continues against the displayed complete snapshot during warm updates. Warm requ
 failures retain that complete document and its existing reconciliation and viewport anchoring.
 
 The first exact display closes creation once; full readiness records opening history
-separately once. Failure before first display reports an opening failure. Failure afterward
+separately once. The viewer publishes `exactDisplay` only after an eligible generation's
+first page has flushed to mounted DOM, with its source, selection, preview and layout epoch.
+The creation `displayed` timing marks that DOM milestone, not complete readiness or measured
+physical paint. Current matching retained pages reuse their existing DOM flush immediately.
+Failure before first display reports an opening failure. Failure afterward
 retains eligible finished pages and shows an explicit incomplete-document error with Retry.
 Retry renders current valid source and intent; failed partial work never counts as complete.
 
@@ -324,6 +331,28 @@ destroying the controller cancels its pending paint observation. Geometry-read t
 include browser layout; the first reader can pay for layout shared by the entire batch.
 Development clocks add overhead, so use production browser traces for latency claims.
 
+Clause-panel openings retain canonical live DOM lookup and the existing post-tick
+placement guards. Redline renderers cooperatively prepare the baseline source index and
+ordered original footprints after pagination; compatible source artifacts reuse those
+facts across snapshots and layout changes. Only complete facts are attached to a matching
+snapshot. Cancellation drops partial work, and optional preparation failure leaves the
+synchronous canonical fallback available. Effective view skips these baseline facts.
+Occurrence scans, target-dependent sorting and live geometry remain per opening.
+
+`window.__documentPanelOpenPerf` contains numeric-only activation samples (at most 100):
+`at`, `admissionMs` / `accepted` / `admittedAt`, `positionRequestedAt` / `domReadyAt`,
+`lookupMs`, `geometryMs`, `preparedSourceFacts`, `effective`, `heldPosition`, `resolvedAt`
+and `contentMountedAt`. The last field records a post-update mounted panel subtree,
+not loaded editor data or physical paint. Rejected, cancelled or unresolved openings
+have incomplete milestones; held-position reuse has no lookup duration. No extra tick
+or animation frame is requested for these samples. `window.__documentPanelReadiness`
+records numeric `at` / `ready` admission-policy transitions, including readiness after
+preparation. Compare those and render `totalMs`, rather than lookup time alone, when
+assessing work moved before opening. Render samples include `panelSourcePrepareMs`,
+`panelSourcePreparationSlices`, `maxPanelSourcePreparationSliceMs`,
+`panelSourceFactsReused`, `panelSourcePreparationFailed` and `panelSourceReadyAt`.
+Slice budgets remain cooperative; an indivisible generator step can overrun.
+
 A prewarmed saved choice should show zero cache misses and zero profile batches. A normal
 one-block change with uncached geometry should show one unique miss and one batch. Both
 perform incremental pagination, reconciliation and one atomic snapshot commit. These warm operations retain immediate scheduling; initial pagination and mounting are paced.
@@ -341,7 +370,7 @@ Review output differences before updating expectations. Do not rewrite frozen
 references merely to obtain a passing result.
 
 Seed verification uses synthetic geometry and cannot establish browser pagination.
-Browser click-to-paint, native selection, scroll stability, font epochs and highlight
+Browser click-to-paint, native selection, scroll stability, mount/style epochs and highlight
 geometry require browser verification. Use production traces for latency claims.
 
 ## Startup diagnostics
@@ -368,3 +397,10 @@ the browser acceptance described in `docs/lifecycle.md`; existing suites do not 
 ## Loading and dependency admission
 
 Skeleton visibility does not make a primary presentation ready. Optional CSM and Home/deal warming still wait for the current primary ticket and its paint/idle policy; advisory setup hints follow that policy too. The heavy profiler is installed by the demanded document host, and the authoring controller implementation by TemplateWorkspace; lightweight membership persistence owners remain stable. Read retries do not key accepted viewers. `npm run verify` includes SSR/exact-fixture hydration and emitted loading-module boundary checks; actual layout/paint/native behavior remains manual browser acceptance.
+
+Saved source admission shares one editor-root definition-readiness calculation. Required
+local wording must be complete before preparation; a cold read failure uses the existing
+viewer Retry and the saved opening's reset. Final view detachment replaces the editor's
+materialized template-item, combined-item and atomic-input caches with empty values even
+when pending or failed saving retains the editor. This does not evict caller-owned data
+or the document resource cache, and no heap or latency improvement has been measured.

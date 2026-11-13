@@ -1,4 +1,5 @@
-import type { EmailEvent, EmailSelection } from './emailValidators';
+import { buyerPath } from '../lib/buyer/urls';
+import type { EmailEvent, EmailCounts } from './emailValidators';
 
 /** Templates own copy and structure; the app supplies only event data. */
 export type EmailNotification =
@@ -24,35 +25,33 @@ export type EmailNotification =
 export function contractNotification(
 	appUrl: string,
 	event: Exclude<EmailEvent, { kind: 'invitation' }>,
-	selections: EmailSelection[]
+	counts: EmailCounts
 ): EmailNotification {
-	const url = `${appUrl}/contracts/${event.contractId}`;
+	const path =
+		event.context === 'buyer-link' && event.buyerToken
+			? `${appUrl}${buyerPath(event.buyerToken)}/contract`
+			: `${appUrl}/contracts/${event.contractId}`;
+	const params = new URLSearchParams();
+	if (event.kind === 'approval' || event.context === 'buyer-link') params.set('review', '1');
+	const url = `${path}${params.size ? `?${params}` : ''}`;
 	if (event.kind === 'decision') {
-		let approvedCount = 0;
-		let rejectedCount = 0;
-		for (const selection of selections) {
-			if (selection.approval?.status === 'approved') approvedCount++;
-			else if (selection.approval?.status === 'rejected') rejectedCount++;
-			else throw new Error('Completed review snapshot contains an unresolved concession.');
-		}
+		const { approvedCount, rejectedCount } = counts;
 		return {
 			kind: 'decision',
-			data: { companyName: event.buyerCompanyName, url, approvedCount, rejectedCount }
+			data: {
+				companyName: event.title,
+				url,
+				approvedCount,
+				rejectedCount
+			}
 		};
 	}
-	let pendingCount = 0;
-	let reviewedCount = 0;
-	let notRequiredCount = 0;
-	for (const selection of selections) {
-		if (selection.approval?.status === undefined) notRequiredCount++;
-		else if (selection.approval?.status === 'pending') pendingCount++;
-		else reviewedCount++;
-	}
+	const { pendingCount, reviewedCount, notRequiredCount } = counts;
 	return {
 		kind: 'approval',
 		data: {
-			companyName: event.buyerCompanyName,
-			url: `${url}?review=1`,
+			companyName: event.title,
+			url,
 			pendingCount,
 			reviewedCount,
 			notRequiredCount

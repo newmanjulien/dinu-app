@@ -43,7 +43,7 @@ Company cleanup uses the [single ordered phase list](../src/convex/deletionValid
 
 Item/contract creation receipts survive individual target deletion to prevent retry resurrection. Shared template versions/revisions/source survive individual contract/item deletion. Company deletion purges its receipts and business history but retains its completed tombstone. There are no legacy notification, attribution or copied-snapshot tables to drain.
 
-File release removes the owner's reference, then checks all five ownership families before deleting storage in the same mutation: template source originals (including prepared sources), profile avatars, company avatars, HubSpot exports and HubSpot quote pushes. Another owner preserves the bytes. [Storage ownership](../src/convex/storageOwnership.ts) is the authoritative shared check for owner cleanup and the orphan sweep.
+File release removes the owner's reference, then checks all five ownership families before deleting storage in the same mutation: template source originals (including company-owned pending uploads), profile avatars, company avatars, HubSpot exports and HubSpot quote pushes. A pending source owns its original file even after its uploader leaves. Another owner preserves the bytes. [Storage ownership](../src/convex/storageOwnership.ts) is the authoritative shared check for owner cleanup and the orphan sweep.
 
 Interrupted unreferenced uploads/exports are recovered by the all-kind, exact 24-hour grace-protected sweep. It uses bounded 25-row/1 MiB metadata pages, a durable creation frontier/cursor/cutoff and stale-continuation fencing. Each file passes the same transactional ownership check before deletion; storage failure rolls back file and progress changes. A normal daily root resumes an interrupted interval.
 
@@ -53,7 +53,7 @@ Company/contract/retired-delivery/expired-template source child drains share a 1
 
 Account/company/contract/disposal workers store their current job/generation. Resumption keeps pending/in-progress jobs, rearms missing/failed/cancelled/finished jobs and advances the generation. Stale generations are no-ops. Unexpected mutation failure rolls back the batch and leaves its durable owner discoverable. Company deletion cancels tracked contract/send/recovery/disposal/invitation-expiry work; an already dispatched external email cannot be recalled.
 
-Template upload expiry uses its own ID/state/deadline and remaining indexed chunk prefix. An active template source or a missing row makes a delayed callback a no-op. Each yielding invocation schedules one continuation; duplicate expiry callbacks can perform additional bounded work. It does not maintain an exclusive generation/job marker. Thirty-minute discovery independently pages expired prepared/deleting states, reaching later uploads even if earlier workers fail.
+Template upload expiry uses its own ID/state/deadline and remaining indexed chunk prefix. An active template source or a missing row makes a delayed callback a no-op. Each yielding invocation schedules one continuation; duplicate expiry callbacks can perform additional bounded work. It does not maintain an exclusive generation/job marker. Thirty-minute discovery independently pages expired pending/deleting states, reaching later uploads even if earlier workers fail.
 
 Quarter-hour reconciliation invokes one bounded local recovery mutation before provider configuration/lookup. Nine indexed first-record probes schedule only nonempty account/company/contract/disposal/consent/unfinished-email/dispatched-company families; errors are isolated and workers page independently. The exact expired-preparation range excludes fresh consent. Delivery resumption restores the existing recovery rule: missing jobs do not establish non-delivery, claimed attempts become uncertain, uncertain decisions never automatically resend, and uncertain approvals only become eligible for an explicit retry after the existing ten-minute cooldown. Terminal/exhausted/retired attempts remain untouched.
 
@@ -68,7 +68,7 @@ First identify the exact deployment and inspect the durable owner, current phase
 - Deleted contract children: contractCleanup:resume.
 - Retired email capture: emailDisposal:resume.
 - Unfinished email recovery: emailDeliveries:resume with the sending, failed or uncertain state.
-- Expired prepared source: templateUploads:expirePrepared.
+- Expired pending/deleting source: templateUploads:expirePending with `{}` to discover both states; optional `state` is `pending` or `deleting`, with an optional pagination `cursor`.
 - All conditional local recovery families: recovery:resume.
 - Interrupted orphan-file interval: storageOwnership:cleanOrphanFiles with no continuation args, which resumes the stored active cursor/cutoff.
 

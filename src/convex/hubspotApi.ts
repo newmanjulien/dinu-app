@@ -22,7 +22,7 @@ export class HubSpotError extends Error {
 		super(`HubSpot request failed (${status}).`);
 	}
 }
-export async function tokenExchange(parameters: Record<string, string>) {
+export async function tokenExchange(parameters: Record<string, string>, signal?: AbortSignal) {
 	if (!env.HUBSPOT_CLIENT_ID || !env.HUBSPOT_CLIENT_SECRET)
 		throw new ConvexError('HubSpot installation is not configured.');
 	const response = await fetch('https://api.hubapi.com/oauth/v1/token', {
@@ -32,7 +32,9 @@ export async function tokenExchange(parameters: Record<string, string>) {
 			client_id: env.HUBSPOT_CLIENT_ID,
 			client_secret: env.HUBSPOT_CLIENT_SECRET
 		}),
-		signal: AbortSignal.timeout(20_000)
+		signal: signal
+			? AbortSignal.any([signal, AbortSignal.timeout(20_000)])
+			: AbortSignal.timeout(20_000)
 	});
 	if (!response.ok) throw new HubSpotError(response.status);
 	const data = await response.json();
@@ -56,7 +58,8 @@ export async function tokenExchange(parameters: Record<string, string>) {
 }
 export async function connectionToken(
 	ctx: ActionCtx,
-	connection: Doc<'hubspotConnections'>
+	connection: Doc<'hubspotConnections'>,
+	signal?: AbortSignal
 ): Promise<Doc<'hubspotConnections'>> {
 	if (connection.status !== 'connected') throw new HubSpotError(401);
 	if (connection.expiresAt > Date.now() + 60_000) return connection;
@@ -70,10 +73,13 @@ export async function connectionToken(
 	)
 		throw new HubSpotError(429, 2000);
 	try {
-		const tokens = await tokenExchange({
-			grant_type: 'refresh_token',
-			refresh_token: connection.refreshToken
-		});
+		const tokens = await tokenExchange(
+			{
+				grant_type: 'refresh_token',
+				refresh_token: connection.refreshToken
+			},
+			signal
+		);
 		if (
 			!(await ctx.runMutation(internal.hubspotConnections.refreshed, {
 				id: connection._id,
@@ -115,7 +121,9 @@ export async function hubspot(
 		response = await fetch(`https://api.hubapi.com${path}`, {
 			...init,
 			headers: { ...init.headers, Authorization: `Bearer ${connection.accessToken}` },
-			signal: AbortSignal.timeout(25_000)
+			signal: init.signal
+				? AbortSignal.any([init.signal, AbortSignal.timeout(25_000)])
+				: AbortSignal.timeout(25_000)
 		});
 	} catch {
 		throw new HubSpotError(0, 60_000, 'attempted', purpose);
@@ -219,8 +227,9 @@ export function objectId(value: unknown, purpose: 'read' | 'create' = 'read'): s
 export async function resolveRecipient(
 	ctx: ActionCtx,
 	connection: Doc<'hubspotConnections'>,
-	dealId: string
-): Promise<{ companyId: string; name: string } | null> {
+	dealId: string,
+	signal?: AbortSignal
+): Promise<{ id: string; name: string } | null> {
 	objectId(dealId);
 	const companies = new Set<string>();
 	const primary = new Set<string>();
@@ -231,7 +240,8 @@ export async function resolveRecipient(
 			await hubspot(
 				ctx,
 				connection,
-				`/crm/objects/2026-09/deals/${dealId}/associations/companies?limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`
+				`/crm/objects/2026-09/deals/${dealId}/associations/companies?limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`,
+				{ signal }
 			)
 		);
 		if (!Array.isArray(data.results) || data.results.length > 100) throw new HubSpotError(502);
@@ -276,21 +286,30 @@ export async function resolveRecipient(
 				? companies.values().next().value
 				: undefined;
 	if (!companyId) return null;
-	const company = record(
-		await hubspot(
-			ctx,
-			connection,
-			`/crm/objects/2026-09/companies/${companyId}?properties=name&archived=false`
-		)
-	);
+	let company: Record<string, unknown>;
+	try {
+		company = record(
+			await hubspot(
+				ctx,
+				connection,
+				`/crm/objects/2026-09/companies/${companyId}?properties=name&archived=false`,
+				{ signal }
+			)
+		);
+	} catch (error) {
+		// Only a selected company 404 is definitive empty evidence. Association/deal 404s propagate.
+		if (error instanceof HubSpotError && error.status === 404 && error.stage === 'attempted')
+			return null;
+		throw error;
+	}
 	if (objectId(company.id) !== companyId || typeof company.archived !== 'boolean')
 		throw new HubSpotError(502);
 	if (company.archived) return null;
 	const name = record(company.properties).name;
 	if (name === undefined || name === null || name === '') return null;
-	if (typeof name !== 'string' || new TextEncoder().encode(name).length > 256 * 1024)
+	if (typeof name !== 'string' || new TextEncoder().encode(name).length > 4096)
 		throw new HubSpotError(502);
-	return name.trim() ? { companyId, name: name.trim() } : null;
+	return name.trim() ? { id: companyId, name: name.trim() } : null;
 }
 
 export function nextCursor(data: Record<string, unknown>): string | null {

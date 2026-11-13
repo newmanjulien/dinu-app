@@ -1,36 +1,24 @@
+import type { NativePageSubscription } from '../native-pagination';
 import { ReadAttempt } from '../auth/attempt';
-export const discussionPage = (cursor: string | null = null) => ({
-	numItems: 20,
-	cursor,
-	maximumRowsRead: 30,
-	maximumBytesRead: 1_500_000
-});
-type PageResult<Row> = { page: Row[]; isDone: boolean; continueCursor: string };
-type Page<Row> = {
-	cursor: string | null;
-	rows: Row[];
-	next: string | null;
-	done: boolean;
-	state: 'pending' | 'accepted' | 'failed';
-	stop?: () => void;
-	attempt: ReadAttempt;
-};
-/** Live bounded pages retain accepted rows through timeouts; access refusals revoke every row. */
+/** The installed native pager owns split/end cursors and live page replacement. */
 export class LiveDiscussionPages<Row extends { id: string }> {
 	rows = $state.raw<Row[]>([]);
 	error = $state.raw<Error | null>(null);
 	loading = $state(false);
 	authorized = $state(true);
 	done = $state(false);
-	private pages: Page<Row>[] = [];
+	firstPageAccepted = $state(false);
+	private subscription?: NativePageSubscription<Row>;
+	private attempt?: ReadAttempt;
 	private generation = 0;
 	private active = false;
+	private pending?: { baseline: number };
+	private latestRequest?: { baseline: number };
 	constructor(
 		private subscribe: (
-			opts: ReturnType<typeof discussionPage>,
-			receive: (value: PageResult<Row>) => void,
+			changed: () => void,
 			fail: (error: Error) => void
-		) => () => void,
+		) => NativePageSubscription<Row>,
 		private changed: () => void = () => {}
 	) {}
 	reset() {
@@ -38,67 +26,77 @@ export class LiveDiscussionPages<Row extends { id: string }> {
 		this.active = true;
 		this.authorized = true;
 		this.done = false;
+		this.firstPageAccepted = false;
 		this.error = null;
-		this.loadMore();
-	}
-	loadMore() {
-		if (!this.active || this.loading || this.done || !this.authorized) return;
-		const tail = this.pages.at(-1);
-		if (tail?.state === 'pending') return;
-		const cursor = tail?.state === 'failed' ? tail.cursor : (tail?.next ?? null);
-		if (tail?.state === 'failed') this.pages.pop();
+		this.rows = [];
 		this.loading = true;
-		this.error = null;
-		const generation = this.generation,
-			attempt = new ReadAttempt(15_000),
-			page: Page<Row> = {
-				cursor,
-				state: 'pending',
-				rows: [],
-				next: null,
-				done: false,
-				attempt
-			};
-		this.pages.push(page);
-		const current = () => this.active && this.generation === generation && !attempt.signal.aborted;
+		this.pending = this.latestRequest = { baseline: 0 };
+		this.wait();
+		const generation = this.generation;
+		const update = () => {
+			if (!this.active || generation !== this.generation) return;
+			const value = this.subscription?.getCurrentValue();
+			if (!value) return;
+			this.rows = [...new Map(value.results.map((row) => [row.id, row])).values()];
+			this.loading = value.status === 'LoadingFirstPage' || value.status === 'LoadingMore';
+			this.done = value.status === 'Exhausted';
+			if (value.status !== 'LoadingFirstPage') this.firstPageAccepted = true;
+			if (this.loading) this.wait();
+			else {
+				this.attempt?.complete();
+				this.attempt = undefined;
+			}
+			this.changed();
+			if (!this.active || generation !== this.generation) return;
+			if (value.status !== 'CanLoadMore' && value.status !== 'Exhausted') return;
+			const settled = this.pending;
+			if (!settled) return;
+			this.pending = undefined;
+			// Effective filtering can leave a requested page empty without ending the feed.
+			if (value.status === 'CanLoadMore' && value.results.length <= settled.baseline)
+				queueMicrotask(() => {
+					if (
+						this.active &&
+						generation === this.generation &&
+						this.latestRequest === settled &&
+						!this.pending
+					)
+						this.loadMore();
+				});
+		};
+		this.subscription = this.subscribe(update, (error) => {
+			if (this.active && generation === this.generation) this.refuse(error);
+		});
+		update();
+	}
+	private wait() {
+		if (this.attempt) return;
+		const attempt = (this.attempt = new ReadAttempt(15_000));
 		attempt.signal.addEventListener(
 			'abort',
 			() => {
-				if (!this.active || this.generation !== generation) return;
-				page.stop?.();
-				page.state = 'failed';
+				if (!this.active || this.attempt !== attempt) return;
+				this.subscription?.unsubscribe();
+				this.subscription = undefined;
+				this.attempt = undefined;
 				this.loading = false;
 				this.error = new Error('Discussion request timed out. Try again.');
 			},
 			{ once: true }
 		);
-		page.stop = this.subscribe(
-			discussionPage(page.cursor),
-			(value) => {
-				if (!current()) return;
-				attempt.complete();
-				page.state = 'accepted';
-				page.rows = value.page;
-				page.next = value.continueCursor;
-				page.done = value.isDone;
-				this.rows = [
-					...new Map(this.pages.flatMap((p) => p.rows).map((row) => [row.id, row])).values()
-				];
-				this.loading = this.pages.some((p) => p.state === 'pending');
-				this.done = this.pages.at(-1)?.done ?? false;
-				this.changed();
-			},
-			(error) => {
-				if (!current()) return;
-				this.stop();
-				this.rows = [];
-				this.done = false;
-				this.authorized = false;
-				this.changed();
-				this.error = error;
-			}
-		);
-		if (!current()) page.stop();
+	}
+	loadMore() {
+		if (!this.active || this.loading || this.done || !this.authorized || this.error || this.pending)
+			return;
+		const value = this.subscription?.getCurrentValue();
+		if (!value || value.status !== 'CanLoadMore') return;
+		const previous = this.latestRequest;
+		const request = { baseline: value.results.length };
+		this.pending = this.latestRequest = request;
+		if (!value.loadMore(20)) {
+			if (this.pending === request) this.pending = undefined;
+			if (this.latestRequest === request) this.latestRequest = previous;
+		}
 	}
 	refuse(error: Error) {
 		this.stop();
@@ -109,24 +107,17 @@ export class LiveDiscussionPages<Row extends { id: string }> {
 		this.changed();
 	}
 	retry() {
-		if (!this.authorized || !this.active) {
-			this.reset();
-			return;
-		}
-		if (this.error) {
-			this.loadMore();
-			return;
-		}
 		this.reset();
 	}
 	stop() {
 		this.active = false;
 		this.generation++;
-		for (const page of this.pages) {
-			page.stop?.();
-			page.attempt.abort();
-		}
-		this.pages = [];
+		this.pending = this.latestRequest = undefined;
+		this.subscription?.unsubscribe();
+		this.subscription = undefined;
+		const attempt = this.attempt;
+		this.attempt = undefined;
+		attempt?.abort();
 		this.loading = false;
 	}
 	destroy() {

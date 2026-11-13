@@ -1,6 +1,7 @@
 import type { DiscussionAnchor } from './validators';
 import type { ResolvedRun } from '../document/model';
 import { runOffset, runPoint } from './anchors';
+import { readSelectedDomEnvelope } from '../document/selection/dom-selection';
 function tokenRun(token: HTMLElement): ResolvedRun | null {
 	try {
 		const source =
@@ -18,17 +19,10 @@ function tokenRun(token: HTMLElement): ResolvedRun | null {
 				: undefined;
 		return {
 			text: token.textContent ?? '',
-			discussion: token.dataset.discussion ? JSON.parse(token.dataset.discussion) : undefined,
+			sourceOrigin: token.dataset.sourceOrigin ? JSON.parse(token.dataset.sourceOrigin) : undefined,
 			source,
 			sourceKind: token.dataset.sourceKind as ResolvedRun['sourceKind'],
-			generated: token.dataset.generated as ResolvedRun['generated'],
-			generatedOffset:
-				token.dataset.generatedOffset === undefined
-					? undefined
-					: Number(token.dataset.generatedOffset),
-			generatedOrigin: token.dataset.generatedOrigin
-				? JSON.parse(token.dataset.generatedOrigin)
-				: undefined
+			generated: token.dataset.generated as ResolvedRun['generated']
 		};
 	} catch {
 		return null;
@@ -38,14 +32,10 @@ type TokenEntry = { token: HTMLElement; run: ResolvedRun; paragraph: number };
 export type DiscussionDomIndex = {
 	entries: TokenEntry[];
 	sources: Map<string, number[]>;
-	origins: Map<string, number[]>;
 };
-const originKey = (origin: NonNullable<ResolvedRun['generatedOrigin']>) =>
-	JSON.stringify([origin.itemId, origin.concessionId, origin.changeIndex]);
 export function indexDiscussionDom(root: HTMLElement): DiscussionDomIndex {
 	const entries: TokenEntry[] = [],
-		sources = new Map<string, number[]>(),
-		origins = new Map<string, number[]>();
+		sources = new Map<string, number[]>();
 	const paragraphKeys = new Map<string, number>();
 	for (const block of root.querySelectorAll<HTMLElement>('[data-block-key]')) {
 		if (block.tagName === 'TABLE' || block.hasAttribute('data-discussion-removed')) continue;
@@ -54,7 +44,9 @@ export function indexDiscussionDom(root: HTMLElement): DiscussionDomIndex {
 	}
 	for (const token of root.querySelectorAll<HTMLElement>('[data-document-token]')) {
 		if (
-			token.closest('[aria-hidden="true"],del,[data-revision="removed"],table') ||
+			token.closest(
+				'[aria-hidden="true"],del,[data-revision="removed"],[data-discussion-removed],table'
+			) ||
 			['number', 'separator', 'empty-hit-target'].includes(token.dataset.generated ?? '') ||
 			!token.textContent
 		)
@@ -70,19 +62,13 @@ export function indexDiscussionDom(root: HTMLElement): DiscussionDomIndex {
 				0
 		});
 		if (run.source) {
-			const key = run.source.start.sourceKey,
+			const key = (run.sourceOrigin ?? run.source).start.sourceKey,
 				list = sources.get(key) ?? [];
 			list.push(index);
 			sources.set(key, list);
 		}
-		if (run.discussion?.origin ?? run.generatedOrigin) {
-			const key = originKey((run.discussion?.origin ?? run.generatedOrigin)!),
-				list = origins.get(key) ?? [];
-			list.push(index);
-			origins.set(key, list);
-		}
 	}
-	return { entries, sources, origins };
+	return { entries, sources };
 }
 export function captureDiscussionAnchor(
 	root: HTMLElement,
@@ -90,6 +76,35 @@ export function captureDiscussionAnchor(
 	entries = indexDiscussionDom(root).entries
 ): DiscussionAnchor | null {
 	if (!root.contains(range.startContainer) || !root.contains(range.endContainer) || range.collapsed)
+		return null;
+	// Validate the whole native selection, including text outside indexed paragraph tokens.
+	// Otherwise table text can silently disappear from the anchor and target another passage.
+	const eligible = new Set(entries.map(({ token }) => token));
+	const ancestor = range.commonAncestorContainer;
+	const scope =
+		ancestor.nodeType === Node.ELEMENT_NODE ? (ancestor as Element) : ancestor.parentElement;
+	if (
+		!scope ||
+		scope.closest('table') ||
+		[...scope.querySelectorAll('table')].some((table) => range.intersectsNode(table)) ||
+		!readSelectedDomEnvelope(root, range, (text) => {
+			const parent = text.parentElement;
+			if (!parent) return false;
+			if (
+				parent.closest(
+					'[aria-hidden="true"],del,[data-revision="removed"],[data-discussion-removed]'
+				)
+			)
+				return true;
+			const token = parent.closest<HTMLElement>('[data-document-token]');
+			if (
+				token &&
+				['number', 'separator', 'empty-hit-target'].includes(token.dataset.generated ?? '')
+			)
+				return true;
+			return Boolean(token && eligible.has(token));
+		})
+	)
 		return null;
 	let start: DiscussionAnchor['start'] | null = null,
 		end: DiscussionAnchor['end'] | null = null,
@@ -129,10 +144,7 @@ export function discussionDomRange(
 	index = indexDiscussionDom(root)
 ): Range | null {
 	const endpoint = (point: DiscussionAnchor['start'], ending: boolean) => {
-		const candidates =
-			point.kind === 'source'
-				? index.sources.get(point.point.sourceKey)
-				: index.origins.get(originKey(point.origin));
+		const candidates = index.sources.get(point.point.sourceKey);
 		for (const i of candidates ?? []) {
 			const entry = index.entries[i],
 				offset = runOffset(entry.run, point);

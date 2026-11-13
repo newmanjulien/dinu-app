@@ -7,8 +7,12 @@
 	let {
 		oncreate,
 		onjoin,
-		disabled
-	}: { oncreate: () => void; onjoin: () => void; disabled: boolean } = $props();
+		disabled = true
+	}: {
+		oncreate?: () => void;
+		onjoin?: () => void;
+		disabled?: boolean;
+	} = $props();
 </script>
 
 <OnboardingStepFrame

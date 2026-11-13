@@ -36,7 +36,7 @@ const routes: Record<string, RouteDescription> = {
 		requiresTemplate: true
 	},
 	'/template/buyers': {
-		title: 'Edit buyer template instructions',
+		title: 'Edit buyer template explanations',
 		presentation: 'document',
 		navigation: '/template',
 		document: 'template',

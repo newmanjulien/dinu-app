@@ -19,47 +19,14 @@ These requirements are an exception to the existing-test restriction above:
 - Do not weaken or remove assertions merely to resolve failures. Fix the regression
   or update the affected assertion to preserve its guarantee under the intended behavior.
 
-## Planning changes
+## Doing work
 
-when evaluating a change. focus on the target outcome, not the migration cost. lots of churn is fine. lots of work is fine. but we need clean/simple outcomes. less code is good
+smallest clean change is not what we're looking for ever. and we never care about backwards compatibility. always start with the best end state and work back from that. lots of churn is fine. lots of work is fine. but we need clean/simple outcomes
 
 ## UI styling
 
 - Put static UI styles directly in inline Tailwind classes on the rendered elements.
-- Avoid custom spacing or size props, shared class-string modules, and CSS variables
-  for ordinary visual styling. Standard `class` attributes and semantic component
-  variants are fine.
-- Keep shared theme tokens, animation keyframes, and computed document or floating
-  layout geometry where they serve a functional purpose.
-
-### Buyer link copy confirmation
-
-- Preserve the UI approved in conversation `01a1b72d-7332-7be0-9db9-2b9b74217b03`:
-  “Latest link copied” in the shared `StatusBubble` used for “Changes saved”,
-  centered in the workspace status area, raised 8px to clear Home's search bar,
-  and dismissed 2.5 seconds after the latest successful copy.
-- `BuyerLinkController` reports successful clipboard writes through its required
-  `onCopied` callback. Wire it to `BuyerLinkCopyFeedback.show`; render the single
-  `CopyConfirmation` host in `WorkspaceShell`. This covers Home cards, the contract
-  bar, its options/create-link actions, and Past links without per-button state.
-- Keep this path intact when refactoring cards, menus, or workspace chrome. If the
-  bubble disappears, repair the controller-to-host path. Do not replace it with a
-  button-anchored tooltip or a modal. Keep the workspace status visible above the
-  Past links dialog. The manual-copy fallback is only for clipboard failure.
-
-## Context management
-
-- Read relevant file sections and targeted search results. Avoid dumping
-  entire large files, reports, or command outputs into context.
-- For long or multi-stage tasks, keep a compact progress file with scope,
-  decisions, evidence pointers, completed work, and next steps. Update it
-  at meaningful checkpoints so work can resume after compaction.
-- Keep detailed evidence in artifacts; use concise summaries and pointers
-  in conversation. Read the underlying evidence when needed to verify claims.
-- When using subagents, prefer fresh contexts with self-contained handoffs.
-  Request compact results with artifact paths, findings, and unresolved gaps.
-- Context efficiency must not reduce investigation depth or omit findings.
-  Skip progress artifacts for simple tasks.
+- Re-use this app's styling
 
 <!-- convex-ai-start -->
 

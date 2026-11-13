@@ -14,7 +14,7 @@ interface Gesture {
 }
 
 type CompletedGesture =
-	| { kind: 'activate-clause'; owner: HTMLElement }
+	| { kind: 'activate-annotation'; owner: HTMLElement }
 	| { kind: 'activate-background' }
 	| { kind: 'ignore' };
 
@@ -26,10 +26,12 @@ export type DocumentGestureIntent =
 			annotationId: string;
 			activation: AnnotationActivation;
 	  }
+	| { kind: 'activate-discussion'; discussionId: string }
 	| { kind: 'activate-background' };
 
 export type DocumentGesturePolicy = {
 	clauseActivation: boolean;
+	discussionActivation?: boolean;
 	backgroundActivation: boolean;
 };
 
@@ -52,11 +54,13 @@ export class DocumentGestureInteractions {
 	#unsubscribe: () => void;
 	#hoverFrame: number | undefined;
 	#customClick = false;
+	#hoverItem: string | undefined;
 
 	constructor(
 		stage: HTMLElement,
 		highlights: DocumentHighlightController,
-		onIntent: (intent: DocumentGestureIntent) => void
+		onIntent: (intent: DocumentGestureIntent) => void,
+		private onItemIntent?: (itemId: string) => void
 	) {
 		this.#stage = stage;
 		this.#highlights = highlights;
@@ -64,6 +68,18 @@ export class DocumentGestureInteractions {
 		const options = { signal: this.#events.signal };
 		stage.addEventListener('pointerdown', this.#down, options);
 		stage.addEventListener('pointermove', this.#hoverMove, options);
+		stage.addEventListener(
+			'focusin',
+			(event) => {
+				const owner =
+					event.target instanceof Element
+						? event.target.closest<HTMLElement>('[data-item-id]')
+						: null;
+				if (this.#annotationsEnabled() && owner?.dataset.itemId)
+					this.onItemIntent?.(owner.dataset.itemId);
+			},
+			options
+		);
 		stage.addEventListener('pointerleave', this.#leave, options);
 		stage.addEventListener('click', this.#click, options);
 		stage.addEventListener(SELECTION_GESTURE, this.#selectionGesture, options);
@@ -85,15 +101,25 @@ export class DocumentGestureInteractions {
 	setPolicy(policy: DocumentGesturePolicy) {
 		if (
 			this.#policy.clauseActivation === policy.clauseActivation &&
+			Boolean(this.#policy.discussionActivation) === Boolean(policy.discussionActivation) &&
 			this.#policy.backgroundActivation === policy.backgroundActivation
 		)
 			return;
 		this.#policy = policy;
-		if (!policy.clauseActivation) {
+		if (!this.#annotationsEnabled()) {
 			this.#resetGesture();
 			this.#cancelHover();
 			this.#setHover(null);
 		} else this.#scheduleHover();
+	}
+
+	#annotationsEnabled() {
+		return this.#policy.clauseActivation || Boolean(this.#policy.discussionActivation);
+	}
+	#canActivate(owner: HTMLElement) {
+		return owner.dataset.discussionId !== undefined
+			? owner.dataset.discussionId !== 'composer' && Boolean(this.#policy.discussionActivation)
+			: this.#policy.clauseActivation;
 	}
 
 	#stageElementAt(x: number, y: number) {
@@ -106,21 +132,28 @@ export class DocumentGestureInteractions {
 	}
 
 	#hit(x: number, y: number) {
-		if (!this.#policy.clauseActivation) return null;
+		if (!this.#annotationsEnabled()) return null;
 		countOverlayWork('hoverChecks');
 		// Ignore document regions obscured by a panel or other UI.
 		const element = this.#stageElementAt(x, y);
 		if (!element) return null;
 		const page = element.closest<HTMLElement>('.document-page');
-		return page && this.#stage.contains(page) ? this.#highlights.hitTest(page, x, y) : null;
+		return page && this.#stage.contains(page)
+			? this.#highlights.hitTest(page, x, y, (owner) => this.#canActivate(owner))
+			: null;
 	}
 
 	#ownerAt(x: number, y: number) {
 		const owner = this.#clauseOwnerAt(x, y);
-		return this.#policy.clauseActivation ? (this.#hit(x, y) ?? owner) : owner;
+		return this.#hit(x, y) ?? owner;
 	}
 
 	#setHover(owner: HTMLElement | null) {
+		const itemId = owner?.dataset.itemId;
+		if (itemId !== this.#hoverItem) {
+			this.#hoverItem = itemId;
+			if (itemId) this.onItemIntent?.(itemId);
+		}
 		const annotationId = owner?.dataset.annotationId ?? null;
 		this.#highlights.setHoveredAnnotationId(annotationId);
 		this.#stage.toggleAttribute('data-clause-hover', annotationId !== null);
@@ -131,7 +164,7 @@ export class DocumentGestureInteractions {
 		this.#setHover(this.#pointer ? this.#hit(this.#pointer.x, this.#pointer.y) : null);
 	};
 	#scheduleHover = () => {
-		if (!this.#policy.clauseActivation || !this.#pointer || this.#hoverFrame !== undefined) return;
+		if (!this.#annotationsEnabled() || !this.#pointer || this.#hoverFrame !== undefined) return;
 		this.#hoverFrame = requestAnimationFrame(() => {
 			this.#hoverFrame = undefined;
 			this.#updateHover();
@@ -146,7 +179,7 @@ export class DocumentGestureInteractions {
 		this.#resetGesture();
 		if (
 			event.defaultPrevented ||
-			(!this.#policy.clauseActivation && !this.#policy.backgroundActivation) ||
+			(!this.#annotationsEnabled() && !this.#policy.backgroundActivation) ||
 			!event.isPrimary ||
 			event.button !== 0
 		)
@@ -178,7 +211,7 @@ export class DocumentGestureInteractions {
 
 	#hoverMove = (event: PointerEvent) => {
 		if (this.#stage.hasAttribute('data-selection-drag')) return;
-		if (!this.#policy.clauseActivation || !event.isPrimary || event.pointerType === 'touch') return;
+		if (!this.#annotationsEnabled() || !event.isPrimary || event.pointerType === 'touch') return;
 		this.#pointer = { x: event.clientX, y: event.clientY };
 		this.#scheduleHover();
 	};
@@ -199,7 +232,7 @@ export class DocumentGestureInteractions {
 		}
 		if (gesture.owner)
 			this.#completed =
-				owner === gesture.owner ? { kind: 'activate-clause', owner } : { kind: 'ignore' };
+				owner === gesture.owner ? { kind: 'activate-annotation', owner } : { kind: 'ignore' };
 		else this.#completed = owner ? { kind: 'ignore' } : { kind: 'activate-background' };
 	};
 
@@ -232,7 +265,7 @@ export class DocumentGestureInteractions {
 			return;
 		}
 		if (
-			(!this.#policy.clauseActivation && !this.#policy.backgroundActivation) ||
+			(!this.#annotationsEnabled() && !this.#policy.backgroundActivation) ||
 			event.defaultPrevented ||
 			event.detail > 1
 		)
@@ -243,11 +276,11 @@ export class DocumentGestureInteractions {
 				event.target instanceof Element
 					? event.target.closest<HTMLElement>('.playbook-trigger')
 					: null;
-			if (owner) this.#activateClause(owner, { owner });
+			if (owner) this.#activateAnnotation(owner, { owner });
 			return;
 		}
-		if (completed?.kind === 'activate-clause' && this.#policy.clauseActivation) {
-			this.#activateClause(completed.owner, {
+		if (completed?.kind === 'activate-annotation' && this.#canActivate(completed.owner)) {
+			this.#activateAnnotation(completed.owner, {
 				owner: completed.owner,
 				clientX: event.clientX,
 				clientY: event.clientY
@@ -269,13 +302,19 @@ export class DocumentGestureInteractions {
 		if (notice.kind === 'click') {
 			const owner = this.#ownerAt(notice.x, notice.y);
 			this.#completed = owner
-				? { kind: 'activate-clause', owner }
+				? { kind: 'activate-annotation', owner }
 				: { kind: 'activate-background' };
 		} else this.#completed = { kind: 'ignore' };
 	};
 
-	#activateClause(owner: HTMLElement, activation: AnnotationActivation) {
-		if (!owner.isConnected || !this.#stage.contains(owner)) return;
+	#activateAnnotation(owner: HTMLElement, activation: AnnotationActivation) {
+		if (!owner.isConnected || !this.#canActivate(owner)) return;
+		const discussionId = owner.dataset.discussionId;
+		if (discussionId !== undefined) {
+			this.#onIntent({ kind: 'activate-discussion', discussionId });
+			return;
+		}
+		if (!this.#stage.contains(owner)) return;
 		const { itemId, annotationId } = owner.dataset;
 		if (itemId && annotationId)
 			this.#onIntent({ kind: 'activate-clause', itemId, annotationId, activation });

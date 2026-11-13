@@ -8,7 +8,7 @@ const ORPHAN_GRACE = 24 * 60 * 60_000;
 
 /** Read ownership inside the same transaction as deletion, including staged uploads. */
 export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
-	const [templateSource, profile, company, exportAttempt, quotePush] = await Promise.all([
+	const [templateSource, profile, company, coreExportArtifact, quotePush] = await Promise.all([
 		ctx.db
 			.query('templateSources')
 			.withIndex('by_originalFileId', (q) => q.eq('originalFileId', fileId))
@@ -21,6 +21,7 @@ export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
 			.query('company')
 			.withIndex('by_avatarId', (q) => q.eq('avatarId', fileId))
 			.first(),
+		// Core attempts retain this physical table so browser acknowledgment IDs stay valid.
 		ctx.db
 			.query('hubspotExports')
 			.withIndex('by_fileId', (q) => q.eq('fileId', fileId))
@@ -30,7 +31,7 @@ export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
 			.withIndex('by_fileId', (q) => q.eq('fileId', fileId))
 			.first()
 	]);
-	return !!(templateSource || profile || company || exportAttempt || quotePush);
+	return !!(templateSource || profile || company || coreExportArtifact || quotePush);
 }
 
 /** Release the owner's reference first, then check all owners in this transaction. */

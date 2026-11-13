@@ -1,5 +1,7 @@
-import type { Doc } from './_generated/dataModel';
+import type { Doc, Id } from './_generated/dataModel';
+import { internal } from './_generated/api';
 import type { MutationCtx } from './_generated/server';
+import { historicalSuccessorHint } from './csmHistory';
 import { pendingSuccessors, type PendingSuccessors } from './csmSetupChain';
 
 type Appointment = Doc<'csmSetupAppointments'>;
@@ -27,7 +29,8 @@ function hasMaintenance(a: Appointment) {
 		a.deadlineJobId !== undefined ||
 		a.repairAt !== undefined ||
 		a.leaseUntil !== undefined ||
-		a.freshUntil !== undefined
+		a.freshUntil !== undefined ||
+		a.reviewSession !== undefined
 	);
 }
 function pendingChanged(a: Appointment, pending: PendingSuccessors) {
@@ -44,7 +47,7 @@ export function needsSupersededSetupRetirement(a: Appointment) {
 		a.superseded &&
 		(a.selection !== 'superseded' ||
 			hasMaintenance(a) ||
-			a.successorHint !== undefined ||
+			historicalSuccessorHint(a) !== undefined ||
 			pendingChanged(a, pendingSuccessors(a)))
 	);
 }
@@ -57,12 +60,12 @@ export async function retireSupersededSetupAppointment(
 	firing?: SetupFiring
 ) {
 	const pending = pendingSuccessors(a, successorHint);
-	const dirty = a.dirty || successorHint !== undefined || a.successorHint !== undefined;
+	const dirty = a.dirty || successorHint !== undefined || historicalSuccessorHint(a) !== undefined;
 	const invalidate = !a.superseded || hasMaintenance(a);
 	if (
 		!invalidate &&
 		a.selection === 'superseded' &&
-		a.successorHint === undefined &&
+		historicalSuccessorHint(a) === undefined &&
 		!pendingChanged(a, pending) &&
 		dirty === a.dirty
 	)
@@ -77,9 +80,54 @@ export async function retireSupersededSetupAppointment(
 		repairAt: undefined,
 		leaseUntil: undefined,
 		freshUntil: undefined,
+		reviewSession: undefined,
 		dirty,
 		pendingSuccessors: pending,
 		successorHint: undefined
+	});
+	return true;
+}
+
+/** Shared template release hook. Continuations bound history work independently of release size. */
+export async function retireCompanySetupAppointments(
+	ctx: MutationCtx,
+	companyId: Id<'company'>,
+	cursor: string | null = null
+) {
+	const company = await ctx.db.get('company', companyId);
+	if (!company?.templateSourceId) return;
+	const page = await ctx.db
+		.query('csmSetupAppointments')
+		.withIndex('by_companyId_and_selection_and_sortAt_and_anchorUid', (q) =>
+			q.eq('companyId', companyId)
+		)
+		.paginate({ cursor, numItems: 25 });
+	for (const a of page.page) await retireReleasedSetupAppointment(ctx, a);
+	if (!page.isDone)
+		await ctx.scheduler.runAfter(0, internal.csmSetupAppointments.retireReleased, {
+			companyId,
+			cursor: page.continueCursor
+		});
+}
+
+/** Release ends maintenance, while confirmed facts and unresolved evidence remain historical. */
+export async function retireReleasedSetupAppointment(
+	ctx: MutationCtx,
+	a: Appointment,
+	firing?: SetupFiring
+) {
+	if (a.superseded) return retireSupersededSetupAppointment(ctx, a, undefined, firing);
+	if (a.maintenanceRetired === 'released' && !hasMaintenance(a) && !a.reviewSession) return false;
+	await retirePendingSetupJobs(ctx, a, firing);
+	await ctx.db.patch('csmSetupAppointments', a._id, {
+		maintenanceRetired: 'released',
+		generation: a.generation + 1,
+		refreshJobId: undefined,
+		deadlineJobId: undefined,
+		repairAt: undefined,
+		leaseUntil: undefined,
+		freshUntil: undefined,
+		reviewSession: undefined
 	});
 	return true;
 }

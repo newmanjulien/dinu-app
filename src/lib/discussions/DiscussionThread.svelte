@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
+	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
+	import InlineAction from '$lib/components/playbook/InlineAction.svelte';
 	import type { DiscussionThread, DiscussionSession } from './session.svelte';
 	import DiscussionMessage from './DiscussionMessage.svelte';
 	import ReplyComposer from './ReplyComposer.svelte';
@@ -7,30 +9,59 @@
 	let {
 		thread,
 		session,
-		orphaned = false
-	}: { thread: DiscussionThread; session: DiscussionSession; orphaned?: boolean } = $props();
+		canRead,
+		orphaned = false,
+		onActivate,
+		header,
+		recovery
+	}: {
+		thread: DiscussionThread;
+		session: DiscussionSession;
+		canRead: boolean;
+		orphaned?: boolean;
+		onActivate: () => void;
+		header?: Snippet;
+		recovery?: Snippet;
+	} = $props();
 	const draft = $derived(session.replyDraft(thread.id));
-	let applying = $state(false);
+	let replyTrigger: HTMLButtonElement | undefined;
 	const replies = untrack(() => session.replyState(thread.id));
 	const feed = replies.feed;
 	$effect(() => {
-		replies.setActive(session.active);
+		const active = session.active;
+		untrack(() => replies.setActive(active));
 		return () => replies.setActive(false);
 	});
 
-	function activate() {
-		if (!session.viewer) void session.loadBuyerViewer();
+	function selectThread() {
+		onActivate();
+		if (!session.readOnly && !session.viewer) void session.loadBuyerViewer();
 		session.selected = thread.id;
-		draft.open = true;
+	}
+	function activate(trigger: HTMLButtonElement) {
+		selectThread();
+		if (session.readOnly) return;
+		session.editingMessage = null;
+		if (!draft.busy) {
+			replyTrigger = trigger;
+			session.replyingTo = thread.id;
+		}
+	}
+	function closeReply(restoreFocus = false) {
+		if (session.replyingTo !== thread.id) return;
+		session.replyingTo = null;
+		if (restoreFocus && replyTrigger?.isConnected) replyTrigger.focus({ preventScroll: true });
 	}
 	async function submit() {
-		if (draft.busy || !draft.text.trim()) return;
+		if (session.readOnly || draft.busy || !draft.text.trim()) return;
+		const current = session.captureWriteAccess();
 		draft.busy = true;
 		draft.error = null;
 		const submitted = draft.text;
 		try {
-			await session.write({ kind: 'reply', threadId: thread.id, text: draft.text });
+			await session.write({ kind: 'reply', threadId: thread.id, text: submitted });
 			if (draft.text === submitted) draft.text = '';
+			if (current()) closeReply();
 		} catch (e) {
 			draft.error =
 				e instanceof Error && e.name !== 'ConvexError'
@@ -40,70 +71,55 @@
 			draft.busy = false;
 		}
 	}
-	async function apply() {
-		if (applying || !session.onApply) return;
-		applying = true;
-		draft.error = null;
-		try {
-			await session.onApply(thread);
-		} catch (e) {
-			draft.error = saveError(
-				e,
-				'We couldn’t apply this proposal. Review the current wording and try again.'
-			);
-		} finally {
-			applying = false;
-		}
-	}
 </script>
 
-<div
-	class="w-full overflow-visible rounded-[9px] border border-line bg-surface text-ink shadow-none"
-	data-context-panel
+<PlaybookCard
+	label={thread.type === 'proposal' ? 'Proposed change' : 'Comment'}
+	variant="discussion"
 >
+	{@render header?.()}
+	{#if !session.readOnly && recovery}<div class="p-3.5">{@render recovery()}</div>{/if}
 	{#if orphaned}<p class="px-3.5 pt-3 text-xs text-ink-muted">The selected passage has changed.</p>
 		<blockquote class="mx-3.5 mt-2 border-l-2 border-line pl-2 text-xs text-ink-muted">
 			{thread.anchor.quote}
 		</blockquote>{/if}
-	<DiscussionMessage message={thread.root} {session} onActivate={activate} />
-	{#if thread.type === 'proposal' && !thread.root.deleted}
-		<div class="px-3.5 pb-3 text-xs text-ink-secondary">
-			{#if thread.applied}Applied as a contract concession.{:else if session.onApply}<button
-					class="cursor-pointer underline disabled:cursor-default"
-					disabled={applying}
-					onclick={() => void apply()}>{applying ? 'Applying…' : 'Apply proposed wording'}</button
-				>{:else}Proposed wording{/if}
-		</div>
-	{/if}
+	<DiscussionMessage
+		message={thread.root}
+		{session}
+		{canRead}
+		onActivate={activate}
+		onEdit={selectThread}
+	/>
 	{#each replies.rows as message (message.id)}<DiscussionMessage
 			{message}
 			{session}
+			canRead={canRead && feed.authorized && feed.firstPageAccepted}
 			reply
 			onActivate={activate}
+			onEdit={selectThread}
 		/>{/each}
-	{#if !feed.done}<button
-			class="mx-3.5 mb-3 cursor-pointer text-xs text-ink-muted underline"
-			disabled={feed.loading}
-			onclick={() => (feed.error || !feed.authorized ? replies.retry() : feed.loadMore())}
-			>{feed.loading ? 'Loading replies…' : 'More replies'}</button
-		>{/if}
-	{#if draft.open}<div class="p-3.5">
+	{#if !feed.done}<div class="px-3.5 pb-3 text-xs">
+			<InlineAction
+				disabled={feed.loading}
+				onclick={() => (feed.error || !feed.authorized ? replies.retry() : feed.loadMore())}
+				>{feed.loading ? 'Loading replies…' : 'More replies'}</InlineAction
+			>
+		</div>{/if}
+	{#if !session.readOnly && session.replyingTo === thread.id}<div class="px-3.5 pb-3.5">
 			<ReplyComposer
 				id={`reply-${thread.id}`}
 				text={draft.text}
 				pending={draft.busy}
 				errorMessage={draft.error ?? feed.error?.message ?? ''}
 				onTextChange={(value) => (draft.text = value)}
-				onCancel={() => {
-					if (!draft.busy) draft.open = false;
-				}}
+				onCancel={closeReply}
 				onSubmit={() => void submit()}
 			/>
 		</div>
-	{:else if draft.error || feed.error}<p
+	{:else if (!session.readOnly && draft.error) || feed.error}<p
 			role="alert"
-			class="px-3.5 pb-3 text-xs text-ink-secondary"
+			class="px-3.5 pb-3 text-xs text-danger"
 		>
-			{draft.error ?? feed.error?.message}
+			{(!session.readOnly && draft.error) || feed.error?.message}
 		</p>{/if}
-</div>
+</PlaybookCard>

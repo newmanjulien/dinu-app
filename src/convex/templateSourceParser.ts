@@ -83,7 +83,7 @@ export const prepare = internalAction({
 		}
 		if (parsed.issues.some((issue) => issue.severity === 'error'))
 			return {
-				preparedTemplateSourceId: null,
+				pendingTemplateSourceId: null,
 				blockCount: parsed.blocks.length,
 				issues: parsed.issues
 			};
@@ -93,7 +93,7 @@ export const prepare = internalAction({
 			issues: parsed.issues
 		});
 		return {
-			preparedTemplateSourceId: result.preparedTemplateSourceId,
+			pendingTemplateSourceId: result.pendingTemplateSourceId,
 			blockCount: parsed.blocks.length,
 			issues: parsed.issues
 		};

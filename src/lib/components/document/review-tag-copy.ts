@@ -1,40 +1,25 @@
-import type { ReviewStatus, ReviewTag } from '$lib/contract/approval';
-
-type ReviewTagCopy = { meaning: string; nextStep?: string };
-
-const reviewTagCopy: Record<'admin' | 'rep', Record<ReviewStatus, ReviewTagCopy>> = {
-	admin: {
-		pending: {
-			meaning: 'This concession needs your review.',
-			nextStep: 'Click to approve or decline it.'
-		},
-		approved: {
-			meaning: 'This concession is approved.',
-			nextStep: 'Click to change the decision.'
-		},
-		rejected: {
-			meaning: 'This concession was declined.',
-			nextStep: 'Click to change the decision.'
-		}
-	},
-	rep: {
-		pending: {
-			meaning: 'This concession needs admin approval.',
-			nextStep: 'Choose “Ask for approval” if you haven’t already.'
-		},
-		approved: {
-			meaning: 'This concession is approved for use in this contract.'
-		},
-		rejected: {
-			meaning: 'This concession was declined.',
-			nextStep: 'Remove it or choose another concession before downloading.'
-		}
-	}
-};
+import type { ReviewTag } from '$lib/contract/approval';
 
 export function reviewTagExplanation(tag: ReviewTag, ready: boolean): string {
-	const copy = reviewTagCopy[tag.admin ? 'admin' : 'rep'][tag.status];
-	const nextStep =
-		tag.admin && (tag.disabled || !ready) ? 'Review is temporarily unavailable.' : copy.nextStep;
-	return nextStep ? `${copy.meaning} ${nextStep}` : copy.meaning;
+	const subject = tag.kind === 'buyer-proposal' ? 'buyer proposal' : 'Playbook change';
+	const meaning =
+		tag.status === 'approved'
+			? `This ${subject} is applied to the current contract.`
+			: tag.status === 'rejected'
+				? `This ${subject} was declined.`
+				: `This ${subject} needs admin approval.`;
+	if (!tag.admin)
+		return tag.status === 'pending'
+			? `${meaning} Choose “Submit for approval” if you haven’t already.`
+			: meaning;
+	if (!ready || tag.disabled) return `${meaning} Review is temporarily unavailable.`;
+	if (tag.status === 'approved' && tag.kind === 'playbook')
+		return `${meaning} Use the Playbook to remove or switch this option.`;
+	const permissions = tag.status === 'approved' ? [tag.undo] : [tag.approve, tag.decline];
+	if (permissions.some((permission) => permission.allowed === null))
+		return `${meaning} Checking this action…`;
+	const allowed = permissions.some((permission) => permission.allowed);
+	if (!allowed)
+		return `${meaning} ${permissions.find((permission) => permission.reason)?.reason ?? 'Use the Playbook to remove or switch an applied option.'}`;
+	return `${meaning} ${tag.status === 'approved' ? 'Click to undo this approved proposal.' : 'Click to approve or decline it.'}`;
 }

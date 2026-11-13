@@ -1,9 +1,11 @@
+import { revokeBuyerCurrentView } from './buyerCurrent';
+import { prepareRetention, retainedDocument, retainedProvider } from './contractRetention';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
 import { v } from 'convex/values';
 import { internalMutation, type MutationCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { activeJob, RETIRED_DELIVERY_RECHECK } from './emailDeliveries';
+import { activeJob, cancelJob, RETIRED_DELIVERY_RECHECK } from './emailDeliveries';
 import { retireDelivery } from './emailDisposal';
 import { pool } from './hubspotDelivery';
 import { deleteUnownedFile } from './storageOwnership';
@@ -39,6 +41,8 @@ export async function ensureContractCleanup(
 		.query('contractCleanups')
 		.withIndex('by_contractId', (q) => q.eq('contractId', contractId))
 		.unique();
+	if (create || marker?.companyId === companyId)
+		await revokeBuyerCurrentView(ctx, companyId, contractId);
 	if (!marker && create) {
 		const id = await ctx.db.insert('contractCleanups', {
 			companyId,
@@ -58,20 +62,32 @@ export const clean = internalMutation({
 	handler: async (ctx, { markerId, generation }) => {
 		const marker = await ctx.db.get('contractCleanups', markerId);
 		if (!marker || marker.generation !== generation) return null;
+		if (!(await prepareRetention(ctx, marker))) {
+			await schedule(ctx, (await ctx.db.get('contractCleanups', markerId))!);
+			return null;
+		}
 		const budget = cleanupBudget(ctx);
 		const id = marker.contractId;
 		let phase = marker.phase;
 		let retryDelay = 0;
 		if (phase === 'decisions') {
-			if (
-				await budget.drain(
-					'concessionDecisions',
-					ctx.db
-						.query('concessionDecisions')
-						.withIndex('by_contractId', (q) => q.eq('contractId', id))
-				)
-			)
-				phase = 'deliveries';
+			for (const table of [
+				'contractChangeHeads',
+				'contractChangeDecisions',
+				'contractChangeContents',
+				'contractChanges'
+			] as const) {
+				if (
+					!(await budget.drain(
+						table,
+						ctx.db.query(table).withIndex('by_contractId', (q) => q.eq('contractId', id))
+					))
+				) {
+					await schedule(ctx, marker, phase);
+					return null;
+				}
+			}
+			phase = 'deliveries';
 		}
 		if (phase === 'deliveries') {
 			const drained = await budget.drain(
@@ -161,20 +177,14 @@ export const clean = internalMutation({
 					ctx.db.query('buyerLinks').withIndex('by_contractId', (q) => q.eq('contractId', id))
 				)
 			)
-				phase = 'buyerState';
-		}
-		if (phase === 'buyerState') {
-			if (
-				await budget.drain(
-					'contractBuyerState',
-					ctx.db
-						.query('contractBuyerState')
-						.withIndex('by_contractId', (q) => q.eq('contractId', id))
-				)
-			)
 				phase = 'discussions';
 		}
 		if (phase === 'discussions') {
+			const control = await ctx.db
+				.query('discussionUnreadControls')
+				.withIndex('by_contractId', (q) => q.eq('contractId', id))
+				.unique();
+			if (control) await cancelJob(ctx, control.jobId);
 			const quotas = await budget.drain(
 				'discussionQuotaKeys',
 				ctx.db
@@ -191,10 +201,12 @@ export const clean = internalMutation({
 				'discussionMessages',
 				'discussionThreads',
 				'discussionReceipts',
-				'proposalApplications',
-				'contractConcessions',
-				'publicationAcknowledgments',
-				'contractAccess'
+				'approvalRequests',
+				'discussionInvalidations',
+				'discussionTransitionMapChunks',
+				'discussionUnreadNodes',
+				'discussionUnreadControls',
+				'discussionPassageClaims'
 			] as const) {
 				if (
 					!(await budget.drain(
@@ -209,31 +221,108 @@ export const clean = internalMutation({
 			if (drained) phase = 'hubspotQuotes';
 		}
 		if (phase === 'hubspotQuotes') {
-			if (
-				await budget.drain(
-					'hubspotQuotePushes',
-					ctx.db
-						.query('hubspotQuotePushes')
-						.withIndex('by_contractId', (q) => q.eq('contractId', id)),
-					{
-						beforeDelete: async (row) => {
-							if (row.workId)
-								await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
-							if (quoteRunningUntil(row) > Date.now()) {
-								retryDelay = 30_000;
-								return false;
-							}
-							return true;
-						},
-						afterDelete: async (row) => {
-							if (row.fileId) await deleteUnownedFile(ctx, row.fileId);
-						}
-					}
-				)
-			) {
-				await ctx.db.delete('contractCleanups', markerId);
+			for (const table of [
+				'contractHubspotAssociations',
+				'contractBuyerRefreshes',
+				'hubspotLinkBlocks'
+			] as const) {
+				if (
+					!(await budget.drain(
+						table,
+						ctx.db.query(table).withIndex('by_contractId', (q) => q.eq('contractId', id))
+					))
+				) {
+					await schedule(ctx, marker, phase);
+					return null;
+				}
+			}
+			const page = await ctx.db
+				.query('hubspotQuotePushes')
+				.withIndex('by_contractId', (q) => q.eq('contractId', id))
+				.paginate({ cursor: marker.providerCursor ?? null, numItems: 1 });
+			for (const row of page.page) {
+				if (row.workId) await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
+				if (quoteRunningUntil(row) > Date.now()) {
+					await schedule(ctx, marker, phase, 30_000);
+					return null;
+				}
+				if (await retainedProvider(ctx, row._id)) {
+					// Keep factual dispatch/claim/outcome for observation and late settlement.
+					if (row.state === 'queued')
+						await ctx.db.patch('hubspotQuotePushes', row._id, {
+							state: 'retired',
+							workId: undefined,
+							dueAt: undefined
+						});
+				} else {
+					await ctx.db.delete('hubspotQuotePushes', row._id);
+					if (row.fileId) await deleteUnownedFile(ctx, row.fileId);
+				}
+			}
+			await ctx.db.patch('contractCleanups', markerId, {
+				providerCursor: page.isDone ? undefined : page.continueCursor
+			});
+			await schedule(ctx, marker, page.isDone ? 'documents' : phase);
+			return null;
+		}
+		if (phase === 'documents') {
+			// Retained output operations outlive the contract. Mark each shared chunk in
+			// bounded batches before the final sweep; never load document contents here.
+			if (await budget.exhausted()) {
+				await schedule(ctx, marker, phase);
 				return null;
 			}
+			const page = marker.documentId
+				? null
+				: await ctx.db
+						.query('contractDocuments')
+						.withIndex('by_contractId', (q) => q.eq('contractId', id))
+						.paginate({ cursor: marker.documentCursor ?? null, numItems: 1 });
+			const document = marker.documentId
+				? await ctx.db.get('contractDocuments', marker.documentId)
+				: page?.page[0];
+			if (document) {
+				const retained = await retainedDocument(ctx, document._id);
+				let offset = marker.chunkOffset ?? 0;
+				if (retained) {
+					const end = Math.min(offset + 20, document.chunkIds.length);
+					for (; offset < end; offset++) {
+						const chunk = await ctx.db.get('contractDocumentChunks', document.chunkIds[offset]);
+						if (!chunk || chunk.contractId !== id || chunk.companyId !== marker.companyId)
+							throw new Error('Retained contract document has invalid chunks.');
+						if (!chunk.retainedAfterDeletion)
+							await ctx.db.patch('contractDocumentChunks', chunk._id, {
+								retainedAfterDeletion: true
+							});
+					}
+				} else await ctx.db.delete('contractDocuments', document._id);
+				const incomplete = retained && offset < document.chunkIds.length;
+				await ctx.db.patch('contractCleanups', markerId, {
+					documentId: incomplete ? document._id : undefined,
+					chunkOffset: incomplete ? offset : undefined,
+					documentCursor: page?.continueCursor ?? marker.documentCursor,
+					documentScanDone: page?.isDone ?? marker.documentScanDone
+				});
+				// Finish a final partial mark before sweeping; never reuse an exhausted cursor.
+				if (!incomplete && (page?.isDone ?? marker.documentScanDone)) phase = 'documentChunks';
+				await schedule(ctx, marker, phase);
+				return null;
+			}
+			phase = 'documentChunks';
+		}
+		if (
+			phase === 'documentChunks' &&
+			(await budget.drain(
+				'contractDocumentChunks',
+				ctx.db
+					.query('contractDocumentChunks')
+					.withIndex('by_contractId_and_retainedAfterDeletion', (q) =>
+						q.eq('contractId', id).eq('retainedAfterDeletion', undefined)
+					)
+			))
+		) {
+			await ctx.db.delete('contractCleanups', markerId);
+			return null;
 		}
 		await schedule(ctx, marker, phase, retryDelay);
 		return null;

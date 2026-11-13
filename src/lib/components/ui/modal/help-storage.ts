@@ -1,27 +1,15 @@
-import { page } from '$app/state';
-import { useViewer } from '$lib/auth/viewer-session.svelte';
-type HelpPreference = 'rep' | 'buyer';
-export function useHelpPreferenceScope() {
-	const viewer = useViewer();
-	return () => (viewer ? viewer().membership.id : (page.data.buyerPreferenceScope ?? null));
+/** Only confirmed actual buyers use browser storage, scoped to this buyer link. */
+function buyerHelpKey(scope: string) {
+	return `dinu:help:anonymous-buyer-link:${scope}`;
 }
-export function isHelpHidden(variant: HelpPreference, scope: string | null): boolean {
-	if (!scope) return false;
+export function isBuyerHelpHidden(scope: string): boolean {
 	try {
-		return localStorage.getItem(`dinu:help:${variant}:${scope}`) === 'true';
+		return localStorage.getItem(buyerHelpKey(scope)) === 'true';
 	} catch {
 		return false;
 	}
 }
-export function setHelpHidden(
-	hidden: boolean,
-	variant: HelpPreference,
-	scope: string | null
-): void {
-	if (!scope) return;
-	try {
-		localStorage.setItem(`dinu:help:${variant}:${scope}`, String(hidden));
-	} catch {
-		/* Storage is optional. */
-	}
+export function setBuyerHelpHidden(scope: string, hidden: boolean): void {
+	// Let the session report a failed write instead of presenting it as saved.
+	localStorage.setItem(buyerHelpKey(scope), String(hidden));
 }

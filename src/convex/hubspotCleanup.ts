@@ -9,8 +9,11 @@ import { pool } from './hubspotDelivery';
 import type { WorkId } from '@convex-dev/workpool';
 import { detachProvider } from './hubspotUninstall';
 
-export async function retireCompanyHubSpot(ctx: MutationCtx, companyId: Id<'company'>) {
-	const budget = cleanupBudget(ctx);
+export async function retireCompanyHubSpot(
+	ctx: MutationCtx,
+	companyId: Id<'company'>,
+	budget = cleanupBudget(ctx)
+) {
 	if (
 		!(await budget.drain(
 			'hubspotQuotePushes',
@@ -69,24 +72,10 @@ export async function retireCompanyHubSpot(ctx: MutationCtx, companyId: Id<'comp
 		))
 	)
 		return false;
-	if (
-		!(await budget.drain(
-			'hubspotExports',
-			ctx.db.query('hubspotExports').withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-			{
-				afterDelete: async (row) => {
-					if (row.fileId) await deleteUnownedFile(ctx, row.fileId);
-				}
-			}
-		))
-	)
-		return false;
 	for (const table of [
 		'hubspotQuoteInstallations',
 		'hubspotLinkBlocks',
-		'hubspotExportChunks',
-		'hubspotReceiptChunks',
-		'hubspotReceipts',
+		'hubspotExportDeliveries',
 		'hubspotLifecycles',
 		'hubspotOAuthStates'
 	] as const) {

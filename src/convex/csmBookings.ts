@@ -18,15 +18,16 @@ import {
 import {
 	availableCompany,
 	liveProfile,
-	requireMembership,
 	requirePermission,
 	verifiedIdentity,
 	type CompanyAccess
 } from './auth';
 import { readTextBody } from '../lib/http-body';
-import { assertPermission } from './permissions';
 import schema from './schema';
+import { canonicalState, confirmedEvidence, validOperator } from './csmAttemptState';
+import { assertHistoricalAdmission } from './csmHistory';
 import { retireSupersededSetupAppointment } from './csmSetupLifecycle';
+import { pendingInitialSetup, resolveSetupBooking } from './csmSetupState';
 import {
 	seedSetupAppointment,
 	claimSetupAppointment,
@@ -51,15 +52,12 @@ import {
 	providerBooking,
 	bookingAck,
 	failureBasis,
+	isSenderExecutionTerminal,
 	terminalProof
 } from './csmBookingValidators';
-import { setupReplacement } from './csmBookingValidators';
+import { setupReplacement, meetingPolicy } from './csmBookingValidators';
+import { seedMeetingPreparation } from './csmMeetingPreparation';
 import {
-	attemptReference,
-	companyReference,
-	sourceReference,
-	parseCompanyReference,
-	verifySignature,
 	object,
 	iso,
 	validTimeZone,
@@ -70,14 +68,31 @@ import {
 	calRead,
 	calRequest,
 	parseBooking,
-	parseSetupBooking,
+	parseSetupLocator,
 	noncreatingRejection,
-	EVENT_ID,
-	HOST,
-	EVENT_SLUG,
+	bookingInScope,
 	type ProviderBooking,
 	type BookingMode
 } from './csmCal';
+import { attemptReference, historicalAttemptLocators, historicalAttemptStart } from './csmHistory';
+import {
+	creationScope,
+	frozenAttemptReference,
+	newAttemptReference,
+	newDispatchId,
+	attemptIdFromReference,
+	verifySignature
+} from './csmIdentity';
+
+import { blockingInitialGuard } from './csmErasureGuards';
+import {
+	enrollAttemptRecovery,
+	recoveryDisposition,
+	RECOVERY_LEASE,
+	EVIDENCE_PASSES,
+	evidenceRetry,
+	readFailure
+} from './csmRecoveryPolicy';
 
 type Attempt = Doc<'csmBookingAttempts'>;
 const attemptArgs = { attemptId: v.id('csmBookingAttempts') };
@@ -88,9 +103,6 @@ const operatorEvidence = {
 	evidence: v.string(),
 	reason: v.string()
 };
-function validOperator(a: { operator: string; evidence: string; reason: string } | undefined) {
-	return !!a && [a.operator, a.evidence, a.reason].every((s) => !!s.trim() && s.length <= 2000);
-}
 const limiter = new RateLimiter(components.rateLimiter, {
 	calendar: { kind: 'token bucket', rate: 12, period: 60_000, capacity: 8 },
 	status: { kind: 'token bucket', rate: 4, period: 60_000, capacity: 2 },
@@ -105,10 +117,7 @@ function view(a: Attempt): Infer<typeof attemptView> {
 		...(a.replacement ? { replacement: a.replacement } : {}),
 		state: a.state,
 		requestedStart: a.requestedStart,
-		start:
-			a.confirmation?.start ??
-			a.lineage?.find((b) => b.uid === a.providerUid)?.start ??
-			a.requestedStart,
+		start: a.confirmation?.start ?? historicalAttemptStart(a) ?? a.requestedStart,
 		timeZone: a.timeZone,
 		error: a.error ?? null
 	};
@@ -125,19 +134,33 @@ async function pending(ctx: QueryCtx, membershipId: Id<'memberships'>) {
 	}
 	return null;
 }
-function assertDisplayAccess(a: CompanyAccess, mode: BookingMode, replacement?: Replacement) {
-	assertPermission(a.membership.role, 'manageTemplate', a.isOwner);
-	if (replacement) {
-		if (mode !== 'setup') throw new ConvexError('This setup call is unavailable.');
+async function assertAccess(
+	ctx: QueryCtx,
+	a: CompanyAccess,
+	mode: BookingMode,
+	replacement?: Replacement
+) {
+	if (mode !== 'setup') {
+		if (replacement) throw new ConvexError('This setup call is unavailable.');
 		return;
 	}
-	if (mode === 'setup' && a.company.csmCallBookedAt !== undefined)
-		throw new ConvexError('Your booking access has changed. Close this window and reopen it.');
-}
-function assertAccess(a: CompanyAccess, mode: BookingMode, replacement?: Replacement) {
-	assertDisplayAccess(a, mode, replacement);
-	if (mode === 'setup' && !a.company.templateSourceId)
-		throw new ConvexError('Your booking access has changed. Close this window and reopen it.');
+	if (a.company.templateSourceId)
+		throw new ConvexError('Your contract template is already set up.');
+	const booking = await resolveSetupBooking(ctx, a.company);
+	if (booking.kind === 'initial' && !replacement) {
+		if (
+			(await pendingInitialSetup(ctx, a.companyId)) ||
+			(await blockingInitialGuard(ctx, a.companyId))
+		)
+			throw new ConvexError('A setup call is still being confirmed. Please check its status.');
+		return;
+	}
+	if (booking.kind === 'cancelled' && replacement) {
+		const source = await replacementSource(ctx, a, replacement);
+		if ((await replacementState(ctx, source)).state === 'ready') return;
+		throw new ConvexError('This setup call is being updated. Please check its status.');
+	}
+	throw new ConvexError('Your booking access has changed. Close this window and reopen it.');
 }
 async function stillEligible(ctx: QueryCtx, a: Attempt) {
 	const [profile, company, member] = await Promise.all([
@@ -150,14 +173,21 @@ async function stillEligible(ctx: QueryCtx, a: Attempt) {
 		!!company &&
 		member?.profileId === a.profileId &&
 		member.companyId === a.companyId &&
-		member.role === 'admin' &&
-		(a.mode !== 'setup' ||
-			(!!company.templateSourceId &&
-				(a.replacement !== undefined || company.csmCallBookedAt === undefined)));
-	if (!memberEligible || !a.replacement) return memberEligible;
-	const source = await ctx.db.get('csmSetupAppointments', a.replacement.appointmentId);
+		member.role === 'admin';
+	if (!memberEligible || !company) return false;
+	if (a.mode !== 'setup') return !a.replacement;
+	if (company.templateSourceId) return false;
+	const booking = await resolveSetupBooking(ctx, company);
+	if (!a.replacement)
+		return (
+			booking.kind === 'initial' &&
+			!(await pendingInitialSetup(ctx, a.companyId, a._id)) &&
+			!(await blockingInitialGuard(ctx, a.companyId))
+		);
+	const source = booking.kind === 'cancelled' ? booking.appointment : null;
 	return (
 		!!source &&
+		source._id === a.replacement.appointmentId &&
 		source.companyId === a.companyId &&
 		source.currentUid === a.replacement.currentUid &&
 		source.status === 'cancelled' &&
@@ -173,7 +203,7 @@ async function owned(
 	attemptId: Id<'csmBookingAttempts'>,
 	a?: CompanyAccess
 ) {
-	a ??= await requireMembership(ctx, membershipId);
+	a ??= await requirePermission(ctx, 'manageTemplate', membershipId);
 	const row = await ctx.db.get('csmBookingAttempts', attemptId);
 	if (
 		!row ||
@@ -188,26 +218,9 @@ export const authorize = internalQuery({
 	args: { ...memberArgs, mode: bookingMode, replacement: v.optional(setupReplacement) },
 	returns: v.null(),
 	handler: async (ctx, a) => {
-		// Display reads may warm setup before a templateSource exists. New bookings remain strict.
-		const owner = await requireMembership(ctx, a.membershipId);
-		assertDisplayAccess(owner, a.mode, a.replacement);
-		if (a.replacement && (await sharedReplacement(ctx, owner, a.replacement)).state !== 'ready')
-			throw new ConvexError('This setup call is being updated. Please check its status.');
+		const owner = await requirePermission(ctx, 'manageTemplate', a.membershipId);
+		await assertAccess(ctx, owner, a.mode, a.replacement);
 		return null;
-	}
-});
-/** Legacy references remain readable by old clients; unresolved native sends cannot issue new links. */
-export const context = query({
-	args: { ...memberArgs, mode: bookingMode },
-	returns: v.string(),
-	handler: async (ctx, a) => {
-		const owner =
-			a.mode === 'setup'
-				? await requirePermission(ctx, 'manageTemplate', a.membershipId)
-				: await requireMembership(ctx, a.membershipId);
-		if (!env.CAL_WEBHOOK_SECRET || (await pending(ctx, a.membershipId)))
-			throw new ConvexError('Booking is temporarily unavailable.');
-		return sourceReference(owner.companyId, a.mode, owner.profile._id);
 	}
 });
 export const availability = action({
@@ -231,8 +244,7 @@ export const availability = action({
 		if (start < Date.now() - 40 * 86_400_000 || start > Date.now() + 370 * 86_400_000)
 			throw new ConvexError('Choose a nearer month.');
 		await limiter.limit(ctx, 'calendar', { key: a.membershipId, throws: true });
-		if (!env.CAL_WEBHOOK_SECRET || !env.CAL_API_KEY)
-			return { status: 'unavailable', slots: [], duration: 0, lastDate: null };
+		if (!creationScope()) return { status: 'unavailable', slots: [], duration: 0, lastDate: null };
 		const end = new Date(start);
 		end.setUTCMonth(end.getUTCMonth() + 1);
 		// Attach both handlers immediately; invalid configuration must not wait for slots.
@@ -265,16 +277,18 @@ export const availability = action({
 export const attempt = query({
 	args: {
 		...memberArgs,
+		mode: bookingMode,
 		attemptId: v.optional(v.id('csmBookingAttempts')),
 		replacement: v.optional(setupReplacement)
 	},
 	returns: v.union(attemptView, v.null()),
 	handler: async (ctx, a) => {
-		const owner = await requireMembership(ctx, a.membershipId);
+		const owner = await requirePermission(ctx, 'manageTemplate', a.membershipId);
 		const row = a.attemptId
 			? await owned(ctx, a.membershipId, a.attemptId, owner)
 			: await pending(ctx, a.membershipId);
-		if (a.replacement && row && !sameReplacement(row.replacement, a.replacement)) return null;
+		if (row && (row.mode !== a.mode || !sameReplacement(row.replacement, a.replacement)))
+			return null;
 		return row ? view(row) : null;
 	}
 });
@@ -285,16 +299,12 @@ export const book = mutation({
 		operationId: v.string(),
 		start: v.string(),
 		timeZone: v.string(),
-		replacement: v.optional(setupReplacement),
-		receiptProtocol: v.optional(v.literal('creation-v1'))
+		replacement: v.optional(setupReplacement)
 	},
-	returns: v.union(bookingAck, attemptView),
-	handler: async (ctx, a): Promise<Infer<typeof bookingAck> | Infer<typeof attemptView>> => {
-		const owner = await requireMembership(ctx, a.membershipId);
-		const acknowledge = (row: Attempt) =>
-			a.receiptProtocol === 'creation-v1'
-				? { attemptId: row._id, operationId: row.operationId }
-				: view(row);
+	returns: bookingAck,
+	handler: async (ctx, a): Promise<Infer<typeof bookingAck>> => {
+		const owner = await requirePermission(ctx, 'manageTemplate', a.membershipId);
+		const acknowledge = (row: Attempt) => ({ attemptId: row._id, operationId: row.operationId });
 		if (!/^[a-zA-Z0-9-]{16,100}$/.test(a.operationId))
 			throw new ConvexError('Invalid booking operation.');
 		const prior = await ctx.db
@@ -305,11 +315,12 @@ export const book = mutation({
 			.unique();
 		if (prior) {
 			if (
-				(a.replacement || prior.replacement) &&
-				(prior.mode !== a.mode ||
-					prior.requestedStart !== a.start ||
-					prior.timeZone !== a.timeZone ||
-					!sameReplacement(prior.replacement, a.replacement))
+				prior.companyId !== owner.companyId ||
+				prior.profileId !== owner.profile._id ||
+				prior.mode !== a.mode ||
+				prior.requestedStart !== a.start ||
+				prior.timeZone !== a.timeZone ||
+				!sameReplacement(prior.replacement, a.replacement)
 			)
 				throw new ConvexError(
 					'This booking operation has changed. Close this window and try again.'
@@ -319,8 +330,10 @@ export const book = mutation({
 		const unresolved = await pending(ctx, a.membershipId);
 		if (unresolved) {
 			if (
-				(a.replacement || unresolved.replacement) &&
-				(unresolved.mode !== a.mode || !sameReplacement(unresolved.replacement, a.replacement))
+				unresolved.companyId !== owner.companyId ||
+				unresolved.profileId !== owner.profile._id ||
+				unresolved.mode !== a.mode ||
+				!sameReplacement(unresolved.replacement, a.replacement)
 			)
 				throw new ConvexError(
 					'Another booking is still being confirmed. Open the booking widget to check it.'
@@ -336,30 +349,10 @@ export const book = mutation({
 			!validTimeZone(a.timeZone)
 		)
 			throw new ConvexError('Choose an available time.');
-		// Old failed rows have no ordered noncreation evidence. Maintenance must classify them
-		// before this member can create more work; exact replay and recovery remain available.
-		const unclassified = await ctx.db
-			.query('csmBookingAttempts')
-			.withIndex('by_membershipId_and_state_and_failureBasis', (q) =>
-				q.eq('membershipId', a.membershipId).eq('state', 'failed').eq('failureBasis', undefined)
-			)
-			.first();
-		if (unclassified)
-			throw new ConvexError('An earlier booking needs to be checked. Please contact support.');
-		// Stale SPA modules can replay old work, but may not create through the old protocol.
-		if (a.receiptProtocol !== 'creation-v1')
-			throw new ConvexError('Please reload this page fully before booking a call.');
-		assertAccess(owner, a.mode, a.replacement);
-		if (a.replacement) {
-			const source = await replacementSource(ctx, owner, a.replacement);
-			if (
-				source.currentUid !== a.replacement.currentUid ||
-				(await replacementState(ctx, source)).state !== 'ready'
-			)
-				throw new ConvexError('This setup call is being updated. Please check its status.');
-		}
-		if (!env.CAL_API_KEY || !env.CAL_WEBHOOK_SECRET)
-			throw new ConvexError('Booking is temporarily unavailable.');
+		await assertHistoricalAdmission(ctx, a.membershipId);
+		await assertAccess(ctx, owner, a.mode, a.replacement);
+		const providerScope = creationScope();
+		if (!providerScope) throw new ConvexError('Booking is temporarily unavailable.');
 		await limiter.limit(ctx, 'book', { key: a.membershipId, throws: true });
 		if (a.replacement)
 			await limiter.limit(ctx, 'book', { key: a.replacement.appointmentId, throws: true });
@@ -373,12 +366,15 @@ export const book = mutation({
 				.trim() ||
 			'Guest';
 		const id = await ctx.db.insert('csmBookingAttempts', {
+			format: 2,
 			companyId: owner.companyId,
 			profileId: owner.profile._id,
 			membershipId: a.membershipId,
 			mode: a.mode,
 			...(a.replacement ? { replacement: a.replacement } : {}),
 			operationId: a.operationId,
+			providerScope,
+			dispatchId: newDispatchId(),
 			requestedStart: start,
 			timeZone: a.timeZone,
 			attendeeName: name.slice(0, 200),
@@ -386,6 +382,10 @@ export const book = mutation({
 			state: 'queued',
 			revision: 0,
 			updatedAt: Date.now()
+		});
+		const inserted = (await ctx.db.get('csmBookingAttempts', id))!;
+		await ctx.db.patch('csmBookingAttempts', id, {
+			attemptReference: newAttemptReference(inserted)
 		});
 		if (a.replacement)
 			await ctx.db.patch('csmSetupAppointments', a.replacement.appointmentId, {
@@ -406,7 +406,7 @@ export const read = internalQuery({
 	handler: async (ctx, { attemptId }) => {
 		const a = await ctx.db.get('csmBookingAttempts', attemptId);
 		return a && (await liveProfile(ctx, a.profileId)) && (await availableCompany(ctx, a.companyId))
-			? { ...a, lineage: a.lineage ?? [] }
+			? a
 			: null;
 	}
 });
@@ -415,30 +415,51 @@ export const readOwned = internalQuery({
 	returns: schema.doc('csmBookingAttempts'),
 	handler: (ctx, a) => owned(ctx, a.membershipId, a.attemptId)
 });
-async function patch(
+export async function patchAttempt(
 	ctx: MutationCtx,
 	a: Attempt,
 	fields: Partial<Infer<typeof import('./csmBookingValidators').storedCsmAttempt>>
 ) {
 	await ctx.db.patch('csmBookingAttempts', a._id, {
 		...fields,
+		...canonicalState({ ...a, ...fields }),
 		revision: a.revision + 1,
 		updatedAt: Date.now()
 	});
+	const updated = (await ctx.db.get('csmBookingAttempts', a._id))!;
+	if (updated.state === 'unknown') {
+		if (updated.recoveryDue === undefined) await enrollAttemptRecovery(ctx, updated);
+	} else if (updated.recoveryDue !== undefined || updated.recoveryLeaseUntil !== undefined)
+		await ctx.db.patch('csmBookingAttempts', a._id, {
+			recoveryDue: undefined,
+			recoveryLeaseUntil: undefined
+		});
 }
+
 export const claim = internalMutation({
-	args: { ...attemptArgs, replacementProof: v.optional(setupProof) },
+	args: {
+		...attemptArgs,
+		replacementProof: v.optional(setupProof),
+		meetingPolicy: v.optional(meetingPolicy)
+	},
 	returns: v.boolean(),
-	handler: async (ctx, { attemptId, replacementProof }) => {
+	handler: async (ctx, { attemptId, replacementProof, meetingPolicy }) => {
 		const a = await ctx.db.get('csmBookingAttempts', attemptId);
 		if (!a || a.state !== 'queued') return false;
 		if (
 			!(await stillEligible(ctx, a)) ||
 			Date.now() > a._creationTime + 45_000 ||
 			!a.attendeeName ||
-			!a.attendeeEmail
+			!a.attendeeEmail ||
+			!a.providerScope ||
+			!a.dispatchId ||
+			!frozenAttemptReference(a)
 		) {
-			await patch(ctx, a, { state: 'failed', error: 'access', failureBasis: 'queuedPreflight' });
+			await patchAttempt(ctx, a, {
+				state: 'failed',
+				error: 'access',
+				failureBasis: 'queuedPreflight'
+			});
 			return false;
 		}
 		if (a.replacement) {
@@ -450,10 +471,9 @@ export const claim = internalMutation({
 				proof.id !== source._id ||
 				proof.currentUid !== a.replacement.currentUid ||
 				proof.generation !== source.generation ||
-				proof.lease !== source.lease ||
-				proof.result.kind !== 'success'
+				proof.lease !== source.lease
 			) {
-				await patch(ctx, a, {
+				await patchAttempt(ctx, a, {
 					state: 'failed',
 					error: 'unavailable',
 					failureBasis: 'queuedPreflight'
@@ -464,17 +484,22 @@ export const claim = internalMutation({
 			await applySetupProof(ctx, proof);
 			const committed = await ctx.db.get('csmSetupAppointments', source._id);
 			if (
+				proof.result.kind !== 'success' ||
 				!committed ||
 				committed.dirty ||
 				committed.generation !== proof.generation ||
 				committed.providerUpdatedAt !== proof.result.booking.updatedAt ||
 				!(await stillEligible(ctx, a))
 			) {
-				await patch(ctx, a, { state: 'failed', error: 'access', failureBasis: 'queuedPreflight' });
+				await patchAttempt(ctx, a, {
+					state: 'failed',
+					error: 'access',
+					failureBasis: 'queuedPreflight'
+				});
 				return false;
 			}
 		}
-		await patch(ctx, a, { state: 'submitting' });
+		await patchAttempt(ctx, a, { state: 'submitting', meetingPolicy });
 		return true;
 	}
 });
@@ -527,7 +552,7 @@ export const fail = internalMutation({
 			((a.state === 'queued' && (!basis || basis === 'queuedPreflight')) ||
 				(basis === 'claimedPredispatch' && a.state === 'submitting') ||
 				(basis === 'providerRejection' && (a.state === 'submitting' || a.state === 'unknown')));
-		await patch(ctx, a, {
+		await patchAttempt(ctx, a, {
 			state: safe ? 'failed' : 'unknown',
 			error,
 			failureBasis: safe ? (basis ?? 'queuedPreflight') : undefined
@@ -535,23 +560,23 @@ export const fail = internalMutation({
 		return null;
 	}
 });
-async function observeSender(ctx: MutationCtx, a: Attempt) {
-	let terminal = a.senderTerminal;
+export async function observeSender(ctx: MutationCtx, a: Attempt) {
+	let terminal = isSenderExecutionTerminal(a.senderTerminal?.kind) ? a.senderTerminal : undefined;
 	if (!terminal && a.sendJobId) {
 		const job = await ctx.db.system.get('_scheduled_functions', a.sendJobId);
-		if (job && !['pending', 'inProgress'].includes(job.state.kind))
+		if (job && isSenderExecutionTerminal(job.state.kind))
 			terminal = { kind: job.state.kind, observedAt: Date.now() };
 	}
 	if (terminal)
 		await ctx.db.patch('csmBookingAttempts', a._id, {
 			senderTerminal: terminal,
 			attendeeName: undefined,
-			...(a.state === 'booked' && a.confirmation ? { attendeeEmail: undefined } : {})
+			...(a.state === 'booked' && confirmedEvidence(a) ? { attendeeEmail: undefined } : {})
 		});
 	return terminal;
 }
 function proofFor(a: Attempt): Infer<typeof terminalProof> | undefined {
-	return a.sendJobId && a.senderTerminal
+	return a.sendJobId && a.senderTerminal && isSenderExecutionTerminal(a.senderTerminal.kind)
 		? { attemptId: a._id, sendJobId: a.sendJobId, ...a.senderTerminal }
 		: undefined;
 }
@@ -559,19 +584,78 @@ async function liveAttempt(ctx: QueryCtx, a: Attempt) {
 	return !!(await liveProfile(ctx, a.profileId)) && !!(await availableCompany(ctx, a.companyId));
 }
 const recoverySnapshot = v.union(
-	v.object({ attempt: schema.doc('csmBookingAttempts'), proof: v.optional(terminalProof) }),
+	v.object({
+		attempt: schema.doc('csmBookingAttempts'),
+		proof: v.optional(terminalProof),
+		lease: v.optional(v.number()),
+		generation: v.optional(v.number()),
+		evidenceIds: v.optional(v.array(v.id('csmWebhookEvidence'))),
+		evidenceUids: v.optional(v.array(v.string()))
+	}),
 	v.null()
 );
 type Recovery = Infer<typeof recoverySnapshot>;
 /** Observe execution before any provider facts that might release the unresolved guard. */
 export const beginRecovery = internalMutation({
-	args: attemptArgs,
+	args: { ...attemptArgs, claim: v.optional(v.boolean()) },
 	returns: recoverySnapshot,
-	handler: async (ctx, { attemptId }): Promise<Recovery> => {
+	handler: async (ctx, { attemptId, claim }): Promise<Recovery> => {
 		const a = await ctx.db.get('csmBookingAttempts', attemptId);
 		if (!a || !(await liveAttempt(ctx, a))) return null;
 		await observeSender(ctx, a);
-		const updated = (await ctx.db.get('csmBookingAttempts', attemptId))!;
+		let updated = (await ctx.db.get('csmBookingAttempts', attemptId))!;
+		if (claim) {
+			if (updated.state === 'booked' || (updated.state === 'failed' && !updated.recoverySeedUid))
+				return null;
+			if (updated.state === 'unknown' && updated.recoveryDue === undefined)
+				await enrollAttemptRecovery(ctx, updated);
+			updated = (await ctx.db.get('csmBookingAttempts', attemptId))!;
+			if (
+				updated.recoveryReview ||
+				updated.reviewRequired ||
+				(updated.recoveryDue ?? Infinity) > Date.now() ||
+				(updated.recoveryLeaseUntil ?? 0) > Date.now()
+			)
+				return null;
+			const obligations = await ctx.db
+				.query('csmWebhookEvidence')
+				.withIndex('by_attemptId_and_state', (q) =>
+					q.eq('attemptId', attemptId).eq('state', 'retained')
+				)
+				.take(26);
+			const evidenceUids = [
+				...new Set(
+					obligations.flatMap((row) =>
+						row.hint
+							? [row.hint.uid, row.hint.previousUid, row.hint.successorHint].filter(
+									(uid): uid is string => uid !== undefined
+								)
+							: []
+					)
+				)
+			];
+			if (obligations.length > 25 || evidenceUids.length > 9) {
+				await ctx.db.patch('csmBookingAttempts', attemptId, {
+					recoveryReview: 'evidenceCap',
+					recoveryDue: undefined
+				});
+				return null;
+			}
+			const lease = (updated.recoveryLease ?? 0) + 1;
+			await ctx.db.patch('csmBookingAttempts', attemptId, {
+				recoveryLease: lease,
+				recoveryLeaseUntil: Date.now() + RECOVERY_LEASE,
+				recoveryDue: Date.now() + RECOVERY_LEASE
+			});
+			return {
+				attempt: updated,
+				proof: proofFor(updated),
+				lease,
+				generation: updated.recoveryGeneration ?? 0,
+				evidenceIds: obligations.map((row) => row._id),
+				evidenceUids
+			};
+		}
 		return { attempt: updated, proof: proofFor(updated) };
 	}
 });
@@ -596,11 +680,23 @@ export const settleCreation = internalMutation({
 		booking: providerBooking,
 		source: v.union(v.literal('dispatch'), v.literal('recovery'), v.literal('operator')),
 		operatorEvidence: v.optional(v.object(operatorEvidence)),
-		proof: v.optional(terminalProof)
+		proof: v.optional(terminalProof),
+		recoveryLease: v.optional(v.number()),
+		recoveryGeneration: v.optional(v.number()),
+		evidenceIds: v.optional(v.array(v.id('csmWebhookEvidence'))),
+		proofUids: v.optional(v.array(v.string()))
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const a = await ctx.db.get('csmBookingAttempts', args.attemptId);
+		if (
+			args.source === 'recovery' &&
+			(!a ||
+				a.recoveryLease !== args.recoveryLease ||
+				(a.recoveryGeneration ?? 0) !== args.recoveryGeneration ||
+				(a.recoveryLeaseUntil ?? 0) <= Date.now())
+		)
+			return null;
 		if (
 			args.source === 'operator' &&
 			(!a ||
@@ -616,12 +712,36 @@ export const settleCreation = internalMutation({
 			!a ||
 			a.state === 'booked' ||
 			!(await liveAttempt(ctx, a)) ||
+			!attemptReference(a) ||
 			args.reference !== attemptReference(a) ||
 			!a.attendeeEmail ||
 			args.attendeeEmail !== a.attendeeEmail ||
 			!validBookingUid(args.anchorUid)
 		)
 			return null;
+		if (args.source === 'recovery') {
+			if (
+				!args.evidenceIds ||
+				!args.proofUids ||
+				args.evidenceIds.length > 25 ||
+				args.proofUids.length > 9
+			)
+				return null;
+			for (const id of args.evidenceIds) {
+				const row = await ctx.db.get('csmWebhookEvidence', id);
+				if (
+					!row ||
+					row.attemptId !== a._id ||
+					row.state !== 'retained' ||
+					(row.evidenceGeneration ?? Infinity) > (args.recoveryGeneration ?? -1) ||
+					!row.hint ||
+					[row.hint.uid, row.hint.previousUid, row.hint.successorHint].some(
+						(uid) => uid !== undefined && !args.proofUids!.includes(uid)
+					)
+				)
+					return null;
+			}
+		}
 		const b = args.booking;
 		if (args.source === 'operator' && (b.status !== 'accepted' || args.anchorUid !== b.uid))
 			return null;
@@ -640,7 +760,7 @@ export const settleCreation = internalMutation({
 		)
 			return null;
 		if (b.status === 'accepted') {
-			await patch(ctx, a, {
+			await patchAttempt(ctx, a, {
 				state: 'booked',
 				error: undefined,
 				failureBasis: undefined,
@@ -656,45 +776,32 @@ export const settleCreation = internalMutation({
 					operatorResolution: { operator, evidence, reason, at: Date.now() }
 				});
 			}
-			if (a.mode === 'setup') {
-				const company = await availableCompany(ctx, a.companyId);
-				if (company && company.csmCallBookedAt === undefined)
-					await ctx.db.patch('company', a.companyId, { csmCallBookedAt: Date.now() });
-			}
-			await seedSetupAppointment(ctx, (await ctx.db.get('csmBookingAttempts', a._id))!);
+			await seedSetupAppointment(ctx, (await ctx.db.get('csmBookingAttempts', a._id))!, true);
+			await seedMeetingPreparation(ctx, a, b, args.attendeeEmail);
+			await ctx.scheduler.runAfter(0, internal.csmEvidence.adoptBookedAttempt, {
+				attemptId: a._id
+			});
 		} else if (a.state !== 'failed') {
 			const refused =
 				(b.status === 'cancelled' || b.status === 'rejected') && sameProof(a, args.proof);
-			await patch(ctx, a, {
+			await patchAttempt(ctx, a, {
 				state: refused ? 'failed' : 'unknown',
 				error: refused ? 'cancelled' : 'uncertain',
 				failureBasis: refused ? 'providerTerminal' : undefined,
 				providerUid: b.uid,
+				...(refused ? { recoverySeedUid: undefined } : {}),
 				lineage: undefined,
 				reviewRequired: undefined
 			});
 		}
-		return null;
-	}
-});
-/** Compatibility only: old payloads are bounded locators, never booking/negative authority. */
-export const settle = internalMutation({
-	args: { ...attemptArgs, bookings: v.array(providerBooking) },
-	returns: v.null(),
-	handler: async (ctx, { attemptId, bookings }) => {
-		const a = await ctx.db.get('csmBookingAttempts', attemptId);
-		if (
-			a &&
-			a.state !== 'booked' &&
-			bookings.length > 0 &&
-			bookings.length <= 9 &&
-			bookings.every((b) => validBookingUid(b.uid)) &&
-			(await liveAttempt(ctx, a))
-		)
-			await ctx.scheduler.runAfter(0, internal.csmBookings.recoverWebhook, {
-				reference: attemptReference(a),
-				uid: bookings[0].uid
-			});
+		const settled = await ctx.db.get('csmBookingAttempts', a._id);
+		if (args.source === 'recovery' && (settled?.state === 'booked' || settled?.state === 'failed'))
+			for (const id of args.evidenceIds ?? []) {
+				await ctx.db.patch('csmWebhookEvidence', id, {
+					state: 'completed',
+					completedAt: Date.now()
+				});
+			}
 		return null;
 	}
 });
@@ -715,9 +822,15 @@ export const watch = internalMutation({
 		if (!a) return null;
 		const terminal = await observeSender(ctx, a);
 		if (a.state === 'queued')
-			await patch(ctx, a, { state: 'failed', error: 'interrupted', failureBasis: 'queuedExpired' });
+			await patchAttempt(ctx, a, {
+				state: 'failed',
+				error: 'interrupted',
+				failureBasis: 'queuedExpired'
+			});
 		else if (a.state === 'submitting')
-			await patch(ctx, a, { state: 'unknown', error: 'uncertain' });
+			await patchAttempt(ctx, a, { state: 'unknown', error: 'uncertain' });
+		if (a.state === 'unknown')
+			await enrollAttemptRecovery(ctx, (await ctx.db.get('csmBookingAttempts', attemptId))!);
 		if (!terminal && round < 24) {
 			const job = await ctx.scheduler.runAfter(30_000, internal.csmBookings.watch, {
 				attemptId,
@@ -739,7 +852,14 @@ export const send = internalAction({
 			dispatched = false;
 		let sourceLease: number | undefined;
 		try {
-			if (!a.attendeeEmail || !a.attendeeName) throw new Error('Missing immutable identity.');
+			if (
+				!a.attendeeEmail ||
+				!a.attendeeName ||
+				!a.providerScope ||
+				!a.dispatchId ||
+				!frozenAttemptReference(a)
+			)
+				throw new Error('Missing immutable identity.');
 			let replacementProof: Infer<typeof setupProof> | undefined;
 			const deadline = a._creationTime + 43_000;
 			const requireReadBudget = () => {
@@ -759,6 +879,11 @@ export const send = internalAction({
 					generation: source.generation,
 					lease: source.lease,
 					currentUid: source.currentUid,
+					providerScope: source.providerScope!,
+					...(snapshot.reference ? { reference: snapshot.reference } : {}),
+					...(source.legacyReference ? { legacyReference: source.legacyReference } : {}),
+					evidenceGeneration: snapshot.evidenceGeneration,
+					evidenceIds: snapshot.evidenceIds,
 					result:
 						result.kind === 'success'
 							? { kind: 'success', booking: result.booking, proofUids: result.proofUids }
@@ -781,7 +906,7 @@ export const send = internalAction({
 				}
 			}
 			requireReadBudget();
-			const config = await configuration(ctx);
+			const config = await configuration(ctx, a.providerScope);
 			if (!config) {
 				await ctx.runMutation(internal.csmBookings.fail, {
 					attemptId,
@@ -797,7 +922,8 @@ export const send = internalAction({
 				a.requestedStart,
 				new Date(Date.parse(a.requestedStart) + 86_400_000).toISOString(),
 				a.timeZone,
-				config.duration
+				config.duration,
+				a.providerScope
 			);
 			if (!times.some((s) => s.start === a.requestedStart)) {
 				await ctx.runMutation(internal.csmBookings.fail, {
@@ -808,13 +934,11 @@ export const send = internalAction({
 				});
 				return null;
 			}
-			const metadata = {
-				dinuCsmReference: companyReference(a.companyId, a.mode),
-				dinuCsmAttempt: attemptReference(a)
-			};
+			const metadata = { dinuCsmAttempt: frozenAttemptReference(a)! };
 			claimStarted = true;
 			claimed = await ctx.runMutation(internal.csmBookings.claim, {
 				attemptId,
+				meetingPolicy: config.meetingPolicy,
 				...(replacementProof ? { replacementProof } : {})
 			});
 			if (!claimed) return null;
@@ -823,8 +947,9 @@ export const send = internalAction({
 				ctx,
 				'bookings',
 				'2026-02-25',
+				'POST',
 				{
-					eventTypeId: EVENT_ID,
+					eventTypeId: a.providerScope.eventTypeId,
 					start: a.requestedStart,
 					lengthInMinutes: config.duration,
 					attendee: {
@@ -852,7 +977,7 @@ export const send = internalAction({
 			}
 			const b =
 				response.ok && object(response.body) && response.body.status === 'success'
-					? parseBooking(response.body.data, a.attendeeEmail)
+					? parseBooking(response.body.data, a.attendeeEmail, a.providerScope)
 					: null;
 			if (!b || b.start !== a.requestedStart) throw new Error('Uncertain provider response.');
 			// A terminal refusal returned while the sender is running cannot prove the POST is finished.
@@ -889,15 +1014,14 @@ async function reconcile(
 	ctx: ActionCtx,
 	attemptId: Id<'csmBookingAttempts'>,
 	seedUid?: string,
-	seen = new Set<string>()
-) {
-	const snapshot: Recovery = await ctx.runMutation(internal.csmBookings.beginRecovery, {
-		attemptId
-	});
-	if (!snapshot || snapshot.attempt.state === 'booked') return;
+	seen = new Set<string>(),
+	snapshot: Recovery = null
+): Promise<Infer<typeof recoveryDisposition>> {
+	if (!snapshot || snapshot.attempt.state === 'booked') return { kind: 'resolved' };
 	const { attempt: a, proof } = snapshot;
-	if (!a.attendeeEmail) return;
+	if (!a.attendeeEmail) return { kind: 'review', reason: 'missingAttendee' };
 	const reference = attemptReference(a);
+	if (!reference || !a.providerScope) return { kind: 'review', reason: 'missingOriginalProof' };
 	const records = new Map<string, unknown>();
 	const signed = (raw: unknown) =>
 		object(raw) && object(raw.metadata) && raw.metadata.dinuCsmAttempt === reference;
@@ -914,26 +1038,32 @@ async function reconcile(
 		records.set(uid, raw);
 		return true;
 	};
-	const locators = seedUid
-		? [seedUid]
-		: a.providerUid
-			? [a.providerUid]
-			: (a.lineage ?? []).map((b) => b.uid);
+	const locators = [
+		...new Set([
+			...(snapshot.evidenceUids ?? []),
+			...((seedUid ?? a.recoverySeedUid)
+				? [(seedUid ?? a.recoverySeedUid)!]
+				: a.providerUid
+					? [a.providerUid]
+					: historicalAttemptLocators(a))
+		])
+	];
 	if (locators.length) {
-		if (locators.length > 9) return;
-		for (const uid of new Set(locators)) if (!(await fetchUid(uid))) return;
+		if (locators.length > 9) return { kind: 'retry', reason: 'incompleteEvidence' };
+		for (const uid of new Set(locators))
+			if (!(await fetchUid(uid))) return { kind: 'retry', reason: 'incompleteEvidence' };
 	} else {
 		let cursor: string | undefined;
 		for (let page = 0; page < 3; page++) {
 			const q = new URLSearchParams({
 				attendeeEmail: a.attendeeEmail,
-				eventTypeId: String(EVENT_ID),
+				eventTypeId: String(a.providerScope.eventTypeId),
 				afterStart: new Date(Date.parse(a.requestedStart) - 1000).toISOString(),
 				beforeEnd: new Date(Date.parse(a.requestedStart) + 86_400_000).toISOString(),
 				limit: '100'
 			});
 			if (cursor) q.set('cursor', cursor);
-			const response = await calRequest(ctx, `bookings?${q}`, '2026-05-01');
+			const response = await calRequest(ctx, `bookings?${q}`, '2026-05-01', 'GET');
 			const body = response.body;
 			if (
 				!response.ok ||
@@ -943,57 +1073,62 @@ async function reconcile(
 				!object(body.pagination) ||
 				body.data.length > 100
 			)
-				return;
+				return { kind: 'retry', reason: 'incompleteEvidence' };
 			for (const raw of body.data)
 				if (signed(raw)) {
-					if (!object(raw) || !validBookingUid(raw.uid) || !reserve(raw.uid)) return;
+					if (!object(raw) || !validBookingUid(raw.uid) || !reserve(raw.uid))
+						return { kind: 'retry', reason: 'incompleteEvidence' };
 					records.set(raw.uid, raw);
 				}
 			if (body.pagination.hasMore === false) break;
-			if (page === 2 || !validBookingUid(body.pagination.nextCursor)) return;
+			if (page === 2 || !validBookingUid(body.pagination.nextCursor))
+				return { kind: 'retry', reason: 'incompleteEvidence' };
 			cursor = body.pagination.nextCursor;
 		}
 	}
-	if (!records.size) return;
+	if (!records.size) return { kind: 'retry', reason: 'incompleteEvidence' };
 	const bookings = new Map<string, ProviderBooking>();
 	let anchorUid: string | undefined;
 	// Map iteration includes newly appended neighbors; every unique node is processed once.
 	for (const [uid, raw] of records) {
-		const b = parseBooking(raw, a.attendeeEmail);
-		if (!b || b.uid !== uid) return;
+		const b = parseBooking(raw, a.attendeeEmail, a.providerScope);
+		if (!b || b.uid !== uid) return { kind: 'retry', reason: 'incompleteEvidence' };
 		if (
 			object(raw) &&
 			object(raw.metadata) &&
 			raw.metadata.dinuCsmAttempt !== undefined &&
 			!signed(raw)
 		)
-			return;
+			return { kind: 'retry', reason: 'incompleteEvidence' };
 		if (signed(raw)) anchorUid = uid;
 		bookings.set(uid, b);
 		for (const neighbor of [b.fromUid, b.toUid])
-			if (neighbor && !records.has(neighbor) && !(await fetchUid(neighbor))) return;
+			if (neighbor && !records.has(neighbor) && !(await fetchUid(neighbor)))
+				return { kind: 'retry', reason: 'incompleteEvidence' };
 	}
-	if (!anchorUid || bookings.size !== records.size) return;
+	if (!anchorUid || bookings.size !== records.size)
+		return { kind: 'retry', reason: 'incompleteEvidence' };
 	const rows = [...bookings.values()];
 	const roots = rows.filter((b) => !b.fromUid);
-	if (roots.length !== 1 || roots[0].start !== a.requestedStart) return;
+	if (roots.length !== 1 || roots[0].start !== a.requestedStart)
+		return { kind: 'retry', reason: 'incompleteEvidence' };
 	let leaf = roots[0];
 	const visited = new Set<string>();
 	while (true) {
-		if (visited.has(leaf.uid)) return;
+		if (visited.has(leaf.uid)) return { kind: 'retry', reason: 'incompleteEvidence' };
 		visited.add(leaf.uid);
 		const children = rows.filter((b) => b.fromUid === leaf.uid || leaf.toUid === b.uid);
-		if (children.length > 1) return;
+		if (children.length > 1) return { kind: 'retry', reason: 'incompleteEvidence' };
 		if (!children.length) {
-			if (leaf.toUid) return;
+			if (leaf.toUid) return { kind: 'retry', reason: 'incompleteEvidence' };
 			break;
 		}
 		const child = children[0];
 		if ((child.fromUid && child.fromUid !== leaf.uid) || (leaf.toUid && leaf.toUid !== child.uid))
-			return;
+			return { kind: 'retry', reason: 'incompleteEvidence' };
 		leaf = child;
 	}
-	if (visited.size !== rows.length) return;
+	if (visited.size !== rows.length) return { kind: 'retry', reason: 'incompleteEvidence' };
 	await ctx.runMutation(internal.csmBookings.settleCreation, {
 		attemptId,
 		reference,
@@ -1001,9 +1136,144 @@ async function reconcile(
 		anchorUid,
 		booking: leaf,
 		source: 'recovery',
+		recoveryLease: snapshot.lease,
+		recoveryGeneration: snapshot.generation,
+		evidenceIds: snapshot.evidenceIds ?? [],
+		proofUids: [...visited],
 		...(proof ? { proof } : {})
 	});
+	return { kind: 'retry', reason: 'pendingOrChanged' };
 }
+/** Every trigger shares the same target cooldown, lease and finite history. Evidence alone may wake review once. */
+export async function requestAttemptRecovery(
+	ctx: MutationCtx,
+	a: Attempt,
+	seedUid?: string,
+	evidence = false
+) {
+	if (!(await liveAttempt(ctx, a)) || a.state === 'booked') return;
+	if (evidence) {
+		await ctx.db.patch('csmBookingAttempts', a._id, {
+			recoveryGeneration: (a.recoveryGeneration ?? 0) + 1,
+			recoverySeedUid: seedUid ?? a.recoverySeedUid,
+			recoveryReview: undefined,
+			reviewRequired: undefined,
+			recoveryDue: Math.max(Date.now(), a.recoveryLeaseUntil ?? 0)
+			// Preserve failure history. A failed pass with history >=10 returns immediately to review.
+		});
+	} else {
+		if (a.state === 'unknown') await enrollAttemptRecovery(ctx, a);
+	}
+	const updated = (await ctx.db.get('csmBookingAttempts', a._id))!;
+	if (updated.recoveryReview || updated.reviewRequired || updated.recoveryDue === undefined) return;
+	const job = updated.recoveryJobId
+		? await ctx.db.system.get('_scheduled_functions', updated.recoveryJobId)
+		: null;
+	if (evidence && job?.state.kind === 'pending' && job.scheduledTime > updated.recoveryDue) {
+		await ctx.scheduler.cancel(job._id);
+	} else if (job && ['pending', 'inProgress'].includes(job.state.kind)) return;
+	const recoveryJobId = await ctx.scheduler.runAfter(
+		Math.max(0, updated.recoveryDue - Date.now()),
+		internal.csmBookings.recoverAttempt,
+		{ attemptId: a._id }
+	);
+	await ctx.db.patch('csmBookingAttempts', a._id, { recoveryJobId });
+}
+export const requestRecovery = internalMutation({
+	args: attemptArgs,
+	returns: v.null(),
+	handler: async (ctx, { attemptId }) => {
+		const a = await ctx.db.get('csmBookingAttempts', attemptId);
+		if (a) await requestAttemptRecovery(ctx, a);
+		return null;
+	}
+});
+export const finishRecovery = internalMutation({
+	args: {
+		...attemptArgs,
+		lease: v.number(),
+		generation: v.number(),
+		disposition: recoveryDisposition
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const a = await ctx.db.get('csmBookingAttempts', args.attemptId);
+		if (!a || !(await liveAttempt(ctx, a)) || a.recoveryLease !== args.lease) return null;
+		if (a.state === 'booked' || (a.state === 'failed' && !a.recoverySeedUid)) {
+			await ctx.db.patch('csmBookingAttempts', a._id, {
+				recoveryDue: undefined,
+				recoveryLeaseUntil: undefined,
+				recoveryJobId: undefined,
+				recoveryReview: undefined
+			});
+			return null;
+		}
+		const changed = (a.recoveryGeneration ?? 0) !== args.generation;
+		const d = args.disposition;
+		const failures = (a.recoveryFailures ?? 0) + (!changed && d.kind === 'retry' ? 1 : 0);
+		const review =
+			!changed && (d.kind === 'review' || (d.kind === 'retry' && failures >= EVIDENCE_PASSES));
+		const due = review
+			? undefined
+			: changed
+				? Date.now()
+				: d.kind === 'deferred'
+					? d.dueAt
+					: evidenceRetry(failures);
+		await ctx.db.patch('csmBookingAttempts', a._id, {
+			recoveryFailures: failures,
+			recoveryLeaseUntil: undefined,
+			recoveryJobId: undefined,
+			recoveryReview: review ? (d.kind === 'review' ? d.reason : 'evidenceHorizon') : undefined,
+			recoveryDue: due
+		});
+		if (due !== undefined) {
+			const recoveryJobId = await ctx.scheduler.runAfter(
+				Math.max(0, due - Date.now()),
+				internal.csmBookings.recoverAttempt,
+				{ attemptId: a._id }
+			);
+			await ctx.db.patch('csmBookingAttempts', a._id, { recoveryJobId });
+		}
+		return null;
+	}
+});
+export const recoverAttempt = internalAction({
+	args: attemptArgs,
+	returns: v.null(),
+	handler: async (ctx, { attemptId }) => {
+		const snapshot: Recovery = await ctx.runMutation(internal.csmBookings.beginRecovery, {
+			attemptId,
+			claim: true
+		});
+		if (!snapshot || snapshot.lease === undefined || snapshot.generation === undefined) return null;
+		let disposition: Infer<typeof recoveryDisposition>;
+		try {
+			disposition = await reconcile(ctx, attemptId, undefined, new Set(), snapshot);
+		} catch (error) {
+			disposition = readFailure(error);
+		}
+		await ctx.runMutation(internal.csmBookings.finishRecovery, {
+			attemptId,
+			lease: snapshot.lease,
+			generation: snapshot.generation,
+			disposition
+		});
+		return null;
+	}
+});
+export const repairRecovery = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const due = await ctx.db
+			.query('csmBookingAttempts')
+			.withIndex('by_recoveryDue', (q) => q.gt('recoveryDue', 0).lte('recoveryDue', Date.now()))
+			.take(25);
+		for (const a of due) await requestAttemptRecovery(ctx, a);
+		return null;
+	}
+});
 export const checkStatus = action({
 	args: { ...memberArgs, ...attemptArgs },
 	returns: v.null(),
@@ -1012,52 +1282,74 @@ export const checkStatus = action({
 		if (row.state === 'booked') return null;
 		await limiter.limit(ctx, 'status', { key: args.membershipId, throws: true });
 		try {
-			await reconcile(ctx, args.attemptId);
+			await ctx.runMutation(internal.csmBookings.requestRecovery, { attemptId: args.attemptId });
 		} catch {
 			throw new ConvexError('Booking status could not be checked. Please try again shortly.');
 		}
 		return null;
 	}
 });
-/** Shared source state contains no other admin's receipt, operation or attendee data. */
-export const replacementStatus = query({
-	args: { ...memberArgs, replacement: setupReplacement },
+/** Shared setup progress reveals only state; the private locator belongs exclusively to its creator. */
+async function setupProgressFor(
+	ctx: QueryCtx,
+	owner: CompanyAccess,
+	replacement?: Replacement
+): Promise<Infer<typeof replacementProgress>> {
+	if (replacement) return sharedReplacement(ctx, owner, replacement);
+	if (owner.membership.role !== 'admin' || owner.company.templateSourceId)
+		return { state: 'unavailable' };
+	if (await blockingInitialGuard(ctx, owner.companyId)) return { state: 'uncertain' };
+	const booking = await resolveSetupBooking(ctx, owner.company);
+	if (booking.kind === 'confirmed') return { state: 'completed' };
+	if (booking.kind !== 'initial') return { state: 'unavailable' };
+	const a = await pendingInitialSetup(ctx, owner.companyId);
+	if (!a) return { state: 'ready' };
+	return {
+		state: a.state === 'unknown' ? 'uncertain' : 'in-progress',
+		...(a.profileId === owner.profile._id && a.membershipId === owner.membership._id
+			? { attemptId: a._id }
+			: {})
+	};
+}
+export const setupStatus = query({
+	args: { ...memberArgs, replacement: v.optional(setupReplacement) },
 	returns: replacementProgress,
 	handler: async (ctx, a) =>
-		sharedReplacement(ctx, await requireMembership(ctx, a.membershipId), a.replacement)
+		setupProgressFor(
+			ctx,
+			await requirePermission(ctx, 'manageTemplate', a.membershipId),
+			a.replacement
+		)
 });
-export const replacementRecovery = internalQuery({
-	args: { ...memberArgs, replacement: setupReplacement },
-	returns: v.union(v.id('csmBookingAttempts'), v.null()),
-	handler: async (ctx, a) => {
-		const owner = await requireMembership(ctx, a.membershipId);
-		const source = await replacementSource(ctx, owner, a.replacement);
-		const progress = await replacementState(ctx, source);
-		return 'attempt' in progress &&
-			progress.attempt &&
-			(source.currentUid === a.replacement.currentUid ||
-				sameReplacement(progress.attempt.replacement, a.replacement)) &&
-			(progress.state === 'uncertain' || progress.state === 'in-progress')
-			? progress.attempt._id
-			: null;
+export const requestSetupRecovery = internalMutation({
+	args: { ...memberArgs, replacement: v.optional(setupReplacement) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const owner = await requirePermission(ctx, 'manageTemplate', args.membershipId);
+		if (owner.company.templateSourceId) return null;
+		let attempt: Attempt | null = null;
+		if (args.replacement) {
+			const source = await ctx.db.get('csmSetupAppointments', args.replacement.appointmentId);
+			if (!source || source.companyId !== owner.companyId) return null;
+			const progress = await replacementState(ctx, source);
+			if (
+				'attempt' in progress &&
+				progress.attempt &&
+				sameReplacement(progress.attempt.replacement, args.replacement) &&
+				['uncertain', 'in-progress'].includes(progress.state)
+			)
+				attempt = progress.attempt;
+		} else if ((await resolveSetupBooking(ctx, owner.company)).kind === 'initial')
+			attempt = await pendingInitialSetup(ctx, owner.companyId);
+		if (attempt) await requestAttemptRecovery(ctx, attempt);
+		return null;
 	}
 });
-export const checkReplacement = action({
-	args: { ...memberArgs, replacement: setupReplacement },
+export const checkSetup = action({
+	args: { ...memberArgs, replacement: v.optional(setupReplacement) },
 	returns: v.null(),
-	handler: async (ctx, a) => {
-		const attemptId: Id<'csmBookingAttempts'> | null = await ctx.runQuery(
-			internal.csmBookings.replacementRecovery,
-			a
-		);
-		await limiter.limit(ctx, 'status', { key: a.replacement.appointmentId, throws: true });
-		if (attemptId) {
-			try {
-				await reconcile(ctx, attemptId);
-			} catch {
-				throw new ConvexError('Booking status could not be checked. Please try again shortly.');
-			}
-		}
+	handler: async (ctx, args) => {
+		await ctx.runMutation(internal.csmBookings.requestSetupRecovery, args);
 		return null;
 	}
 });
@@ -1080,14 +1372,16 @@ export const resolveConfirmed = internalAction({
 			throw new ConvexError('Inspect the current attempt and terminal sender before confirming.');
 		const a = snapshot.attempt;
 		const raw = await calRead(ctx, `bookings/${encodeURIComponent(args.uid)}`, '2026-02-25');
-		const b = a.attendeeEmail ? parseBooking(raw, a.attendeeEmail) : null;
+		const b = a.attendeeEmail ? parseBooking(raw, a.attendeeEmail, a.providerScope) : null;
+		const reference = attemptReference(a);
 		if (
+			!reference ||
 			!b ||
 			b.uid !== args.uid ||
 			b.status !== 'accepted' ||
 			!object(raw) ||
 			!object(raw.metadata) ||
-			raw.metadata.dinuCsmAttempt !== attemptReference(a) ||
+			raw.metadata.dinuCsmAttempt !== reference ||
 			(!b.fromUid && b.start !== a.requestedStart)
 		)
 			throw new ConvexError(
@@ -1095,7 +1389,7 @@ export const resolveConfirmed = internalAction({
 			);
 		await ctx.runMutation(internal.csmBookings.settleCreation, {
 			attemptId: a._id,
-			reference: raw.metadata.dinuCsmAttempt,
+			reference: reference!,
 			attendeeEmail: a.attendeeEmail!,
 			anchorUid: b.uid,
 			booking: b,
@@ -1110,16 +1404,16 @@ export const resolveConfirmed = internalAction({
 		return null;
 	}
 });
-/** Old operator arrays remain recovery hints. Text alone cannot establish a positive confirmation. */
+/** Negative resolution requires terminal-before-investigation proof; positive uses resolveConfirmed. */
 export const resolveUnknown = internalMutation({
 	args: {
 		...attemptArgs,
 		...operatorEvidence,
 		proof: v.optional(terminalProof),
-		resolution: v.union(
-			v.object({ kind: v.literal('booking'), bookings: v.array(providerBooking) }),
-			v.object({ kind: v.literal('notCreated'), basis: v.literal('providerInvestigation') })
-		)
+		resolution: v.object({
+			kind: v.literal('notCreated'),
+			basis: v.literal('providerInvestigation')
+		})
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1133,126 +1427,25 @@ export const resolveUnknown = internalMutation({
 			throw new ConvexError('The attempt changed; inspect it again.');
 		if (!a.senderTerminal || !validOperator(args))
 			throw new ConvexError('Terminal execution and authoritative evidence are required.');
-		if (args.resolution.kind === 'booking') {
-			const hints = args.resolution.bookings;
-			if (!hints.length || hints.length > 9 || hints.some((b) => !validBookingUid(b.uid)))
-				throw new ConvexError('Supply bounded booking locators for authenticated recovery.');
-			await ctx.scheduler.runAfter(0, internal.csmBookings.recoverWebhook, {
-				reference: attemptReference(a),
-				uid: hints[0].uid
-			});
-		} else {
-			if (!sameProof(a, args.proof))
-				throw new ConvexError(
-					'Observe the sender before investigating noncreation, then supply that terminal proof.'
-				);
-			await patch(ctx, a, {
-				state: 'failed',
-				error: 'interrupted',
-				failureBasis: 'providerInvestigation',
-				lineage: undefined,
-				reviewRequired: undefined
-			});
-		}
-		await ctx.db.patch('csmBookingAttempts', a._id, {
-			operatorResolution: {
-				operator: args.operator,
-				evidence: args.evidence,
-				reason: args.reason,
-				at: Date.now()
-			}
-		});
-		return null;
-	}
-});
-/** Bounded, explicitly invoked transition. Never schedules a sender or changes operation identity. */
-export const maintainReceipts = internalMutation({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.object({
-		cursor: v.string(),
-		isDone: v.boolean(),
-		scanned: v.number(),
-		changed: v.number(),
-		blocked: v.number()
-	}),
-	handler: async (ctx, { cursor }) => {
-		const page = await ctx.db
-			.query('csmBookingAttempts')
-			.withIndex('by_creation_time')
-			.paginate({ cursor, numItems: 25 });
-		let changed = 0,
-			blocked = 0;
-		for (const original of page.page) {
-			await observeSender(ctx, original);
-			const a = (await ctx.db.get('csmBookingAttempts', original._id))!;
-			const fields: Partial<Infer<typeof import('./csmBookingValidators').storedCsmAttempt>> = {};
-			if (a.state === 'failed' && !a.failureBasis) {
-				fields.state = 'unknown';
-				fields.error = 'uncertain';
-			}
-			if (a.state === 'booked' && !a.confirmation) {
-				const b = a.lineage?.find((b) => b.uid === a.providerUid);
-				if (
-					b?.status === 'accepted' &&
-					!b.toUid &&
-					validBookingUid(b.uid) &&
-					iso(b.start) === b.start &&
-					iso(b.end) === b.end &&
-					b.end > b.start
-				) {
-					fields.confirmation = {
-						uid: b.uid,
-						start: b.start,
-						end: b.end,
-						confirmedAt: a.updatedAt
-					};
-				} else blocked++;
-			}
-			if (a.confirmation || fields.confirmation) fields.providerUid = undefined;
-			if (a.confirmation || fields.confirmation || (a.state === 'failed' && a.failureBasis)) {
-				fields.lineage = undefined;
-				fields.reviewRequired = undefined;
-				if (a.operatorResolution?.priorLineage)
-					fields.operatorResolution = {
-						operator: a.operatorResolution.operator,
-						evidence: a.operatorResolution.evidence,
-						reason: a.operatorResolution.reason,
-						at: a.operatorResolution.at
-					};
-			}
-			if (a.senderTerminal && (a.confirmation || fields.confirmation))
-				fields.attendeeEmail = undefined;
-			const semantic = fields.state !== undefined || fields.confirmation !== undefined;
-			if (Object.entries(fields).some(([k, value]) => a[k as keyof Attempt] !== value)) {
-				if (semantic) await patch(ctx, a, fields);
-				else await ctx.db.patch('csmBookingAttempts', a._id, fields);
-			}
-			// R-09: independent constant-field cleanup, never changes lifecycle revision.
-			if (a.eventTypeId !== undefined)
-				await ctx.db.patch('csmBookingAttempts', a._id, { eventTypeId: undefined });
-			await seedSetupAppointment(ctx, (await ctx.db.get('csmBookingAttempts', a._id))!);
-			if (
-				JSON.stringify(original) !== JSON.stringify(await ctx.db.get('csmBookingAttempts', a._id))
-			)
-				changed++;
-		}
-		return {
-			cursor: page.continueCursor,
-			isDone: page.isDone,
-			scanned: page.page.length,
-			changed,
-			blocked
+		const operatorResolution = {
+			operator: args.operator,
+			evidence: args.evidence,
+			reason: args.reason,
+			at: Date.now()
 		};
-	}
-});
-export const markSetupBooked = internalMutation({
-	args: { companyReference: v.string() },
-	returns: v.null(),
-	handler: async (ctx, { companyReference }) => {
-		const id = ctx.db.normalizeId('company', companyReference);
-		const company = id ? await availableCompany(ctx, id) : null;
-		if (company && company.csmCallBookedAt === undefined)
-			await ctx.db.patch('company', company._id, { csmCallBookedAt: Date.now() });
+		if (!sameProof(a, args.proof))
+			throw new ConvexError(
+				'Observe the sender before investigating noncreation, then supply that terminal proof.'
+			);
+		await patchAttempt(ctx, a, {
+			state: 'failed',
+			error: 'interrupted',
+			failureBasis: 'providerInvestigation',
+			operatorResolution,
+			lineage: undefined,
+			reviewRequired: undefined
+		});
+
 		return null;
 	}
 });
@@ -1260,8 +1453,8 @@ export const readReference = internalQuery({
 	args: { reference: v.string() },
 	returns: v.union(schema.doc('csmBookingAttempts'), v.null()),
 	handler: async (ctx, { reference }) => {
-		const parts = reference.split('.');
-		const id = parts.length === 2 ? ctx.db.normalizeId('csmBookingAttempts', parts[0]) : null;
+		const locator = attemptIdFromReference(reference);
+		const id = locator ? ctx.db.normalizeId('csmBookingAttempts', locator) : null;
 		const a = id ? await ctx.db.get('csmBookingAttempts', id) : null;
 		return a && reference === attemptReference(a) && (await liveAttempt(ctx, a)) ? a : null;
 	}
@@ -1269,7 +1462,7 @@ export const readReference = internalQuery({
 function referencedAttempt(ctx: ActionCtx, reference: string): Promise<Attempt | null> {
 	return ctx.runQuery(internal.csmBookings.readReference, { reference });
 }
-/** Missing webhook metadata is recovered through authenticated API facts, never email attribution. */
+/** Drains old scheduled names into durable GET-only evidence; no provider IO here. */
 export const recoverWebhook = internalAction({
 	args: {
 		reference: v.optional(v.string()),
@@ -1278,71 +1471,8 @@ export const recoverWebhook = internalAction({
 		successorHint: v.optional(v.string())
 	},
 	returns: v.null(),
-	handler: async (ctx, { reference, uid, previousUid, successorHint }) => {
-		if (!validBookingUid(uid)) return null;
-		if (reference !== undefined) {
-			const a = await referencedAttempt(ctx, reference);
-			if (a?.state === 'booked')
-				await ctx.runMutation(internal.csmSetupAppointments.notify, {
-					uid,
-					attemptId: a._id,
-					previousUid,
-					successorHint
-				});
-			else if (a) await reconcile(ctx, a._id, uid);
-			return null;
-		}
-		if (
-			await ctx.runMutation(internal.csmSetupAppointments.notify, {
-				uid,
-				previousUid,
-				successorHint
-			})
-		)
-			return null;
-		const records = new Map<string, unknown>([[uid, undefined]]);
-		for (const [key] of records) {
-			const raw = await calRead(ctx, `bookings/${encodeURIComponent(key)}`, '2026-02-25');
-			if (!object(raw) || raw.uid !== key || raw.eventTypeId !== EVENT_ID) return null;
-			const metadata = object(raw.metadata) ? raw.metadata : {};
-			if (metadata.dinuCsmAttempt !== undefined) {
-				if (typeof metadata.dinuCsmAttempt !== 'string') return null;
-				const a = await referencedAttempt(ctx, metadata.dinuCsmAttempt);
-				if (!a) return null; // Purported native references never fall through into legacy promotion.
-				if (a.state === 'booked') {
-					await ctx.runMutation(internal.csmSetupAppointments.notify, {
-						uid,
-						attemptId: a._id,
-						previousUid,
-						successorHint
-					});
-					return null;
-				}
-				if (!a.attendeeEmail || !parseBooking(raw, a.attendeeEmail)) return null;
-				await reconcile(ctx, a._id, uid, new Set(records.keys()));
-				return null;
-			}
-			if (typeof metadata.dinuCsmReference === 'string') {
-				await ctx.runAction(internal.csmSetupAppointments.legacyWebhook, {
-					reference: metadata.dinuCsmReference,
-					uid: key,
-					previousUid,
-					successorHint
-				});
-				return null;
-			}
-			// Known old/intermediate UIDs can attribute a later metadata-less delivery.
-			if (await ctx.runMutation(internal.csmSetupAppointments.notify, { uid: key, successorHint }))
-				return null;
-			// Attribution only follows authenticated explicit links. No facts from this pass settle.
-			const b = parseSetupBooking(raw, key);
-			if (!b) return null;
-			for (const neighbor of [b.fromUid, b.toUid])
-				if (neighbor && !records.has(neighbor)) {
-					if (records.size >= 9) return null;
-					records.set(neighbor, undefined);
-				}
-		}
+	handler: async (ctx, args) => {
+		await ctx.runMutation(internal.csmEvidence.ingress, { ...args, event: 'RECOVERY_HINT' });
 		return null;
 	}
 });
@@ -1372,65 +1502,77 @@ export const webhook = httpAction(async (ctx, request): Promise<Response> => {
 			'BOOKING_REQUESTED',
 			'BOOKING_RESCHEDULED',
 			'BOOKING_CANCELLED',
-			'BOOKING_REJECTED'
+			'BOOKING_REJECTED',
+			'BOOKING_LOCATION_UPDATED'
 		].includes(event.triggerEvent)
 	)
 		return new Response(null, { status: 204 });
 	const p = event.payload;
 	if (!object(p) || !validBookingUid(p.uid))
 		return new Response('Invalid booking', { status: 400 });
-	if (
-		p.type !== EVENT_SLUG ||
-		!object(p.organizer) ||
-		p.organizer.username !== HOST ||
-		(p.eventTypeId !== undefined && p.eventTypeId !== EVENT_ID)
-	)
-		return new Response(null, { status: 204 });
+	// Delivery HMAC authenticates ingress; stored scope plus provider GET authenticates facts.
+	// Missing webhook numeric scope is retained for attribution, never authorized by a mutable name.
 	const metadata = object(p.metadata) ? p.metadata : {};
 	const rescheduled = event.triggerEvent === 'BOOKING_RESCHEDULED';
 	const hints = {
 		...(rescheduled && validBookingUid(p.rescheduleUid) ? { previousUid: p.rescheduleUid } : {}),
 		...(rescheduled ? { successorHint: p.uid } : {})
 	};
-	// Presence of a native hint, even malformed, must never fall back to company promotion.
-	if (metadata.dinuCsmAttempt !== undefined && typeof metadata.dinuCsmAttempt !== 'string')
+	// Presence of native metadata, including malformed metadata, forbids historical fallback.
+	if (
+		metadata.dinuCsmAttempt !== undefined &&
+		(typeof metadata.dinuCsmAttempt !== 'string' || metadata.dinuCsmAttempt.length > 500)
+	)
 		return new Response('Invalid booking reference', { status: 400 });
 	if (
-		typeof metadata.dinuCsmAttempt === 'string' ||
-		typeof metadata.dinuCsmReference !== 'string'
-	) {
-		try {
-			await ctx.runAction(internal.csmBookings.recoverWebhook, {
-				uid: p.uid,
-				...hints,
-				...(typeof metadata.dinuCsmAttempt === 'string'
-					? { reference: metadata.dinuCsmAttempt }
+		metadata.dinuCsmReference !== undefined &&
+		(typeof metadata.dinuCsmReference !== 'string' || metadata.dinuCsmReference.length > 500)
+	)
+		return new Response('Invalid booking reference', { status: 400 });
+	const occurrence = iso(p.updatedAt) ?? iso(event.createdAt) ?? undefined;
+	const revision =
+		typeof p.revision === 'number' && Number.isSafeInteger(p.revision) && p.revision >= 0
+			? String(p.revision)
+			: undefined;
+	const organizer = object(p.organizer) ? p.organizer.id : undefined;
+	const scope =
+		typeof p.eventTypeId === 'number' &&
+		Number.isSafeInteger(p.eventTypeId) &&
+		p.eventTypeId > 0 &&
+		typeof organizer === 'number' &&
+		Number.isSafeInteger(organizer) &&
+		organizer > 0
+			? { eventTypeId: p.eventTypeId, organizerId: organizer }
+			: undefined;
+	try {
+		await ctx.runMutation(internal.csmMeetingPreparation.hint, {
+			uid: p.uid,
+			...(hints.previousUid ? { previousUid: hints.previousUid } : {}),
+			...(typeof metadata.dinuCsmAttempt === 'string' ? { reference: metadata.dinuCsmAttempt } : {})
+		});
+		const retained = await ctx.runMutation(internal.csmEvidence.ingress, {
+			uid: p.uid,
+			event: event.triggerEvent as
+				| 'BOOKING_CREATED'
+				| 'BOOKING_REQUESTED'
+				| 'BOOKING_RESCHEDULED'
+				| 'BOOKING_CANCELLED'
+				| 'BOOKING_REJECTED'
+				| 'BOOKING_LOCATION_UPDATED',
+			...hints,
+			...(scope ? { scope } : {}),
+			...(occurrence ? { occurrence } : {}),
+			...(revision ? { revision } : {}),
+			...(typeof metadata.dinuCsmAttempt === 'string'
+				? { reference: metadata.dinuCsmAttempt }
+				: typeof metadata.dinuCsmReference === 'string'
+					? { historicalReference: metadata.dinuCsmReference }
 					: {})
-			});
-		} catch {
-			return new Response('Booking recovery is unavailable', { status: 503 });
-		}
-	} else {
-		const reference = await parseCompanyReference(metadata.dinuCsmReference);
-		if (!reference) return new Response('Invalid booking reference', { status: 400 });
-		if (
-			reference.mode === 'setup' &&
-			['BOOKING_CREATED', 'BOOKING_REQUESTED', 'BOOKING_RESCHEDULED'].includes(event.triggerEvent)
-		)
-			await ctx.runMutation(internal.csmBookings.markSetupBooked, {
-				companyReference: reference.companyId
-			});
-		if (reference.mode === 'setup') {
-			try {
-				await ctx.runAction(internal.csmSetupAppointments.legacyWebhook, {
-					reference: metadata.dinuCsmReference,
-					uid: p.uid,
-					...hints
-				});
-			} catch {
-				return new Response('Booking synchronization is unavailable', { status: 503 });
-			}
-		}
+		});
+		if (retained.kind === 'needsRetention')
+			return new Response('Booking evidence could not be retained', { status: 503 });
+	} catch {
+		return new Response('Booking evidence could not be retained', { status: 503 });
 	}
 	return new Response(null, { status: 204 });
 });
@@ -1458,7 +1600,7 @@ export const providerStatus = internalAction({
 		return {
 			available: true,
 			duration: config.duration,
-			videoProvider: config.location.integration,
+			videoProvider: config.videoProvider,
 			slotCount: times.length
 		};
 	}

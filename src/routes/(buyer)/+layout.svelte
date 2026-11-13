@@ -10,7 +10,9 @@
 </script>
 
 <AnonymousProvider
-	>{#key page.params.token}<BuyerShell token={page.params.token!} browser={data.activityBrowser}
-			>{@render children()}</BuyerShell
+	>{#key page.params.token}<BuyerShell
+			token={page.params.token!}
+			browser={data.activityBrowser}
+			hasAccountSession={data.hasAccountSession}>{@render children()}</BuyerShell
 		>{/key}</AnonymousProvider
 >

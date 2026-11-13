@@ -12,6 +12,7 @@
 		setWorkspaceFeedback
 	} from '$lib/components/chrome/workspace-feedback.svelte';
 	import { beforeNavigate } from '$app/navigation';
+	import { TemplateSource } from '$lib/playbook/template-source.svelte';
 	import {
 		TemplateAuthoringSession,
 		setTemplateAuthoringSession
@@ -73,10 +74,15 @@
 				})
 		)
 	);
+	const templateSource = new TemplateSource(
+		client,
+		untrack(() => viewer.membership.id)
+	);
 	const authoring = setTemplateAuthoringSession(
 		untrack(
 			() =>
 				new TemplateAuthoringSession({
+					templateSource,
 					client,
 					membershipId: viewer.membership.id,
 					companyId: viewer.company.id,
@@ -88,6 +94,7 @@
 		untrack(
 			() =>
 				new TemplateAuthoringSession({
+					templateSource,
 					client,
 					membershipId: viewer.membership.id,
 					companyId: viewer.company.id,
@@ -108,17 +115,20 @@
 		authoringFeedback.release();
 		authoring.destroy();
 		buyerAuthoring.destroy();
+		templateSource.destroy();
 		feedback.destroy();
 		sessions.destroy();
 	});
 	$effect(() => {
 		const available = !viewer.company.deletionPending;
+		const admin = viewer.membership.role === 'admin';
 		const frozen = account.blocked;
 		const generation = account.transportGeneration;
 		untrack(() => {
 			sessions.configure(available, frozen, generation);
-			authoring.configure(available, frozen, generation);
-			buyerAuthoring.configure(available, frozen, generation);
+			templateSource.configure(available && admin && !frozen, generation);
+			authoring.configure(available && admin, frozen, generation);
+			buyerAuthoring.configure(available && admin, frozen, generation);
 		});
 	});
 	let latestAuthoringCompletion = $state.raw<TemplateAuthoringSession['completion']>(null);

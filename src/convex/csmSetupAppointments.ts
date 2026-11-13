@@ -7,35 +7,41 @@ import {
 	internalMutation,
 	internalQuery,
 	mutation,
-	query,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx
 } from './_generated/server';
 import { companyDeletion, liveProfile, requireMembership } from './auth';
-import { activeJob, cancelJob } from './emailDeliveries';
+import { cancelJob } from './emailDeliveries';
 import {
-	attemptReference,
 	calRead,
-	calRequest,
-	CalRateLimitError,
 	object,
-	parseCompanyReference,
 	parseSetupBooking,
 	validBookingUid,
-	EVENT_ID,
 	type ProviderBooking
 } from './csmCal';
-import { providerBooking } from './csmBookingValidators';
+import { providerBooking, providerScope } from './csmBookingValidators';
+import { attemptReference } from './csmHistory';
 import { replacementAware } from './csmReplacements';
 import {
-	needsSupersededSetupRetirement,
+	clearSetupAppointment,
+	readConfirmedSetupBooking,
+	resolveSetupBooking,
+	transferSetupAppointment
+} from './csmSetupState';
+import {
 	retirePendingSetupJobs,
 	retireSupersededSetupAppointment,
+	retireReleasedSetupAppointment,
+	retireCompanySetupAppointments,
 	type SetupFiring
 } from './csmSetupLifecycle';
-import { setupNotice, setupSyncIssue } from './csmSetupValidators';
+import { setupSyncIssue, setupReviewAttestation } from './csmSetupValidators';
 import schema from './schema';
+import { ingressResult } from './csmEvidenceValidators';
+import { appointmentEvidence, completeAppointmentEvidence } from './csmEvidence';
+import { EVIDENCE_PASSES, evidenceRetry } from './csmRecoveryPolicy';
+import { validProviderScope } from './csmIdentity';
 import {
 	pendingSuccessors,
 	proveSetupChain,
@@ -66,7 +72,7 @@ const LEASE_TIME = 3 * 60_000; // Nine bounded reads fit inside this lease.
 const limiter = new RateLimiter(components.rateLimiter, {
 	setupRevisit: { kind: 'token bucket', rate: 1, period: 60_000, capacity: 1 }
 });
-async function ownerState(ctx: QueryCtx, a: Pick<Appointment, 'companyId' | 'profileId'>) {
+export async function ownerState(ctx: QueryCtx, a: Pick<Appointment, 'companyId' | 'profileId'>) {
 	const [company, profile, deletion] = await Promise.all([
 		ctx.db.get('company', a.companyId),
 		liveProfile(ctx, a.profileId),
@@ -74,7 +80,7 @@ async function ownerState(ctx: QueryCtx, a: Pick<Appointment, 'companyId' | 'pro
 	]);
 	if (!company || !profile || deletion?.status === 'cleaning' || deletion?.status === 'complete')
 		return 'erased';
-	return deletion ? 'paused' : 'active';
+	return deletion ? 'paused' : company.templateSourceId ? 'released' : 'active';
 }
 async function authorize(ctx: QueryCtx, membershipId: Id<'memberships'>) {
 	const owner = await requireMembership(ctx, membershipId);
@@ -85,8 +91,9 @@ export async function cancelAppointmentJobs(ctx: MutationCtx, a: Appointment) {
 	await cancelJob(ctx, a.refreshJobId);
 	await cancelJob(ctx, a.deadlineJobId);
 }
-async function remove(ctx: MutationCtx, a: Appointment, firing?: SetupFiring) {
+export async function remove(ctx: MutationCtx, a: Appointment, firing?: SetupFiring) {
 	await retirePendingSetupJobs(ctx, a, firing);
+	await clearSetupAppointment(ctx, a);
 	await ctx.db.delete('csmSetupAppointments', a._id);
 }
 async function pause(ctx: MutationCtx, a: Appointment, hint?: string, firing?: SetupFiring) {
@@ -109,7 +116,7 @@ async function pause(ctx: MutationCtx, a: Appointment, hint?: string, firing?: S
 	});
 }
 /** Bounded identity lookup, including one-sided legacy chains. Nonunique locators fail closed. */
-async function represented(ctx: QueryCtx, uids: string[]): Promise<Appointment[] | null> {
+export async function represented(ctx: QueryCtx, uids: string[]): Promise<Appointment[] | null> {
 	if (uids.length > 9 || uids.some((uid) => !validBookingUid(uid))) return null;
 	const rows = new Map<string, Appointment>();
 	for (const uid of new Set(uids)) {
@@ -130,7 +137,62 @@ async function byUid(ctx: QueryCtx, uid: string) {
 	const rows = await represented(ctx, [uid]);
 	return rows?.length === 1 ? rows[0] : null;
 }
-async function enqueue(ctx: MutationCtx, a: Appointment, successorHint?: string) {
+/** All automatic callers share the same admission, including dirty rows in backoff. */
+function refreshAdmission(a: Appointment, mode: 'routine' | 'evidence' | 'forced', now: number) {
+	if (a.reviewReason && !(mode === 'evidence' && a.reviewReason === 'evidenceHorizon'))
+		return false;
+	if (mode !== 'evidence' && a.leaseUntil !== undefined && a.leaseUntil > now) return false;
+	if (mode === 'routine' && ((a.freshUntil ?? 0) > now || (a.repairAt ?? 0) > now)) return false;
+	return true;
+}
+export async function retainSetupReview(
+	ctx: MutationCtx,
+	a: Appointment,
+	reason: string,
+	firing?: SetupFiring,
+	failures = a.failures,
+	invalidate = false
+) {
+	if (
+		!invalidate &&
+		a.reviewReason === reason &&
+		!a.refreshJobId &&
+		!a.deadlineJobId &&
+		!a.repairAt &&
+		!a.leaseUntil &&
+		!a.reviewSession
+	)
+		return;
+	await retirePendingSetupJobs(ctx, a, firing);
+	await ctx.db.patch('csmSetupAppointments', a._id, {
+		reviewReason: reason,
+		reviewSession: undefined,
+		generation: a.generation + 1,
+		dirty: true,
+		failures,
+		issue:
+			reason === 'cap'
+				? 'cap'
+				: reason === 'conflict'
+					? 'conflict'
+					: reason === 'chain'
+						? 'chain'
+						: a.issue,
+		pendingSuccessors: pendingSuccessors(a),
+		successorHint: undefined,
+		refreshJobId: undefined,
+		deadlineJobId: undefined,
+		repairAt: undefined,
+		leaseUntil: undefined,
+		freshUntil: undefined
+	});
+}
+export async function enqueue(
+	ctx: MutationCtx,
+	a: Appointment,
+	options: { successorHint?: string; invalidate?: boolean } = {}
+) {
+	const { successorHint, invalidate = successorHint !== undefined } = options;
 	const ownership = await ownerState(ctx, a);
 	if (ownership === 'erased') {
 		await remove(ctx, a);
@@ -140,26 +202,74 @@ async function enqueue(ctx: MutationCtx, a: Appointment, successorHint?: string)
 		await retireSupersededSetupAppointment(ctx, a, successorHint);
 		return;
 	}
+	if (ownership === 'released' || a.maintenanceRetired) {
+		await retireReleasedSetupAppointment(ctx, a);
+		return;
+	}
 	if (ownership === 'paused') {
 		await pause(ctx, a, successorHint);
 		return;
 	}
+	if (a.reviewReason && !invalidate) return;
+	const pending = pendingSuccessors(a, successorHint);
+	if (pending.overflow || a.issue === 'cap') {
+		await retainSetupReview(
+			ctx,
+			{ ...a, pendingSuccessors: pending, successorHint: undefined },
+			'cap',
+			undefined,
+			a.failures,
+			invalidate
+		);
+		return;
+	}
+	if (a.reviewReason && invalidate && a.reviewReason !== 'evidenceHorizon') {
+		await retainSetupReview(
+			ctx,
+			{ ...a, pendingSuccessors: pending, successorHint: undefined },
+			a.reviewReason,
+			undefined,
+			a.failures,
+			true
+		);
+		return;
+	}
 	const now = Date.now();
-	const jobRunning = await activeJob(ctx, a.refreshJobId);
+	if (!refreshAdmission(a, invalidate ? 'evidence' : 'routine', now)) return;
+	const job = a.refreshJobId
+		? await ctx.db.system.get('_scheduled_functions', a.refreshJobId)
+		: null;
+	let jobRunning = job?.state.kind === 'pending' || job?.state.kind === 'inProgress';
+	const abandoned = a.leaseUntil !== undefined && a.leaseUntil <= now;
+	if (!invalidate && jobRunning && !abandoned) return;
+	if (job?.state.kind === 'pending' && (abandoned || (invalidate && job.scheduledTime > now))) {
+		await ctx.scheduler.cancel(job._id);
+		jobRunning = false;
+	}
+	if (abandoned) jobRunning = false;
+	// Evidence invalidates a running snapshot; its eventual commit requeues the new generation.
 	const refreshJobId = jobRunning
 		? a.refreshJobId
 		: await ctx.scheduler.runAfter(0, internal.csmSetupAppointments.refresh, { id: a._id });
 	await ctx.db.patch('csmSetupAppointments', a._id, {
-		generation: a.generation + 1,
-		dirty: true,
+		generation: a.generation + (invalidate || abandoned ? 1 : 0),
+		dirty: a.dirty || invalidate,
+		freshUntil: invalidate ? undefined : a.freshUntil,
+		reviewReason: invalidate ? undefined : a.reviewReason,
+		reviewSession: invalidate ? undefined : a.reviewSession,
 		refreshJobId,
-		leaseUntil: a.leaseUntil,
+		leaseUntil: abandoned ? undefined : a.leaseUntil,
 		repairAt: a.leaseUntil && a.leaseUntil > now ? a.leaseUntil : now,
-		pendingSuccessors: pendingSuccessors(a, successorHint),
+		pendingSuccessors: pending,
 		successorHint: undefined
 	});
 }
 async function scheduleDeadline(ctx: MutationCtx, a: Appointment) {
+	if ((await ownerState(ctx, a)) === 'released' || a.maintenanceRetired) {
+		await retireReleasedSetupAppointment(ctx, a);
+		return;
+	}
+	if (a.reviewReason || pendingSuccessors(a).overflow) return;
 	if (a.superseded) {
 		await retireSupersededSetupAppointment(ctx, a);
 		return;
@@ -171,10 +281,13 @@ async function scheduleDeadline(ctx: MutationCtx, a: Appointment) {
 	}
 	const now = Date.now(),
 		end = Date.parse(a.end);
+	const freshUntil = a.freshUntil && a.freshUntil > now ? a.freshUntil : undefined;
 	const deadline =
-		a.status === 'cancelled' || end <= now
-			? undefined
-			: Math.min(end, a.freshUntil && a.freshUntil > now ? a.freshUntil : end);
+		a.status === 'cancelled'
+			? freshUntil
+			: end <= now
+				? undefined
+				: Math.min(end, freshUntil ?? end);
 	const deadlineJobId =
 		deadline === undefined
 			? undefined
@@ -187,10 +300,19 @@ async function scheduleDeadline(ctx: MutationCtx, a: Appointment) {
 }
 type Source = Pick<
 	Appointment,
-	'companyId' | 'profileId' | 'source' | 'anchorUid' | 'membershipId' | 'attemptId'
+	| 'companyId'
+	| 'profileId'
+	| 'source'
+	| 'anchorUid'
+	| 'membershipId'
+	| 'attemptId'
+	| 'providerScope'
+	| 'attemptReference'
+	| 'legacyReference'
+	| 'confirmedBooking'
 >;
 /** Both admission paths share defaults and job order after their distinct trust checks. */
-async function initializeAppointment(
+export async function initializeAppointment(
 	ctx: MutationCtx,
 	source: Source,
 	b: Pick<ProviderBooking, 'uid' | 'start' | 'end'>,
@@ -211,20 +333,19 @@ async function initializeAppointment(
 		pendingSuccessors: { uids: [], overflow: false }
 	});
 	const row = (await ctx.db.get('csmSetupAppointments', id))!;
-	await enqueue(ctx, row, hint);
+	await enqueue(ctx, row, { successorHint: hint });
 	await scheduleDeadline(ctx, row);
-	return true;
+	return id;
 }
 /** Creation confirmation and current appointment state have separate lifetimes. */
-export async function seedSetupAppointment(ctx: MutationCtx, a: Doc<'csmBookingAttempts'>) {
-	if (a.mode !== 'setup' || !a.confirmation || (await ownerState(ctx, a)) !== 'active')
-		return false;
-	// Settlement, initialization and receipt maintenance all preserve the same permanent latch.
-	if (a.replacement) {
-		const source = await ctx.db.get('csmSetupAppointments', a.replacement.appointmentId);
-		if (source?.companyId === a.companyId && source.replacementAttemptId === a._id)
-			await retireSupersededSetupAppointment(ctx, source);
-	}
+export async function seedSetupAppointment(
+	ctx: MutationCtx,
+	a: Doc<'csmBookingAttempts'>,
+	bindCurrent = false
+) {
+	if (a.mode !== 'setup' || !a.confirmation) return false;
+	const ownership = await ownerState(ctx, a);
+	if (ownership === 'erased' || ownership === 'paused') return false;
 	if (
 		await ctx.db
 			.query('csmSetupAppointments')
@@ -234,18 +355,39 @@ export async function seedSetupAppointment(ctx: MutationCtx, a: Doc<'csmBookingA
 		return false;
 	const existing = await represented(ctx, [a.confirmation.uid]);
 	if (!existing || existing.length) return false;
-	return initializeAppointment(
+	const id = await initializeAppointment(
 		ctx,
 		{
 			companyId: a.companyId,
 			profileId: a.profileId,
 			membershipId: a.membershipId,
 			attemptId: a._id,
+			...(a.providerScope ? { providerScope: a.providerScope } : {}),
+			...(attemptReference(a) ? { attemptReference: attemptReference(a)! } : {}),
 			source: 'native',
-			anchorUid: a.confirmation.uid
+			anchorUid: a.confirmation.uid,
+			confirmedBooking: { status: 'accepted', ...a.confirmation }
 		},
 		a.confirmation
 	);
+	const company = await ctx.db.get('company', a.companyId);
+	const source = a.replacement
+		? await ctx.db.get('csmSetupAppointments', a.replacement.appointmentId)
+		: null;
+	// Only fresh settlement binds. Replay/maintenance must never adopt a historical receipt.
+	if (
+		bindCurrent &&
+		company &&
+		(a.replacement
+			? company.setupAppointmentId === a.replacement.appointmentId &&
+				source?.companyId === a.companyId &&
+				source.replacementAttemptId === a._id
+			: company.setupAppointmentId === undefined)
+	) {
+		await ctx.db.patch('company', company._id, { setupAppointmentId: id });
+		if (source) await retireSupersededSetupAppointment(ctx, source);
+	}
+	return true;
 }
 async function candidate(ctx: QueryCtx, companyId: Id<'company'>): Promise<Appointment | null> {
 	for (const selection of ['scheduled', 'cancelled', 'checking'] as const) {
@@ -263,28 +405,6 @@ async function candidate(ctx: QueryCtx, companyId: Id<'company'>): Promise<Appoi
 	}
 	return null;
 }
-export const current = query({
-	args: memberArgs,
-	returns: setupNotice,
-	handler: async (ctx, { membershipId }): Promise<Infer<typeof setupNotice>> => {
-		const { companyId } = await authorize(ctx, membershipId);
-		const a = await candidate(ctx, companyId);
-		if (!a) return null;
-		return {
-			id: a._id,
-			currentUid: a.currentUid,
-			state:
-				a.selection === 'cancelled'
-					? 'cancelled'
-					: a.selection === 'scheduled' && !a.dirty
-						? 'scheduled'
-						: 'checking',
-			start: a.start,
-			end: a.end,
-			freshUntil: a.freshUntil ?? null
-		};
-	}
-});
 async function advanceExpired(ctx: MutationCtx, companyId: Id<'company'>) {
 	let more = false;
 	for (const selection of ['scheduled', 'checking'] as const) {
@@ -302,6 +422,8 @@ async function advanceExpired(ctx: MutationCtx, companyId: Id<'company'>) {
 				advanced++;
 			} else if (a.superseded) {
 				if (await retireSupersededSetupAppointment(ctx, a)) advanced++;
+			} else if (ownership === 'released' || a.maintenanceRetired) {
+				await retireReleasedSetupAppointment(ctx, a);
 			} else if (ownership === 'paused') {
 				await pause(ctx, a);
 			} else if (Date.parse(a.end) <= Date.now()) {
@@ -327,11 +449,13 @@ export const revisit = mutation({
 	args: memberArgs,
 	returns: v.null(),
 	handler: async (ctx, { membershipId }) => {
-		const { companyId } = await authorize(ctx, membershipId);
+		const { companyId, company } = await authorize(ctx, membershipId);
+		if (company.templateSourceId) return null;
 		if (!(await limiter.limit(ctx, 'setupRevisit', { key: companyId })).ok) return null;
 		await advanceExpired(ctx, companyId);
-		const a = await candidate(ctx, companyId);
-		if (a) await enqueue(ctx, a);
+		const booking = await resolveSetupBooking(ctx, company);
+		const a = 'appointment' in booking ? booking.appointment : await candidate(ctx, companyId);
+		if (a) await enqueue(ctx, a, { invalidate: false });
 		// Ordinary hidden chains can recover a later missed post-end provider reschedule.
 		const hidden = await ctx.db
 			.query('csmSetupAppointments')
@@ -340,11 +464,76 @@ export const revisit = mutation({
 			)
 			.order('desc')
 			.first();
-		if (hidden) await enqueue(ctx, hidden);
+		if (hidden && hidden._id !== a?._id) await enqueue(ctx, hidden, { invalidate: false });
 		return null;
 	}
 });
 /** HMAC-verified webhooks invalidate facts; only an authenticated provider read replaces them. */
+/** Only ingress owns deduplication. Every new obligation is already durable before invalidation. */
+export async function notifySetupEvidence(
+	ctx: MutationCtx,
+	evidence: Doc<'csmWebhookEvidence'>,
+	association: { attemptId?: Id<'csmBookingAttempts'> } = {},
+	attributedUid?: string
+): Promise<Infer<typeof ingressResult>> {
+	const hint = evidence.hint;
+	if (!hint) return { kind: 'unrelated' };
+	let a: Appointment | null = null;
+	if (association.attemptId) {
+		const attempt = await ctx.db.get('csmBookingAttempts', association.attemptId);
+		if (!attempt || attempt.mode !== 'setup' || !attempt.confirmation)
+			return { kind: 'needsRetention' };
+		await seedSetupAppointment(ctx, attempt);
+		a = await ctx.db
+			.query('csmSetupAppointments')
+			.withIndex('by_attemptId', (q) => q.eq('attemptId', association.attemptId))
+			.unique();
+	} else
+		a =
+			(await byUid(ctx, attributedUid ?? hint.uid)) ??
+			(hint.previousUid ? await byUid(ctx, hint.previousUid) : null);
+	if (!a) return { kind: 'needsRetention' };
+	if (evidence.companyId && a.companyId !== evidence.companyId) return { kind: 'needsRetention' };
+	// A conflicting native/historical hint stays separate and cannot bind to an unrelated known UID.
+	if (hint.reference) {
+		const original =
+			a.attemptId && !a.attemptReference
+				? await ctx.db.get('csmBookingAttempts', a.attemptId)
+				: null;
+		if (hint.reference !== (a.attemptReference ?? (original ? attemptReference(original) : null)))
+			return { kind: 'needsRetention' };
+	}
+	if (
+		hint.historicalReference &&
+		a.legacyReference &&
+		hint.historicalReference !== a.legacyReference
+	)
+		return { kind: 'needsRetention' };
+	const ownership = await ownerState(ctx, a);
+	if (ownership === 'erased') return { kind: 'needsRetention' };
+	const evidenceGeneration = (a.evidenceGeneration ?? 0) + 1;
+	await ctx.db.patch('csmWebhookEvidence', evidence._id, {
+		appointmentId: a._id,
+		attemptId: undefined,
+		companyId: a.companyId,
+		profileId: a.profileId,
+		state: 'retained',
+		dueAt: undefined,
+		leaseUntil: undefined,
+		evidenceGeneration,
+		generation: evidence.generation + 1
+	});
+	await ctx.db.patch('csmSetupAppointments', a._id, { evidenceGeneration });
+	await enqueue(
+		ctx,
+		{ ...a, evidenceGeneration },
+		{
+			invalidate: true,
+			successorHint: hint.successorHint ?? (hint.uid !== a.currentUid ? hint.uid : undefined)
+		}
+	);
+	return { kind: 'retained', evidenceId: evidence._id };
+}
 export const notify = internalMutation({
 	args: {
 		uid: v.string(),
@@ -353,56 +542,41 @@ export const notify = internalMutation({
 		previousUid: v.optional(v.string()),
 		successorHint: v.optional(v.string())
 	},
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		if (
-			!validBookingUid(args.uid) ||
-			(args.successorHint !== undefined && !validBookingUid(args.successorHint))
-		)
-			return false;
-		const companyId =
-			args.companyReference !== undefined
-				? ctx.db.normalizeId('company', args.companyReference)
-				: undefined;
-		if (args.companyReference !== undefined && !companyId) return false;
-		let a: Appointment | null = null;
-		if (args.attemptId) {
-			const attempt = await ctx.db.get('csmBookingAttempts', args.attemptId);
-			if (
-				!attempt ||
-				attempt.mode !== 'setup' ||
-				!attempt.confirmation ||
-				(companyId && attempt.companyId !== companyId)
-			)
-				return false;
-			await seedSetupAppointment(ctx, attempt);
-			a = await ctx.db
-				.query('csmSetupAppointments')
-				.withIndex('by_attemptId', (q) => q.eq('attemptId', args.attemptId))
-				.unique();
-		} else
-			a =
-				(await byUid(ctx, args.uid)) ??
-				(args.previousUid && validBookingUid(args.previousUid)
-					? await byUid(ctx, args.previousUid)
-					: null);
-		if (!a || (companyId && a.companyId !== companyId)) return false;
-		const ownership = await ownerState(ctx, a);
-		if (ownership === 'erased') {
-			await remove(ctx, a);
-			return false;
-		}
-		await enqueue(ctx, a, args.successorHint);
-		return true;
+	returns: ingressResult,
+	handler: async (ctx, args): Promise<Infer<typeof ingressResult>> => {
+		const a = args.attemptId ? await ctx.db.get('csmBookingAttempts', args.attemptId) : null;
+		return ctx.runMutation(internal.csmEvidence.ingress, {
+			uid: args.uid,
+			event: 'RECOVERY_HINT',
+			previousUid: args.previousUid,
+			successorHint: args.successorHint,
+			...(a && attemptReference(a) ? { reference: attemptReference(a)! } : {})
+		});
 	}
 });
 export const claimResult = v.union(
 	v.null(),
 	v.object({
 		appointment: schema.doc('csmSetupAppointments'),
-		reference: v.optional(v.string())
+		reference: v.optional(v.string()),
+		evidenceGeneration: v.number(),
+		evidenceIds: v.array(v.id('csmWebhookEvidence')),
+		evidenceUids: v.array(v.string())
 	})
 );
+export function setupEvidenceUids(rows: Doc<'csmWebhookEvidence'>[]) {
+	return [
+		...new Set(
+			rows.flatMap((row) =>
+				row.hint
+					? [row.hint.uid, row.hint.previousUid, row.hint.successorHint].filter(
+							(uid): uid is string => uid !== undefined
+						)
+					: []
+			)
+		)
+	];
+}
 export async function claimSetupAppointment(
 	ctx: MutationCtx,
 	id: Id<'csmSetupAppointments'>,
@@ -419,14 +593,44 @@ export async function claimSetupAppointment(
 		await retireSupersededSetupAppointment(ctx, a, undefined, 'refresh');
 		return null;
 	}
+	if (ownership === 'released' || a.maintenanceRetired) {
+		await retireReleasedSetupAppointment(ctx, a, 'refresh');
+		return null;
+	}
 	if (ownership === 'paused') {
 		await pause(ctx, a, undefined, 'refresh');
 		return null;
 	}
-	if (a.leaseUntil && a.leaseUntil > Date.now()) return null;
+	// A delayed automatic action cannot disturb a live operator scan or another claim.
+	if (a.reviewReason || (a.leaseUntil ?? 0) > Date.now()) return null;
+	const pending = pendingSuccessors(a);
+	if (pending.overflow || a.issue === 'cap') {
+		await retainSetupReview(ctx, a, 'cap', 'refresh');
+		return null;
+	}
+	if (!refreshAdmission(a, expiresAt === undefined ? 'routine' : 'forced', Date.now())) return null;
+	const obligations = await appointmentEvidence(ctx, id);
+	const evidenceUids = setupEvidenceUids(obligations);
+	if (
+		obligations.length > 25 ||
+		obligations.some((row) => !row.hint) ||
+		new Set([a.currentUid, ...pending.uids, ...evidenceUids]).size > 9
+	) {
+		await retainSetupReview(ctx, a, 'cap', 'refresh');
+		return null;
+	}
+	const attempt =
+		a.attemptId && !a.attemptReference ? await ctx.db.get('csmBookingAttempts', a.attemptId) : null;
+	const reference = a.attemptReference ?? (attempt ? attemptReference(attempt) : null);
+	if (
+		!validProviderScope(a.providerScope) ||
+		(a.source === 'native' ? !reference : !a.legacyReference)
+	) {
+		await retainSetupReview(ctx, a, 'missingOriginalProof', 'refresh');
+		return null;
+	}
 	const leaseUntil = Math.min(Date.now() + LEASE_TIME, expiresAt ?? Infinity);
 	if (leaseUntil <= Date.now()) return null;
-	const pending = pendingSuccessors(a);
 	await ctx.db.patch('csmSetupAppointments', id, {
 		lease: a.lease + 1,
 		leaseUntil,
@@ -434,7 +638,6 @@ export async function claimSetupAppointment(
 		pendingSuccessors: pending,
 		successorHint: undefined
 	});
-	const attempt = a.attemptId ? await ctx.db.get('csmBookingAttempts', a.attemptId) : null;
 	return {
 		appointment: {
 			...a,
@@ -443,7 +646,10 @@ export async function claimSetupAppointment(
 			pendingSuccessors: pending,
 			successorHint: undefined
 		},
-		...(attempt ? { reference: attemptReference(attempt) } : {})
+		...(reference ? { reference } : {}),
+		evidenceGeneration: a.evidenceGeneration ?? 0,
+		evidenceIds: obligations.map((row) => row._id),
+		evidenceUids
 	};
 }
 export const claim = internalMutation({
@@ -460,7 +666,7 @@ export const refreshResult = v.union(
 	v.object({ kind: v.literal('failure'), issue: setupSyncIssue }),
 	v.object({ kind: v.literal('deferred'), retryAt: v.number() })
 );
-function compatibleLegacy(
+export function compatibleLegacy(
 	a: Appointment,
 	b: Pick<Appointment, 'source' | 'companyId' | 'profileId' | 'attemptId'>
 ) {
@@ -474,26 +680,51 @@ function compatibleLegacy(
 		a.profileId === b.profileId
 	);
 }
-function oldest(rows: Appointment[]) {
+export function oldest(rows: Appointment[]) {
 	return rows.sort(
 		(a, b) => a._creationTime - b._creationTime || (a._id < b._id ? -1 : a._id > b._id ? 1 : 0)
 	)[0];
 }
 function conflictingFacts(a: Appointment, b: ProviderBooking) {
-	if (b.uid !== a.currentUid || a.providerUpdatedAt === undefined) return false;
+	if (
+		b.uid !== a.currentUid &&
+		a.providerUpdatedAt !== undefined &&
+		b.updatedAt <= a.providerUpdatedAt
+	)
+		return true;
+	const prior =
+		b.uid === a.currentUid && a.providerUpdatedAt !== undefined
+			? { status: a.status, start: a.start, end: a.end, updatedAt: a.providerUpdatedAt }
+			: b.uid === a.confirmedBooking?.uid && a.confirmedBooking.providerUpdatedAt !== undefined
+				? { ...a.confirmedBooking, updatedAt: a.confirmedBooking.providerUpdatedAt }
+				: null;
+	if (!prior) return false;
 	const status =
 		b.status === 'accepted' ? 'accepted' : b.status === 'pending' ? 'checking' : 'cancelled';
 	return (
-		b.updatedAt < a.providerUpdatedAt ||
-		(b.updatedAt === a.providerUpdatedAt &&
-			(b.start !== a.start || b.end !== a.end || status !== a.status))
+		b.updatedAt < prior.updatedAt ||
+		(b.updatedAt === prior.updatedAt &&
+			(b.start !== prior.start || b.end !== prior.end || status !== prior.status))
 	);
 }
+
+export function validReviewAttestation(a: Infer<typeof setupReviewAttestation>) {
+	return [a.operator, a.evidence, a.reason].every(
+		(value) => value.trim().length > 0 && value.length <= 2000
+	);
+}
+
 export const setupProof = v.object({
 	...rowArgs,
 	generation: v.number(),
 	lease: v.number(),
 	currentUid: v.string(),
+	providerScope,
+	reference: v.optional(v.string()),
+	legacyReference: v.optional(v.string()),
+	evidenceGeneration: v.number(),
+	evidenceIds: v.array(v.id('csmWebhookEvidence')),
+	reviewed: v.optional(setupReviewAttestation),
 	result: refreshResult
 });
 export async function applySetupProof(
@@ -512,26 +743,79 @@ export async function applySetupProof(
 		await retireSupersededSetupAppointment(ctx, a, undefined, 'refresh');
 		return null;
 	}
+	if (ownership === 'released' || a.maintenanceRetired) {
+		await retireReleasedSetupAppointment(ctx, a, 'refresh');
+		return null;
+	}
 	if (ownership === 'paused') {
 		await pause(ctx, a, undefined, 'refresh');
 		return null;
 	}
-	if (a.generation !== args.generation) {
-		await enqueue(ctx, { ...a, leaseUntil: undefined, refreshJobId: undefined });
+	if (a.generation !== args.generation || (a.evidenceGeneration ?? 0) !== args.evidenceGeneration) {
+		if (!args.reviewed)
+			await enqueue(
+				ctx,
+				{ ...a, leaseUntil: undefined, refreshJobId: undefined, repairAt: Date.now() },
+				{ invalidate: false }
+			);
 		return null;
 	}
+	const original =
+		a.attemptId && !a.attemptReference ? await ctx.db.get('csmBookingAttempts', a.attemptId) : null;
+	if (
+		!a.providerScope ||
+		a.providerScope.eventTypeId !== args.providerScope.eventTypeId ||
+		a.providerScope.organizerId !== args.providerScope.organizerId ||
+		(a.attemptReference ?? (original ? attemptReference(original) : undefined) ?? undefined) !==
+			args.reference ||
+		a.legacyReference !== args.legacyReference
+	)
+		return null;
 	const now = Date.now(),
 		pending = pendingSuccessors(a);
-	// No expired claim can publish facts, even if ordinary repair has not run yet.
+	const session = a.reviewSession;
+	const reviewed = !!(
+		args.reviewed &&
+		a.reviewReason &&
+		session?.isDone &&
+		session.lease === args.lease &&
+		session.generation === args.generation &&
+		session.evidenceGeneration === args.evidenceGeneration &&
+		session.currentUid === args.currentUid &&
+		session.expiresAt > now &&
+		validReviewAttestation(args.reviewed)
+	);
+	if ((args.reviewed && !reviewed) || (a.reviewReason && !reviewed)) return null;
+	const obligations = reviewed ? [] : await appointmentEvidence(ctx, a._id);
+	const evidenceCovered =
+		reviewed ||
+		(obligations.length <= 25 &&
+			obligations.length === args.evidenceIds.length &&
+			new Set(args.evidenceIds).size === args.evidenceIds.length &&
+			obligations.every((row) => row.hint && args.evidenceIds.includes(row._id)));
+	let confirmed = await readConfirmedSetupBooking(ctx, a);
+	// Reviewed attestation is the sole exception to bounded graph coverage. All publication fences remain shared.
 	let b =
 		args.result.kind === 'success' &&
 		a.leaseUntil !== undefined &&
 		a.leaseUntil > now &&
-		coversSetupProof(args.result.proofUids, [a.currentUid, args.result.booking.uid], pending)
+		evidenceCovered &&
+		!args.result.booking.toUid &&
+		(reviewed
+			? args.result.booking.status !== 'pending'
+			: coversSetupProof(
+					args.result.proofUids,
+					[a.currentUid, args.result.booking.uid, ...setupEvidenceUids(obligations)],
+					pending
+				))
 			? args.result.booking
 			: undefined;
 	let issue: Infer<typeof setupSyncIssue> =
-		args.result.kind === 'failure' ? args.result.issue : pending.overflow ? 'cap' : 'chain';
+		args.result.kind === 'failure'
+			? args.result.issue
+			: pending.overflow || !evidenceCovered
+				? 'cap'
+				: 'chain';
 	if (b && conflictingFacts(a, b)) {
 		b = undefined;
 		issue = 'conflict';
@@ -543,6 +827,15 @@ export async function applySetupProof(
 			b = undefined;
 			issue = 'conflict';
 		} else if (others.length) {
+			if (
+				reviewed ||
+				(await Promise.all(others.map((row) => appointmentEvidence(ctx, row._id)))).some(
+					(rows) => rows.length
+				)
+			) {
+				await retainSetupReview(ctx, a, 'conflict', 'refresh');
+				return null;
+			}
 			const affected = [a, ...others];
 			const compatible = affected.every(
 				(row) =>
@@ -559,6 +852,11 @@ export async function applySetupProof(
 				issue = 'conflict';
 			} else {
 				const survivor = oldest(affected);
+				if (survivor._id !== a._id && obligations.length) {
+					await retainSetupReview(ctx, a, 'conflict', 'refresh');
+					return null;
+				}
+				confirmed = (await transferSetupAppointment(ctx, affected, survivor)) ?? confirmed;
 				for (const loser of affected) {
 					if (loser._id !== survivor._id)
 						await remove(ctx, loser, loser._id === a._id ? 'refresh' : undefined);
@@ -574,11 +872,21 @@ export async function applySetupProof(
 	}
 	if (!b) {
 		const deferred = args.result.kind === 'deferred' && Number.isFinite(args.result.retryAt);
-		const failures = deferred ? a.failures : Math.min(a.failures + 1, 12);
+		const failures = deferred ? a.failures : a.failures + 1;
+		if (!deferred && (issue !== 'provider' || failures >= EVIDENCE_PASSES)) {
+			await retainSetupReview(
+				ctx,
+				a,
+				issue === 'provider' ? 'evidenceHorizon' : issue,
+				'refresh',
+				failures
+			);
+			return null;
+		}
 		await ctx.db.patch('csmSetupAppointments', a._id, {
 			leaseUntil: undefined,
 			refreshJobId: undefined,
-			dirty: true,
+			dirty: a.dirty || (!deferred && issue !== 'provider'),
 			failures,
 			pendingSuccessors: pending,
 			successorHint: undefined,
@@ -586,21 +894,51 @@ export async function applySetupProof(
 			repairAt:
 				deferred && args.result.kind === 'deferred'
 					? Math.max(now + 1, args.result.retryAt)
-					: now + Math.min(ACTIVE_INTERVAL, 30_000 * 2 ** failures) + Math.random() * 10_000,
+					: evidenceRetry(failures, now),
 			selection: selectionFor(a, now)
 		});
+		return null;
+	}
+	if (
+		!reviewed &&
+		!(await completeAppointmentEvidence(
+			ctx,
+			a,
+			args.evidenceIds,
+			args.result.kind === 'success' ? args.result.proofUids : [],
+			args.evidenceGeneration
+		))
+	) {
+		await retainSetupReview(ctx, a, 'chain', 'refresh');
 		return null;
 	}
 	const status =
 		b.status === 'accepted' ? 'accepted' : b.status === 'pending' ? 'checking' : 'cancelled';
 	const ended = Date.parse(b.end) <= now;
 	const selection = selectionFor({ ...a, status, end: b.end }, now);
-	const freshUntil = status === 'accepted' ? now + ACTIVE_INTERVAL : undefined;
+	const freshUntil =
+		status === 'accepted'
+			? now + ACTIVE_INTERVAL
+			: status === 'cancelled'
+				? now + CANCELLED_INTERVAL
+				: undefined;
 	await ctx.db.patch('csmSetupAppointments', a._id, {
 		currentUid: b.uid,
 		start: b.start,
 		end: b.end,
 		status,
+		confirmedBooking:
+			status === 'checking'
+				? (confirmed ?? undefined)
+				: {
+						status,
+						uid: b.uid,
+						start: b.start,
+						end: b.end,
+						confirmedAt: now,
+						providerUpdatedAt: b.updatedAt
+					},
+		bookingConfirmation: undefined,
 		selection,
 		sortAt: status === 'cancelled' ? b.updatedAt : Date.parse(b.start),
 		providerUpdatedAt: b.updatedAt,
@@ -611,6 +949,20 @@ export async function applySetupProof(
 		dirty: false,
 		failures: 0,
 		issue: undefined,
+		reviewReason: undefined,
+		reviewSession: undefined,
+		...(reviewed && args.reviewed && session
+			? {
+					reviewedResolution: {
+						...args.reviewed,
+						at: now,
+						generation: args.generation,
+						evidenceGeneration: args.evidenceGeneration,
+						inspected: session.inspected,
+						lease: args.lease
+					}
+				}
+			: {}),
 		pendingSuccessors: { uids: [], overflow: false },
 		successorHint: undefined,
 		repairAt:
@@ -620,6 +972,12 @@ export async function applySetupProof(
 					? undefined
 					: Math.min(now + ACTIVE_INTERVAL, ended ? now + ACTIVE_INTERVAL : Date.parse(b.end))
 	});
+	if (reviewed)
+		await ctx.scheduler.runAfter(0, internal.csmSetupReview.completeEvidence, {
+			id: a._id,
+			evidenceGeneration: args.evidenceGeneration,
+			lease: args.lease
+		});
 	await scheduleDeadline(ctx, (await ctx.db.get('csmSetupAppointments', a._id))!);
 	return null;
 }
@@ -632,34 +990,26 @@ export const commit = internalMutation({
 export async function readSetupProof(
 	ctx: ActionCtx,
 	snapshot: NonNullable<Infer<typeof claimResult>>,
-	deadline: number,
-	waitForQuota = false
+	deadline: number
 ) {
 	const a = snapshot.appointment;
-	return proveSetupChain(a.currentUid, pendingSuccessors(a), async (uid) => {
-		while (true) {
-			// Already claimed reads may continue through a reversible pause. Ownership
-			// is rechecked transactionally at commit, without a query before every GET.
-			if (Date.now() + 12_000 > deadline) throw new SetupDeferredError(Date.now() + 60_000);
-			let raw: unknown;
-			try {
-				raw = await calRead(ctx, `bookings/${encodeURIComponent(uid)}`, '2026-02-25');
-			} catch (error) {
-				if (!(error instanceof CalRateLimitError) || !waitForQuota) throw error;
-				const delay = Math.ceil(error.retryAfter) + 10;
-				if (Date.now() + delay + 12_000 > deadline)
-					throw new SetupDeferredError(Date.now() + Math.ceil(error.retryAfter));
-				await new Promise((resolve) => setTimeout(resolve, delay));
-				continue;
-			}
-			const booking = parseSetupBooking(raw, uid, {
-				companyId: a.companyId,
-				profileId: a.profileId,
-				attemptReference: snapshot.reference
-			});
-			if (!booking) throw new SetupChainError('chain');
-			return booking;
-		}
+	const pending = pendingSuccessors(a);
+	pending.uids = [...new Set([...pending.uids, ...snapshot.evidenceUids])].filter(
+		(uid) => uid !== a.currentUid
+	);
+	return proveSetupChain(a.currentUid, pending, async (uid) => {
+		// A quota failure immediately becomes a durable deferral, without spending a pass.
+		if (Date.now() + 12_000 > deadline) throw new SetupDeferredError(Date.now() + 60_000);
+		const raw = await calRead(ctx, `bookings/${encodeURIComponent(uid)}`, '2026-02-25');
+		const booking = parseSetupBooking(raw, uid, {
+			companyId: a.companyId,
+			profileId: a.profileId,
+			attemptReference: snapshot.reference,
+			providerScope: a.providerScope,
+			legacyReference: a.legacyReference
+		});
+		if (!booking) throw new SetupChainError('chain');
+		return booking;
 	});
 }
 export const refresh = internalAction({
@@ -672,12 +1022,17 @@ export const refresh = internalAction({
 		);
 		if (!snapshot) return null;
 		const a = snapshot.appointment;
-		const result = await readSetupProof(ctx, snapshot, a.leaseUntil! - 15_000, true);
+		const result = await readSetupProof(ctx, snapshot, a.leaseUntil! - 15_000);
 		await ctx.runMutation(internal.csmSetupAppointments.commit, {
 			id,
 			generation: a.generation,
 			lease: a.lease,
 			currentUid: a.currentUid,
+			providerScope: a.providerScope!,
+			...(snapshot.reference ? { reference: snapshot.reference } : {}),
+			...(a.legacyReference ? { legacyReference: a.legacyReference } : {}),
+			evidenceGeneration: snapshot.evidenceGeneration,
+			evidenceIds: snapshot.evidenceIds,
 			result:
 				result.kind === 'success'
 					? { kind: 'success', booking: result.booking, proofUids: result.proofUids }
@@ -686,7 +1041,7 @@ export const refresh = internalAction({
 		return null;
 	}
 });
-/** Presentation expiry never waits for provider IO, provider budget, or a refresh lease. */
+/** Sync deadlines advance repair state; confirmed booking facts do not expire. */
 export const expire = internalMutation({
 	args: { ...rowArgs, end: v.string(), freshUntil: v.union(v.number(), v.null()) },
 	returns: v.null(),
@@ -704,15 +1059,15 @@ export const expire = internalMutation({
 			await retireSupersededSetupAppointment(ctx, a, undefined, 'deadline');
 			return null;
 		}
+		if (ownership === 'released' || a.maintenanceRetired) {
+			await retireReleasedSetupAppointment(ctx, a, 'deadline');
+			return null;
+		}
 		if (ownership === 'paused') {
 			await pause(ctx, a, undefined, 'deadline');
 			return null;
 		}
-		if (a.status === 'cancelled') {
-			await ctx.db.patch('csmSetupAppointments', a._id, { deadlineJobId: undefined });
-			return null;
-		}
-		if (Date.parse(a.end) <= Date.now())
+		if (a.status !== 'cancelled' && Date.parse(a.end) <= Date.now())
 			await ctx.db.patch('csmSetupAppointments', a._id, { selection: 'hidden' });
 		await enqueue(ctx, a);
 		// This mutation owns the firing deadline; cancelling itself could roll it back.
@@ -732,220 +1087,23 @@ export const repairDue = internalMutation({
 			const ownership = await ownerState(ctx, a);
 			if (ownership === 'erased') await remove(ctx, a);
 			else if (a.superseded) await retireSupersededSetupAppointment(ctx, a);
+			else if (ownership === 'released' || a.maintenanceRetired)
+				await retireReleasedSetupAppointment(ctx, a);
 			else if (ownership === 'paused') await pause(ctx, a);
-			else {
-				// Recover abandoned actions, including leases whose scheduled job was retained as active.
-				if (a.leaseUntil && a.leaseUntil <= Date.now()) {
-					await retirePendingSetupJobs(ctx, { ...a, deadlineJobId: undefined });
-					await enqueue(ctx, { ...a, leaseUntil: undefined, refreshJobId: undefined });
-				} else await enqueue(ctx, a);
-			}
+			else await enqueue(ctx, a, { invalidate: false });
 		}
 		return null;
 	}
 });
-/** Explicit, resumable maintenance; private receipt survival is irrelevant to retirement. */
-export const normalizeSuperseded = internalMutation({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.object({
-		cursor: v.string(),
-		isDone: v.boolean(),
-		scanned: v.number(),
-		normalized: v.number()
-	}),
-	handler: async (ctx, { cursor }) => {
-		const page = await ctx.db
-			.query('csmSetupAppointments')
-			.withIndex('by_creation_time')
-			.paginate({ cursor, numItems: 25 });
-		let normalized = 0;
-		for (const a of page.page) {
-			if (!a.superseded) continue;
-			if ((await ownerState(ctx, a)) === 'erased') await remove(ctx, a);
-			else if (await retireSupersededSetupAppointment(ctx, a)) normalized++;
-		}
-		return {
-			cursor: page.continueCursor,
-			isDone: page.isDone,
-			scanned: page.page.length,
-			normalized
-		};
+export const retireReleased = internalMutation({
+	args: { companyId: v.id('company'), cursor: v.union(v.string(), v.null()) },
+	returns: v.null(),
+	handler: async (ctx, { companyId, cursor }) => {
+		await retireCompanySetupAppointments(ctx, companyId, cursor);
+		return null;
 	}
 });
-/** Page-local completion evidence only; no identities, receipts or provider locators. */
-export const normalizationInventory = internalQuery({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.object({
-		cursor: v.string(),
-		isDone: v.boolean(),
-		scanned: v.number(),
-		superseded: v.number(),
-		remaining: v.number()
-	}),
-	handler: async (ctx, { cursor }) => {
-		const page = await ctx.db
-			.query('csmSetupAppointments')
-			.withIndex('by_creation_time')
-			.paginate({ cursor, numItems: 25 });
-		return {
-			cursor: page.continueCursor,
-			isDone: page.isDone,
-			scanned: page.page.length,
-			superseded: page.page.filter((a) => a.superseded).length,
-			remaining: page.page.filter(needsSupersededSetupRetirement).length
-		};
-	}
-});
-/** Explicit initialization only; maintainReceipts normalizes first and also uses the shared seed. */
-export const initialize = internalMutation({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.object({
-		cursor: v.string(),
-		isDone: v.boolean(),
-		scanned: v.number(),
-		seeded: v.number(),
-		blocked: v.number()
-	}),
-	handler: async (ctx, { cursor }) => {
-		const page = await ctx.db
-			.query('csmBookingAttempts')
-			.withIndex('by_creation_time')
-			.paginate({ cursor, numItems: 25 });
-		let seeded = 0,
-			blocked = 0;
-		for (const a of page.page) {
-			if (a.mode === 'setup' && a.state === 'booked' && !a.confirmation) blocked++;
-			if (await seedSetupAppointment(ctx, a)) seeded++;
-		}
-		return {
-			cursor: page.continueCursor,
-			isDone: page.isDone,
-			scanned: page.page.length,
-			seeded,
-			blocked
-		};
-	}
-});
-
-export const seedLegacy = internalMutation({
-	args: {
-		companyReference: v.string(),
-		profileReference: v.string(),
-		anchor: providerBooking,
-		booking: providerBooking,
-		admittedUid: v.string(),
-		proofUids: v.array(v.string()),
-		successorHint: v.optional(v.string())
-	},
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		if (args.successorHint !== undefined && !validBookingUid(args.successorHint)) return false;
-		if (
-			!coversSetupProof(args.proofUids, [args.anchor.uid, args.admittedUid, args.booking.uid], {
-				uids: [],
-				overflow: false
-			})
-		)
-			return false;
-		const companyId = ctx.db.normalizeId('company', args.companyReference);
-		const profileId = ctx.db.normalizeId('profiles', args.profileReference);
-		if (!companyId || !profileId || (await ownerState(ctx, { companyId, profileId })) !== 'active')
-			return false;
-		const existing = await represented(ctx, args.proofUids);
-		if (!existing) return false;
-		if (existing.length) {
-			if (
-				existing.every((row) => compatibleLegacy(row, { companyId, profileId, source: 'legacy' }))
-			) {
-				const survivor = oldest(existing);
-				await enqueue(ctx, survivor, args.booking.uid);
-				if (args.successorHint !== undefined) {
-					const updated = (await ctx.db.get('csmSetupAppointments', survivor._id))!;
-					await enqueue(ctx, updated, args.successorHint);
-				}
-			}
-			return false;
-		}
-		return initializeAppointment(
-			ctx,
-			{
-				companyId,
-				profileId,
-				source: 'legacy',
-				anchorUid: args.anchor.uid
-			},
-			args.booking,
-			args.successorHint
-		);
-	}
-});
-/** Source-unbound history needs explicit reviewed original-source evidence, never an email match. */
-async function adoptLegacy(
-	ctx: ActionCtx,
-	uid: string,
-	reviewedProfileId?: Id<'profiles'>,
-	sourceEvidence?: string,
-	successorHint?: string
-) {
-	if (!validBookingUid(uid) || (successorHint !== undefined && !validBookingUid(successorHint)))
-		return false;
-	const raw = await calRead(ctx, `bookings/${encodeURIComponent(uid)}`, '2026-02-25');
-	if (
-		!object(raw) ||
-		!object(raw.metadata) ||
-		raw.metadata.dinuCsmAttempt !== undefined ||
-		typeof raw.metadata.dinuCsmReference !== 'string'
-	)
-		return false;
-	const reference = await parseCompanyReference(raw.metadata.dinuCsmReference);
-	if (!reference || reference.mode !== 'setup') return false;
-	const profileId =
-		reference.profileId ??
-		(sourceEvidence?.trim() && sourceEvidence.length <= 2000 ? reviewedProfileId : undefined);
-	if (
-		!profileId ||
-		(reference.profileId && reviewedProfileId && reference.profileId !== reviewedProfileId)
-	)
-		return false;
-	const scope = { companyId: reference.companyId, profileId };
-	const initial = parseSetupBooking(raw, uid, scope);
-	if (!initial) return false;
-	// No refresh lease exists here: local quota denial remains an immediate failure.
-	const result = await proveSetupChain(
-		uid,
-		{ uids: [], overflow: false },
-		async (linkedUid) => {
-			const booking = parseSetupBooking(
-				await calRead(ctx, `bookings/${encodeURIComponent(linkedUid)}`, '2026-02-25'),
-				linkedUid,
-				scope
-			);
-			if (!booking) throw new SetupChainError('chain');
-			return booking;
-		},
-		{ includeAncestors: true, initial }
-	);
-	if (result.kind !== 'success') return false;
-	return ctx.runMutation(internal.csmSetupAppointments.seedLegacy, {
-		companyReference: reference.companyId,
-		profileReference: profileId,
-		anchor: result.anchor,
-		booking: result.booking,
-		admittedUid: uid,
-		proofUids: result.proofUids,
-		...(successorHint !== undefined ? { successorHint } : {})
-	});
-}
-export const importLegacy = internalAction({
-	args: {
-		uid: v.string(),
-		reviewedProfileId: v.optional(v.id('profiles')),
-		sourceEvidence: v.optional(v.string())
-	},
-	returns: v.boolean(),
-	handler: (ctx, a): Promise<boolean> =>
-		adoptLegacy(ctx, a.uid, a.reviewedProfileId, a.sourceEvidence)
-});
+/** Old scheduled invocations are transported into the same durable inbox. */
 export const legacyWebhook = internalAction({
 	args: {
 		reference: v.string(),
@@ -955,164 +1113,13 @@ export const legacyWebhook = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		if (
-			!validBookingUid(args.uid) ||
-			(args.successorHint !== undefined && !validBookingUid(args.successorHint))
-		)
-			return null;
-		const reference = await parseCompanyReference(args.reference);
-		if (!reference || reference.mode !== 'setup') return null;
-		// Normalize the signed company inside a mutation; malformed/erased IDs cannot bind a row.
-		const known: boolean = await ctx.runMutation(internal.csmSetupAppointments.notify, {
+		await ctx.runMutation(internal.csmEvidence.ingress, {
 			uid: args.uid,
+			event: 'RECOVERY_HINT',
+			historicalReference: args.reference,
 			previousUid: args.previousUid,
-			successorHint: args.successorHint,
-			companyReference: reference.companyId
+			successorHint: args.successorHint
 		});
-		if (known) return null;
-		if (reference.profileId)
-			await adoptLegacy(ctx, args.uid, undefined, undefined, args.successorHint);
-		else {
-			// A source-unbound delivery may still belong to an already reviewed chain.
-			// Explicit authenticated links can locate it without inferring a booker.
-			const queue = new Set([args.uid]);
-			for (const uid of queue) {
-				const raw = await calRead(ctx, `bookings/${encodeURIComponent(uid)}`, '2026-02-25');
-				const b = parseSetupBooking(raw, uid);
-				if (!b || !object(raw)) break;
-				const metadata = object(raw.metadata) ? raw.metadata : {};
-				if (metadata.dinuCsmAttempt !== undefined) break;
-				if (metadata.dinuCsmReference !== undefined) {
-					const scope =
-						typeof metadata.dinuCsmReference === 'string'
-							? await parseCompanyReference(metadata.dinuCsmReference)
-							: null;
-					if (!scope || scope.companyId !== reference.companyId || scope.mode !== 'setup') break;
-				}
-				if (
-					await ctx.runMutation(internal.csmSetupAppointments.notify, {
-						uid,
-						companyReference: reference.companyId,
-						successorHint: args.successorHint ?? args.uid
-					})
-				)
-					return null;
-				for (const neighbor of [b.fromUid, b.toUid]) {
-					if (neighbor && !queue.has(neighbor)) {
-						if (queue.size >= 9) break;
-						queue.add(neighbor);
-					}
-				}
-			}
-			console.warn(
-				'Setup call notice: source-unbound legacy delivery requires reviewed attribution.'
-			);
-		}
 		return null;
-	}
-});
-/** Omit status to cover past/cancelled/unconfirmed too; one opaque provider page per invocation. */
-export const discoverLegacy = internalAction({
-	args: { cursor: v.union(v.string(), v.null()) },
-	returns: v.object({
-		cursor: v.union(v.string(), v.null()),
-		isDone: v.boolean(),
-		scanned: v.number(),
-		eligible: v.number(),
-		unattributed: v.number(),
-		unresolved: v.number()
-	}),
-	handler: async (
-		ctx,
-		args
-	): Promise<{
-		cursor: string | null;
-		isDone: boolean;
-		scanned: number;
-		eligible: number;
-		unattributed: number;
-		unresolved: number;
-	}> => {
-		const params = new URLSearchParams({ eventTypeId: String(EVENT_ID), limit: '100' });
-		if (args.cursor) params.set('cursor', args.cursor);
-		const response = await calRequest(ctx, `bookings?${params}`, '2026-05-01');
-		const body = response.body;
-		if (
-			!response.ok ||
-			!object(body) ||
-			body.status !== 'success' ||
-			!Array.isArray(body.data) ||
-			body.data.length > 100 ||
-			!object(body.pagination) ||
-			typeof body.pagination.hasMore !== 'boolean' ||
-			(body.pagination.hasMore && !validBookingUid(body.pagination.nextCursor))
-		)
-			throw new Error('Setup appointment inventory is unavailable.');
-		let eligible = 0,
-			unattributed = 0,
-			unresolved = 0;
-		for (const raw of body.data) {
-			if (
-				!object(raw) ||
-				!object(raw.metadata) ||
-				raw.metadata.dinuCsmAttempt !== undefined ||
-				typeof raw.metadata.dinuCsmReference !== 'string'
-			)
-				continue;
-			const reference = await parseCompanyReference(raw.metadata.dinuCsmReference);
-			if (!reference || reference.mode !== 'setup') continue;
-			eligible++;
-			if (!reference.profileId) {
-				unattributed++;
-				continue;
-			}
-			if (
-				!validBookingUid(raw.uid) ||
-				!parseSetupBooking(raw, raw.uid, {
-					companyId: reference.companyId,
-					profileId: reference.profileId
-				})
-			) {
-				unresolved++;
-				continue;
-			}
-		}
-		return {
-			cursor: body.pagination.hasMore ? String(body.pagination.nextCursor) : null,
-			isDone: !body.pagination.hasMore,
-			scanned: body.data.length,
-			eligible,
-			unattributed,
-			unresolved
-		};
-	}
-});
-
-/** Page-local aggregate health, with explicit time; no provider locators or attendee data. */
-export const inventory = internalQuery({
-	args: { cursor: v.union(v.string(), v.null()), now: v.number() },
-	returns: v.object({
-		cursor: v.string(),
-		isDone: v.boolean(),
-		scanned: v.number(),
-		verified: v.number(),
-		unresolved: v.number(),
-		overdue: v.number(),
-		capLimited: v.number()
-	}),
-	handler: async (ctx, args) => {
-		const page = await ctx.db
-			.query('csmSetupAppointments')
-			.withIndex('by_creation_time')
-			.paginate({ cursor: args.cursor, numItems: 25 });
-		return {
-			cursor: page.continueCursor,
-			isDone: page.isDone,
-			scanned: page.page.length,
-			verified: page.page.filter((a) => a.observedAt !== undefined && !a.dirty).length,
-			unresolved: page.page.filter((a) => a.dirty || a.status === 'checking').length,
-			overdue: page.page.filter((a) => a.repairAt !== undefined && a.repairAt < args.now).length,
-			capLimited: page.page.filter((a) => a.issue === 'cap').length
-		};
 	}
 });

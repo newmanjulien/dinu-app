@@ -1,5 +1,8 @@
 import { v } from 'convex/values';
+import { setupCallView } from './csmSetupValidators';
 import { permissions, role } from './permissions';
+
+export const helpPreferences = v.object({ rep: v.boolean(), buyer: v.boolean() });
 
 export const profileView = v.object({
 	id: v.id('profiles'),
@@ -9,6 +12,7 @@ export const profileView = v.object({
 });
 export const accountView = v.object({
 	profile: profileView,
+	helpPreferences,
 	permissions,
 	membership: v.union(
 		v.null(),
@@ -26,7 +30,7 @@ export const accountView = v.object({
 			name: v.string(),
 			avatarUrl: v.union(v.string(), v.null()),
 			approvalEmail: v.union(v.string(), v.null()),
-			csmCallBooked: v.boolean(),
+			setupCall: setupCallView,
 			deletionPending: v.boolean()
 		})
 	),

@@ -43,17 +43,32 @@ Verify provider rejection, timeout/connection loss, late result persistence, exp
 
 ## Outcomes and recovery
 
-Explicit review decisions now hold completed results for confirmation. The contract stores one completion under its current review generation: awaiting confirmation with the triggering reviewer, or queued with its delivery ID. Admins can choose **Send results** or **Reset all reviews**. Leaving or dismissing the modal leaves the choice pending; returning to the contract restores it. Approvals take effect immediately while the email is held.
+Explicit review decisions hold completed results for confirmation under their selected
+contract and dashboard/buyer review context. Admins can send results; dismissing the modal
+leaves confirmation pending. Approvals take effect immediately while email is held. There
+is no global review reset. Dashboard applications and accepted buyer changes have independent
+generations/completions, and only their current active requests contribute to results.
 
-Confirmation creates the delivery and consumes the pending completion in one transaction. Repeated confirmation reuses its delivery; confirmation and reset against stale generations do nothing. Another admin can confirm without changing triggering-reviewer CC. Editing an already completed decision also requires confirmation before another notification.
+Confirmation creates the delivery and consumes the pending completion atomically. A retry
+reuses its delivery; stale generation confirmations do nothing. Claims preserve the triggering
+reviewer for CC even when another admin confirms. Editing a completed decision requires
+confirmation before another notification.
 
-The live contract subscription owns review state. Decision commands return no state, and confirmation/reset return only their outcome. `stateVersion` orders all mutable contract state, including renames, saves, review decisions, confirmation and reset. It advances only when that state changes; unchanged commands and replays retain it. Selection `revision` and `reviewGeneration` remain separate business guards for save conflicts, review completion and delivery eligibility. Completion state does not duplicate the generation, and new immutable decision receipts omit the obsolete completion flag; historical rows remain readable without rewriting receipts.
+Live subscriptions own review state. `stateVersion` orders mutable metadata; `editRevision`,
+`approvedRevision`, review generations and immutable application/operation identities serve
+their respective workflows. Save concurrency uses each ordered command's expected widget
+state, with one retained immutable batch across uncertainty and receipt reconciliation.
+A newer global edit revision is not a save veto. Browser persistence preserves local intent,
+contract ownership, subscription-before-response acknowledgment and account-exit draining.
+New review email captures carry model 2, the exact contract/context generation and
+current change/application IDs; an omitted context means dashboard. Legacy model-less
+captures are disposed rather than dispatched. Invitations retain their separate lifecycle.
 
-Browser persistence and the bounded cache queue reject older state versions, and both full and metadata-only disk writes recheck freshness inside their IndexedDB transaction. Confirmed IndexedDB stores are disposable; their current upgrade/retirement behavior and the separate sessionStorage intent journal are documented in [template storage](template-storage.md#browser-persistence). Legacy cached metadata and draft bases normalize missing versions to zero, below the server's template source of one, and missing completion state to null. Confirmed-cache upgrades preserve pending journal intent and immutable operation arguments; review lifecycles remain intact. Backend rows without a stored version project version one and advance on their next changed write. Ship the frontend and backend API changes together and refresh existing clients during rollout; this local work does not deploy or migrate production data.
-
-Reset returns all current required reviews on that contract to pending with new lifecycles, advances selection revision and review generation, clears the previous save acknowledgement, and retires the previous approval request. Selected concessions and historical decision receipts remain. Fresh lifecycles reject delayed decisions; the revision prevents old saves from reapplying, and explicit draft rebasing adopts server lifecycles for unchanged choices. Exports retain their existing final authorization check. Review metadata changes do not rebuild document content.
-
-New results deliveries must match the contract’s queued completion. Existing deliveries on contracts without completion state retain their previous generation eligibility rules. An email already dispatched before this workflow was introduced cannot be recalled. Reset before confirmation prevents this completion’s results email from being queued at all.
+Seller export release retains current readiness and reserved capture/decision authorization
+checks independently of publication; buyer download retains final capability/publication checks. Review metadata
+updates do not reconstruct approved wording. Queued results deliveries must match the
+current completion and generation; dispatched emails cannot be recalled. Provider delivery
+recovery remains independent of document saving.
 
 Approval requests capture selected concessions and statuses against the contract's immutable template. Completed-review notifications retain the triggering reviewer captured during the decision transaction; confirmed deliveries capture review statuses during preparation while their generation remains eligible. Claims resolve current recipient eligibility: approval mail goes to the configured request recipient; decision mail goes to the live contract creator with at most the triggering reviewer in CC, excluding the primary mailbox. Invitation plaintext tokens exist only in the inline action and outgoing message; the database stores their hash.
 

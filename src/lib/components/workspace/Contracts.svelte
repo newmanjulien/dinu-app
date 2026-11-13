@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ContractsLayout from './ContractsLayout.svelte';
 	import { resolve } from '$app/paths';
 	import SearchField from '$lib/ui/SearchField.svelte';
 	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
@@ -7,6 +8,7 @@
 	import type { SavedContractCard } from '$lib/contract/card';
 	import { afterStartupPaint, recordStartup } from '$lib/auth/startup-perf';
 	import { useStartupHome } from '$lib/auth/startup-data';
+	import { useWorkspaceHints } from '$lib/auth/workspace-hints.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { createVisibleContractWarming } from '$lib/contract/visible-contracts.svelte';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
@@ -19,7 +21,10 @@
 	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import CompanySetupPrompt from '$lib/features/company-setup/CompanySetupPrompt.svelte';
+	import ContractGrid from './ContractGrid.svelte';
 	import ContractGridSkeleton from './ContractGridSkeleton.svelte';
+	import BuyerLinks from './BuyerLinks.svelte';
+	import BuyerLinksSkeleton from './BuyerLinksSkeleton.svelte';
 	import { getInteractionController, setInteractionOwner } from '$lib/components/ui/interactions';
 	setInteractionOwner(Symbol('contracts'));
 	const interactions = getInteractionController();
@@ -28,6 +33,7 @@
 	const feedback = getWorkspaceFeedback();
 	const session = useViewerSession();
 	const viewer = useViewer();
+	const hints = useWorkspaceHints();
 	const hubspot = useHubSpotDeals();
 	const admin = $derived(viewer().membership.role === 'admin');
 	const canCreateContract = $derived(viewer().templateReady && viewer().instructionsReady);
@@ -46,6 +52,7 @@
 			hubspot.prefetch();
 	}
 	const membershipId = viewer().membership.id;
+	const companyId = viewer().company.id;
 	const startup = useStartupHome();
 	const warming = createVisibleContractWarming();
 	onDestroy(() => warming.destroy());
@@ -61,6 +68,46 @@
 		},
 		{ initialNumItems: 24 }
 	);
+	let buyerLinksRevision = $state(0);
+	let visibleBuyerLinks = $state(10);
+	const buyerLinks = usePaginatedQuery(
+		api.buyerLinks.browse,
+		() => {
+			void buyerLinksRevision;
+			return { membershipId };
+		},
+		{ initialNumItems: 10, keepPreviousData: true }
+	);
+	const hasBuyerLinks = $derived(buyerLinks.results.length > 0);
+	const buyerLinksPresence = $derived(
+		hasBuyerLinks
+			? true
+			: !buyerLinks.error && buyerLinks.status === 'Exhausted'
+				? false
+				: undefined
+	);
+	const showBuyerLinksSkeleton = $derived(
+		buyerLinksPresence === undefined && !buyerLinks.error && hints.hasBuyerLinks === true
+	);
+	$effect(() => {
+		const present = buyerLinksPresence;
+		if (present === undefined || buyerLinks.error || session.blocked || session.closing) return;
+		untrack(() => hints.rememberBuyerLinks({ membershipId, companyId }, present));
+	});
+	const hasMoreBuyerLinks = $derived(
+		buyerLinks.results.length > visibleBuyerLinks ||
+			buyerLinks.status === 'CanLoadMore' ||
+			buyerLinks.status === 'LoadingMore'
+	);
+	$effect(() => {
+		// Fill the visible rows even when deleted contracts leave an empty page.
+		if (
+			!buyerLinks.error &&
+			buyerLinks.status === 'CanLoadMore' &&
+			buyerLinks.results.length < visibleBuyerLinks
+		)
+			buyerLinks.loadMore(3);
+	});
 	type ContractPage = {
 		cards: SavedContractCard[];
 		query: string;
@@ -246,35 +293,45 @@
 
 <WorkspacePresentationReporter outcome={hasPage ? 'success' : list.error ? 'error' : 'pending'} />
 
-<main
-	class="contracts min-h-[calc(100dvh-var(--app-header-height))] bg-page px-4 py-4 sm:px-6 md:px-8 md:py-5"
+<ContractsLayout
+	role={viewer().membership.role}
+	hasBuyerLinks={hasBuyerLinks || showBuyerLinksSkeleton}
 >
-	<div class="mx-auto max-w-[1800px]">
-		<h1 class="sr-only">Contracts</h1>
-		<div class="mb-6 flex items-center gap-2">
-			<SearchField
-				bind:element={searchInput}
-				label="Search contracts"
-				placeholder="Search by name of company"
-				maxlength={200}
-				bind:value={search}
-			/>
-			<Button
-				href={canCreateContract ? resolve('/contracts/new') : undefined}
-				disabled={!canCreateContract}
-				onpointerenter={warmDeals}
-				onpointerdown={warmDeals}
-				onfocus={warmDeals}
-				title={canCreateContract
-					? undefined
-					: viewer().templateReady
-						? 'An admin must add instructions to your company’s template.'
-						: 'An admin must set up your company’s template.'}
-				><PlusIcon class="size-[15px]" aria-hidden="true" />New contract</Button
-			>
-		</div>
+	{#snippet toolbar()}
+		<SearchField
+			bind:element={searchInput}
+			label="Search contracts"
+			placeholder="Search by name of company"
+			maxlength={200}
+			bind:value={search}
+		/>
+		<Button
+			href={canCreateContract ? resolve('/contracts/new') : undefined}
+			disabled={!canCreateContract}
+			onpointerenter={warmDeals}
+			onpointerdown={warmDeals}
+			onfocus={warmDeals}
+			title={canCreateContract
+				? undefined
+				: viewer().templateReady
+					? 'An admin must add instructions to your company’s template.'
+					: 'An admin must set up your company’s template.'}
+			><PlusIcon class="size-[15px]" aria-hidden="true" />New contract</Button
+		>
+	{/snippet}
+	{#snippet notice()}
 		<CompanySetupPrompt />
-		<div class="min-w-0 @container" bind:clientWidth={gridWidth}>
+		{#if buyerLinks.error && !hasBuyerLinks}
+			<p role="alert" class="mb-3 text-xs text-ink-muted">
+				We couldn’t load your buyer links. <button
+					class="cursor-pointer underline"
+					onclick={() => buyerLinksRevision++}>Try again</button
+				>
+			</p>
+		{/if}
+	{/snippet}
+	{#snippet contracts()}
+		<div bind:clientWidth={gridWidth}>
 			{#if list.waiting && list.cards.length}
 				<div class="mb-3 flex items-center">
 					<LoadingWheel label="Refreshing contracts" class="size-5" />
@@ -318,7 +375,7 @@
 						</p>{/if}
 				</div>
 			{:else if list.cards.length}
-				<div class="grid grid-cols-1 gap-3 @[600px]:grid-cols-2 @[1000px]:grid-cols-4">
+				<ContractGrid>
 					{#each visibleCards as contract (contract._id)}
 						<ContractCard
 							status={feedback.statusFor(contract._id)}
@@ -328,7 +385,7 @@
 							onCool={() => warming.cool(contract._id)}
 						/>
 					{/each}
-				</div>
+				</ContractGrid>
 			{/if}
 			{#if hasHiddenCards || list.hasMore}
 				<Button
@@ -342,5 +399,20 @@
 				>
 			{/if}
 		</div>
-	</div>
-</main>
+	{/snippet}
+	{#snippet buyerLinksContent()}
+		{#if hasBuyerLinks}
+			<BuyerLinks
+				role={viewer().membership.role}
+				links={buyerLinks.results.slice(0, visibleBuyerLinks)}
+				hasMore={hasMoreBuyerLinks}
+				loading={buyerLinks.isLoading}
+				error={Boolean(buyerLinks.error)}
+				onShowMore={() => (visibleBuyerLinks += 3)}
+				onRetry={() => buyerLinksRevision++}
+			/>
+		{:else if showBuyerLinksSkeleton}
+			<BuyerLinksSkeleton />
+		{/if}
+	{/snippet}
+</ContractsLayout>

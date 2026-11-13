@@ -8,10 +8,15 @@ type Session = {
 	expiresAt: number;
 	opening: 'idle' | 'pending' | 'accepted';
 	sequence: number;
+	lastActivitySentAt: number;
 };
 type Pending = { body: BuyerActivityRequest; at: number; generation: number };
 const key = Symbol('buyer-activity');
 const MAX_AGE = 120_000;
+type ActivityAccount = {
+	activityToken: (signal: AbortSignal) => Promise<string | null>;
+	preparedActivityToken: () => string | null;
+};
 
 function waitForRetry(delay: number, signal: AbortSignal) {
 	return new Promise<void>((resolve) => {
@@ -28,6 +33,8 @@ function waitForRetry(delay: number, signal: AbortSignal) {
 
 /** Best-effort page activity. Event history is never persisted in browser storage. */
 export class BuyerActivity {
+	private account?: ActivityAccount;
+	private owner?: string;
 	private eligible = false;
 	private token?: string;
 	private session?: Session;
@@ -37,10 +44,19 @@ export class BuyerActivity {
 	private queue: Pending[] = [];
 	private request?: AbortController;
 	private expiry?: ReturnType<typeof setTimeout>;
+	setAccount(account: ActivityAccount) {
+		this.account = account;
+		return () => {
+			if (this.account === account) this.account = undefined;
+		};
+	}
 
 	mount() {
 		this.alive = true;
 		document.addEventListener('visibilitychange', this.visible);
+		document.addEventListener('scroll', this.interacted, { capture: true, passive: true });
+		document.addEventListener('pointerdown', this.interacted);
+		document.addEventListener('keydown', this.interacted);
 		window.addEventListener('pagehide', this.flush);
 		this.visible();
 		return () => {
@@ -48,11 +64,18 @@ export class BuyerActivity {
 			this.alive = false;
 			this.stop();
 			document.removeEventListener('visibilitychange', this.visible);
+			document.removeEventListener('scroll', this.interacted, true);
+			document.removeEventListener('pointerdown', this.interacted);
+			document.removeEventListener('keydown', this.interacted);
 			window.removeEventListener('pagehide', this.flush);
 		};
 	}
-	observe(token: string, eligible: boolean, browser: ActivityBrowser = null) {
-		if (this.token !== token) {
+	observe(token: string, eligible: boolean, browser: ActivityBrowser = null, owner?: string) {
+		if (this.owner !== owner) {
+			this.stop();
+			this.owner = owner;
+		}
+		if (this.token !== token || (eligible && !this.session)) {
 			this.stop();
 			this.token = token;
 			const current = browser && browser.expiresAt > Date.now() ? browser : null;
@@ -62,7 +85,8 @@ export class BuyerActivity {
 				openingId: crypto.randomUUID(),
 				expiresAt: current?.expiresAt ?? Date.now() + ACTIVITY_RETENTION,
 				opening: 'idle',
-				sequence: 0
+				sequence: 0,
+				lastActivitySentAt: Date.now()
 			};
 			this.scheduleExpiry();
 		}
@@ -112,6 +136,27 @@ export class BuyerActivity {
 		session.opening = 'pending';
 		this.enqueue({
 			kind: 'open',
+			token: session.token,
+			browserId: session.browserId,
+			openingId: session.openingId
+		});
+	};
+	private interacted = (event: Event) => {
+		const session = this.session;
+		if (
+			!event.isTrusted ||
+			!this.alive ||
+			!this.eligible ||
+			!session ||
+			session.opening !== 'accepted' ||
+			session.expiresAt <= Date.now() ||
+			document.visibilityState !== 'visible' ||
+			Date.now() - session.lastActivitySentAt < 60_000
+		)
+			return;
+		session.lastActivitySentAt = Date.now();
+		this.enqueue({
+			kind: 'active',
 			token: session.token,
 			browserId: session.browserId,
 			openingId: session.openingId
@@ -170,9 +215,10 @@ export class BuyerActivity {
 							);
 							if (!current()) break;
 							if (response.ok) {
-								if (entry.body.kind === 'open') {
+								if (response.status !== 204) {
 									const result: { expiresAt: number } = await response.json();
 									if (!current()) break;
+									if (entry.body.kind !== 'open') throw new Error('Invalid activity response.');
 									if (!Number.isFinite(result.expiresAt))
 										throw new Error('Invalid activity expiry.');
 									session.expiresAt = result.expiresAt;
@@ -210,10 +256,21 @@ export class BuyerActivity {
 			this.delivering = false;
 		}
 	}
-	private send(body: BuyerActivityRequest, signal = AbortSignal.timeout(8000)) {
+	private async send(
+		body: BuyerActivityRequest,
+		signal = AbortSignal.timeout(8000),
+		flush = false
+	) {
+		const account = this.account;
+		const token = flush ? account?.preparedActivityToken() : await account?.activityToken(signal);
+		signal.throwIfAborted();
+		if (account !== this.account) throw new Error('Activity account changed.');
 		return fetch('/api/buyer/activity', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: {
+				'Content-Type': 'application/json',
+				...(token ? { Authorization: `Bearer ${token}` } : {})
+			},
 			credentials: 'same-origin',
 			cache: 'no-store',
 			keepalive: true,
@@ -225,7 +282,7 @@ export class BuyerActivity {
 		if (!this.eligible || !this.session || this.session.expiresAt <= Date.now()) return;
 		for (const entry of this.queue.splice(0, 8))
 			if (entry.generation === this.generation && Date.now() - entry.at < MAX_AGE)
-				void this.send(entry.body).catch(() => {});
+				void this.send(entry.body, AbortSignal.timeout(8000), true).catch(() => {});
 	};
 }
 export function setBuyerActivity() {

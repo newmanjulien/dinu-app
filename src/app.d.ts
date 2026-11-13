@@ -8,9 +8,6 @@ declare global {
 		interface PageData {
 			startup?: Promise<import('$lib/auth/startup-data').StartupData | null> | null;
 		}
-		interface PageState {
-			supportWelcomeMembershipId?: string;
-		}
 	}
 }
 

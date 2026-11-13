@@ -52,6 +52,48 @@ export function remapSeedSelections(items, selected) {
 	}
 	return result;
 }
+/** Materialize fixture selections through the same native immutable changes as saving.
+ * @param {Awaited<ReturnType<typeof import('../src/convex/contractChanges').changeSession>>} session
+ * @param {import('../src/lib/playbook/model').RepInstruction[]} items
+ * @param {Record<string,string>} selected
+ * @param {import('../src/convex/_generated/dataModel').Id<'playbookItems'>[]} itemIds
+ * @param {{ access: import('../src/convex/auth').CompanyAccess; templateVersionId: import('../src/convex/_generated/dataModel').Id<'templateVersions'>; operationId: string }} options
+ */
+export async function materializeSeedSelections(session, items, selected, itemIds, options) {
+	for (const [itemId, choiceId] of Object.entries(selected)) {
+		const index = Number(itemId.replace('seed-item-', ''));
+		const item = items[index];
+		assert.ok(item, `Unknown seed instruction ${itemId}`);
+		const choice = item.concessions.find((choice) => choice.id === choiceId);
+		assert.ok(choice, `Unknown seed concession ${choiceId}`);
+		try {
+			await session.stage({
+				source: {
+					kind: 'playbook',
+					value: {
+						templateVersionId: options.templateVersionId,
+						itemId: present(itemIds[index]),
+						optionId: choiceId,
+						description: choice.description,
+						target: item.trigger.target
+					}
+				},
+				key: present(itemIds[index]),
+				operationId: `seed:${itemId}:${choiceId}`,
+				policy: item.approvalPolicy.kind,
+				changes: choice.changes,
+				access: options.access
+			});
+		} catch (error) {
+			throw new Error(
+				`Seed ${itemId}/${choiceId}: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error }
+			);
+		}
+	}
+	await session.commit({ access: options.access, operationId: options.operationId });
+	return session.document;
+}
 /** @returns {Promise<import('./seed-types').LegacyExport>} */
 export async function readExport(directory = sourceDirectory) {
 	/** @param {string} table @returns {Promise<unknown[]>} */
@@ -560,7 +602,7 @@ export function transformExport(source) {
 		);
 	canonicalMetadata(blocks, workingItems);
 	normalizeAuthoring(blocks, workingItems, manifest);
-	/** @type {import('../src/lib/playbook/model').PlaybookItem[]} */
+	/** @type {import('../src/lib/playbook/model').RepInstruction[]} */
 	const items = workingItems.map((item) => {
 		const { changesNeedApproval: guidance, ...instructions } = item.instructions;
 		const trigger = item.triggers[0];

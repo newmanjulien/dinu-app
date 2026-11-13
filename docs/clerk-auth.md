@@ -331,10 +331,11 @@ keep completed deletion markers permanently.
 
 ## Verification before rollout
 
-`npm run verify` runs SSR/hydration, lifecycle, performance and HubSpot checks, Svelte/type checks, bundle-boundary assertions and
-production build. Existing fixtures carry authenticated identities. Their saving,
-conflict, retry, creation, immutable publication, scheduling, and cache assertions
-remain in place; no new test suite was added.
+`npm run verify` runs the existing SSR, backend, client and component tests, focused
+performance suite, Svelte/type checks, production build and bundle-boundary assertions.
+Existing authenticated fixtures check saving, conflicts, retries, creation,
+frozen-template preservation, immutable output reservations, scheduling and caching.
+See the [automated guarantee reference](performance-checks.md) for their scope and limits.
 
 Live configuration and browser checks need development Clerk keys and Loops setup.
 Use accounts in two companies plus an unaffiliated account. Verify email codes,

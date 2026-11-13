@@ -12,7 +12,7 @@ import { createChangeConflictChecker } from './conflicts';
 import type { ChangeStructure } from './structure';
 import { equalConcession } from './content';
 import { changeTriggerOwner, triggersIntersect, validateTriggerRange } from './geometry';
-import type { Concession, ContractChange, PlaybookItem, TemplateItem, Trigger } from './model';
+import type { Concession, ContractChange, RepInstruction, TemplateItem, Trigger } from './model';
 
 import { MAX_PLAYBOOK_ITEM_BYTES } from './limits';
 
@@ -24,8 +24,8 @@ export function validateConcessions(concessions: DeepReadonly<Concession[]>): vo
 
 /** Retained concessions are read-only. All content uses the same authoring limits. */
 export function validateConcessionUpdate(
-	saved: DeepReadonly<PlaybookItem>,
-	proposed: DeepReadonly<PlaybookItem>
+	saved: DeepReadonly<RepInstruction>,
+	proposed: DeepReadonly<RepInstruction>
 ): void {
 	const retained = new Map(saved.concessions.map((concession) => [concession.id, concession]));
 	for (const concession of proposed.concessions) {
@@ -80,19 +80,26 @@ export function validateChangeGeometry(
 }
 
 /** Final items cannot reserve a structural location without changing the contract. */
-export function validateStructuralReplacementContent(item: {
-	concessions: DeepReadonly<{ changes: DeepReadonly<ContractChange>[] }[]>;
-}): void {
+export function validateStructuralReplacementContent(
+	item: {
+		concessions: DeepReadonly<{ changes: DeepReadonly<ContractChange>[] }[]>;
+	},
+	allowBoundaryDeletion = false
+): void {
 	for (const concession of item.concessions)
 		for (const change of concession.changes)
-			if (change.target.kind === 'boundary' && !hasMeaningfulReplacement(change.replacement))
+			if (
+				change.target.kind === 'boundary' &&
+				!hasMeaningfulReplacement(change.replacement) &&
+				!allowBoundaryDeletion
+			)
 				throw new PlaybookValidationError(
 					'A structural concession needs text or a reference before it can be saved.'
 				);
 }
 
-/** Source-independent checks shared by structural validation and instructions-only saves. */
-export function validatePlaybookItemContent(item: DeepReadonly<TemplateItem>): void {
+/** Source-independent checks shared by structural validation and wording-only saves. */
+export function validateTemplateItemContent(item: DeepReadonly<TemplateItem>): void {
 	validateStorageArrays(item);
 	if (
 		'approvalPolicy' in item &&
@@ -101,7 +108,9 @@ export function validatePlaybookItemContent(item: DeepReadonly<TemplateItem>): v
 	)
 		throw new PlaybookValidationError('Approval instructions cannot be blank');
 	if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_PLAYBOOK_ITEM_BYTES)
-		throw new PlaybookValidationError('Instruction exceeds 500 KB');
+		throw new PlaybookValidationError(
+			'audience' in item ? 'Explanation exceeds 500 KB' : 'Instructions exceed 500 KB'
+		);
 	for (const target of [
 		item.trigger.target,
 		...('concessions' in item ? item.concessions : []).flatMap((concession) =>

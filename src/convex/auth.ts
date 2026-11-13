@@ -42,6 +42,14 @@ export function membershipForProfile(ctx: QueryCtx, profileId: Id<'profiles'>) {
 		.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
 		.unique();
 }
+/** Optional recognition on public links never initializes an account or a workspace. */
+export async function memberForCompany(ctx: QueryCtx, companyId: Id<'company'>) {
+	if (!(await ctx.auth.getUserIdentity())) return null;
+	const { profile } = await readAccount(ctx);
+	if (!profile) return null;
+	const membership = await membershipForProfile(ctx, profile._id);
+	return membership?.companyId === companyId ? { profile, membership } : null;
+}
 export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id<'memberships'>) {
 	const profile = await requireProfile(ctx);
 	const membership = await membershipForProfile(ctx, profile._id);

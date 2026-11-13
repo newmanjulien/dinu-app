@@ -24,17 +24,17 @@ export const approvalPolicy = v.union(
 	v.object({ kind: v.literal('none') }),
 	v.object({ kind: v.literal('required'), instructions: v.string() })
 );
-export const playbookItem = v.object({
+export const repInstruction = v.object({
 	approvalPolicy,
 	trigger,
 	instructions: v.optional(instructions),
 	concessions: v.array(concession)
 });
 
-export const instructionAudience = v.union(v.literal('rep'), v.literal('buyer'));
-export const buyerInstruction = v.object({
+export const templateAudience = v.union(v.literal('rep'), v.literal('buyer'));
+export const buyerExplanation = v.object({
 	audience: v.literal('buyer'),
 	trigger,
 	explanation: v.string()
 });
-export const templateItem = v.union(playbookItem, buyerInstruction);
+export const templateItem = v.union(repInstruction, buyerExplanation);

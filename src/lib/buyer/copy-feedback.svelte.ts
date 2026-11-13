@@ -1,22 +1,32 @@
 import { getContext, setContext } from 'svelte';
 
-/** Workspace-owned so closing a menu or removing a card cannot remove its confirmation. */
+type CopyNotice = { message: string; kind: 'success' | 'error' };
+
+/** Workspace-owned so closing a menu or removing a card cannot remove its feedback. */
 export class BuyerLinkCopyFeedback {
-	confirmation = $state.raw<{ message: string } | null>(null);
+	notice = $state.raw<CopyNotice | null>(null);
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private alive = true;
 
 	show = () => {
+		this.publish({ message: 'Latest link copied', kind: 'success' }, 2500);
+	};
+
+	showError = (message: string) => {
+		this.publish({ message, kind: 'error' }, 5000);
+	};
+
+	private publish(notice: CopyNotice, durationMs: number) {
 		if (!this.alive) return;
 		clearTimeout(this.timer);
-		this.confirmation = { message: 'Latest link copied' };
-		this.timer = setTimeout(() => (this.confirmation = null), 2500);
-	};
+		this.notice = notice;
+		this.timer = setTimeout(() => (this.notice = null), durationMs);
+	}
 
 	destroy() {
 		this.alive = false;
 		clearTimeout(this.timer);
-		this.confirmation = null;
+		this.notice = null;
 	}
 }
 

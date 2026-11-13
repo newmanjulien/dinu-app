@@ -1,5 +1,4 @@
 <script lang="ts">
-	import TextInput from '$lib/ui/TextInput.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { useConvexClient } from 'convex-svelte';
 	import { useViewer } from '$lib/auth/viewer-session.svelte';
@@ -8,22 +7,21 @@
 	import type { Id } from '../../convex/_generated/dataModel';
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import { getBuyerLinkCopyFeedback } from './copy-feedback.svelte';
-	import ModalShell from '$lib/ui/ModalShell.svelte';
 	let {
 		id,
 		disabled = false,
 		reason = null
 	}: { id: Id<'savedContracts'>; disabled?: boolean; reason?: string | null } = $props();
 	const viewer = useViewer();
+	const feedback = getBuyerLinkCopyFeedback();
 	const links = new BuyerLinkController(
 		useConvexClient(),
 		getContractEditors(),
 		viewer().membership.id,
 		untrack(() => id),
-		getBuyerLinkCopyFeedback().show
+		feedback.show
 	);
 	onDestroy(() => links.destroy());
-	let open = $state(false);
 	let trigger = $state<HTMLButtonElement | null>();
 </script>
 
@@ -31,7 +29,6 @@
 	text={reason ?? links.busy ?? 'Copy and send to buyer'}
 	trigger={trigger ?? undefined}
 	standalone={false}
-	class="rounded-md border-hairline border-edge bg-surface px-2 py-1 text-xs leading-[1.4] text-ink shadow-floating"
 >
 	{#snippet children(descriptionId)}
 		<button
@@ -46,7 +43,7 @@
 			onclick={() => {
 				if (disabled || reason || links.busy) return;
 				void links.copy().then(() => {
-					if (links.manualUrl || links.error) open = true;
+					if (links.error) feedback.showError(links.error);
 				});
 			}}
 		>
@@ -81,25 +78,6 @@
 	{/snippet}
 </Tooltip>
 <span class="sr-only" aria-live="polite">{links.busy}</span>
-{#if open}
-	<ModalShell
-		title={links.error ? 'Couldn’t copy link' : 'Buyer link'}
-		onClose={() => {
-			open = false;
-		}}
-	>
-		{#if links.error}<p role="alert" class="text-sm text-ink-muted">{links.error}</p>{/if}
-		{#if links.manualUrl}<p class="mb-3 text-sm text-ink-muted">
-				Copy this link to send it to the buyer.
-			</p>
-			<TextInput
-				readonly
-				value={links.manualUrl}
-				aria-label="Buyer link"
-				onfocus={(event) => event.currentTarget.select()}
-			/>{/if}
-	</ModalShell>
-{/if}
 
 <style>
 	@keyframes -global-buyer-link-rock {

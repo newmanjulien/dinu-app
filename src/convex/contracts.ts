@@ -1,12 +1,16 @@
+import { buyerName } from './contractBuyer';
+import { requestBuyerRefresh } from './hubspotRecipients';
 import { assertStorageCapacity } from './storageCapacity';
-import { publishContract } from './contractPublication';
-import { templateContent } from './templateValidators';
 import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
-import { applicationChoices, sameApplications, choicesOf } from '../lib/contract/applications';
-import type { Doc, Id } from './_generated/dataModel';
+import { validate } from 'convex-helpers/validators';
+import { discussionCommand, seenMessages } from '../lib/discussions/validators';
+import { discussionContext } from './discussionContext';
+import { discussionActor } from './discussionService';
+import { discussionResult, discussionSeenResult } from './discussionCommands';
+
 import { mutation, query, type MutationCtx } from './_generated/server';
-import { accessibleContract, requireMembership, scopedOperation, type CompanyAccess } from './auth';
+import { requireMembership, scopedOperation, type CompanyAccess } from './auth';
 import { ensureContractCleanup } from './contractCleanup';
 import { readDirectory, removeDirectoryEntry, writeDirectory } from './contractDirectory';
 import {
@@ -15,40 +19,66 @@ import {
 	liveContractMetadata,
 	saveResult
 } from './savedContractValidators';
-import { activityCommand } from '../lib/contract/activity-commands';
+import {
+	playbookCommand,
+	readiness as readinessResult,
+	type PlaybookState
+} from '../lib/contract/changes';
+import { playbookStates, contractReadiness } from './reviews';
 import { saveCommands } from './contractSaving';
+import { nativePreparationKind } from './discussionPreparationValidators';
+import { nativeOperationKey } from './discussionPreparation';
+import { receiptPayload } from './operationReceipts';
 import { contractWorkBlock, installation, requireContractWork } from './contractPolicy';
-import { currentPointer } from './templates';
+import { currentPointer, versionReader } from './templates';
+import { createContractDocument } from '../lib/document/contract-document';
+import { writeContractDocument } from './contractDocuments';
+import { initialContextIdentity } from './contractReviewIdentity';
+import {
+	accessibleContractState,
+	clearBuyerRefresh,
+	readContract,
+	patchContract,
+	assertHubspotAssociationAvailable,
+	type Contract,
+	type ContractHubspotLink
+} from './contractState';
 
-function buyerCompanyName(value: string) {
+function contractTitle(value: string) {
 	const name = value.trim();
-	if (!name) throw new ConvexError('Enter a buyer company name.');
-	if (name.length > 200) throw new ConvexError('Company names must be 200 characters or fewer.');
+	if (!name) throw new ConvexError('Enter a contract name.');
+	if (name.length > 200) throw new ConvexError('Contract names must be 200 characters or fewer.');
 	return name;
 }
 
-export function stateOf(contract: Doc<'savedContracts'>) {
+export async function stateOf(
+	ctx: import('./_generated/server').QueryCtx,
+	contract: Contract,
+	playbook?: PlaybookState[]
+) {
 	return {
+		title: contract.root.title,
+		documentId: contract.root.documentId,
+		documentRevision: contract.root.documentRevision,
+		stateRevision: contract.root.stateRevision,
+		playbookReviewIdentity: contract.root.playbookReviewIdentity,
+		buyerLinkReviewIdentity: contract.root.buyerLinkReviewIdentity,
+		playbook: playbook ?? (await playbookStates(ctx, contract)),
 		hubspot: contract.hubspot,
-		buyerCompanyName: contract.buyerCompanyName,
-		applications: contract.applications,
-		editRevision: contract.editRevision,
-		reviewGeneration: contract.reviewGeneration,
-		reviewCompletion: contract.reviewCompletion ?? null,
-		stateVersion: contract.stateVersion,
-		lastOperationId: contract.lastOperation?.id ?? null
+		playbookCompletion: contract.root.playbookCompletion ?? null,
+		buyerLinkCompletion: contract.root.buyerLinkCompletion ?? null,
+		lastOperationId: contract.root.lastOperation?.id ?? null
 	};
 }
-
-export function metadataOf(contract: Doc<'savedContracts'>) {
+export async function metadataOf(ctx: import('./_generated/server').QueryCtx, contract: Contract) {
 	return {
-		...stateOf(contract),
-		_id: contract._id,
-		_creationTime: contract._creationTime,
-		companyId: contract.companyId,
-		creatorId: contract.creatorId,
-		templateVersionId: contract.templateVersionId,
-		savedAt: contract.savedAt
+		...(await stateOf(ctx, contract)),
+		_id: contract.root._id,
+		_creationTime: contract.root._creationTime,
+		companyId: contract.root.companyId,
+		creatorId: contract.root.creatorId,
+		templateVersionId: contract.root.templateVersionId,
+		savedAt: contract.root.savedAt
 	};
 }
 
@@ -72,24 +102,46 @@ export const browse = query({
 
 export const state = query({
 	// Like full reads, route IDs may be malformed or refer to deleted contracts.
-	args: { membershipId: v.id('memberships'), id: v.string() },
+	args: {
+		membershipId: v.id('memberships'),
+		id: v.string()
+	},
 	returns: v.union(liveContractMetadata, v.null()),
 	handler: async (ctx, { id, membershipId }) => {
 		const access = await requireMembership(ctx, membershipId);
 		const contractId = ctx.db.normalizeId('savedContracts', id);
-		const contract = contractId
-			? accessibleContract(await ctx.db.get('savedContracts', contractId), access)
-			: null;
+		const contract = contractId ? await accessibleContractState(ctx, contractId, access) : null;
 		return contract
-			? { ...metadataOf(contract), workBlock: await contractWorkBlock(ctx, contract) }
+			? {
+					...(await metadataOf(ctx, contract)),
+					buyerName: buyerName(contract.root),
+					workBlock: await contractWorkBlock(ctx, contract)
+				}
 			: null;
+	}
+});
+
+export const readiness = query({
+	args: {
+		membershipId: v.id('memberships'),
+		id: v.id('savedContracts'),
+		paginationOpts: v.optional(paginationOptsValidator)
+	},
+	returns: v.union(readinessResult, v.null()),
+	handler: async (ctx, { id, membershipId, paginationOpts }) => {
+		const access = await requireMembership(ctx, membershipId);
+		const contract = await accessibleContractState(ctx, id, access);
+		if (!contract) return null;
+		const result = await contractReadiness(ctx, contract, paginationOpts),
+			workBlock = await contractWorkBlock(ctx, contract);
+		return { ...result, ready: result.ready && workBlock === null, workBlock };
 	}
 });
 
 export const create = mutation({
 	args: {
 		membershipId: v.id('memberships'),
-		buyerCompanyName: v.string(),
+		title: v.string(),
 		operationId: v.string()
 	},
 	returns: v.union(
@@ -111,70 +163,148 @@ export const create = mutation({
 			)
 			.unique();
 		if (receipt) {
-			const contract = accessibleContract(
-				await ctx.db.get('savedContracts', receipt.contractId),
-				access
-			);
+			const contract = await accessibleContractState(ctx, receipt.contractId, access);
 			if (!contract) return { status: 'deleted' as const };
-			return { status: 'created' as const, id: receipt.contractId, contract: metadataOf(contract) };
+			return {
+				status: 'created' as const,
+				id: receipt.contractId,
+				contract: await metadataOf(ctx, contract)
+			};
 		}
 		// Receipt first: this definitive refusal proves this manual attempt never committed.
 		if (await installation(ctx, access.companyId))
 			return { status: 'association-required' as const };
-		const name = buyerCompanyName(args.buyerCompanyName);
+		const name = contractTitle(args.title);
 		const contract = await createContract(ctx, access, name);
 		await ctx.db.insert('contractCreationReceipts', {
 			companyId: access.companyId,
 			operationId: scopedOperation(access, args.operationId),
-			contractId: contract._id
+			contractId: contract.root._id
 		});
-		return { status: 'created' as const, id: contract._id, contract: metadataOf(contract) };
+		return {
+			status: 'created' as const,
+			id: contract.root._id,
+			contract: await metadataOf(ctx, contract)
+		};
 	}
 });
 
-export const saveChoices = mutation({
+export const saveChanges = mutation({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.id('savedContracts'),
-		choices: applicationChoices,
-		commands: v.optional(v.array(activityCommand)),
-		expectedEditRevision: v.number(),
+		commands: v.array(playbookCommand),
 		operationId: v.string()
 	},
 	returns: saveResult,
-	handler: async (
-		ctx,
-		{ id, membershipId, choices, commands, expectedEditRevision, operationId }
-	) => {
+	handler: async (ctx, { id, membershipId, commands, operationId }) => {
 		const access = await requireMembership(ctx, membershipId);
 		validateOperationId(operationId);
-		if (!Number.isSafeInteger(expectedEditRevision) || expectedEditRevision < 0)
-			throw new ConvexError('Invalid contract revision.');
-		const contract = accessibleContract(await ctx.db.get('savedContracts', id), access);
+		const contract = await accessibleContractState(ctx, id, access);
 		if (!contract) return { status: 'deleted' as const };
-		if (!commands) {
-			// Old snapshot requests may only acknowledge proven accepted work.
-			if (
-				contract.lastOperation?.id === operationId &&
-				contract.lastOperation.callerId === access.profile._id
-			)
-				return { status: 'saved' as const, state: stateOf(contract) };
-			if (contract.editRevision !== expectedEditRevision)
-				return { status: 'conflict' as const, state: stateOf(contract) };
-			if (sameApplications(choicesOf(contract.applications), choices))
-				return { status: 'saved' as const, state: stateOf(contract) };
-			throw new ConvexError({
-				code: 'SAVE_PROTOCOL_REQUIRED',
-				message:
-					'Reload to update your contract editor before saving. Your draft is still available.'
-			});
-		}
 		return saveCommands(ctx, access, contract, {
 			commands,
-			choices,
-			expectedEditRevision,
 			operationId
 		});
+	}
+});
+
+/** Exceptional preparation result transport. Ordinary saves still return their result directly. */
+export const operationResult = query({
+	args: {
+		membershipId: v.id('memberships'),
+		id: v.id('savedContracts'),
+		kind: nativePreparationKind,
+		operationId: v.string(),
+		inputs: v.string()
+	},
+	returns: v.union(
+		v.null(),
+		v.object({ status: v.literal('preparing'), operationId: v.string() }),
+		v.object({ status: v.literal('complete'), operationId: v.string(), result: v.string() }),
+		v.object({ status: v.literal('failed'), operationId: v.string(), error: v.string() })
+	),
+	handler: async (ctx, { membershipId, id, kind, operationId, inputs }) => {
+		const access = await requireMembership(ctx, membershipId);
+		const contract = await accessibleContractState(ctx, id, access);
+		if (!contract) throw new ConvexError('This contract is unavailable.');
+		const deletion = await ctx.db
+			.query('contractCleanups')
+			.withIndex('by_contractId', (q) => q.eq('contractId', id))
+			.unique();
+		if (deletion) throw new ConvexError('This contract is unavailable.');
+		// Small discussion writes use their bounded discussion receipt. Reattachment
+		// must consult it even when no exceptional preparation receipt was allocated.
+		if (kind === 'discussion-write' || kind === 'discussion-mark-seen') {
+			const input: unknown = JSON.parse(inputs),
+				common = { token: v.string(), operationId: v.string() };
+			const valid =
+				kind === 'discussion-write'
+					? validate(v.object({ ...common, command: discussionCommand }), input)
+					: validate(v.object({ ...common, messages: seenMessages }), input);
+			if (
+				!valid ||
+				!input ||
+				typeof input !== 'object' ||
+				!('token' in input) ||
+				typeof input.token !== 'string' ||
+				!('operationId' in input) ||
+				input.operationId !== operationId
+			)
+				throw new ConvexError('Invalid original discussion result input.');
+			const context = await discussionContext(ctx, { token: input.token });
+			if (context.root._id !== id || context.root.companyId !== access.companyId)
+				throw new ConvexError('This operation is unavailable.');
+			const actor = await discussionActor(ctx, context);
+			if (
+				kind === 'discussion-write' &&
+				validate(v.object({ ...common, command: discussionCommand }), input)
+			)
+				return discussionResult(ctx, context, actor, input);
+			if (
+				kind === 'discussion-mark-seen' &&
+				validate(v.object({ ...common, messages: seenMessages }), input)
+			)
+				return discussionSeenResult(ctx, context, actor, input);
+			throw new ConvexError('Invalid original discussion result input.');
+		}
+		const row = await ctx.db
+			.query('operationReceipts')
+			.withIndex('by_key', (q) => q.eq('key', nativeOperationKey(access, kind, operationId)))
+			.unique();
+		if (!row) return null;
+		if (row.companyId !== access.companyId || row.contractId !== id || row.kind !== kind)
+			throw new ConvexError('This operation is unavailable.');
+		const payload = await receiptPayload(ctx, row);
+		if (payload.inputs !== inputs)
+			throw new ConvexError('This operation was already used with different inputs.');
+		if (row.actor) {
+			if (
+				row.actor.kind !== 'seller' ||
+				row.actor.membershipId !== access.membershipId ||
+				row.actor.profileId !== access.profile._id ||
+				row.actor.identity !== access.profile.identity
+			)
+				throw new ConvexError('This operation is unavailable.');
+			if (row.actor.link) {
+				const link = await ctx.db.get('buyerLinks', row.actor.link.id);
+				if (
+					!link?.currentView ||
+					link.companyId !== access.companyId ||
+					link.contractId !== id ||
+					link.token !== row.actor.link.token
+				)
+					throw new ConvexError('This link is unavailable.');
+			}
+		}
+		if (row.state === 'preparing') return { status: 'preparing' as const, operationId };
+		if (row.state === 'failed')
+			return {
+				status: 'failed' as const,
+				operationId,
+				error: row.error ?? 'This operation could not complete.'
+			};
+		return { status: 'complete' as const, operationId, result: payload.result };
 	}
 });
 
@@ -182,24 +312,25 @@ export const rename = mutation({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.id('savedContracts'),
-		buyerCompanyName: v.string()
+		title: v.string()
 	},
 	returns: v.null(),
-	handler: async (ctx, { id, membershipId, buyerCompanyName: value }) => {
+	handler: async (ctx, { id, membershipId, title: value }) => {
 		const access = await requireMembership(ctx, membershipId);
-		const contract = accessibleContract(await ctx.db.get('savedContracts', id), access);
+		const contract = await accessibleContractState(ctx, id, access);
 		if (!contract) throw new ConvexError('This contract was deleted.');
-		const name = buyerCompanyName(value);
-		if (name === contract.buyerCompanyName) return null;
+		const name = contractTitle(value);
+		if (name === contract.root.title) return null;
 		await requireContractWork(ctx, contract);
 		const savedAt = Date.now();
-		await ctx.db.patch('savedContracts', id, {
-			buyerCompanyName: name,
+		await patchContract(ctx, contract, {
+			title: name,
+			...(!(await installation(ctx, access.companyId))
+				? { buyer: { kind: 'manual' as const } }
+				: {}),
 			savedAt,
-			stateVersion: contract.stateVersion + 1
+			stateRevision: contract.root.stateRevision + 1
 		});
-		await writeDirectory(ctx, { ...contract, buyerCompanyName: name, savedAt });
-		await publishContract(ctx, { ...contract, buyerCompanyName: name, savedAt });
 		return null;
 	}
 });
@@ -209,20 +340,18 @@ export const remove = mutation({
 	returns: v.null(),
 	handler: async (ctx, { id, membershipId }) => {
 		const access = await requireMembership(ctx, membershipId);
-		const contract = accessibleContract(await ctx.db.get('savedContracts', id), access);
+		const contract = await accessibleContractState(ctx, id, access);
 		await ensureContractCleanup(ctx, access.companyId, id, Boolean(contract));
 		if (!contract) return null;
 		const request = await ctx.db
 			.query('approvalRequests')
 			.withIndex('by_contractId', (q) => q.eq('contractId', id))
-			.unique();
-		if (request) await ctx.db.delete('approvalRequests', request._id);
+			.take(2);
+		for (const row of request) await ctx.db.delete('approvalRequests', row._id);
 		await removeDirectoryEntry(ctx, id);
-		const authority = await ctx.db
-			.query('contractAccess')
-			.withIndex('by_contractId', (q) => q.eq('contractId', id))
-			.unique();
-		if (authority) await ctx.db.delete('contractAccess', authority._id);
+		await clearBuyerRefresh(ctx, access.companyId, id);
+		if (contract.hubspotAssociationId)
+			await ctx.db.delete('contractHubspotAssociations', contract.hubspotAssociationId);
 		await ctx.db.delete('savedContracts', id);
 		return null;
 	}
@@ -232,9 +361,9 @@ export async function createContract(
 	ctx: MutationCtx,
 	access: CompanyAccess,
 	name: string,
-	hubspot?: Doc<'savedContracts'>['hubspot']
+	hubspot?: ContractHubspotLink
 ) {
-	await requireContractWork(ctx, { companyId: access.companyId, hubspot });
+	await requireContractWork(ctx, { root: { companyId: access.companyId }, hubspot });
 	const pointer = await currentPointer(ctx, access.companyId);
 	const version = pointer?.versionId
 		? await ctx.db.get('templateVersions', pointer.versionId)
@@ -244,25 +373,47 @@ export async function createContract(
 	await assertStorageCapacity(ctx, { documents: 5, bytes: 20_000 });
 	const id = await ctx.db.insert('savedContracts', {
 		companyId: access.companyId,
-		buyerCompanyName: name,
+		title: name,
+		buyer: hubspot ? { kind: 'hubspot', company: null } : { kind: 'manual' },
 		creatorId: access.profile._id,
-		savedAt: Date.now(),
-		applications: {},
-		editRevision: 0,
-		reviewGeneration: 0,
-		stateVersion: 1,
 		templateVersionId: version._id,
-		hubspot
+		documentId: null,
+		documentRevision: 0,
+		stateRevision: 1,
+		playbookSelectionCount: 0,
+		playbookReviewCount: 0,
+		playbookPendingCount: 0,
+		playbookDeclinedCount: 0,
+		playbookReviewIdentity: '',
+		buyerLinkReviewIdentity: '',
+		savedAt: Date.now()
 	});
-	await ctx.db.insert('contractAccess', {
+	const document = createContractDocument(
+		await (await versionReader(ctx, version._id, access.companyId)).blocks()
+	);
+	const documentId = await writeContractDocument(ctx, {
 		companyId: access.companyId,
 		contractId: id,
-		templateVersionId: version._id
+		document
 	});
+	// The only second root write completes cyclic ownership before any receipt or return.
+	await ctx.db.patch('savedContracts', id, {
+		documentId,
+		playbookReviewIdentity: initialContextIdentity(id, 'playbook'),
+		buyerLinkReviewIdentity: initialContextIdentity(id, 'buyer-link')
+	});
+	if (hubspot) {
+		await assertHubspotAssociationAvailable(ctx, access.companyId, id, hubspot);
+		await ctx.db.insert('contractHubspotAssociations', {
+			companyId: access.companyId,
+			contractId: id,
+			...hubspot
+		});
+	}
 	if (version.mutability === 'mutable')
 		await ctx.db.patch('templateVersions', version._id, { mutability: 'frozen' as const });
-	const contract = (await ctx.db.get('savedContracts', id))!;
+	const contract = await readContract(ctx, (await ctx.db.get('savedContracts', id))!);
 	await writeDirectory(ctx, contract);
-	await publishContract(ctx, contract);
+	if (hubspot) await requestBuyerRefresh(ctx, contract.root);
 	return contract;
 }

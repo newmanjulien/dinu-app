@@ -97,7 +97,7 @@
       "field": "replacementReferences",
       "before": 1,
       "after": 3,
-      "reason": "Continuous selections retain two unchanged baseline references as structured replacement atoms."
+      "reason": "Continuous selections retain two unchanged templateSource references as structured replacement atoms."
     },
     {
       "field": "detailEntries",
@@ -790,7 +790,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "access-use",
       "oldId": "j57f61hppjzys835a6mzm28scn8fachz",
       "triggerId": "access-use",
@@ -798,7 +798,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "amendment-waiver",
       "oldId": "j5715b6znzsrnkn28q3qpdfn2x8fa9fb",
       "triggerId": "amendment-waiver",
@@ -806,7 +806,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "amendments-statement-of-work",
       "oldId": "j57e88kq8vqpzhffntb081vkjn8fam55",
       "triggerId": "amendments-statement-of-work",
@@ -814,7 +814,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "annual-fee-increase",
       "oldId": "j572r9x6bmkt8xgdbxxb920as18fbbva",
       "triggerId": "annual-fee-increase-main",
@@ -825,7 +825,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "assignment",
       "oldId": "j57e9hze3ngf29qxs2atb6dg4h8fbffh",
       "triggerId": "assignment",
@@ -833,7 +833,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "attorneys-fees",
       "oldId": "j575btt7h1hgxcks4tdbeqw8bx8fb30f",
       "triggerId": "attorneys-fees",
@@ -867,7 +867,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "automatic-payment-authorization",
       "oldId": "j578n7mpze6h5tc91103mz8wk18fb88w",
       "triggerId": "automatic-payment-authorization",
@@ -875,7 +875,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "buyer-responsibilities",
       "oldId": "j57d3htnthfgnphj78fz58fpah8fb44e",
       "triggerId": "buyer-responsibilities",
@@ -883,7 +883,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "certain-definitions",
       "oldId": "j57963nzbfrs6hnk2scapc7g8n8fbpj5",
       "triggerId": "certain-definitions",
@@ -891,7 +891,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "confidential-information",
       "oldId": "j575s21wpaqd4qzjpgp8v6t9s58fbr8d",
       "triggerId": "confidential-information",
@@ -899,7 +899,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "counterparts",
       "oldId": "j5722bz1t4yj7zp0wr9ca1hrmx8fbsqs",
       "triggerId": "counterparts",
@@ -907,7 +907,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "entire-contract",
       "oldId": "j573wfyec7j4zf62gff2v159qx8fbyx3",
       "triggerId": "entire-contract",
@@ -915,7 +915,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "equipment-fee",
       "oldId": "j57b8w3j8bb5xc3pmkwktya27x8faaqj",
       "triggerId": "equipment-fee-main",
@@ -954,7 +954,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "equitable-relief",
       "oldId": "j570s2zehaqp111eg7fp04q27h8fbs7h",
       "triggerId": "equitable-relief",
@@ -962,7 +962,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "exhibit-description-of-services",
       "oldId": "j575211c2fbv1mjd1gwp00xrt18fb3nv",
       "triggerId": "exhibit-description-of-services",
@@ -970,7 +970,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "exhibit-fees",
       "oldId": "j5720eswh0cyetrb8n8bfgpfhn8fa8wk",
       "triggerId": "exhibit-fees",
@@ -978,7 +978,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "fees",
       "oldId": "j57e3gp9vskfspxns2ng21tfnh8fbnm4",
       "triggerId": "fees",
@@ -986,7 +986,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "fees-and-payment",
       "oldId": "j572nzhkym2m08b4nzndxb91f98fbzf1",
       "triggerId": "fees-and-payment",
@@ -994,7 +994,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "force-majeure",
       "oldId": "j575ynh9ew6fscccy4f5fgn1b58fbr1f",
       "triggerId": "force-majeure",
@@ -1002,7 +1002,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "governing-law-dispute-resolution",
       "oldId": "j575cmk5affmzc2646qvm5qqbn8fb74x",
       "triggerId": "governing-law-dispute-resolution",
@@ -1024,7 +1024,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "information-security",
       "oldId": "j57b5jd84zmdd04nake2nbrwtd8faeaa",
       "triggerId": "information-security",
@@ -1032,7 +1032,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "insurance",
       "oldId": "j576r5tnh5w2qemnm6mv06n5zx8fabvx",
       "triggerId": "insurance",
@@ -1040,7 +1040,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "intellectual-property",
       "oldId": "j57ckpwvjy82nvmyfkwy5ge2qd8fbnf0",
       "triggerId": "intellectual-property",
@@ -1048,7 +1048,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "limitations-of-liability",
       "oldId": "j57awfngw7mce3da6zqvtb146s8faw1a",
       "triggerId": "limitations-of-liability",
@@ -1069,7 +1069,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "marketing-rights",
       "oldId": "j5715qexgvrr1k8ym02a5dc93n8fawxm",
       "triggerId": "marketing-rights",
@@ -1077,7 +1077,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "miscellaneous",
       "oldId": "j57aky3agevzgkg2x6a7ve8p098faz0q",
       "triggerId": "miscellaneous",
@@ -1085,7 +1085,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "mutual-indemnification-insertion",
       "oldId": "j574tjkvc87rbe2jad96dksqr58fa25g",
       "triggerId": "mutual-indemnification-insertion",
@@ -1093,7 +1093,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "non-interference",
       "oldId": "j57fj5b2g3579bwnrfztmdhb398faz9r",
       "triggerId": "non-interference",
@@ -1101,7 +1101,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "non-solicitation",
       "oldId": "j579k63wz6gkg2nf0csffvtny98fbfke",
       "triggerId": "non-solicitation",
@@ -1109,7 +1109,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "non-solicitation-definitions",
       "oldId": "j57fcx7f8v7zgy3eejq9nzma758fbvbj",
       "triggerId": "non-solicitation-definitions",
@@ -1117,7 +1117,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "non-solicitation-non-interference",
       "oldId": "j575jhrgejbrgbkyt9c5wmf64x8fbyb6",
       "triggerId": "non-solicitation-non-interference",
@@ -1125,7 +1125,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "non-solicitation-poaching-penalty-calculation",
       "oldId": "j5716y1m5pyvkz4rcqe95m5n058fawyc",
       "triggerId": "non-solicitation-poaching-penalty-calculation",
@@ -1133,7 +1133,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "non-solicitation-remedies",
       "oldId": "j57bv85vy614czsemxmyxp78m58fa0dg",
       "triggerId": "non-solicitation-remedies",
@@ -1141,7 +1141,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "notices",
       "oldId": "j577b1dcyw85kcjb47f5ye03rs8fb1qq",
       "triggerId": "notices",
@@ -1149,7 +1149,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "professional-terms",
       "oldId": "j57dq3yrw8skc3sqf5fk7mevax8fa1d4",
       "triggerId": "professional-terms",
@@ -1157,7 +1157,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "provider-ip-buyer-ip",
       "oldId": "j57amy31pmcda9hkaxkp748hch8fbjea",
       "triggerId": "provider-ip-buyer-ip",
@@ -1165,7 +1165,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "provision-professionals",
       "oldId": "j57fbfvm1w81meh13x23wy0dah8fapnc",
       "triggerId": "provision-professionals",
@@ -1173,7 +1173,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "relationship-of-parties",
       "oldId": "j578445cj7g5rsxafpp7pgdpk18fawx1",
       "triggerId": "relationship-of-parties",
@@ -1181,7 +1181,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "replacement-professional",
       "oldId": "j57d8trs6r48ht29c8fg9bvaes8fb1z5",
       "triggerId": "replacement-professional",
@@ -1189,7 +1189,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "replacement-professional-initial-term",
       "oldId": "j5752wsf04t37n8bfvr49x9eds8fb8mt",
       "triggerId": "replacement-professional-initial-term",
@@ -1200,7 +1200,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "resale",
       "oldId": "j57f9vt8xmc9nhsyqbkkfzffkd8fampa",
       "triggerId": "resale",
@@ -1208,7 +1208,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "reservation-of-rights",
       "oldId": "j575bbkpkfcrtxfm11nxds9edd8fbkpe",
       "triggerId": "reservation-of-rights",
@@ -1216,7 +1216,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "return-personal-information",
       "oldId": "j577z8f40p1w112tm54997kd1s8fbs1f",
       "triggerId": "return-personal-information",
@@ -1224,7 +1224,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "security-compliance",
       "oldId": "j5799p6c63z07xsnca7kmq4bvx8fbaqb",
       "triggerId": "security-compliance",
@@ -1232,7 +1232,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "severability",
       "oldId": "j574wbcfmzn196kw6ye3hsqs698fa19x",
       "triggerId": "severability",
@@ -1240,7 +1240,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "sharing-highly-sensitive-personal-information",
       "oldId": "j574jpff2za7xcxtwexn574g518fbky0",
       "triggerId": "sharing-highly-sensitive-personal-information-main",
@@ -1248,7 +1248,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "survival",
       "oldId": "j570ftafjdn61jm5s7crzb7zgx8fawqw",
       "triggerId": "survival",
@@ -1256,7 +1256,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "taxes",
       "oldId": "j5701japxtd2krppnzspt4kshh8fbmk8",
       "triggerId": "taxes",
@@ -1264,7 +1264,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "term-and-termination",
       "oldId": "j57fxaaej50wm8tvfs3e9n6h0s8fb1jm",
       "triggerId": "term-and-termination",
@@ -1272,7 +1272,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "term-fee-payment",
       "oldId": "j571n295e67r4dwndd33vamx158fay4x",
       "triggerId": "term-fee-payment-initial-main",
@@ -1322,7 +1322,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "term-of-contract",
       "oldId": "j57asbq1xnc3pfnrr703jdwdz58fak4v",
       "triggerId": "term-of-contract",
@@ -1330,7 +1330,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "termination",
       "oldId": "j57fw9y0jjf0sj12ps11xqjsgx8fa1ch",
       "triggerId": "termination",
@@ -1338,7 +1338,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "warranty-disclaimer",
       "oldId": "j57byp79jngdkv01vy8q7zr9w98fbb6p",
       "triggerId": "warranty-disclaimer",
@@ -1346,7 +1346,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "work-product-deliverables",
       "oldId": "j576fjb00p8zwmykrtnq0mwtys8fackj",
       "triggerId": "work-product-deliverables",
@@ -1354,7 +1354,7 @@
       "mismatches": 0
     },
     {
-      "entity": "clauseBox → playbookItem",
+      "entity": "clauseBox → repInstruction",
       "key": "work-product-payment-vesting",
       "oldId": "j57384z2jdp66e0n4j0dkzgr9h8fbptk",
       "triggerId": "work-product-payment-vesting",
@@ -1363,7 +1363,7 @@
     }
   ],
   "outputScenarios": [
-    "baseline",
+    "templateSource",
     "annual-fee-increase-five-percent",
     "attorneys-fees-mutual",
     "attorneys-fees-mutual-prevailing-party",
@@ -1401,7 +1401,7 @@
   "notes": [
     "Convex document IDs and creation times are retained in source evidence but regenerated by seed import.",
     "No deleted records exist. Bold/italic marks are deliberately omitted with user approval; all business wording and structure remain checked.",
-    "Paragraph insertion uses virtual baseline boundaries; no hidden placeholder or optional paragraph remains.",
+    "Paragraph insertion uses virtual templateSource boundaries; no hidden placeholder or optional paragraph remains.",
     "All data/convex files are derived from the cleaned export; existing seed wording is never an input."
   ]
 }

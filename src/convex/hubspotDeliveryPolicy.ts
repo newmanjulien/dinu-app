@@ -1,5 +1,6 @@
 import type { Doc } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
+import { readContract, type ContractHubspotLink } from './contractState';
 import { linkBlocked } from './hubspotRecords';
 
 export const CLAIM_MS = 5 * 60_000;
@@ -10,7 +11,7 @@ export function observationExpired(event: Doc<'hubspotEvents'>, now: number) {
 	);
 }
 export function sameDestination(
-	link: Doc<'savedContracts'>['hubspot'],
+	link: ContractHubspotLink | undefined,
 	event: Doc<'hubspotEvents'>
 ) {
 	const d = event.destination;
@@ -28,7 +29,11 @@ export async function deliveryFacts(ctx: QueryCtx, event: Doc<'hubspotEvents'>) 
 		.query('contractDirectory')
 		.withIndex('by_contractId', (q) => q.eq('contractId', event.contractId))
 		.unique();
-	const current = directory ?? (await ctx.db.get('savedContracts', event.contractId));
+	const root = directory ? null : await ctx.db.get('savedContracts', event.contractId);
+	const contract = root ? await readContract(ctx, root) : null;
+	const current =
+		directory ??
+		(contract ? { companyId: contract.root.companyId, hubspot: contract.hubspot } : null);
 	const connection = await ctx.db.get('hubspotConnections', event.destination.connectionId);
 	const accountValid = Boolean(
 		connection &&

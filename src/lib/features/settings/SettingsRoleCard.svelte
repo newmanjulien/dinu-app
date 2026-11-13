@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { settingsFields } from './settings-fields';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import { Button } from '$lib/ui';
 	import SettingsCard from './SettingsCard.svelte';
@@ -31,10 +32,7 @@
 	}
 </script>
 
-<SettingsCard
-	title="Your role"
-	description="Choose Rep or Admin for yourself. Admins can manage company settings and colleagues."
->
+<SettingsCard title={settingsFields.role.title} description={settingsFields.role.description}>
 	<div class="mt-4 max-w-sm space-y-2">
 		<label class="sr-only" for="personal-role">Your role</label>
 		<div class="relative">
@@ -56,16 +54,12 @@
 			/>
 		</div>
 		{#if shownError}
-			<p
-				id="personal-role-message"
-				role="alert"
-				class="text-[0.72rem] leading-5 text-danger"
-			>
+			<p id="personal-role-message" role="alert" class="text-[0.72rem] leading-5 text-danger">
 				{shownError}
 			</p>
 		{/if}
 	</div>
-	{#snippet footer()}<p>You can change your role at any time.</p>{/snippet}
+	{#snippet footer()}<p>{settingsFields.role.footerText}</p>{/snippet}
 	{#snippet action()}<Button disabled={saving || disabled || draft === value} onclick={save}
 			>{saving ? 'Saving...' : 'Save'}</Button
 		>{/snippet}

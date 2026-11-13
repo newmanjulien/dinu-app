@@ -11,8 +11,10 @@ import {
 } from '../lib/playbook/validation';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
-import { requireMembership, requirePermission } from './auth';
+import { query, type MutationCtx, type QueryCtx } from './_generated/server';
+import { requireCompany, requireMembership } from './auth';
+import { resolveSetupBooking } from './csmSetupState';
+import { retireCompanySetupAppointments } from './csmSetupLifecycle';
 import {
 	templateSourceBlocks,
 	TemplateSourceFingerprintError,
@@ -23,17 +25,13 @@ import { selections } from './contractValidators';
 import {
 	businessItem,
 	hydrateHead,
-	liveRevision,
 	compactHead,
 	historicalRevision,
 	snapshotItem,
 	type HistoricalItem
 } from './playbookItemRevisions';
 import { templateContent } from './templateValidators';
-import {
-	itemStructure,
-	type TemplateDetailRecord as DetailRecord
-} from '../lib/playbook/structure';
+import { itemStructure, type TemplateDetailRecord } from '../lib/playbook/structure';
 import { validationCertified, readValidationCertificate } from './authoringValidation';
 import { VALIDATION_CODEC_VERSION } from '../lib/document/validation-codec';
 
@@ -49,7 +47,7 @@ export type LiveSnapshot = {
 	pointer: Doc<'currentTemplate'> | null;
 	templateSource: Doc<'templateSources'>;
 	blocks: SourceBlock[];
-	items: DetailRecord[];
+	items: TemplateDetailRecord[];
 	normalized?: boolean;
 };
 export async function readLiveSnapshot(
@@ -201,11 +199,45 @@ export async function saveTemplateVersion(
 			bytes: documentBytes({ ...company, templateSourceId })
 		});
 		await ctx.db.patch('company', companyId, { templateSourceId });
+		await retireCompanySetupAppointments(ctx, companyId);
 	}
 	return versionId;
 }
 
 type TemplateVersionContent = Omit<Doc<'templateVersions'>, '_id' | '_creationTime' | 'mutability'>;
+
+function generation(value: number) {
+	if (!Number.isSafeInteger(value) || value < 0)
+		throw templateRejected('The authoring generation is invalid.');
+	return value;
+}
+/** Manifest clocks own canonical state; pointer clocks only fill historical missing fields. */
+export function templateGenerations(
+	version: Doc<'templateVersions'> | null,
+	pointer: Doc<'currentTemplate'> | null
+) {
+	if (version && pointer && version._id !== pointer.versionId)
+		throw templateRejected('The template is not available.');
+	return {
+		authoringGeneration: generation(
+			version ? (version.authoringGeneration ?? pointer?.authoringGeneration ?? 0) : 0
+		),
+		structuralGeneration: generation(
+			version ? (version.structuralGeneration ?? pointer?.structuralGeneration ?? 0) : 0
+		)
+	};
+}
+export function nextTemplateGenerations(
+	version: Doc<'templateVersions'> | null,
+	pointer: Doc<'currentTemplate'> | null,
+	structuralChanged = true
+) {
+	const current = templateGenerations(version, pointer);
+	return {
+		authoringGeneration: generation(current.authoringGeneration + 1),
+		structuralGeneration: generation(current.structuralGeneration + Number(structuralChanged))
+	};
+}
 
 /** Complete native read/result envelope, independent of the mutation's remaining write budget. */
 export function templateReadCapacity(
@@ -269,19 +301,21 @@ export async function writeTemplateVersion(
 		knownCertificate ??
 		(await readValidationCertificate(ctx, templateSource.companyId, templateSource._id));
 	const current = pointer ? await ctx.db.get('templateVersions', pointer.versionId) : null;
-	if (pointer && (!current || current.companyId !== version.companyId))
-		throw templateRejected('The template is not available.');
-	const authoringGeneration =
-		(pointer?.authoringGeneration ?? current?.authoringGeneration ?? 0) + 1;
-	const structuralGeneration =
-		(pointer?.structuralGeneration ?? current?.structuralGeneration ?? 0) +
-		Number(structuralChanged);
 	if (
-		![authoringGeneration, structuralGeneration].every(
-			(value) => Number.isSafeInteger(value) && value >= 0
-		)
+		templateSource.companyId !== version.companyId ||
+		templateSource._id !== version.templateSourceId ||
+		(pointer &&
+			(pointer.companyId !== version.companyId ||
+				!current ||
+				current.companyId !== version.companyId ||
+				current.templateSourceId !== templateSource._id))
 	)
-		throw templateRejected('The authoring generation is invalid.');
+		throw templateRejected('The template is not available.');
+	const { authoringGeneration, structuralGeneration } = nextTemplateGenerations(
+		current,
+		pointer,
+		structuralChanged
+	);
 	const stored = {
 		...version,
 		authoringGeneration,
@@ -344,11 +378,11 @@ export function isMutableTemplateVersion(version: Doc<'templateVersions'> | null
 	return Boolean(version?.mutability === 'mutable');
 }
 
-/** Audited metadata, independent of template source prose and unrelated instruction bodies. */
+/** Audited metadata, independent of template source prose and unrelated item bodies. */
 export async function readAuthoringVersion(
 	ctx: QueryCtx,
 	company: Doc<'company'>,
-	current?: DetailRecord
+	current?: TemplateDetailRecord
 ) {
 	if (company.authoringMigration)
 		throw templateRejected(
@@ -372,11 +406,8 @@ export async function readAuthoringVersion(
 		templateSource.blockCount !== version.blockCount
 	)
 		throw templateRejected('The template is not available.');
-	if (
-		pointer.authoringGeneration !== version.authoringGeneration ||
-		pointer.structuralGeneration !== version.structuralGeneration ||
-		!validationCertified(templateSource, certificate, version)
-	)
+	templateGenerations(version, pointer);
+	if (!validationCertified(templateSource, certificate, version))
 		throw templateRejected('The template needs authoring certification.');
 	const references = versionReferences(version);
 	if (
@@ -391,8 +422,8 @@ export async function readAuthoringVersion(
 export async function saveChangedVersion(
 	ctx: MutationCtx,
 	captured: Awaited<ReturnType<typeof readAuthoringVersion>>,
-	previous: DetailRecord | null,
-	next: DetailRecord | null,
+	previous: TemplateDetailRecord | null,
+	next: TemplateDetailRecord | null,
 	revisionBytes: { previous: number; next: number },
 	structuralChanged: boolean,
 	headBytes: { previous: number; next: number }
@@ -450,49 +481,6 @@ export async function saveChangedVersion(
 		captured.certificate
 	);
 }
-/** Compatibility list reads the manifest directly, without a full-head scan plus body joins. */
-export async function currentDetails(ctx: QueryCtx, companyId: Id<'company'>) {
-	const pointer = await currentPointer(ctx, companyId);
-	if (!pointer) return [];
-	const version = await ctx.db.get('templateVersions', pointer.versionId);
-	if (!version || version.companyId !== companyId)
-		throw new ConvexError('This template version is unavailable.');
-	versionReferences(version);
-	const templateSource = await ctx.db.get('templateSources', version.templateSourceId);
-	if (
-		!templateSource ||
-		templateSource.companyId !== companyId ||
-		version.contentReadBytes < templateSource.chunkReadBytes ||
-		version.contentReadBytes -
-			templateSource.chunkReadBytes +
-			documentBytes(version) +
-			documentBytes(templateSource) +
-			version.itemCount * 128 +
-			65_536 >
-			16 * 1024 * 1024 ||
-		version.itemCount + 4 + 64 > 4096
-	)
-		throw new ConvexError('The playbook list exceeds supported read capacity.');
-	const items: DetailRecord[] = [];
-	for (let offset = 0; offset < version.items.length; offset += 64) {
-		const batch = version.items.slice(offset, offset + 64);
-		const revisions = await Promise.all(
-			batch.map((ref) => ctx.db.get('playbookItemRevisions', ref.revisionId))
-		);
-		for (const [i, revision] of revisions.entries()) {
-			if (
-				!revision ||
-				revision.companyId !== companyId ||
-				revision.itemId !== batch[i].itemId ||
-				!Number.isSafeInteger(revision.contentRevision) ||
-				revision.contentRevision < 1
-			)
-				throw new ConvexError('This template version is incomplete.');
-			items.push(liveRevision(revision));
-		}
-	}
-	return items;
-}
 export async function readVersion(
 	ctx: QueryCtx,
 	versionId: Id<'templateVersions'>,
@@ -517,22 +505,43 @@ export const content = query({
 		return readVersion(ctx, versionId, companyId);
 	}
 });
+/** Current authoring content is reactive and must never enter the frozen snapshot cache. */
+export const preview = query({
+	args: { membershipId: v.id('memberships') },
+	returns: v.union(v.null(), templateContent),
+	handler: async (ctx, { membershipId }) => {
+		const { companyId } = await requireMembership(ctx, membershipId);
+		const pointer = await currentPointer(ctx, companyId);
+		return pointer ? readVersion(ctx, pointer.versionId, companyId) : null;
+	}
+});
+export const frozenContent = query({
+	args: { membershipId: v.id('memberships'), versionId: v.id('templateVersions') },
+	returns: templateContent,
+	handler: async (ctx, { versionId, membershipId }) => {
+		const { companyId } = await requireMembership(ctx, membershipId);
+		return (await versionReader(ctx, versionId, companyId, true)).read();
+	}
+});
 // Callers authorize the company or contract first. Validate the immutable parent
 // once per transaction; use its counts for every complete read.
 export function snapshotReader(
 	ctx: QueryCtx,
 	contract: Pick<Doc<'savedContracts'>, 'templateVersionId' | 'companyId'>
 ) {
-	return versionReader(ctx, contract.templateVersionId, contract.companyId);
+	return versionReader(ctx, contract.templateVersionId, contract.companyId, true);
 }
 export async function versionReader(
 	ctx: QueryCtx,
 	versionId: Id<'templateVersions'>,
-	companyId: Id<'company'>
+	companyId: Id<'company'>,
+	requireFrozen = false
 ) {
 	const storedVersion = await ctx.db.get('templateVersions', versionId);
 	if (!storedVersion || storedVersion.companyId !== companyId)
 		throw new ConvexError('This template version is unavailable.');
+	if (requireFrozen && storedVersion.mutability !== 'frozen')
+		throw new ConvexError('This template version has not been captured.');
 	const version = storedVersion;
 	const { blockCount, itemCount, templateSourceId } = version;
 	const references = versionReferences(version);
@@ -597,93 +606,123 @@ export async function versionReader(
 	};
 }
 
-/** One permanent templateSource; prepared conversion cannot establish company state. */
-export const activate = mutation({
+/** Trusted release reuses the canonical version/bootstrap path in one transaction. */
+export async function activatePendingTemplate(
+	ctx: MutationCtx,
 	args: {
-		membershipId: v.id('memberships'),
-		preparedTemplateSourceId: v.id('templateSources')
-	},
-	returns: v.id('templateVersions'),
-	handler: async (ctx, { membershipId, preparedTemplateSourceId }) => {
-		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
-		const templateSource = await ctx.db.get('templateSources', preparedTemplateSourceId);
-		if (
-			!templateSource ||
-			templateSource.companyId !== access.companyId ||
-			templateSource.source !== 'docx' ||
-			templateSource.uploaderId !== access.profile._id ||
-			templateSource.state === 'deleting'
-		)
-			throw templateRejected('This upload is unavailable. Select the DOCX again.');
-		if (templateSource.issues.some((issue) => issue.severity === 'error'))
-			throw templateRejected('Resolve the document conversion errors before saving.');
-		const pointer = await currentPointer(ctx, access.companyId);
-		const currentTemplateSource = access.company.templateSourceId
-			? await ctx.db.get('templateSources', access.company.templateSourceId)
-			: null;
-		if (
-			pointer &&
-			currentTemplateSource?.state === 'active' &&
-			currentTemplateSource._id === templateSource._id &&
-			templateSource.state === 'active'
-		)
-			return pointer.versionId;
-		if (
-			templateSource.state !== 'prepared' ||
-			!templateSource.expiresAt ||
-			templateSource.expiresAt <= Date.now()
-		)
-			throw templateRejected('This upload has expired. Select the DOCX again.');
-		const [items, versions] = await Promise.all([
-			ctx.db
-				.query('playbookItems')
-				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
-				.take(1),
-			ctx.db
-				.query('templateVersions')
-				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
-				.take(1)
-		]);
-		if (access.company.templateSourceId || pointer || items.length || versions.length)
-			throw templateRejected(
-				'This company already has a template source or an import in progress. Its template source cannot be replaced.'
-			);
-		let blocks: SourceBlock[];
-		try {
-			const parsed = await readTemplateSource(
-				ctx,
-				preparedTemplateSourceId,
-				access.companyId,
-				templateSource
-			);
-			blocks = parsed.blocks;
-		} catch (error) {
-			if (error instanceof TemplateSourceFingerprintError)
-				throw templateRejected('The prepared document failed validation. Select the DOCX again.');
-			throw error;
-		}
-		const { expiresAt, ...source } = templateSource;
-		const active: Doc<'templateSources'> = {
-			...source,
-			state: 'active',
-			activatedAt: Date.now()
-		};
-		await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(active) });
-		const { _id, _creationTime, ...stored } = active;
-		await ctx.db.replace('templateSources', preparedTemplateSourceId, stored);
-		return saveTemplateVersion(
-			ctx,
-			access.companyId,
-			{
-				pointer: null,
-				templateSource: active,
-				blocks,
-				items: []
-			},
-			access.company
-		);
+		companyId: Id<'company'>;
+		pendingTemplateSourceId: Id<'templateSources'>;
+		expectedFingerprint: string;
 	}
-});
+): Promise<Id<'templateVersions'>> {
+	const { companyId, pendingTemplateSourceId, expectedFingerprint } = args;
+	const company = await requireCompany(ctx, companyId);
+	const templateSource = await ctx.db.get('templateSources', pendingTemplateSourceId);
+	if (
+		!templateSource ||
+		templateSource.companyId !== companyId ||
+		templateSource.source !== 'docx' ||
+		templateSource.fingerprint !== expectedFingerprint ||
+		templateSource.state === 'deleting'
+	)
+		throw templateRejected(
+			'This exact pending upload is unavailable or has changed. Inspect it again.'
+		);
+	const pointer = await currentPointer(ctx, companyId);
+	// Lost-response replay precedes booking admission: later cancellation cannot undo a release.
+	if (
+		company.templateSourceId === templateSource._id &&
+		templateSource.state === 'active' &&
+		pointer
+	) {
+		const version = await ctx.db.get('templateVersions', pointer.versionId);
+		if (version?.companyId === companyId && version.templateSourceId === templateSource._id)
+			return version._id;
+		throw templateRejected('The released template version is unavailable.');
+	}
+	if (company.pendingTemplateSourceId !== templateSource._id || templateSource.state !== 'pending')
+		throw templateRejected(
+			'This upload is no longer the current pending template. Inspect it again.'
+		);
+	if (!Number.isFinite(templateSource.expiresAt) || templateSource.expiresAt <= Date.now())
+		throw templateRejected('This upload has expired. Upload the DOCX again.');
+	if ((await resolveSetupBooking(ctx, company)).kind !== 'confirmed')
+		throw templateRejected('A confirmed setup call is required before releasing this template.');
+	if (templateSource.issues.some((issue) => issue.severity === 'error'))
+		throw templateRejected('Resolve the document conversion errors before releasing.');
+	const [items, versions, active, revisions, receipts] = await Promise.all([
+		ctx.db
+			.query('playbookItems')
+			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.take(1),
+		ctx.db
+			.query('templateVersions')
+			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.take(1),
+		ctx.db
+			.query('templateSources')
+			.withIndex('by_companyId_and_state', (q) =>
+				q.eq('companyId', companyId).eq('state', 'active')
+			)
+			.first(),
+		ctx.db
+			.query('playbookItemRevisions')
+			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.take(1),
+		ctx.db
+			.query('playbookItemCreationReceipts')
+			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.take(1)
+	]);
+	if (
+		company.templateSourceId ||
+		pointer ||
+		active ||
+		items.length ||
+		versions.length ||
+		revisions.length ||
+		receipts.length
+	)
+		throw templateRejected(
+			'This company already has template data. Its template source cannot be replaced.'
+		);
+	let blocks: SourceBlock[];
+	try {
+		const parsed = await readTemplateSource(
+			ctx,
+			pendingTemplateSourceId,
+			companyId,
+			templateSource
+		);
+		blocks = parsed.blocks;
+	} catch (error) {
+		if (error instanceof TemplateSourceFingerprintError)
+			throw templateRejected('The pending document failed validation. Upload the DOCX again.');
+		throw error;
+	}
+	const { expiresAt, ...source } = templateSource;
+	const activeSource: Doc<'templateSources'> = {
+		...source,
+		state: 'active',
+		activatedAt: Date.now()
+	};
+	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(activeSource) });
+	const { _id, _creationTime, ...stored } = activeSource;
+	await ctx.db.replace('templateSources', pendingTemplateSourceId, stored);
+	const versionId = await saveTemplateVersion(
+		ctx,
+		companyId,
+		{
+			pointer: null,
+			templateSource: activeSource,
+			blocks,
+			items: []
+		},
+		company
+	);
+	await ctx.db.patch('company', companyId, { pendingTemplateSourceId: undefined });
+	return versionId;
+}
 
 type VersionReference = Doc<'templateVersions'>['items'][number];
 export function versionReferences(version: Doc<'templateVersions'>) {
@@ -743,5 +782,3 @@ async function resolveVersionItem(
 		throw new ConvexError('This template version is incomplete.');
 	return historicalRevision(contentRevision);
 }
-
-export { version } from './legacyTemplates';

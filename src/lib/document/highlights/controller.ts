@@ -6,7 +6,6 @@ import {
 	measureRanges,
 	measureStructuralBoundaryTarget,
 	measureRevisions,
-	measureTriggers,
 	structuralBoundaryHighlight,
 	structuralBoundaryRect,
 	resolveOverlaps,
@@ -18,6 +17,7 @@ import {
 } from './geometry';
 import { countOverlayWork } from '../runtime/render-perf';
 import { getDocumentViewportMetrics } from '../document-viewport';
+import { characterBounds } from '../character-bounds';
 
 type GeometryChange = 'invalidate' | 'measure' | 'project';
 
@@ -36,8 +36,6 @@ export function getDocumentHighlights(
 
 type PageRecord = {
 	geometry: PageGeometry;
-	triggers: MeasuredInterval[];
-	annotationIds: ReadonlySet<string>;
 	revisions: MeasuredInterval[];
 	groups: Map<string, Map<Range, MeasuredInterval[]>>;
 };
@@ -68,6 +66,7 @@ type RangeEndpoints = Pick<Range, 'startContainer' | 'startOffset' | 'endContain
 type RangeRecord = RangeEndpoints & {
 	pages: ReadonlySet<number>;
 	membership: ReadonlySet<number>;
+	railAnchor?: { geometry: PageGeometry; rect: DOMRect | null };
 };
 function rangeEndpoints(range: Range): RangeEndpoints {
 	return {
@@ -161,8 +160,6 @@ export class DocumentHighlightController {
 	#intersection: IntersectionObserver;
 	#mutations: MutationObserver;
 	#observed = new Map<Element, ObservedContent>();
-	#fontsSettled = document.fonts.status === 'loaded';
-	#awaitingFontCommit = !this.#fontsSettled;
 
 	constructor(stage: HTMLElement) {
 		this.#stage = stage;
@@ -239,10 +236,6 @@ export class DocumentHighlightController {
 		});
 		this.#observeContent();
 		window.addEventListener('resize', this.projectionChanged, options);
-		document.fonts.addEventListener('loading', this.#fontsLoading, options);
-		document.fonts.addEventListener('loadingdone', this.#fontsReady, options);
-		document.fonts.addEventListener('loadingerror', this.#fontsReady, options);
-		void document.fonts.ready.then(this.#fontsReady);
 		this.#schedule();
 	}
 
@@ -538,11 +531,53 @@ export class DocumentHighlightController {
 						y: interval.band.y,
 						width: interval.right - interval.left,
 						height: interval.band.height,
-						kind: 'trigger'
+						kind: interval.kind
 					});
 		}
 		return result;
 	}
+	/** Match text-card anchors without changing highlight bands or measuring cold pages. */
+	annotationAnchorRect(name: string): DOMRect | undefined {
+		for (const [range, record] of this.#groups.get(name)?.ranges ?? []) {
+			const start = range.startContainer;
+			const element = (
+				start instanceof Element ? start : start.parentElement
+			)?.closest<HTMLElement>('.document-page');
+			if (!element || !this.#stage.contains(element)) continue;
+			const number = Number(element.dataset.pageNumber);
+			if (!record.pages.has(number) || this.#pageElements.get(number) !== element) continue;
+			const projection = this.#pageProjection(number);
+			if (!projection) continue;
+			const { bounds, scale } = projection;
+			const page = this.#pages.get(number);
+			if (page?.geometry.element === element && !this.#geometryDirty.has(number)) {
+				if (record.railAnchor?.geometry !== page.geometry) {
+					const rect = characterBounds(start, range.startOffset);
+					record.railAnchor = {
+						geometry: page.geometry,
+						rect: rect
+							? new DOMRect(
+									(rect.left - bounds.left) / scale,
+									(rect.top - bounds.top) / scale,
+									rect.width / scale,
+									rect.height / scale
+								)
+							: null
+					};
+				}
+				const rect = record.railAnchor.rect;
+				if (rect)
+					return new DOMRect(
+						bounds.left + rect.x * scale,
+						bounds.top + rect.y * scale,
+						rect.width * scale,
+						rect.height * scale
+					);
+			}
+			return new DOMRect(bounds.left, bounds.top, 0, 0);
+		}
+	}
+
 	annotationsChanged(names: ReadonlySet<string>) {
 		for (const name of names)
 			for (const range of this.#groups.get(name)?.ranges.values() ?? [])
@@ -578,7 +613,12 @@ export class DocumentHighlightController {
 			? selectionTextHit(page.geometry, x, y)
 			: null;
 	}
-	hitTest(pageElement: HTMLElement, clientX: number, clientY: number): HTMLElement | null {
+	hitTest(
+		pageElement: HTMLElement,
+		clientX: number,
+		clientY: number,
+		accept: (owner: HTMLElement) => boolean = () => true
+	): HTMLElement | null {
 		if (this.#destroyed) return null;
 		const number = Number(pageElement.dataset.pageNumber);
 		this.#ensureGeometry(new Set([number]));
@@ -598,7 +638,6 @@ export class DocumentHighlightController {
 			y = (clientY - bounds.top) / scale;
 		return (
 			[
-				...page.triggers,
 				...[...page.groups.values()]
 					.flatMap((ranges) => [...ranges.values()].flat())
 					.filter((interval) => interval.owner)
@@ -612,6 +651,7 @@ export class DocumentHighlightController {
 				.find(
 					(interval) =>
 						interval.owner?.isConnected &&
+						accept(interval.owner) &&
 						x >= interval.left &&
 						x < interval.right &&
 						y >= interval.band.y &&
@@ -626,12 +666,7 @@ export class DocumentHighlightController {
 				const id = this.#groups.get(name)?.owner?.dataset.annotationId;
 				return id === this.#hoveredAnnotationId || id === annotationId;
 			});
-			if (
-				projected ||
-				(this.#hoveredAnnotationId !== null && page.annotationIds.has(this.#hoveredAnnotationId)) ||
-				(annotationId !== null && page.annotationIds.has(annotationId))
-			)
-				this.#paintDirty.add(number);
+			if (projected) this.#paintDirty.add(number);
 		}
 		this.#hoveredAnnotationId = annotationId;
 		this.#schedule();
@@ -654,16 +689,6 @@ export class DocumentHighlightController {
 		countOverlayWork('geometryNotifications');
 		for (const listener of this.#geometryListeners) listener(change);
 	}
-	#fontsLoading = () => {
-		this.#fontsSettled = false;
-		this.#awaitingFontCommit = true;
-	};
-	#fontsReady = () => {
-		if (this.#destroyed || this.#fontsSettled || document.fonts.status !== 'loaded') return;
-		this.#fontsSettled = true;
-		// The viewer's font epoch commit invalidates once, after repagination has committed.
-		this.#schedule();
-	};
 	/** Project text geometry; gutter controls keep a fixed screen size as the page scales. */
 	projectionChanged = () => {
 		if (this.#destroyed) return;
@@ -754,8 +779,6 @@ export class DocumentHighlightController {
 		if (this.#destroyed) return;
 		const previousEpoch = this.#layoutEpoch;
 		this.#layoutEpoch = layoutEpoch;
-		if (previousEpoch !== layoutEpoch && document.fonts.status === 'loaded')
-			this.#awaitingFontCommit = false;
 		// Group ownership can move across an unchanged page's edge on a new model.
 		// Text geometry still reuses exact prepared pages; structural targets rebind lazily.
 		this.#structuralBoundaries.clear();
@@ -922,7 +945,6 @@ export class DocumentHighlightController {
 	}
 
 	#ensureGeometry(targets: ReadonlySet<number>) {
-		if (this.#awaitingFontCommit || document.fonts.status !== 'loaded') return;
 		const pending = new Set([...targets].filter((number) => this.#geometryDirty.has(number)));
 		if (!pending.size) return;
 		// A synchronous hit/navigation request drains the same page queue as the frame.
@@ -934,11 +956,8 @@ export class DocumentHighlightController {
 		);
 		for (const number of pending) this.#geometryDirty.delete(number);
 		for (const geometry of updated) {
-			const triggers = measureTriggers([geometry]);
 			this.#pages.set(geometry.number, {
 				geometry,
-				triggers,
-				annotationIds: new Set(triggers.flatMap((interval) => interval.annotationIds ?? [])),
 				revisions: measureRevisions([geometry]),
 				groups: new Map()
 			});
@@ -1008,7 +1027,6 @@ export class DocumentHighlightController {
 					const rects = [
 						...resolveOverlaps(
 							[
-								...page.triggers,
 								...page.revisions,
 								...[...page.groups.values()].flatMap((ranges) => [...ranges.values()].flat())
 							],

@@ -1,6 +1,7 @@
 import { useConvexClient } from 'convex-svelte';
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from 'convex/server';
 import { untrack } from 'svelte';
+import type { SnapshotClient } from '$lib/query-once';
 
 /** A region owns one bounded subscription attempt; its form and accepted display outlive retries. */
 export function useReadQuery<Q extends FunctionReference<'query'>>(
@@ -8,7 +9,16 @@ export function useReadQuery<Q extends FunctionReference<'query'>>(
 	args: FunctionArgs<Q> | (() => FunctionArgs<Q> | 'skip'),
 	generation: () => unknown = () => undefined
 ) {
-	const client = useConvexClient();
+	return createReadQuery(useConvexClient(), query, args, generation);
+}
+
+/** Also usable by explicit lifecycle owners outside component initialization. */
+export function createReadQuery<Q extends FunctionReference<'query'>>(
+	client: SnapshotClient,
+	query: Q,
+	args: FunctionArgs<Q> | (() => FunctionArgs<Q> | 'skip'),
+	generation: () => unknown = () => undefined
+) {
 	let revision = $state(0);
 	let data = $state.raw<FunctionReturnType<Q>>();
 	let error = $state.raw<Error>();

@@ -1,14 +1,15 @@
 /* Resolve container units inside the shared wrapper, including during loading. */
 .document-workspace-geometry {
 	--reserved-width: 30px;
-	--review-gutter: var(--review-gutter-max);
+	--available-width: max(0px, calc(100cqw - var(--reserved-width)));
+	--review-gutter: min(var(--review-gutter-max), var(--available-width));
 	--panel-min-width: var(--panel-min-width-floor);
 	--side-panel-reserved-width: calc(
 		var(--rail-safe-gutter) + var(--panel-min-width) + var(--panel-gap) + var(--right-gutter)
 	);
 	--paper-width: min(
 		var(--paper-max-width),
-		max(var(--paper-min-width), calc(100cqw - var(--reserved-width) - var(--review-gutter)))
+		max(0px, calc(var(--available-width) - var(--review-gutter)))
 	);
 	--page-width: calc(var(--paper-width) + var(--review-gutter));
 	--page-margin-left: auto;
@@ -29,12 +30,12 @@
 /* Match the side-panel container queries in DocumentWorkspaceLayout. */
 @container (min-width: 1150px) {
 	.document-workspace-geometry {
-		--reserved-width: var(--side-panel-reserved-width);
-		--review-gutter: min(var(--review-gutter-max), clamp(92px, 7cqw, 100px));
+		--review-gutter: min(var(--desktop-review-gutter-max), clamp(92px, 7cqw, 100px));
 		--panel-min-width: clamp(var(--panel-min-width-floor), 26cqw, var(--panel-comfortable-width));
 	}
 
 	.document-workspace-geometry.has-panel {
+		--reserved-width: var(--side-panel-reserved-width);
 		--page-margin-left: var(--page-left);
 		--page-margin-right: 0;
 	}

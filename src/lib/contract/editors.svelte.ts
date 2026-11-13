@@ -1,5 +1,13 @@
-import { isRepItem } from '$lib/playbook/model';
+import {
+	prepareApprovedDocument,
+	previewContractDocument,
+	type PreviewBasis,
+	type ApprovedContractDocument
+} from './document-preview';
+import { awaitContractOperation } from './operation-result';
+import { isRepItem, sameSelection } from '$lib/playbook/model';
 import type { TemplateContent } from '../template/model';
+import { queryOnce } from '$lib/query-once';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import type { SessionEditor } from '$lib/auth/viewer-session.svelte';
 import type { ConvexClient } from 'convex/browser';
@@ -12,11 +20,25 @@ import { DraftJournal, discoverContractDrafts, type DraftRecovery } from './draf
 import { ContractPersistence } from './persistence.svelte';
 import { saveError } from './saved';
 import type { getContractSnapshotCache } from './snapshot-cache';
+import { createReadQuery } from '$lib/auth/read-query.svelte';
+import { resolveTemplateItem } from './items';
+import type { DocumentSourceInput } from '$lib/document/runtime/source.svelte';
 
-type Metadata = NonNullable<FunctionReturnType<typeof api.contracts.state>>;
+type LiveMetadata = NonNullable<FunctionReturnType<typeof api.contracts.state>>;
+type Metadata = Omit<LiveMetadata, 'buyerName'>;
+function persistedMetadata({ buyerName, ...metadata }: LiveMetadata): Metadata {
+	return metadata;
+}
 type SnapshotCache = Pick<
 	ReturnType<typeof getContractSnapshotCache>,
-	'loadVersion' | 'seedConfirmed' | 'updateState' | 'confirmMetadata' | 'remove'
+	| 'loadFrozenVersion'
+	| 'seedConfirmed'
+	| 'updateState'
+	| 'confirmMetadata'
+	| 'remove'
+	| 'peekApproved'
+	| 'rememberApproved'
+	| 'loadApproved'
 >;
 export type SaveStatus = 'Checking' | 'Saving' | 'Paused' | 'Save failed' | 'Conflict' | 'Saved';
 export type SaveNotice = {
@@ -30,7 +52,7 @@ type Options = {
 	userId: string;
 	membershipId: Id<'memberships'>;
 	companyId: Id<'company'>;
-	client: Pick<ConvexClient, 'onUpdate' | 'mutation'>;
+	client: Pick<ConvexClient, 'onUpdate' | 'mutation' | 'query'>;
 	cache: SnapshotCache;
 	registerEditor: (editor: SessionEditor) => () => void;
 	onSaved: (notice: SaveNotice) => void;
@@ -38,10 +60,25 @@ type Options = {
 	onRenamed: (id: string, name: string) => void;
 };
 
-/** One editing owner per contract. No viewer, route, or rendering effects live here. */
+type EditingSession = {
+	persistence: ContractPersistence;
+	journal: DraftJournal;
+	ownsRecovery: boolean;
+};
+
+function previewError(cause: unknown) {
+	return cause instanceof Error ? cause : new Error('Selected contract wording is unavailable.');
+}
+
+/** One contract editor and journal survive route changes within this member session. */
 export class ContractEditor {
-	readonly journal: DraftJournal;
+	private initialJournal: DraftJournal;
+	private session = $state.raw<EditingSession>();
+	get journal() {
+		return this.session?.journal ?? this.initialJournal;
+	}
 	metadata = $state.raw<Metadata | null>();
+	buyerName = $state<string | null>(null);
 	snapshot = $state.raw<TemplateContent>();
 	persistence = $state.raw<ContractPersistence>();
 	error = $state<string | null>(null);
@@ -59,6 +96,7 @@ export class ContractEditor {
 	private viewAttempt: ReadAttempt | undefined;
 	private unsubscribe: (() => void) | undefined;
 	private releaseEffects: () => void;
+	private releaseDraftOwner: () => void;
 	private validated = false;
 	private version: string | undefined;
 	private alive = true;
@@ -66,18 +104,282 @@ export class ContractEditor {
 	private recoveryName: string | undefined;
 	private recovery: DraftRecovery['draft'] | null;
 	private removed = $state(false);
+	private definitions!: ReturnType<typeof createReadQuery<typeof api.contractDefinitions.current>>;
+	private approved = $state.raw<ApprovedContractDocument>();
+	private previewItemId = $state<Id<'playbookItems'>>();
+	private readonly previewBases = new SvelteMap<string, PreviewBasis>();
+	private readonly basisFlights = new Map<
+		string,
+		{ attempt: ReadAttempt; result: Promise<void> }
+	>();
+	private previewFailure = $state.raw<{ key: string; error: Error }>();
+	private view!: {
+		renderChoices: Record<string, string>;
+		items: ReturnType<typeof resolveTemplateItem>[];
+		input: DocumentSourceInput;
+		definitionsReady: boolean;
+		focusedPreview: ReturnType<typeof previewContractDocument>;
+		previewError?: Error;
+	};
+	private retireView!: () => void;
+	get items() {
+		return this.view.items;
+	}
+	/** Main annotations follow applied options only; local intent belongs to the focused panel. */
+	get renderChoices() {
+		return this.view.renderChoices;
+	}
+	/** Controls may edit only the exact approved document currently materialized in this view. */
+	get currentDocumentReady() {
+		return Boolean(
+			this.approved &&
+			this.persistence &&
+			this.approved.documentId === this.persistence.confirmed.documentId &&
+			this.approved.documentRevision === this.persistence.confirmed.documentRevision
+		);
+	}
+	get documentInput() {
+		return this.view.input;
+	}
+	get definitionsReady() {
+		return this.view.definitionsReady;
+	}
+	get focusedPreview() {
+		return this.view.focusedPreview;
+	}
+	get previewError() {
+		return (
+			this.view.previewError ??
+			(this.previewFailure && this.previewFailure.key === this.basisKey(this.previewItemId)
+				? this.previewFailure.error
+				: undefined)
+		);
+	}
+	get previewBusy() {
+		const key = this.basisKey(this.previewItemId);
+		return Boolean(key && !this.previewBases.has(key) && !this.previewError);
+	}
+	private basisKey(itemId?: string) {
+		if (!itemId || !this.approved || !this.persistence || !this.currentDocumentReady)
+			return undefined;
+		const head = this.persistence.confirmed.playbook.find((item) => item.itemId === itemId);
+		return JSON.stringify([
+			this.approved.displayIdentity,
+			itemId,
+			head?.currentChangeId ?? null,
+			head?.appliedChangeId ?? null
+		]);
+	}
+	preparePreview(itemId: string | null) {
+		this.previewItemId = itemId ? (itemId as Id<'playbookItems'>) : undefined;
+		if (itemId) void this.prefetchPreview(itemId);
+	}
+	/** Row/panel pointer and focus intent share one small basis flight and a 32-entry LRU. */
+	prefetchPreview(itemId: string): Promise<void> {
+		const key = this.basisKey(itemId);
+		if (!key || !this.attachments || !this.owner.accessAvailable || this.owner.frozen)
+			return Promise.resolve();
+		const cached = this.previewBases.get(key);
+		if (cached) {
+			this.previewBases.delete(key);
+			this.previewBases.set(key, cached);
+			return Promise.resolve();
+		}
+		const existing = this.basisFlights.get(key);
+		if (existing) return existing.result;
+		const attempt = new ReadAttempt(15_000);
+		const result = queryOnce(
+			this.owner.options.client,
+			api.contractDefinitions.previewBasis,
+			{
+				membershipId: this.owner.options.membershipId,
+				id: this.id as Id<'savedContracts'>,
+				itemId: itemId as Id<'playbookItems'>
+			},
+			attempt.signal
+		)
+			.then((basis) => {
+				if (
+					!this.alive ||
+					this.basisFlights.get(key)?.attempt !== attempt ||
+					attempt.signal.aborted ||
+					this.basisKey(itemId) !== key ||
+					basis.displayIdentity !== this.approved?.displayIdentity
+				)
+					return;
+				const actual = JSON.stringify([
+					basis.displayIdentity,
+					itemId,
+					basis.currentChangeId,
+					basis.appliedChangeId
+				]);
+				if (actual !== key) return;
+				this.previewBases.set(key, basis);
+				while (this.previewBases.size > 32)
+					this.previewBases.delete(this.previewBases.keys().next().value!);
+				if (this.previewFailure?.key === key) this.previewFailure = undefined;
+			})
+			.catch((cause) => {
+				if (
+					this.alive &&
+					this.basisFlights.get(key)?.attempt === attempt &&
+					this.basisKey(itemId) === key
+				)
+					this.previewFailure = { key, error: previewError(cause) };
+			})
+			.finally(() => {
+				attempt.complete();
+				if (this.basisFlights.get(key)?.attempt === attempt) this.basisFlights.delete(key);
+			});
+		this.basisFlights.set(key, { attempt, result });
+		return result;
+	}
+	private stopPreviewReads() {
+		const flights = [...this.basisFlights.values()];
+		this.basisFlights.clear();
+		for (const flight of flights) flight.attempt.abort();
+	}
+	private retirePreviews() {
+		this.previewBases.clear();
+		this.stopPreviewReads();
+		this.previewFailure = undefined;
+	}
 
 	constructor(
 		readonly id: string,
 		private owner: ContractEditors,
 		recovery?: DraftRecovery
 	) {
-		this.journal =
+		this.initialJournal =
 			recovery?.journal ?? new DraftJournal(owner.options.userId, id, owner.options.membershipId);
 		this.recovery = recovery?.draft ?? this.journal.read();
-		this.recovered = Boolean(this.recovery);
-		this.recoveryName = this.recovery?.base.buyerCompanyName;
+		this.recovered = Boolean(this.recovery || this.journal.recoveryError);
+		this.recoveryName = this.recovery?.base.title;
 		this.releaseEffects = $effect.root(() => {
+			// Derivations belong to the editor root, never the route effect that first opens it.
+			const templateItems = $derived(
+				this.snapshot?.items.filter(isRepItem).map(resolveTemplateItem) ?? []
+			);
+			const approvedResult = $derived.by(() => {
+				if (!this.approved) return { value: null };
+				try {
+					return { value: prepareApprovedDocument(this.approved, templateItems) };
+				} catch (cause) {
+					return { value: null, error: previewError(cause) };
+				}
+			});
+			const rendered = $derived(approvedResult.value);
+			const definitionsReady = $derived(Boolean(this.snapshot && rendered));
+			const input: DocumentSourceInput = $derived({
+				kind: 'records',
+				contract: true,
+				materialized: {
+					data:
+						rendered && this.snapshot
+							? { document: rendered.document, baseline: this.snapshot.blocks }
+							: undefined,
+					error: this.definitions.error ?? approvedResult.error
+				},
+				items: { data: rendered?.items, error: this.definitions.error ?? approvedResult.error }
+			});
+			const focusedResult = $derived.by(() => {
+				const itemId = this.previewItemId,
+					key = this.basisKey(itemId);
+				const basis = key ? this.previewBases.get(key) : undefined;
+				const item = templateItems.find((item) => item._id === itemId);
+				if (!basis || !item || !this.approved) return { value: null };
+				try {
+					return {
+						value: previewContractDocument({
+							approved: this.approved,
+							item,
+							basis,
+							action: this.persistence?.intent[item._id]
+						})
+					};
+				} catch (cause) {
+					return { value: null, error: previewError(cause) };
+				}
+			});
+			let choicesForDocument: Record<string, string> = {};
+			const renderChoices = $derived.by(() => {
+				if (!this.currentDocumentReady) return choicesForDocument;
+				const next = Object.fromEntries(
+					(this.persistence?.confirmed.playbook ?? [])
+						.filter((item) => item.appliedOptionId !== null)
+						.map((item) => [item.itemId, item.appliedOptionId!])
+				);
+				if (!sameSelection(next, choicesForDocument)) choicesForDocument = next;
+				return choicesForDocument;
+			});
+			const thisEditor = this;
+			this.view = {
+				get renderChoices() {
+					return renderChoices;
+				},
+				get items() {
+					return rendered?.items ?? templateItems;
+				},
+				get input() {
+					return input;
+				},
+				get definitionsReady() {
+					return definitionsReady;
+				},
+				get focusedPreview() {
+					return focusedResult.value;
+				},
+				get previewError() {
+					return focusedResult.error;
+				}
+			};
+			this.retireView = () => {
+				this.snapshot = undefined;
+				this.approved = undefined;
+				this.retirePreviews();
+				this.previewItemId = undefined;
+				untrack(() => {
+					void templateItems;
+					void approvedResult;
+					void rendered;
+					void focusedResult;
+					void input;
+				});
+			};
+			this.definitions = createReadQuery(
+				owner.options.client,
+				api.contractDefinitions.current,
+				() =>
+					this.attachments &&
+					owner.accessAvailable &&
+					!owner.frozen &&
+					!this.isDeleted &&
+					!this.deleting
+						? { membershipId: owner.options.membershipId, id: id as Id<'savedContracts'> }
+						: 'skip'
+			);
+			$effect(() => {
+				const data = this.definitions.data;
+				if (data && this.attachments)
+					untrack(() => {
+						if (
+							this.approved?.documentId !== data.documentId ||
+							this.approved?.documentRevision !== data.documentRevision
+						)
+							this.retirePreviews();
+						if (this.approved?.displayIdentity !== data.displayIdentity)
+							this.approved = owner.options.cache.rememberApproved(this.id, data) ?? data;
+					});
+			});
+			$effect(() => {
+				const itemId = this.previewItemId,
+					key = this.basisKey(itemId);
+				if (itemId && key && !this.previewBases.has(key))
+					untrack(() => {
+						void this.prefetchPreview(itemId);
+					});
+			});
+
 			// Cache writes follow confirmed state alone, never view or save housekeeping.
 			$effect(() => {
 				const persistence = this.persistence;
@@ -112,6 +414,17 @@ export class ContractEditor {
 				void this.persistence?.error;
 				untrack(() => this.retain());
 			});
+		});
+		this.releaseDraftOwner = this.initialJournal.registerOwner({
+			flush: () => this.savePending(),
+			hasLocalIntent: () =>
+				!this.alive ||
+				!this.owner.accessAvailable ||
+				this.deleting ||
+				this.isDeleted ||
+				this.pending ||
+				this.inFlight ||
+				Boolean(this.error || this.persistence?.error || this.persistence?.conflict)
 		});
 	}
 	attach() {
@@ -149,10 +462,7 @@ export class ContractEditor {
 	}
 	get name() {
 		return (
-			this.persistence?.confirmed.buyerCompanyName ??
-			this.metadata?.buyerCompanyName ??
-			this.recoveryName ??
-			'Contract'
+			this.persistence?.confirmed.title ?? this.metadata?.title ?? this.recoveryName ?? 'Contract'
 		);
 	}
 	get notice(): SaveNotice | undefined {
@@ -186,6 +496,7 @@ export class ContractEditor {
 		attempt?.abort();
 		this.viewAttempt?.abort();
 		this.viewAttempt = undefined;
+		this.stopPreviewReads();
 		this.validated = false;
 	}
 	interrupt() {
@@ -196,8 +507,13 @@ export class ContractEditor {
 		this.work = undefined;
 		this.initializing = false;
 		this.metadata = undefined;
+		this.definitions.retry();
 	}
 	initialize(): Promise<boolean> {
+		if (this.journal.recoveryError) {
+			this.error = this.journal.recoveryError;
+			return Promise.resolve(false);
+		}
 		if (!this.alive || !this.owner.accessAvailable || this.deleting) return Promise.resolve(false);
 		if (this.isDeleted) return Promise.resolve(true);
 		if (this.work) return this.work;
@@ -230,8 +546,22 @@ export class ContractEditor {
 		const attempt = new ReadAttempt(15_000);
 		this.viewAttempt = attempt;
 		this.initializing = true;
+		this.approved ??= this.owner.options.cache.peekApproved(this.id, metadata.documentId);
+		if (!this.approved)
+			void this.owner.options.cache
+				.loadApproved(this.id, metadata.documentId, attempt.signal)
+				.then((data) => {
+					if (
+						this.alive &&
+						this.viewAttempt === attempt &&
+						!attempt.signal.aborted &&
+						!this.approved
+					)
+						this.approved = data;
+				})
+				.catch(() => {});
 		const work = waitForRead(
-			this.owner.options.cache.loadVersion(
+			this.owner.options.cache.loadFrozenVersion(
 				metadata.templateVersionId,
 				metadata.companyId,
 				attempt.signal
@@ -275,8 +605,10 @@ export class ContractEditor {
 					membershipId: this.owner.options.membershipId,
 					id: this.id as Id<'savedContracts'>
 				},
-				(state) => {
+				(live) => {
 					if (!this.current(attempt)) return;
+					this.buyerName = live?.buyerName ?? null;
+					const state = live ? persistedMetadata(live) : null;
 					this.metadata = state;
 					first(state);
 					if (!state) {
@@ -288,8 +620,17 @@ export class ContractEditor {
 							this.fail('This contract’s template changed. Open it again to reload.');
 							return;
 						}
-						this.persistence?.acceptLive(state);
-						this.resume();
+						try {
+							this.adoptState(state);
+							this.resume();
+						} catch (error) {
+							this.fail(
+								saveError(
+									error,
+									'We couldn’t recover this contract. Your changes are still stored in this browser.'
+								)
+							);
+						}
 					}
 				},
 				(error) => {
@@ -310,8 +651,16 @@ export class ContractEditor {
 			}
 			if (!this.validMetadata(initial))
 				throw new Error('This contract is unavailable in your company.');
+			this.approved ??= this.owner.options.cache.peekApproved(this.id, initial.documentId);
+			if (!this.approved)
+				void this.owner.options.cache
+					.loadApproved(this.id, initial.documentId, attempt.signal)
+					.then((data) => {
+						if (this.current(attempt) && !this.approved) this.approved = data;
+					})
+					.catch(() => {});
 			const snapshot = await waitForRead(
-				this.owner.options.cache.loadVersion(
+				this.owner.options.cache.loadFrozenVersion(
 					initial.templateVersionId,
 					initial.companyId,
 					attempt.signal
@@ -328,39 +677,22 @@ export class ContractEditor {
 				throw new Error('This contract’s template changed. Try again.');
 			this.version = latest.templateVersionId;
 			this.snapshot = snapshot;
-			if (!this.persistence) {
-				this.persistence = new ContractPersistence(
-					this.id as Id<'savedContracts'>,
-					latest,
-					(request) =>
-						this.owner.options.client.mutation(api.contracts.saveChoices, {
-							...request,
-							membershipId: this.owner.options.membershipId
-						}),
-					(draft) => this.journal.write(draft),
-					this.recovery,
-					new Set(
-						snapshot.items
-							.filter(isRepItem)
-							.filter((item) => item.approvalPolicy.kind === 'required')
-							.map((item) => item._id)
-					)
-				);
-				this.recovery = null;
-			}
-			this.persistence.freeze(this.owner.frozen);
-			this.persistence.acceptLive(latest);
+
+			if (!this.current(attempt)) return false;
+			this.adoptState(this.metadata ?? latest);
+			this.persistence!.freeze(this.owner.frozen);
 			this.recovered = false;
 			this.validated = true;
 			this.owner.options.cache.seedConfirmed({
 				id: this.id,
 				status: 'ready',
 				snapshot,
-				contract: latest
+				contract: this.metadata ?? latest,
+				approved: this.approved
 			});
 			attempt.complete();
 			this.resume();
-			this.persistence.retry();
+			this.persistence!.retry();
 			return true;
 		} catch (error) {
 			if (this.attempt === attempt && this.alive)
@@ -371,6 +703,19 @@ export class ContractEditor {
 		} finally {
 			attempt.complete();
 		}
+	}
+
+	recoveryBlocked(journal: DraftJournal) {
+		this.initialJournal = journal;
+	}
+	private adoptState(state: Metadata) {
+		if (!this.persistence) {
+			this.session = this.owner.createSession(this, state, this.recovery);
+			this.persistence = this.session.persistence;
+			this.recovery = null;
+		}
+		this.persistence.freeze(this.owner.frozen);
+		this.persistence.acceptLive(state);
 	}
 	private validMetadata(state: Metadata) {
 		return (
@@ -399,6 +744,9 @@ export class ContractEditor {
 	}
 	retry() {
 		this.error = null;
+		this.definitions.retry();
+		this.previewFailure = undefined;
+		if (this.previewItemId) void this.prefetchPreview(this.previewItemId);
 		void this.initialize().then((ready) => {
 			if (ready && this.alive) this.persistence?.retry();
 		});
@@ -426,13 +774,16 @@ export class ContractEditor {
 		this.flushLifetime = new AbortController();
 	}
 
-	discard() {
+	discard(allStored = false) {
 		this.cancelFlush();
 		this.wasPending = false;
 		this.recovered = false;
+		if (this.session?.ownsRecovery || this.recovery || this.journal.recoveryError)
+			if (allStored) this.journal.discardAll();
+			else this.journal.discard();
 		this.recovery = null;
 		this.persistence?.discard();
-		this.journal.write(null);
+		if (this.metadata) this.adoptState(this.metadata);
 		this.error = null;
 	}
 	deleted() {
@@ -441,12 +792,13 @@ export class ContractEditor {
 		this.cancelFlush();
 		this.wasPending = false;
 		this.recovered = false;
+		if (this.recovery) this.journal.write(null);
 		this.recovery = null;
 		this.metadata = null;
-		this.snapshot = undefined;
+		this.retireView();
 		this.viewError = null;
 		this.persistence?.accept(null);
-		this.journal.write(null);
+		if (this.session?.ownsRecovery) this.journal.write(null);
 		this.owner.deleted(this.id);
 		this.error = null;
 		this.stopReads();
@@ -455,7 +807,7 @@ export class ContractEditor {
 	private retain() {
 		if (!this.alive) return;
 		if (this.attached.size) return;
-		this.snapshot = undefined;
+		this.retireView();
 		if (this.viewAttempt) {
 			const attempt = this.viewAttempt;
 			this.viewAttempt = undefined;
@@ -478,11 +830,12 @@ export class ContractEditor {
 	}
 	destroy() {
 		this.alive = false;
+		this.releaseDraftOwner();
 		this.flushLifetime.abort();
 		this.stopReads();
+		this.retireView();
 		this.releaseEffects();
 		this.persistence?.destroy();
-		this.snapshot = undefined;
 	}
 }
 
@@ -527,7 +880,7 @@ export class ContractEditors {
 				for (const entry of this.entries) entry.persistence?.freeze(frozen);
 			},
 			discard: () => {
-				for (const entry of [...this.entries]) entry.discard();
+				for (const entry of [...this.entries]) entry.discard(true);
 			},
 			restartTransport: () => {
 				this.interrupt();
@@ -554,11 +907,63 @@ export class ContractEditors {
 		}
 		return entry;
 	}
+	createSession(
+		editor: ContractEditor,
+		state: Metadata,
+		recovery: DraftRecovery['draft'] | null
+	): EditingSession {
+		const journal = recovery
+			? editor.journal
+			: new DraftJournal(this.options.userId, editor.id, this.options.membershipId);
+		if (journal.recoveryError) {
+			editor.recoveryBlocked(journal);
+			throw new Error(journal.recoveryError);
+		}
+		const retained = recovery ?? journal.read();
+		if (journal.recoveryError) {
+			editor.recoveryBlocked(journal);
+			throw new Error(journal.recoveryError);
+		}
+		const ownsRecovery = true;
+		const persistence = new ContractPersistence(
+			editor.id as Id<'savedContracts'>,
+			state,
+			async (request, signal) => {
+				const result = await this.options.client.mutation(api.contracts.saveChanges, {
+					...request,
+					membershipId: this.options.membershipId
+				});
+				if (result.status !== 'preparing') return result;
+				return awaitContractOperation<import('./saved').ContractSaveResult>(
+					this.options.client,
+					{
+						membershipId: this.options.membershipId,
+						id: request.id,
+						kind: 'playbook-save',
+						operationId: request.operationId,
+						inputs: JSON.stringify([
+							request.id,
+							{ commands: request.commands, operationId: request.operationId }
+						])
+					},
+					signal
+				);
+			},
+			(draft) => {
+				if (ownsRecovery) journal.write(draft);
+			},
+			retained
+		);
+		return { journal, persistence, ownsRecovery };
+	}
 	acquire(id: string) {
 		const editor = this.reserve(id);
+		const handoff = editor.attachments > 0;
 		const release = editor.attach();
 		this.queue.delete(editor);
-		if (this.accessAvailable) void editor.initialize();
+		// A screen adopting an opening observes its delivered failure until explicit retry.
+		if (this.accessAvailable && !(handoff && (editor.error || editor.viewError)))
+			void editor.initialize();
 		return { editor, release };
 	}
 	/** Inspect local intent without starting template or viewer acquisition. */
@@ -714,14 +1119,14 @@ export class ContractEditors {
 	}
 	async rename(id: Id<'savedContracts'>, name: string) {
 		const generation = this.generation;
-		const confirm = (state: Metadata | null) => {
+		const confirm = (state: LiveMetadata | null) => {
 			if (!this.alive || generation !== this.generation) return;
 			if (!state) {
 				this.deleted(id);
 				return;
 			}
-			this.options.cache.confirmMetadata(state);
-			this.options.onRenamed(id, state.buyerCompanyName);
+			this.options.cache.confirmMetadata(persistedMetadata(state));
+			this.options.onRenamed(id, state.title);
 		};
 		// Home may have no editing editor. Subscribe before submitting the command:
 		// Convex delivers query transitions before resolving the mutation promise.
@@ -738,11 +1143,21 @@ export class ContractEditors {
 			if (this.renameSubscriptions.delete(release)) unsubscribe();
 		};
 		this.renameSubscriptions.add(release);
+		const read = new ReadAttempt(15_000);
 		try {
+			const state = await queryOnce(
+				this.options.client,
+				api.contracts.state,
+				{ membershipId: this.options.membershipId, id },
+				read.signal
+			);
+			if (!state) throw new Error('This contract is unavailable for editing.');
+			if (!this.alive || generation !== this.generation)
+				throw new Error('Your connection changed. Try again.');
 			await this.options.client.mutation(api.contracts.rename, {
 				membershipId: this.options.membershipId,
 				id,
-				buyerCompanyName: name
+				title: name
 			});
 			if (!this.alive || generation !== this.generation)
 				throw new Error('Your connection changed. Check the name before trying again.');
@@ -754,6 +1169,7 @@ export class ContractEditors {
 				// An optional query failure must not turn a committed rename into an error.
 			}
 		} finally {
+			read.complete();
 			release();
 		}
 	}

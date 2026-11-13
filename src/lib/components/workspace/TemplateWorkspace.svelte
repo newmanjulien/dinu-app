@@ -15,7 +15,9 @@
 	import { EMPTY_PREVIEW_CHANGES } from '$lib/document/runtime/types';
 	import { sameSourceTarget } from '$lib/document/source-model';
 	import { structuralBoundary } from '$lib/document/ranges';
-	import type { SourceTarget, InstructionAudience } from '$lib/playbook/model';
+	import { isRepItem, type SourceTarget, type TemplateAudience } from '$lib/playbook/model';
+	import { templateCopy } from '$lib/playbook/template-copy';
+	import { setAnnotationLabel } from '$lib/document/annotation-label';
 	import type { SelectionCandidate } from '$lib/document/selection/selection-model';
 	import { immutable } from '../../immutable';
 	import { semanticConcession } from '../../playbook/content';
@@ -31,14 +33,24 @@
 	import PlaybookEditor from '$lib/components/playbook/PlaybookEditor.svelte';
 	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
+	import QuestionIcon from 'phosphor-svelte/lib/QuestionIcon';
+	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import WorkspaceChrome from './WorkspaceChrome.svelte';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import InteractionInputScope from '$lib/components/ui/InteractionInputScope.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 
-	let { active = true, audience = 'rep' }: { active?: boolean; audience?: InstructionAudience } =
-		$props();
+	let {
+		active = true,
+		audience = 'rep'
+	}: {
+		active?: boolean;
+		audience?: TemplateAudience;
+	} = $props();
 	const buyerTemplate = untrack(() => audience === 'buyer');
+	const copy = untrack(() => templateCopy(audience));
+	setAnnotationLabel(buyerTemplate ? 'explanation' : 'instructions');
 	const runtime = getWorkspaceRuntime();
 	const accountViewer = useViewer();
 	const isAdmin = $derived(accountViewer().membership.role === 'admin');
@@ -46,40 +58,41 @@
 	const authoringSession = untrack(() => getTemplateAuthoringSession(audience));
 	const session = useViewerSession();
 	const membershipId = accountViewer().membership.id;
-	const templateSource = useQuery(api.templateSources.authoringSource, () =>
-		runtime.paused || accountViewer().membership.role !== 'admin' ? 'skip' : { membershipId }
-	);
+	const templateSource = authoringSession.templateSource;
+	// The mounted workspace keeps its own lease, including the Settings detour.
+	const releaseReads = untrack(() => authoringSession.retainReads());
+	onDestroy(releaseReads);
 	const client = useConvexClient();
 	let copyCandidate = $state.raw<SelectionCandidate | null>(null);
 	const copyTarget = $derived(copyCandidate?.target);
 	const copySource = $derived(templateSource.data?.templateSourceFingerprint);
-	const repExplanation = useQuery(api.playbookItems.repExplanation, () =>
+	const repSummary = useQuery(api.playbookItems.repSummary, () =>
 		buyerTemplate && available && copyTarget && copySource && !session.blocked
 			? { membershipId, templateSourceFingerprint: copySource, target: copyTarget }
 			: 'skip'
 	);
 	let disposed = false;
 	onDestroy(() => (disposed = true));
-	async function copyExplanation(candidate: SelectionCandidate, current: () => boolean) {
+	async function copyRepSummary(candidate: SelectionCandidate, current: () => boolean) {
 		const fingerprint = copySource;
 		if (!fingerprint || !buyerTemplate) return false;
 		try {
-			const saved = await client.query(api.playbookItems.repExplanation, {
+			const saved = await client.query(api.playbookItems.repSummary, {
 				membershipId,
 				templateSourceFingerprint: fingerprint,
 				target: candidate.target
 			});
 			if (disposed || !available || !current() || fingerprint !== copySource) return false;
 			if (!saved) {
-				authoring.reportBlocked('This selection no longer has a saved rep explanation to copy.');
+				authoring.reportBlocked('This selection no longer has a saved rep summary to copy.');
 				return false;
 			}
-			if (!authoring.startExplanationFromSelection(candidate)) return false;
-			authoring.setInstruction('summary', saved.summary);
+			if (!authoring.startItemFromSelection(candidate)) return false;
+			authoring.setExplanation(saved);
 			return true;
 		} catch {
 			if (!disposed && current())
-				authoring.reportBlocked('Unable to copy the explanation. Please try again.');
+				authoring.reportBlocked('Unable to copy the rep summary. Please try again.');
 			return false;
 		}
 	}
@@ -92,9 +105,11 @@
 		const fingerprint = preloadTemplateSource;
 		untrack(() => authoringSession.configurePreloading(fingerprint));
 	});
-	const instructionPreload = $derived(authoringSession.instructionPreload);
+	const itemPreload = $derived(authoringSession.itemPreload);
 	const projected = $derived(authoringSession.projectedStructure);
 	const details = $derived(authoringSession.hydratedDetails);
+	// Buyer wording never contributes replacement content to the document renderer.
+	const renderDetails = $derived(details.filter(isRepItem));
 	const sourceMatches = $derived(
 		Boolean(
 			templateSource.data &&
@@ -121,7 +136,7 @@
 			}
 		},
 		get details() {
-			return details;
+			return renderDetails;
 		},
 		get pendingRenderKey() {
 			return authoringSession.pendingRenderKey;
@@ -150,12 +165,12 @@
 	);
 	const { source, viewer } = workspace;
 	const editingUnavailableReason = $derived.by(() => {
-		if (!available) return 'Instruction editing is temporarily unavailable.';
+		if (!available) return copy.unavailable;
 		if (session.blocked) return 'Waiting for your account to be ready…';
 		if (templateSource.error) return 'Unable to load the template. Refresh and try again.';
 		if (authoringSession.structureError) return authoringSession.structureError;
-		if (!authoringSession.current) return 'Refreshing instructions…';
-		if (!sourceMatches) return 'Waiting for instructions to match the uploaded template…';
+		if (!authoringSession.current) return copy.refreshing;
+		if (!sourceMatches) return copy.waitingSource;
 		if (!source.itemsCurrent)
 			return source.issue
 				? 'Unable to prepare the template for editing. Refresh and try again.'
@@ -253,7 +268,9 @@
 	const draft = $derived(authoring.draft);
 	const previewConcession = $derived(
 		authoring.creationConcession ??
-			draft?.concessions.find((concession) => concession.id === authoring.previewConcessionId)
+			(draft && isRepItem(draft)
+				? draft.concessions.find((concession) => concession.id === authoring.previewConcessionId)
+				: undefined)
 	);
 	const previewChanges = $derived(
 		previewConcession
@@ -295,7 +312,7 @@
 	$effect(() => {
 		if (!pendingPanel) pendingRestoreFocus = undefined;
 	});
-	function selectInstruction(itemId: string, annotationId: string) {
+	function selectItem(itemId: string, annotationId: string) {
 		const restore = pendingPanel
 			? pendingRestoreFocus
 			: entry
@@ -331,12 +348,7 @@
 	}
 	function remove() {
 		if (!authoring.canDelete) return;
-		if (
-			!window.confirm(
-				'Permanently delete this instruction box? Any unsaved local edits will also be discarded.'
-			)
-		)
-			return;
+		if (!window.confirm(copy.deleteConfirm)) return;
 		void runEditorAction(() => authoring.remove());
 	}
 	function restoreSubmittedDraft() {
@@ -384,7 +396,7 @@
 />
 {#if active && !runtime.paused && !isAdmin}
 	<p role="alert" class="px-6 py-8 text-sm text-ink-muted">
-		Only admins can edit template instructions.
+		{copy.denied}
 	</p>
 {/if}
 
@@ -411,11 +423,15 @@
 				>
 			</div>
 		{/if}
-		{#if authoringSession.structureError || (authoringSession.detailError && !pendingPanel?.error)}<div
+		{#if templateSource.error || authoringSession.structureError || (authoringSession.detailError && !pendingPanel?.error)}<div
 				class="mx-auto max-w-3xl px-6 text-sm text-danger"
 				role="status"
 			>
-				<p>{authoringSession.structureError || authoringSession.detailError}</p>
+				<p>
+					{templateSource.error
+						? 'Unable to refresh the template. Please try again.'
+						: authoringSession.structureError || authoringSession.detailError}
+				</p>
 				<button type="button" class="underline" onclick={() => authoringSession.retryReads()}
 					>Retry refresh</button
 				>
@@ -433,8 +449,7 @@
 					type="button"
 					class="ml-4 underline"
 					onclick={() => {
-						if (window.confirm('Discard the retained instruction draft?'))
-							authoringSession.discardRecovery();
+						if (window.confirm(copy.discardRetainedConfirm)) authoringSession.discardRecovery();
 					}}>Discard draft</button
 				>
 			</div>
@@ -449,28 +464,31 @@
 				aria-label="Template editor"
 			>
 				<h1
-					class="mb-2 grid min-h-(--mobile-utility-rail-height) place-items-center px-2 text-center text-[13px] leading-6 text-ink-muted min-[1000px]:mb-4 min-[1000px]:block min-[1000px]:min-h-0"
+					class="mb-2 grid min-h-(--mobile-utility-rail-height) place-items-center px-2 text-center text-[13.5px] leading-6 text-ink-muted min-[1000px]:mb-4 min-[1000px]:block min-[1000px]:min-h-0"
 				>
-					Edit the instructions {buyerTemplate ? 'buyers' : 'reps'} see
+					<span class="inline-flex items-center gap-1.5">
+						<span>{copy.editingTitle}</span>
+						<Tooltip label={copy.editingHelpLabel} text={copy.editingHelp}>
+							{#snippet children()}
+								<QuestionIcon class="size-3.5 text-ink-muted/60" aria-hidden="true" />
+							{/snippet}
+						</Tooltip>
+					</span>
 				</h1>
 				{#snippet panelContent()}
 					{#if source.renderSource && pendingPanel}
-						<PlaybookCard label="Instruction box editor">
+						<PlaybookCard label={copy.editorLabel}>
 							{#if pendingPanel.error}
 								<div class="py-1" role="status">
-									<h2 class="text-sm font-medium">Couldn’t load instructions</h2>
+									<h2 class="text-sm font-medium">{copy.loadFailureTitle}</h2>
 									<p class="mt-1.5 text-[13px] leading-relaxed text-ink-muted">
-										Try again to load the instructions for this clause.
+										{copy.loadFailureHint}
 									</p>
 								</div>
 							{:else}
-								<div
-									aria-busy="true"
-									aria-label="Loading instructions"
-									class="grid gap-3 motion-safe:animate-pulse"
-								>
-									<div aria-hidden="true" class="h-24 rounded bg-edge/50"></div>
-									<div aria-hidden="true" class="h-4 w-3/5 rounded bg-edge"></div>
+								<div aria-busy="true" aria-label={copy.loading} class="grid gap-3">
+									<SkeletonBlock quiet class="h-24 rounded" />
+									<SkeletonBlock class="h-4 w-3/5" />
 								</div>
 							{/if}
 							<div class="flex justify-end gap-2">
@@ -483,7 +501,6 @@
 					{:else if source.renderSource && entry}
 						<PlaybookEditor
 							controller={authoring}
-							{buyerTemplate}
 							animateContent={animateEditorContent}
 							onCancel={cancel}
 							onPrimary={() => runEditorAction(() => authoring.primary())}
@@ -498,15 +515,14 @@
 						{authoring.feedback}
 					</p>{/if}
 				<DocumentViewerSlot
-					instructionAudience={audience}
 					{attachment}
 					entry={resource}
 					active={available}
 					onPresentation={(outcome) => (viewerPresentation = outcome)}
 					prepare={!runtime.paused}
-					{instructionPreload}
+					{itemPreload}
 					interactive={available}
-					hasPanel={Boolean(entry || pendingPanel)}
+					hasPanel={authoringSession.hasPanel}
 					followScroll={authoring.locationPicking}
 					{panelContent}
 					selectedAnnotationId={pendingPanel?.annotationId ?? authoring.selectedAnnotationId}
@@ -520,12 +536,13 @@
 					sourceSelectionEnabled={authoring.textSelectionEnabled && !pendingPanel}
 					allowPlaybookNavigation={true}
 					playbookNavigationReady={authoringSession.current && source.itemsCurrent && sourceMatches}
-					onSelect={selectInstruction}
+					onSelect={selectItem}
 					onDocumentBackground={() => dismiss(false)}
 				/>
 			</main>
 		</InteractionInputScope>
 		{#if available && viewer.interactionEnabled && viewer.displayedSnapshot}<SourceSelectionToolbar
+				{audience}
 				container={viewer.documentStageElement ?? undefined}
 				snapshot={viewer.displayedSnapshot}
 				enabled={authoring.textSelectionEnabled && !pendingPanel}
@@ -538,16 +555,15 @@
 						? { allowed: false, reason: 'Select the text you want to explain to buyers.' }
 						: authoring.selectionEligibility(candidate)}
 				onCandidate={(candidate) => (copyCandidate = candidate)}
-				copyExplanation={buyerTemplate
+				copyRepSummary={buyerTemplate
 					? {
-							enabled: Boolean(repExplanation.data),
-							reason:
-								'Select text within a rep clause with a saved Summary to copy its explanation.',
-							run: copyExplanation
+							enabled: Boolean(repSummary.data),
+							reason: 'Select text within a rep clause with a saved summary to copy it.',
+							run: copyRepSummary
 						}
 					: undefined}
 				onConfirm={(range, mode) => {
-					if (mode === 'explain') return authoring.startExplanationFromSelection(range);
+					if (mode === 'add-item') return authoring.startItemFromSelection(range);
 					if (mode === 'concession') return authoring.startConcessionFromSelection(range);
 					return authoring.textSelectionPurpose === 'secondary-location'
 						? authoring.attachSecondaryLocation(range)

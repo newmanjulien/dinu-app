@@ -3,18 +3,19 @@ import { defineConfig } from 'vitest/config';
 
 const local = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
-// These pure TypeScript tests don't need the SvelteKit build pipeline.
+// Backend tests don't need the SvelteKit build pipeline. Individual files retain
+// their existing Node/edge-runtime environment declarations.
 export default defineConfig({
 	resolve: {
 		alias: {
 			$lib: local('./src/lib'),
-			'$app/environment': local('./tests/perf/browser-inputs.ts'),
-			'$app/navigation': local('./tests/perf/browser-inputs.ts'),
-			'$env/dynamic/public': local('./tests/perf/browser-inputs.ts')
+			'$app/environment': local('./tests/support/browser-inputs.ts'),
+			'$app/navigation': local('./tests/support/browser-inputs.ts'),
+			'$env/dynamic/public': local('./tests/support/browser-inputs.ts')
 		}
 	},
 	test: {
-		include: ['tests/perf/*.test.ts'],
+		include: ['tests/backend/**/*.test.ts'],
 		environment: 'node',
 		restoreMocks: true,
 		unstubGlobals: true

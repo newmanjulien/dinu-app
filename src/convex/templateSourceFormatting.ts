@@ -12,9 +12,10 @@ import {
 	readTemplateSource,
 	readTemplateSourceMetadata
 } from './templateSourceStorage';
-import { currentPointer } from './templates';
+import { currentPointer, nextTemplateGenerations } from './templates';
 import { historicalRevision } from './playbookItemRevisions';
-import { playbookItem } from './playbookValidators';
+import { templateItem } from '../lib/playbook/validators';
+import type { TemplateItem } from '../lib/playbook/model';
 import schema from './schema';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { MAX_SNAPSHOT_BYTES } from './templateCapacity';
@@ -65,7 +66,7 @@ async function storeRoles(
 	blocks: SourceBlock[],
 	chunks: Awaited<ReturnType<typeof readTemplateSource>>['chunks'],
 	normalized: SourceBlock[],
-	seedItems?: import('convex/values').Infer<typeof playbookItem>[]
+	seedItems?: TemplateItem[]
 ) {
 	validateDocumentSource(normalized);
 	if (
@@ -108,10 +109,10 @@ async function storeRoles(
 	if (pointer) {
 		const version = await ctx.db.get('templateVersions', pointer.versionId);
 		if (version?.templateSourceId === templateSource._id) {
-			const authoringGeneration =
-				(pointer.authoringGeneration ?? version.authoringGeneration ?? 0) + 1;
-			const structuralGeneration =
-				(pointer.structuralGeneration ?? version.structuralGeneration ?? 0) + 1;
+			const { authoringGeneration, structuralGeneration } = nextTemplateGenerations(
+				version,
+				pointer
+			);
 			await ctx.db.patch('templateVersions', version._id, {
 				validation: undefined,
 				authoringGeneration,
@@ -134,7 +135,7 @@ export const repairSource = internalMutation({
 		sourceFingerprint: v.string(),
 		resultFingerprint: v.string(),
 		assignments: v.array(roleAssignment),
-		seedItems: v.optional(v.array(playbookItem))
+		seedItems: v.optional(v.array(templateItem))
 	},
 	returns: v.object({ fingerprint: v.string(), changed: v.boolean() }),
 	handler: async (ctx, args) => {
@@ -168,7 +169,7 @@ export const repairSource = internalMutation({
 
 /** Convert remaining prepared/source records without reinterpreting their classifications. */
 export const normalizeSources = internalMutation({
-	args: { ...scope, seedItems: v.optional(v.array(playbookItem)) },
+	args: { ...scope, seedItems: v.optional(v.array(templateItem)) },
 	returns: progress,
 	handler: async (ctx, args) => {
 		requireTransition();

@@ -8,6 +8,7 @@
 	<div aria-hidden="true" class={kind === 'calendar' ? 'grid grid-cols-7 gap-2' : 'grid gap-4'}>
 		{#each Array(kind === 'calendar' ? 28 : 3) as _, index (index)}
 			<SkeletonBlock
+				quiet={kind !== 'calendar'}
 				class={kind === 'calendar'
 					? 'h-9 rounded-md'
 					: kind === 'form'

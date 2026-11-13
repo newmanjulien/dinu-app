@@ -36,7 +36,7 @@
 		) => void;
 	} = $props();
 
-	const saved = $derived(navigationCapable);
+	const saved = $derived(navigationCapable && !annotation.passive);
 	function register(owner: HTMLElement, ids: readonly string[]) {
 		let release = registry?.register(owner, ids);
 		return {
@@ -54,6 +54,7 @@
 {#if saved}
 	<button
 		type="button"
+		data-item-id={annotation.itemId}
 		data-document-control
 		use:protect={interactive}
 		use:register={[annotation.id]}

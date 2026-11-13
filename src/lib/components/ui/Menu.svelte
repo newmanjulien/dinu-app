@@ -2,11 +2,14 @@
 	import { onDestroy, type Snippet } from 'svelte';
 	import type { Placement } from '@floating-ui/dom';
 	import FloatingSurface from './FloatingSurface.svelte';
+	import type { FloatingAnchor } from './floating';
 	import type { CloseReason } from './interactions';
 	let {
 		open,
 		trigger,
+		anchor,
 		placement = 'bottom-end',
+		gap = 8,
 		onClose,
 		id,
 		label,
@@ -14,7 +17,9 @@
 	}: {
 		open: boolean;
 		trigger?: HTMLElement;
+		anchor?: FloatingAnchor;
 		placement?: Placement;
+		gap?: number;
 		onClose: (reason: CloseReason) => void;
 		id: string;
 		label: string;
@@ -67,7 +72,9 @@
 <FloatingSurface
 	{open}
 	{trigger}
+	{anchor}
 	{placement}
+	{gap}
 	onClose={close}
 	{id}
 	role="menu"
@@ -80,7 +87,7 @@
 		(selected ?? enabled[0])?.focus({ preventScroll: true });
 	}}
 	onkeydown={keydown}
-	class="rounded-base border-hairline border-edge bg-surface p-1 shadow-floating"
+	class="rounded-lg border border-line bg-surface p-0.5 shadow-card"
 >
 	{@render children(() => close('activation'))}
 </FloatingSurface>

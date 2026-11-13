@@ -1,5 +1,9 @@
+import { cancelPreparationJobs } from './csmMeetingPreparation';
 import { cancelJob } from './emailDeliveries';
 import { cancelAppointmentJobs } from './csmSetupAppointments';
+import { clearSetupAppointment } from './csmSetupState';
+import { preserveErasedInitial } from './csmErasureGuards';
+import { eraseProfileEvidence } from './csmEvidence';
 import { eraseReplacementAttempt } from './csmReplacements';
 import { paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
@@ -330,12 +334,29 @@ export const clean = internalMutation({
 		// A retried or superseded cleanup job cannot continue an older chain.
 		if (!marker || marker.complete || generation !== marker.cleanupGeneration) return null;
 		const profileId = marker.profileId;
+		if (!(await eraseProfileEvidence(ctx, profileId))) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
+		const preparations = await ctx.db
+			.query('csmMeetingPreparations')
+			.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
+			.take(25);
+		for (const preparation of preparations) {
+			await cancelPreparationJobs(ctx, preparation);
+			await ctx.db.delete('csmMeetingPreparations', preparation._id);
+		}
+		if (preparations.length === 25) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
 		const appointments = await ctx.db
 			.query('csmSetupAppointments')
 			.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
 			.take(25);
 		for (const appointment of appointments) {
 			await cancelAppointmentJobs(ctx, appointment);
+			await clearSetupAppointment(ctx, appointment);
 			await ctx.db.delete('csmSetupAppointments', appointment._id);
 		}
 		if (appointments.length === 25) {
@@ -347,17 +368,49 @@ export const clean = internalMutation({
 			.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
 			.take(25);
 		for (const attempt of attempts) {
+			await preserveErasedInitial(ctx, attempt);
 			await eraseReplacementAttempt(ctx, attempt);
-			await cancelJob(ctx, attempt.sendJobId);
+			// Cancellation cannot stop a running action. Preserve its real outcome for guard observation.
+			const sender = attempt.sendJobId
+				? await ctx.db.system.get('_scheduled_functions', attempt.sendJobId)
+				: null;
+			if (sender?.state.kind === 'pending') await ctx.scheduler.cancel(sender._id);
 			await cancelJob(ctx, attempt.watchdogJobId);
+			await cancelJob(ctx, attempt.recoveryJobId);
 			await ctx.db.delete('csmBookingAttempts', attempt._id);
 		}
 		if (attempts.length === 25) {
 			await scheduleCleanup(ctx, marker);
 			return null;
 		}
-		// No new activity records carry an account identity. Retired tables still need
-		// bounded erasure for accounts deleted before the explicit legacy retirement.
+		// Remove current identity-linked visits and their receipts before the profile.
+		const activityBudget = cleanupBudget(ctx);
+		const activityDone = await activityBudget.drain(
+			'buyerActivityOpenings',
+			ctx.db
+				.query('buyerActivityOpenings')
+				.withIndex('by_profileId', (q) => q.eq('profileId', profileId)),
+			{
+				beforeDelete: async (opening) => {
+					for (const table of ['buyerActivityReceipts', 'buyerActivityClauses'] as const) {
+						if (
+							!(await activityBudget.drain(
+								table,
+								ctx.db
+									.query(table)
+									.withIndex('by_openingId_and_itemId', (q) => q.eq('openingId', opening._id))
+							))
+						)
+							return false;
+					}
+				}
+			}
+		);
+		if (!activityDone) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
+		// Retired tables still need bounded erasure until explicit retirement.
 		if (marker.legacyActivityPhase !== 'done') {
 			const phase = marker.legacyActivityPhase ?? 'opens';
 			const budget = cleanupBudget(ctx);

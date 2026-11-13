@@ -63,7 +63,12 @@ export const activityOpening = v.object({
 	contractId: v.id('savedContracts'),
 	linkId: v.id('buyerLinks'),
 	browserId: v.string(),
+	// Verified same-company identity; external visitors remain browser-scoped.
+	profileId: v.optional(v.id('profiles')),
 	openingId: v.string(),
+	// Reloads/tabs retain delivery IDs while sharing a single visible visit.
+	visitId: v.optional(v.id('buyerActivityOpenings')),
+	lastActivityAt: v.optional(v.number()),
 	acceptedAt: v.number(),
 	expiresAt: v.number(),
 	visitorNumber: v.number(),
@@ -71,7 +76,8 @@ export const activityOpening = v.object({
 	clauseCount: v.number(),
 	eventCount: v.number(),
 	lastClauseAt: v.optional(v.number()),
-	device: v.optional(deviceCategory)
+	device: v.optional(deviceCategory),
+	city: v.optional(v.string())
 });
 const openingChild = v.object({
 	companyId: v.id('company'),

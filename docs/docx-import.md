@@ -8,11 +8,13 @@ effective formatting, wording, and document context. Word heading styles are hin
 not the sole source of headings. Classification is deterministic, without an LLM. Document content is plain: the
 approved model strips all bold/italic marks from import, authoring, seed and export. The result uses the same immutable source model,
 composition, reference resolution, and Word export as existing contracts.
-Errors block template saving. The upload page gives plain-English corrections and
-short text excerpts to find in Word. Valid uploads show a template preview with
-role correction for every nonempty paragraph and navigation to uncertain labels. Routine
-layout warnings remain in the conversion diagnostics; the page explains once
-that Dinu applies its own layout and ignores comments and footers. After reviewing the title and headings, “Go to last step” activates the template.
+Errors block pending-source adoption. After a confirmed setup booking, the upload
+page offers an optional DOCX upload with plain-English corrections and short text
+excerpts to find in Word. A valid upload is saved immediately and shows its filename
+while waiting for Julien to release it. Uploading does not expose the editor or
+instructions. Routine layout warnings remain in conversion diagnostics; Dinu applies
+its own layout and ignores comments and footers. The original file can be corrected
+in Word and replaced through the same uploader.
 
 Tables persist only plain cell strings. Paragraph breaks become newlines, and
 recognized Word fields retain their cached display text. Cell references never
@@ -195,53 +197,62 @@ structured arrays. Alphabetic numbering explicitly stores repeated or sequential
 lettering. The offline seed generator emits the same canonical format, preserving
 its sequential z, aa, ab labels.
 
-The existing upload page sends the original DOCX to the authenticated Convex HTTP
-endpoint `POST /templates/upload`, with a company membership and filename. The backend
-checks admin access and that the company has no permanent template source, bounds the
-request body, and runs the parser. Error diagnostics return without persisting
-an upload. A document with no meaningful contract text also requires correction.
-A successful check stores a prepared template source and its blocks, the original file,
-SHA-256 file hash, canonical content fingerprint, parser version, uploader,
-filename, and diagnostics. The browser receives the prepared template source ID and
-diagnostics; no public mutation accepts client-generated template source blocks.
+The setup page first shows Julien's introduction and the existing setup calendar
+inline. A provider-confirmed native setup booking is required before the optional
+uploader appears. Unresolved creation/replacement and uncertain targets block fresh
+booking work while preserving owned receipt recovery. A call ending alone preserves
+qualification. Cancellation before release returns to booking and retains any pending
+file; confirmed exact replacement restores waiting/upload. A user without a DOCX can
+simply wait for their call. Help opens only on request.
 
-The upload card shows a visible checking state, then replaces its upload controls
-with “Your template is ready” and “Go to last step”. A choose-another-file action
-remains available before activation, including when a prepared upload expires.
-The request has a 30-second deadline, including token retrieval and response-body
-reading. Choosing another file or leaving the page cancels the attempt. Changed
-sessions and memberships prevent stale results from becoming usable.
-Advancing to the last step belongs to the route intent and session that started it.
-A newer navigation or changed session prevents a late setup response from
-redirecting the user. The expected same-route setup unmount after saving
-still allows navigation to the template page.
+The uploader sends the original DOCX to authenticated `POST /templates/upload`,
+with membership and filename. The backend derives admin access and checks confirmed
+setup qualification, available company and absence of an active template/history at
+both authorization and final adoption. Body/hash/type/size bounds and parser validation
+remain enforced. Error diagnostics do not replace a prior pending upload. A document
+without meaningful contract text requires correction. Successful import stores the
+pending source/chunks, original file, SHA-256 file hash, content fingerprint, parser
+version, uploader, filename, diagnostics, `uploadedAt` and a 90-day `expiresAt`, then
+atomically adopts the company's pending pointer. The response is
+`{pendingTemplateSourceId, blockCount, issues}`; the source ID is null for conversion
+issues. No public mutation accepts client-generated source blocks or activates them.
 
-`templates.activate` accepts the membership and prepared template source ID,
-verifies company, uploader, expiry, and parse integrity, then atomically marks the
-template source active, creates the first version, and updates the current pointer.
-Activation keeps the automatically classified blocks, fingerprint, and native
-chunk accounting unchanged. One company has one permanent template source; replacement
-is refused. Identical retries and concurrent first saves of the same prepared ID
-return the committed version. “Go to last step” activates this template and opens
-the template editor with “Add your first instruction” guidance. Uploading alone does
-not activate the template. The company template becomes available immediately;
-saving instructions updates the current template automatically. Existing contracts
-retain their captured versions.
-Identical upload retries reuse an unexpired prepared template source with the current
-parser version before parsing or storing another copy. Preparations contain
-immutable parsed blocks and diagnostics, with no draft role overrides. Parser `docx-11`
-stores one paragraph kind with required title/heading/body roles, keeps all
-non-title headings flat, and recognizes canonical title/clause-depth/table styles.
-Empty table-gap artifacts do not become source blocks, while
-genuine empty paragraphs remain source. Preparations from older parsers are not
-reused. New uploads parse in a separate
-internal Node action. Cleanup dispatch is independent of preparation success. Prepared DOCX
-uploads expire after 24 hours, with bounded scheduled cleanup and a recurring
-recovery sweep. A daily bounded all-kind sweep removes unreferenced storage files left by an
-interrupted upload or export after a 24-hour grace, using the shared transactional
-[file ownership policy](company-deletion.md#retention-and-ownership). It persists its cursor and fixed cutoff for
-resumption, and advances a completed watermark to avoid rescanning retained originals.
-Originals for active template sources remain until company deletion.
+The existing upload card shows checking, then the reactive status shows the saved
+filename and “Waiting for Julien”. “Choose another file” uses the same uploader; a
+failed replacement keeps the previous file. Admin-only `templateUploads.status`
+returns booking/upload/waiting/released plus bounded pending metadata. It exposes
+neither source content nor download URLs. Reps retain the waiting-for-admin page.
+Requests retain their 30-second token/body deadline and abort on leaving the page;
+identity, transport, membership and navigation guards reject stale upload results.
+Release keeps the current route and existing readiness gates reveal its normal content.
+
+Internal `operator.inspectPendingTemplate` supplies a trusted operator the exact
+company's pending source, fingerprint and signed original download URL.
+`operator.releasePendingTemplate` requires `companyId`, `pendingTemplateSourceId`
+and `expectedFingerprint`, and rechecks current ownership, booking, expiry, parse
+integrity and empty canonical state. Canonical activation/version creation and
+pending-pointer removal commit together; the automatically classified blocks,
+fingerprint and native chunk accounting are unchanged. Identical release replay
+returns the existing version even after subsequent cancellation. Stale, replaced,
+expired or foreign sources fail. Operators normally release the upload as-is; a
+replacement uses the ordinary authorized uploader. See the [operator runbook](assisted-template-setup.md).
+
+Identical upload retries reuse only the exact current unexpired pending source for
+the same uploader/hash/parser; reuse does not renew retention. Parser `docx-11` stores
+one paragraph kind with required title/heading/body roles, keeps non-title headings
+flat and recognizes canonical title/clause-depth/table styles. Genuine empty
+paragraphs remain source; empty table-gap artifacts do not. Imports run in an
+internal Node action. Cleanup dispatch is independent of parsing success.
+
+Expiry clears only the matching pending pointer and drains original/source chunks,
+validation chunks and certificates through bounded jobs with a recurring recovery
+sweep. Replaced sources use the same drain. Active sources are protected from old
+expiry jobs. A source in any state owns its original until its row is removed;
+uploader departure, cancellation and rebooking do not erase company-owned uploads.
+A daily bounded all-kind sweep removes unreferenced files left by interrupted upload
+or export after a 24-hour grace, using the shared transactional
+[file ownership policy](company-deletion.md#retention-and-ownership). Originals for
+released sources remain until company deletion.
 
 Active template source blocks are stored once. Each template version references that
 template source and a complete manifest from stable rule IDs to immutable full rule
@@ -264,7 +275,7 @@ See [template storage](template-storage.md) and the
 | Aggregate retained XML across parsed parts        | 8 MiB                        |
 | Parsed XML nodes / depth / attributes per element | 100,000 / 100 / 100          |
 | Parsed XML characters across consumed parts       | 2 million                    |
-| Imported blocks / serialized template source             | 400 / 512 KiB                |
+| Imported blocks / serialized template source      | 400 / 512 KiB                |
 | Paragraphs / text segments / text characters      | 20,000 / 100,000 / 1 million |
 | Characters per paragraph                          | 512,000                      |
 | Fields / instruction characters                   | 10,000 / 4,096               |

@@ -1,18 +1,15 @@
 :root {
-	--document-highlight-trigger: color-mix(in srgb, var(--color-success) 16%, transparent);
-	--document-highlight-trigger-hover: color-mix(in srgb, var(--color-success) 22%, transparent);
-	--document-highlight-trigger-selected: color-mix(in srgb, var(--color-success) 28%, transparent);
+	--document-highlight-rep: color-mix(in srgb, var(--color-accent) 16%, transparent);
+	--document-highlight-rep-hover: color-mix(in srgb, var(--color-accent) 22%, transparent);
+	--document-highlight-rep-selected: color-mix(in srgb, var(--color-accent) 28%, transparent);
+	--document-highlight-buyer: color-mix(in srgb, var(--color-success) 16%, transparent);
+	--document-highlight-buyer-hover: color-mix(in srgb, var(--color-success) 22%, transparent);
+	--document-highlight-buyer-selected: color-mix(in srgb, var(--color-success) 28%, transparent);
 	--document-highlight-revision-added: #dcf1b9;
 	--document-highlight-revision-removed: var(--color-fill-subtle);
 	--document-highlight-selection: var(--color-accent-soft);
 	--document-highlight-search-match: rgba(250, 204, 21, 0.38);
 	--document-highlight-search-active: rgba(249, 115, 22, 0.72);
-}
-
-.viewer-root[data-instruction-audience='rep'] {
-	--document-highlight-trigger: color-mix(in srgb, var(--color-accent) 16%, transparent);
-	--document-highlight-trigger-hover: color-mix(in srgb, var(--color-accent) 22%, transparent);
-	--document-highlight-trigger-selected: color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
 .document-content {
@@ -211,23 +208,51 @@
 	background: transparent;
 }
 
-.document-highlight--trigger {
-	fill: var(--document-highlight-trigger);
+.document-highlight--rep-attachment {
+	fill: var(--document-highlight-rep);
 }
 
-.document-highlight--trigger[data-trigger-state='hover'] {
-	fill: var(--document-highlight-trigger-hover);
+.document-highlight--rep-attachment[data-trigger-state='hover'] {
+	fill: var(--document-highlight-rep-hover);
 }
 
-.document-highlight--trigger[data-trigger-state='selected'] {
-	fill: var(--document-highlight-trigger-selected);
+.document-highlight--rep-attachment[data-trigger-state='selected'] {
+	fill: var(--document-highlight-rep-selected);
 }
 
-.document-highlight--trigger[data-trigger-state='pending'] {
-	fill: var(--document-highlight-selection);
+.document-highlight--rep-attachment[data-trigger-state='pending'] {
 	stroke: var(--color-accent);
+}
+
+.document-highlight--buyer-attachment {
+	fill: var(--document-highlight-buyer);
+}
+
+.document-highlight--buyer-attachment[data-trigger-state='hover'] {
+	fill: var(--document-highlight-buyer-hover);
+}
+
+.document-highlight--buyer-attachment[data-trigger-state='selected'] {
+	fill: var(--document-highlight-buyer-selected);
+}
+
+.document-highlight--buyer-attachment[data-trigger-state='pending'] {
+	stroke: var(--color-success);
+}
+
+.document-highlight--rep-attachment[data-trigger-state='pending'],
+.document-highlight--buyer-attachment[data-trigger-state='pending'] {
 	stroke-width: 1;
 	stroke-dasharray: 3 2;
+}
+
+.document-highlight--discussion-proposal {
+	fill: var(--document-highlight-revision-removed);
+}
+
+.document-highlight--discussion-proposal[data-trigger-state='hover'],
+.document-highlight--discussion-proposal[data-trigger-state='selected'] {
+	fill: color-mix(in srgb, var(--color-ink-muted) 18%, transparent);
 }
 
 .document-highlight--revision-added {

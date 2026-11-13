@@ -1,6 +1,6 @@
 # Template authoring storage and cutover
 
-`/template` reads compact structure independently of source prose and instruction
+`/template` reads compact structure independently of source prose and item
 bodies. This document describes the implemented storage boundary and the source-only
 conversion tools. It does not record a deployment or a completed live-data migration.
 
@@ -8,11 +8,20 @@ conversion tools. It does not record a deployment or a completed live-data migra
 
 `playbookItemRevisions.body` is the sole business-content authority. A normalized
 `playbookItems` head stores company/revision/replay identity, a stable `renderKey`,
-and a private binary structure projection. It contains no instruction prose or
+and a private binary structure projection. It contains no instruction or explanation prose or
 replacement wording. Existing head IDs/timestamps remain unchanged. New render keys
 use the creation operation UUID; converted records use their original item ID. Creation
 receipts reserve each UUID within the company, including after deletion, so another membership
 cannot publish a colliding annotation identity.
+
+An admitted template destination starts its selected audience's compact reads alongside
+editor code loading. The membership shares one `templateSources.authoringSource`
+subscription across audience sessions; opening and mounted owners retain the same reads.
+WorkspaceScope constructs, configures and destroys that source once. Audience sessions
+receive it as a required dependency and own their separate compact structure subscriptions.
+The admitted route and mounted editor keep independent read leases; their overlap uses
+the existing reader count without another subscription or ownership-transfer callback.
+Opening demand does not create drafts, select template items or preload their bodies.
 
 `playbookItems.currentStructure` owns the template source ID/fingerprint, readiness,
 complete ordered membership, compact geometry, and authoring/structural generations.
@@ -21,21 +30,21 @@ it does not read the global pointer, version manifest or generations. The client
 its body only when source ID/fingerprint, item ID, company, creation time, content
 revision and render key exactly match current ready structure. An item's missing content
 result never establishes deletion; only complete ready structure establishes absence.
-The older `playbookItems.detail` endpoint retains its generation-bearing contract for
-compatibility; the authoring session uses `content`.
+The authoring session uses `content`; complete membership and generations remain
+owned by `currentStructure`.
 
 Save/delete acknowledgement first requires structure at or beyond the mutation watermark,
 then exact operation/revision evidence or a later revision. Conflict and missing responses
 carry transactional watermarks for recovery. The session retains these witnesses separately
 from the immutable retry request; recovery requires sufficiently new structure and matching
 content, with a conflict revision floor. A missing mutation requires complete same-source
-absence before restoring as a new instruction. A different source requires a strictly newer global
+absence before restoring as a new template item. A different source requires a strictly newer global
 authoring generation than the witness or submission. Source loading/errors remain client
 states. `templateSources.authoringSource` returns blocks and their fingerprint atomically.
 
 The active template authoring session eagerly warms a bounded pool of live item-content subscriptions
 as soon as the loaded template source matches ready structure, before renderer interaction or a first
-selection. Documents that fit the pool warm every instruction. Optional retention is limited to
+selection. Documents that fit the pool warm every item. Optional retention is limited to
 64 item IDs, eight subscriptions awaiting their first response, and 4 MiB of encoded retained
 records. The byte budget excludes unknown first responses, pinned records and object/client
 overhead; it is not a heap limit. Pending selection, actual editor and submitted-operation
@@ -51,7 +60,8 @@ annotation registry memberships, including boundary/bookmark anchors and grouped
 It rebuilds after owners commit or boundary controls return from location picking. Each eligible
 reporting lifetime receives current-page demand again, including after a same-template source read
 restart without scrolling; reports from a retired lifetime cannot change current priorities.
-Only selected/save-confirmation bodies enter the document source; background arrivals do not
+Only selected/save-confirmation rep bodies enter the document source; buyer explanations
+remain in the authoring session and their highlights use compact structure. Background arrivals do not
 change that projection or paginate. Optional errors stay outside foreground error/leave logic.
 An accepted successful current read retires only that item's failed-read suppression, without
 relaxing authority checks or optional budgets. Inactive, paused, blocked, frozen, suspended or
@@ -123,7 +133,7 @@ The selected encodings and transaction boundaries avoid amplification:
   A lone surrogate therefore does not double a large ASCII key. Original UTF-16 length,
   frame lengths and varints bound decoding; UTF-8 decoding preserves literal BOMs.
 - Structure encodes target/ID fields and counts, removing business-object property
-  names, instruction/replacement wording and reference-display patterns. Paragraph
+  names, instruction/explanation/replacement wording and reference-display patterns. Paragraph
   breaks and meaningful-content state use one count/flag value. Facts derive ordinals,
   regions, boundaries and positions rather than repeating them per source unit.
 
@@ -147,14 +157,14 @@ native checks still use actual values rather than assuming JSON equals native by
 
 The implementation maintains these independent envelopes:
 
-| Surface                  | Counted work                                                                                                                                                                                        |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ordinary structural save | Exact compact-head total + fact-chunk total + certificate/version/template source metadata + 2,100,000 bytes for changed head/body and access work; document/read/query/write checks remain active. |
-| Instruction-only save    | Metadata and one changed head/body, with exact deltas; no fact chunks or unrelated heads/bodies.                                                                                                    |
-| Structure result         | Exact sum of projected native item sizes, maintained by changed-item delta, plus 64 KiB result reserve.                                                                                             |
-| Content / mutation result | One admitted revision and head, checked ownership/revision identity; content carries source scope, mutation results carry the global watermark.                                                                                                  |
-| Compatibility list       | Revision total minus template source chunk reads, manifest/metadata, conservative 128 bytes per live projection and 64 KiB reserve; no source chunks or heads.                                      |
-| Historical full snapshot | Actual referenced revision wrappers + source chunks + manifest/template source metadata + 64 KiB; at most 4,000 revision gets plus metadata and 64-query reserve.                                   |
+| Surface                   | Counted work                                                                                                                                                                                        |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ordinary structural save  | Exact compact-head total + fact-chunk total + certificate/version/template source metadata + 2,100,000 bytes for changed head/body and access work; document/read/query/write checks remain active. |
+| Wording-only save         | Metadata and one changed head/body, with exact deltas; no fact chunks or unrelated heads/bodies.                                                                                                    |
+| Structure result          | Exact sum of projected native item sizes, maintained by changed-item delta, plus 64 KiB result reserve.                                                                                             |
+| Content / mutation result | One admitted revision and head, checked ownership/revision identity; content carries source scope, mutation results carry the global watermark.                                                     |
+| Compatibility list        | Revision total minus template source chunk reads, manifest/metadata, conservative 128 bytes per live projection and 64 KiB reserve; no source chunks or heads.                                      |
+| Historical full snapshot  | Actual referenced revision wrappers + source chunks + manifest/template source metadata + 64 KiB; at most 4,000 revision gets plus metadata and 64-query reserve.                                   |
 
 Arrays remain at most 8,192 entries; blocks/manifest/result membership stay below this.
 Generated numbered source units live in binary facts rather than a persisted array that
@@ -207,7 +217,7 @@ company has completed conversion and old releases have drained; tightening that 
 before conversion would make deployment fail. Normalized companies retain no duplicate
 business body in heads. No live conversion or schema tightening has been performed here.
 
-## Instruction audiences
+## Rep instructions and buyer explanations
 
 The Rep (`/template`) and Buyers (`/template/buyers`) editors share one source and
 one version manifest. Rep business bodies are unchanged. Buyer bodies contain only
@@ -219,13 +229,24 @@ cleanup cover both audiences through the existing revision and manifest machiner
 
 Each audience has its own instance of the shared membership-scoped authoring session,
 including drafts, selection, preloads, retries and retained recovery. The shared editor
-adapts a buyer explanation to its single Summary text slot internally; the buyer
-save transport emits only the buyer business body. Buyer queries require template
+keeps `RepInstruction` and `BuyerExplanation` as a `TemplateItem` union throughout
+drafts, dirty checking, save payloads/results, conflicts and retained recovery. Buyer
+drafts use `explanation` directly; only rep drafts have `instructions`, approval guidance
+and concessions. Shared lifecycle code uses `TemplateAudience` and neutral item names.
+The shared save transport emits the matching business body without an audience adapter. Buyer queries require template
 management permission and reject IDs from the other audience.
 
-Copy explanation is an admin-only targeted read. It requires a selection wholly
+`Copy rep summary` calls the admin-only targeted `playbookItems.repSummary` query. It requires a selection wholly
 contained in exactly one rep text trigger with a nonempty saved Summary, and checks
 the source fingerprint. The selection and saved source are checked again on click;
 the full Summary enters an editable buyer draft and is saved normally. It creates
-no ongoing link between instruction sets. Existing snapshots receive no fallback,
+no ongoing link between rep instructions and buyer explanations. Existing snapshots receive no fallback,
 backfill or retroactive edits.
+
+The terminology change preserves stored field names, table names, IDs, revision bodies,
+frozen versions and both binary codecs. It needs no backfill. New saves/deletes use
+`playbookItems.saveTemplateItem` and `deleteTemplateItem`; the previous exports remain
+as temporary aliases for open clients. `repExplanation` likewise aliases `repSummary`.
+User copy, including recovery/error/loading/accessibility text, calls rep content
+instructions and buyer content explanations. Rep coaching such as
+`howToExplainToBuyers` remains part of rep instructions.

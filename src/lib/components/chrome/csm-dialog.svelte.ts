@@ -1,7 +1,6 @@
 import { getContext, setContext, tick } from 'svelte';
 import { page } from '$app/state';
 import { initialCalendar, useCsmPreload, type CsmOwner } from './csm-preload.svelte';
-import { loadCsmModal } from './csm-modal';
 import { supportContent, type SupportContent, type SupportContext } from './csm-support';
 import type { CalendarSelection } from './csm-availability';
 import type { CsmBookingMode, CsmReplacement } from './csm-booking';
@@ -13,16 +12,10 @@ export type CsmRequest = {
 	context: SupportContext;
 	content: SupportContent;
 	trigger?: HTMLButtonElement;
-	onOpen?: () => void;
 	onBooked?: () => void;
 };
 const key = Symbol('csm-dialog');
-export function setCsmDialog(
-	canStart: () => boolean,
-	setupAvailable: () => boolean,
-	onSetupBooked: () => void,
-	support: () => SupportContext | undefined
-) {
+export function setCsmDialog(canStart: () => boolean, support: () => SupportContext | undefined) {
 	const preload = useCsmPreload();
 	let request = $state.raw<CsmRequest>();
 	let fallback: (() => void) | undefined;
@@ -41,14 +34,13 @@ export function setCsmDialog(
 			preload.owner === value.owner &&
 			value.owner.calendar.current() &&
 			value.path === page.url.pathname &&
-			context?.section === value.context.section &&
-			(!!value.initial.replacement || value.initial.mode !== 'setup' || setupAvailable())
+			context?.section === value.context.section
 		);
 	}
 	function open(
 		mode: CsmBookingMode,
 		trigger?: HTMLButtonElement,
-		callbacks?: Pick<CsmRequest, 'onOpen' | 'onBooked'>,
+		onBooked?: () => void,
 		replacement?: CsmReplacement
 	) {
 		const context = support();
@@ -60,7 +52,6 @@ export function setCsmDialog(
 			...initialCalendar(mode),
 			...(replacement ? { replacement: { ...replacement } } : {})
 		};
-		void loadCsmModal().catch(() => {});
 		request = {
 			path: page.url.pathname,
 			owner,
@@ -68,7 +59,7 @@ export function setCsmDialog(
 			context,
 			content: supportContent(context),
 			trigger,
-			...callbacks
+			onBooked
 		};
 		return true;
 	}
@@ -81,7 +72,8 @@ export function setCsmDialog(
 		},
 		canStart,
 		current,
-		open,
+		openSupport: (trigger?: HTMLButtonElement, onBooked?: () => void) =>
+			open('support', trigger, onBooked),
 		replace: (target: CsmReplacement, trigger: HTMLButtonElement) =>
 			open('setup', trigger, undefined, target),
 		align() {
@@ -89,7 +81,6 @@ export function setCsmDialog(
 		},
 		booked(value: CsmRequest) {
 			if (!current(value)) return;
-			if (value.initial.mode === 'setup') onSetupBooked();
 			value.onBooked?.();
 		},
 		async close(value: CsmRequest) {

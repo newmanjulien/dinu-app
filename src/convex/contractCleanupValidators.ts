@@ -6,7 +6,8 @@ export const contractCleanupPhase = v.union(
 	v.literal('buyerLinks'),
 	v.literal('buyerActivity'),
 	v.literal('buyerQuotas'),
-	v.literal('buyerState'),
 	v.literal('discussions'),
-	v.literal('hubspotQuotes')
+	v.literal('hubspotQuotes'),
+	v.literal('documents'),
+	v.literal('documentChunks')
 );

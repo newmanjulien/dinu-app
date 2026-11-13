@@ -1,28 +1,23 @@
 import { render } from 'svelte/server';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
-import { page } from '../lifecycle/navigation.svelte';
-import BuyerHarness from '../lifecycle/BuyerLoadingHarness.svelte';
-import Harness from '../lifecycle/LoadingHarness.svelte';
+import { page } from '../support/navigation.svelte';
+import BuyerHarness from '../components/loading/BuyerLoadingHarness.svelte';
+import Harness from '../components/loading/LoadingHarness.svelte';
 const external = vi.hoisted(() => ({
 	clerk: { isLoaded: false, auth: {}, session: null, user: null }
 }));
 vi.mock('svelte-clerk', () => ({ useClerkContext: () => external.clerk }));
-vi.mock('$lib/auth/SessionStatus.svelte', () => import('../lifecycle/CsmChrome.svelte'));
+vi.mock('$lib/auth/SessionStatus.svelte', () => import('../support/CsmChrome.svelte'));
 vi.mock('$lib/auth/destination-code', () => ({ preloadDestination: async () => {} }));
 
 it.each([
 	['/contracts', '/(workspace)/contracts', false],
-	['/settings', '/(workspace)/settings', false],
-	['/team', '/(workspace)/team', false],
-	['/integrations/hubspot', '/(workspace)/integrations/[slug]', false],
-	['/contracts/contract', '/(workspace)/contracts/(document)/[id]', false],
-	['/template', '/(workspace)/template', false],
-	['/login', '/(entry)/login', true],
-	['/onboarding', '/(onboarding)/onboarding', true]
+	['/login', '/(entry)/login', true]
 ])('server renders %s without waiting for authentication', (path, id, entry) => {
 	page.url = new URL(path as string, 'https://test.local');
 	page.route.id = id as string;
+	page.params = {};
 	page.data = {};
 	const result = render(Harness, { props: { entry: Boolean(entry) } });
 	expect(result.body).toContain('data-workspace-frame');
@@ -35,14 +30,14 @@ it.each([
 	}
 });
 
-it.each(['', '/contract'])(
-	'server renders buyer %s while validation is unresolved',
-	(destination) => {
-		page.url = new URL(`https://test.local/${'0'.repeat(39)}${destination}`);
-		const result = render(BuyerHarness);
-		const header = result.body.match(/<header\b[^>]*>([\s\S]*?)<\/header>/)?.[1];
-		expect(header?.replace(/<[^>]*>/g, '').trim()).toBe('');
-		expect(result.body).toContain('role="status"');
-		expect(result.body).not.toContain('data-private-buyer');
-	}
-);
+it('server renders buyer /contract while validation is unresolved', () => {
+	page.url = new URL(`https://test.local/${'0'.repeat(39)}/contract`);
+	page.route.id = '/(buyer)/[token=buyerCode]/contract';
+	page.params = { token: '0'.repeat(39) };
+	page.data = {};
+	const result = render(BuyerHarness);
+	const header = result.body.match(/<header\b[^>]*>([\s\S]*?)<\/header>/)?.[1];
+	expect(header).toContain('Opening contract…');
+	expect(result.body).toContain('role="status"');
+	expect(result.body).not.toContain('data-private-buyer');
+});

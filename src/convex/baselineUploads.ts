@@ -10,7 +10,7 @@ export const expire = internalMutation({
 	returns: v.null(),
 	handler: async (ctx) => {
 		if (!terminologyTransition)
-			await ctx.scheduler.runAfter(0, internal.templateUploads.expirePrepared, {});
+			await ctx.scheduler.runAfter(0, internal.templateUploads.expirePending, {});
 		return null;
 	}
 });
@@ -22,7 +22,7 @@ export const expirePrepared = internalMutation({
 	returns: v.null(),
 	handler: async (ctx) => {
 		if (!terminologyTransition)
-			await ctx.scheduler.runAfter(0, internal.templateUploads.expirePrepared, {});
+			await ctx.scheduler.runAfter(0, internal.templateUploads.expirePending, {});
 		return null;
 	}
 });

@@ -1,26 +1,35 @@
 import { ConvexError } from 'convex/values';
-import type { Doc } from './_generated/dataModel';
+import type { Id } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
-import { contractReader } from './contractReader';
-import { concessionSelections } from '../lib/contract/applications';
-import { savedReviews } from '../lib/contract/approval';
+import { readContractDocument, assertContractDocumentManifest } from './contractDocuments';
+import { outputReservation } from './outputProof';
 
-/** Shared saved-version approval boundary for Word and native Quotes. */
-export async function approvedExport(
+/** Exactly one source materialization, owned by the original immutable reservation. */
+export async function reservedExport(
 	ctx: QueryCtx,
-	contract: Doc<'savedContracts'>,
-	purpose = 'exporting',
-	unavailableMessage?: string,
-	prepared?: Awaited<ReturnType<typeof contractReader>>
+	source: {
+		companyId: Id<'company'>;
+		contractId: Id<'savedContracts'>;
+		reservationReceiptId: Id<'operationReceipts'>;
+		documentId: Id<'contractDocuments'>;
+	}
 ) {
-	const reader = prepared ?? (await contractReader(ctx, contract));
-	if (reader.contractId !== contract._id) throw new Error('Invalid contract preparation.');
-	const items = await reader.selectedItems(
-		concessionSelections(contract.applications),
-		unavailableMessage
-	);
-	const reviews = savedReviews(items, contract);
-	if (reviews.some((review) => review.status !== 'approved'))
-		throw new ConvexError(`All selected concessions must be approved before ${purpose}.`);
-	return { reader, items, reviews };
+	const { owner, reservationManifest } = await outputReservation(ctx, source);
+	if (
+		!owner.outputVerification?.complete ||
+		owner.outputVerification.generation !== reservationManifest.proof.generation
+	)
+		throw new ConvexError('This output evidence is still being checked. Try again shortly.');
+	const manifest = await ctx.db.get('contractDocuments', reservationManifest.documentId);
+	assertContractDocumentManifest(manifest, {
+		companyId: source.companyId,
+		contractId: source.contractId
+	});
+	if (manifest.fingerprint !== reservationManifest.documentFingerprint)
+		throw new ConvexError('This output document is unavailable. Prepare a new output.');
+	const document = await readContractDocument(ctx, manifest._id, {
+		companyId: source.companyId,
+		contractId: source.contractId
+	});
+	return { reservationManifest, document };
 }

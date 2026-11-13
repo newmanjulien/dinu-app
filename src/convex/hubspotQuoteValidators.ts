@@ -1,5 +1,11 @@
 import { v } from 'convex/values';
 import { hubspotDestination } from './hubspotValidators';
+import { reservationManifest } from './outputValidators';
+import { exportRequest } from './savedContractValidators';
+
+export const quoteRequest = exportRequest.extend({ destination: hubspotDestination });
+/** The immutable source/actor/destination request lives in its existing operation receipt. */
+export const quoteReservation = reservationManifest;
 
 export const quoteScopes = ['crm.objects.quotes.read', 'crm.objects.quotes.write'] as const;
 export const hasQuoteScopes = (scopes: readonly string[]) =>
@@ -44,23 +50,16 @@ export const quoteProviderFailure = v.object({
 export const quotePush = v.object({
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	membershipId: v.id('memberships'),
-	profileId: v.id('profiles'),
-	installationId: v.id('hubspotQuoteInstallations'),
-	epoch: v.number(),
+	reservationReceiptId: v.id('operationReceipts'),
+	documentId: v.id('contractDocuments'),
+	// Indexed provider destination stays operational; immutable source/actor lives on the receipt.
 	destination: hubspotDestination,
 	canonicalKey: v.string(),
 	fingerprint: v.string(),
 	payloadHash: v.string(),
-	templateVersionId: v.id('templateVersions'),
-	editRevision: v.number(),
-	reviewGeneration: v.number(),
-	title: v.string(),
 	state: quoteState,
-	// Accept old snapshots during rollout; new/replaced rows use native _creationTime.
-	createdAt: v.optional(v.number()),
-	requestedAt: v.optional(v.number()),
 	updatedAt: v.number(),
+	dispatchedAt: v.optional(v.number()),
 	fileId: v.optional(v.id('_storage')),
 	payloadExpiresAt: v.optional(v.number()),
 	dueAt: v.optional(v.number()),
@@ -72,7 +71,6 @@ export const quotePush = v.object({
 	previousQuoteId: v.optional(v.string()),
 	url: v.optional(v.string()),
 	message: v.optional(v.string()),
-	correlationId: v.optional(v.string()), // Legacy diagnostics until existing rows age out.
 	providerFailure: v.optional(quoteProviderFailure),
 	recoveryEvidence: v.optional(v.string())
 });

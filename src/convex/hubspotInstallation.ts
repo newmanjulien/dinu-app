@@ -27,7 +27,9 @@ export function portalLifecycle(ctx: QueryCtx, accountId: string) {
 export async function activeDestination(
 	ctx: QueryCtx,
 	companyId: Id<'company'>,
-	destination: Doc<'hubspotExports'>['destination']
+	destination:
+		| import('convex/values').Infer<typeof import('./hubspotValidators').hubspotDestination>
+		| undefined
 ) {
 	if (!destination) return null;
 	const row = await ctx.db.get('hubspotConnections', destination.connectionId);

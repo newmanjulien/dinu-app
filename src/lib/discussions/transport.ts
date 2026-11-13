@@ -3,9 +3,12 @@ import { validate } from 'convex-helpers/validators';
 import { readTextBody } from '../http-body';
 import { discussionCommand } from './validators';
 export const discussionRequest = v.union(
-	v.object({ kind: v.literal('viewer'), token: v.string() }),
 	v.object({
-		kind: v.literal('write'),
+		kind: v.literal('viewer'),
+		token: v.string()
+	}),
+	v.object({
+		kind: v.union(v.literal('write'), v.literal('result')),
 		token: v.string(),
 		operationId: v.string(),
 		expectedAuthorKey: v.string(),

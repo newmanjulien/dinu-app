@@ -18,6 +18,7 @@
 		disabled?: boolean;
 		class?: ClassValue;
 		onclick?: (event: MouseEvent) => void;
+		onkeydown?: (event: KeyboardEvent) => void;
 		onpointerenter?: (event: PointerEvent) => void;
 		onpointerdown?: (event: PointerEvent) => void;
 		onfocus?: (event: FocusEvent) => void;
@@ -40,6 +41,7 @@
 		disabled = false,
 		class: className = '',
 		onclick,
+		onkeydown,
 		onpointerenter,
 		onpointerdown,
 		onfocus,
@@ -88,6 +90,7 @@
 	aria-disabled={href && disabled ? true : undefined}
 	tabindex={href && disabled ? -1 : undefined}
 	onclick={handleClick}
+	{onkeydown}
 	{onpointerenter}
 	{onpointerdown}
 	{onfocus}

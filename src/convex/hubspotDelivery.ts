@@ -4,7 +4,7 @@ import { v } from 'convex/values';
 import { components, internal } from './_generated/api';
 import { env, internalMutation, internalQuery } from './_generated/server';
 import { availableCompany } from './auth';
-import { writeDirectory } from './contractDirectory';
+import { readContract } from './contractState';
 import schema from './schema';
 import { blockLink } from './hubspotRecords';
 import { requireReconnect } from './hubspotConnections';
@@ -15,7 +15,7 @@ import {
 	observationExpired,
 	sameDestination
 } from './hubspotDeliveryPolicy';
-import { confirmUpload } from './hubspotExports';
+import { confirmUpload, exportDelivery } from './hubspotExportDeliveries';
 
 export const pool = new Workpool(components.hubspotPool, {
 	maxParallelism: 5,
@@ -145,17 +145,17 @@ export const data = internalQuery({
 	returns: v.union(
 		v.object({
 			event: schema.doc('hubspotEvents'),
-			attempt: v.union(schema.doc('hubspotExports'), v.null())
+			attempt: v.union(schema.doc('hubspotExports'), v.null()),
+			delivery: v.union(schema.doc('hubspotExportDeliveries'), v.null())
 		}),
 		v.null()
 	),
 	handler: async (ctx, { id }) => {
 		const event = await ctx.db.get('hubspotEvents', id);
 		if (!event || !(await availableCompany(ctx, event.companyId))) return null;
-		return {
-			event,
-			attempt: event.attemptId ? await ctx.db.get('hubspotExports', event.attemptId) : null
-		};
+		const attempt = event.attemptId ? await ctx.db.get('hubspotExports', event.attemptId) : null;
+		const delivery = attempt ? await exportDelivery(ctx, attempt) : null;
+		return { event, attempt, delivery };
 	}
 });
 /** Read authority is scoped to this claim and original account, even after link repair. */
@@ -344,8 +344,9 @@ export const settle = internalMutation({
 			(row.leaseUntil ?? 0) > now &&
 			args.outcome === 'unavailable'
 		) {
-			const contract = await ctx.db.get('savedContracts', row.contractId);
-			if (contract?.companyId === row.companyId && sameDestination(contract.hubspot, row))
+			const root = await ctx.db.get('savedContracts', row.contractId);
+			const contract = root ? await readContract(ctx, root) : null;
+			if (contract?.root.companyId === row.companyId && sameDestination(contract.hubspot, row))
 				await markDealUnavailable(ctx, contract);
 			else await blockLink(ctx, row.companyId, row.contractId, row.destination.generation);
 		}

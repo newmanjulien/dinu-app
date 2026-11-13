@@ -1,8 +1,13 @@
-import { contractItemId } from '../lib/contract/item-identity';
 import { ConvexError, v, type Infer } from 'convex/values';
-import { approvalState } from '../lib/contract/applications';
 
 import { normalizedEmailAddress } from '../lib/email-address';
+import {
+	approvalContext,
+	buyerProposalSource,
+	changeActor,
+	playbookSource
+} from '../lib/contract/changes';
+import { preparationActor } from './discussionPreparationValidators';
 
 export function emailAddress(input: string) {
 	const email = normalizedEmailAddress(input);
@@ -20,28 +25,80 @@ export const emailOutcome = v.union(
 export type EmailOutcome = Infer<typeof emailOutcome>;
 export const emailAttempt = v.object({ id: v.id('emailDeliveries'), attempt: v.number() });
 export const emailRecipients = v.object({ recipientEmail: v.string(), cc: v.array(v.string()) });
-export const emailSelection = v.object({
-	itemId: contractItemId,
-	concessionId: v.string(),
-	concessionPosition: v.optional(v.number()),
-	approval: v.optional(approvalState)
+export const nativeEmailEntry = v.object({
+	changeId: v.id('contractChanges'),
+	decisionId: v.union(v.id('contractChangeDecisions'), v.null()),
+	key: v.string(),
+	status: v.union(v.literal('pending'), v.literal('approved'), v.literal('rejected')),
+	pendingAdmissionRevision: v.union(v.number(), v.null()),
+	actor: changeActor,
+	source: v.union(
+		v.object({ kind: v.literal('playbook'), value: playbookSource }),
+		v.object({ kind: v.literal('buyer-proposal'), value: buyerProposalSource })
+	),
+	decision: v.union(v.null(), v.object({ actor: changeActor, decidedAt: v.number() }))
 });
-export type EmailSelection = Infer<typeof emailSelection>;
-export const approvalEmailEvent = v.object({
-	kind: v.literal('approval'),
+export type NativeEmailEntry = Infer<typeof nativeEmailEntry>;
+export const emailCounts = v.object({
+	pendingCount: v.number(),
+	reviewedCount: v.number(),
+	notRequiredCount: v.number(),
+	approvedCount: v.number(),
+	rejectedCount: v.number()
+});
+export type EmailCounts = Infer<typeof emailCounts>;
+export const emailFilterFence = v.object({
+	stateRevision: v.number(),
+	supportGeneration: v.number(),
+	storageGeneration: v.number()
+});
+export const emailFilterManifest = v.object({
+	fence: emailFilterFence,
+	order: v.number(),
+	count: v.number(),
+	bytes: v.number(),
+	hash: v.string(),
+	filteredHash: v.string(),
+	counts: emailCounts
+});
+export const emailSnapshot = v.object({
+	state: v.union(v.literal('staging'), v.literal('complete')),
+	actor: preparationActor,
+	operationId: v.string(),
+	ownerKey: v.string(),
+	receiptId: v.optional(v.id('operationReceipts')),
+	generation: v.number(),
+	contextIdentity: v.string(),
+	cutoff: v.number(),
+	sourceDocumentId: v.id('contractDocuments'),
+	documentRevision: v.number(),
+	stateRevision: v.number(),
+	supportGeneration: v.number(),
+	storageGeneration: v.number(),
+	latestRequestId: v.union(v.string(), v.null()),
+	count: v.number(),
+	chunks: v.number(),
+	bytes: v.number(),
+	hash: v.string()
+});
+const nativeReviewEvent = {
+	context: approvalContext,
+	identity: v.string(),
+	buyerToken: v.optional(v.string()),
 	contractId: v.id('savedContracts'),
+	title: v.string(),
+	templateVersionId: v.id('templateVersions')
+};
+export const approvalEmailEvent = v.object({
+	...nativeReviewEvent,
+	kind: v.literal('approval'),
 	requestId: v.string(),
-	buyerCompanyName: v.string(),
-	templateVersionId: v.id('templateVersions'),
 	recipientEmail: v.string()
 });
 export const decisionEmailEvent = v.object({
+	...nativeReviewEvent,
 	kind: v.literal('decision'),
-	contractId: v.id('savedContracts'),
-	reviewGeneration: v.number(),
-	reviewerId: v.id('profiles'),
-	buyerCompanyName: v.string(),
-	templateVersionId: v.id('templateVersions')
+	reviewerId: v.id('profiles')
 });
 export const invitationEmailEvent = v.object({
 	kind: v.literal('invitation'),
@@ -80,6 +137,7 @@ const deliveryFields = {
 	companyId: v.id('company'),
 	attempt: v.number(),
 	state: emailState,
+	filter: v.optional(emailFilterManifest),
 	// A retired delivery owns its remaining chunks until bounded disposal finishes.
 	disposal: v.optional(
 		v.object({ generation: v.number(), jobId: v.optional(v.id('_scheduled_functions')) })
@@ -90,6 +148,7 @@ export const emailDelivery = v.union(
 		...deliveryFields,
 		event: v.union(approvalEmailEvent, decisionEmailEvent),
 		contractId: v.id('savedContracts'),
+		snapshot: emailSnapshot,
 		execution: scheduledExecution
 	}),
 	v.object({

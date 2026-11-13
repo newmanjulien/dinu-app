@@ -1,3 +1,4 @@
+import type { ContractDocument } from '../contract-document';
 import type { ContractItemId } from '$lib/contract/item-identity';
 import { CompiledDocument } from '../compiled-document';
 import type { SourceBlock } from '../model';
@@ -9,8 +10,11 @@ import {
 } from '../../playbook/document-overlay';
 import { playbookGeometryKey } from '../../playbook/geometry';
 import { PlaybookGeometryIndex } from '../../playbook/geometry-index';
-import type { ContractItemRecord } from '../../playbook/model';
-import { semanticPlaybookDraft } from '../../playbook/content';
+import {
+	resolveTemplateItem,
+	type ResolvedContractItem,
+	type DocumentItemRecord
+} from '../../contract/items';
 
 import { documentAnnotations } from '../../playbook/document-overlay';
 import {
@@ -30,7 +34,7 @@ type StructuralEntry = {
 export class DocumentDomain {
 	document: CompiledDocument | null = null;
 	geometry: PlaybookGeometryIndex | null = null;
-	records: DeepReadonly<ContractItemRecord[]> | null = null;
+	records: DeepReadonly<ResolvedContractItem[]> | null = null;
 	structures: DeepReadonly<StructureItem<ContractItemId>[]> | null = null;
 	overlays: readonly DocumentAnnotationItem[] = [];
 	contentOverlays: readonly DocumentOverlayItem[] = [];
@@ -51,10 +55,11 @@ export class DocumentDomain {
 	} | null = null;
 	private sourceKey = '';
 	private sourceInput: readonly SourceBlock[] | null = null;
+	private sourceAliases: ContractDocument['aliases'] | undefined;
 	private accepted = new Map<
 		string,
 		{
-			record: DeepReadonly<ContractItemRecord>;
+			record: DeepReadonly<ResolvedContractItem>;
 			identity: string;
 			overlay: DocumentOverlayItem;
 			key: string;
@@ -68,15 +73,37 @@ export class DocumentDomain {
 			? { record: entry.record, annotations: structure.overlay.annotations }
 			: null;
 	}
+	/** Certified contract acceptance replaces indexes rather than mutating the prior geometry. */
+	checkpoint() {
+		const previous = {
+			document: this.document,
+			geometry: this.geometry,
+			records: this.records,
+			structures: this.structures,
+			overlays: this.overlays,
+			contentOverlays: this.contentOverlays,
+			structureInput: this.structureInput,
+			sourceKey: this.sourceKey,
+			sourceInput: this.sourceInput,
+			sourceAliases: this.sourceAliases,
+			accepted: this.accepted,
+			structural: this.structural
+		};
+		return () => Object.assign(this, previous);
+	}
 	acceptBlocks(
 		blocks: readonly SourceBlock[],
-		initialGeometry: 'empty' | 'defer-to-overlays' = 'empty'
+		initialGeometry: 'empty' | 'defer-to-overlays' = 'empty',
+		document?: ContractDocument
 	) {
-		const key = blocks === this.sourceInput ? this.sourceKey : JSON.stringify(blocks);
+		const key =
+			blocks === this.sourceInput && document?.aliases === this.sourceAliases
+				? this.sourceKey
+				: JSON.stringify([blocks, document?.aliases]);
 		if (key !== this.sourceKey) {
-			const document = new CompiledDocument(JSON.parse(key));
-			const geometry = initialGeometry === 'empty' ? new PlaybookGeometryIndex(document) : null;
-			this.document = document;
+			const compiled = new CompiledDocument(blocks, document);
+			const geometry = initialGeometry === 'empty' ? new PlaybookGeometryIndex(compiled) : null;
+			this.document = compiled;
 			// Deferred overlay acceptance must never use an index for the previous document.
 			this.geometry = geometry;
 			this.sourceKey = key;
@@ -86,6 +113,7 @@ export class DocumentDomain {
 			this.geometry = new PlaybookGeometryIndex(this.document);
 		}
 		this.sourceInput = blocks;
+		this.sourceAliases = document?.aliases;
 	}
 	acceptStructure(
 		items: DeepReadonly<StructureItem<ContractItemId>[]>,
@@ -111,6 +139,7 @@ export class DocumentDomain {
 			const key = JSON.stringify([
 				item._id,
 				item.renderKey,
+				item.audience,
 				item.trigger,
 				item.concessions,
 				pending
@@ -171,7 +200,7 @@ export class DocumentDomain {
 			geometry.loadCertified(overlays.map((o) => [o.itemId, playbookStructure(o)] as const));
 		else geometry.auditGeometry();
 		for (const overlay of overlays) {
-			validateStructuralReplacementContent(overlay);
+			validateStructuralReplacementContent(overlay, contract);
 			validateChangeReferences(this.document, overlay);
 		}
 		this.geometry = geometry;
@@ -180,7 +209,7 @@ export class DocumentDomain {
 		this.overlays = overlays;
 		this.contentOverlays = overlays;
 	}
-	acceptItems(records: DeepReadonly<ContractItemRecord[]>, contract = false) {
+	acceptItems(records: DeepReadonly<DocumentItemRecord[]>, contract = false) {
 		this.acceptStructure(
 			records.map((record) => itemStructure(record)),
 			undefined,
@@ -188,12 +217,33 @@ export class DocumentDomain {
 		);
 		this.acceptDetails(records);
 	}
-	acceptDetails(records: DeepReadonly<ContractItemRecord[]>) {
+	acceptDetails(records: DeepReadonly<DocumentItemRecord[]>) {
 		this.metrics.snapshotsAccepted++;
 		const next = new Map<string, typeof this.accepted extends Map<string, infer T> ? T : never>();
 		for (const record of records) {
 			this.metrics.recordsCompared++;
-			const identity = JSON.stringify([record._creationTime, record.contentRevision]);
+			const suppressed =
+				'origin' in record
+					? record.choices.flatMap((choice) =>
+							choice.changes.flatMap((change, index) =>
+								change.suppressed ? [[choice.id, index]] : []
+							)
+						)
+					: [];
+			const identity = JSON.stringify([
+				record._creationTime,
+				record.contentRevision,
+				...('origin' in record
+					? [
+							record.primary,
+							record.choices.map((choice) => [
+								choice.id,
+								choice.changes.map((change) => change.target)
+							])
+						]
+					: []),
+				...(suppressed.length ? [suppressed] : [])
+			]);
 			const previous = this.accepted.get(record._id);
 			if (previous?.identity === identity) {
 				next.set(record._id, previous);
@@ -202,11 +252,7 @@ export class DocumentDomain {
 				continue;
 			}
 			// Copy the domain tree explicitly so reactive query proxies are supported too.
-			const copy = immutable({
-				...record,
-				...semanticPlaybookDraft(record),
-				...(record.instructions !== undefined ? { instructions: { ...record.instructions } } : {})
-			});
+			const copy = immutable('origin' in record ? record : resolveTemplateItem(record));
 			const projected = { ...toDocumentOverlay(copy), annotations: [] };
 			const key = JSON.stringify(projected);
 			next.set(record._id, {

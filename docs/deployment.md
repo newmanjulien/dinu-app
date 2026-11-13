@@ -11,6 +11,8 @@ local and need website publication before clients can use the current app code.
 
 [Current architecture](data-model.md) describes the backend model.
 
+The one-current-contract rewrite is a local, incompatible backend/client change. The intended release uses a separately controlled database reset and matching client reload; no retained-contract conversion is supported. Local checks do not perform or certify that reset, a deployment or provider outcomes. See [contract cutover](#backend-ownership-conversion). Keep old/offline clients fenced when releasing the clean schema and invalidate their obsolete intent/cache namespaces.
+
 Push to `main` to release Dinu. Vercel builds the website and deploys Convex from
 the same checkout. Automatic deployments from other branches are disabled by
 `vercel.json`. Vercel's project-level **Preview Deployments** setting is also
@@ -38,11 +40,11 @@ are shared by both release phases. Convex URLs and the Clerk issuer are derived 
 
 Vercel **Production** needs these variables:
 
-| Variable                       | Value                                                                                                              |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Variable                       | Value                                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
 | `CONVEX_DEPLOY_KEY`            | Sensitive deployment-scoped production key; needs deployment and environment-read access |
-| `PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk Production publishable key (`pk_live_…`)                                                                     |
-| `CLERK_SECRET_KEY`             | Secret for the configured Clerk Production instance (`sk_live_…`), stored as Sensitive                             |
+| `PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk Production publishable key (`pk_live_…`)                                           |
+| `CLERK_SECRET_KEY`             | Secret for the configured Clerk Production instance (`sk_live_…`), stored as Sensitive   |
 
 The release command injects `PUBLIC_CONVEX_URL` into the website build from the
 selected Convex deployment. An existing saved value is overridden during builds.
@@ -118,8 +120,9 @@ production deployments or deploying Convex separately.
 ## Failures and recovery
 
 The deployments are not atomic. Convex can update before Vercel publishes, and
-open browser tabs can still use older frontend code. Keep backend changes
-compatible with those clients, even when the database is empty.
+open browser tabs can still use older frontend code. For routine releases, keep
+backend changes compatible with those clients, even when the database is empty.
+The planned contract cutover in [Contract reset and client cutover](#backend-ownership-conversion) releases the matching clean schema/data/client pair and reloads supported clients together.
 
 If preflight fails, fix the named production setting or retry after a transient
 service failure, then redeploy the same commit. Do not bypass the checker.
@@ -138,11 +141,82 @@ to use its existing configuration rather than the production release checker.
 
 Integration content ships with the website from `src/lib/integrations.ts`; no catalog initialization is required. Before the first static-catalog publication on a target, compare its stored editorial content with the shared code snapshot. Before deploying removal of the former catalog APIs, establish that supported served/open clients no longer need them. If clients remain or their status is uncertain, first publish the static frontend while retaining the old catalog backend/schema, then remove those APIs after client retirement. Legacy stored records need no cleanup for the application to work. See [integration catalog](integrations.md) for the transition and content maintenance.
 
+<a id="backend-ownership-conversion"></a>
+
+## Contract reset and client cutover
+
+The current local model has one authoritative contract root and approved document, native changes/heads/decisions, a stable listing projection and permanent current-view links. Business contract publication/history and their converters/operator endpoints have been removed. Historical rollout artifacts describe superseded models and must not be applied to this source.
+
+The user controls the separate database reset. This implementation performs no reset, migration, deployment or live provider action. Before an authorized release, classify the exact target, preserve any required recoverable data/code and reconcile running provider/email/booking outcomes under their own procedures. Coordinate the reset, matching backend/client release and old-tab reload; do not run a removed converter or replay obsolete browser intent against the new schema. Browser namespaces are `dinu:v7`, `dinu:drafts:v6` with envelope 10, and `dinu:download-acks:v2`. Previous namespaces have no translation/recovery path.
+
+Manual acceptance includes the same approved document in all audiences, permitted immediate changes beside unrelated pending work, exact review/support/undo and context requests, logically removed discussions with immediate unread cancellation, output-owned evidence, current displayed-byte buyer downloads, concurrent command/retry/account boundaries, warm navigation and shared copy feedback. Local type/build/tests cannot certify visual/native provider behavior or old running jobs. Reset and deployment remain separately controlled release steps.
+
+Template authoring and external integration maintenance have independent live procedures:
+
+Before changing generation resolution on a target, inventory current manifests,
+pointer clocks, acknowledged watermarks and active `authoringMigrations` captures.
+Present manifest clocks now own observations, readiness, saves and repair; only
+genuinely missing historical fields fall back to the corresponding pointer clock.
+Classify divergences against retained capture/watermark history and reconcile
+deliberately so acknowledged company clocks never decrease. Do not take a runtime
+maximum or reset clocks. An older active capture whose clock semantics differ must
+restart through `authoringMigration:begin` and complete certification; version,
+source and fingerprint fences remain. Pointer clocks remain output mirrors during
+compatibility. Remove their fields/writes only after historical missing-clock
+manifests and older captures are proven retired; this local implementation does
+not establish those population gates or remove the mirrors.
+
+- Cal booking rollout uses the bounded `csmMaintenance:normalize` dry-run/apply
+  populations (`attempts`, `appointments`, `companies`), retaining every unresolved
+  ID/reason and converted-unknown/recovery-enrollment delta. Old receipt/snapshot
+  maintenance APIs are removed. Apply reuses current reducers, schedules GET recovery
+  only, and preserves lease/backoff/review/budget. Missing original proof stays
+  guarded review. A separately authorized complete attempt inventory/apply is required
+  before relying on affected historical initial-setup/support admission, including
+  already-format2 provider-negative failures with missing/invalid sender execution
+  tokens (`canceled`, `unknown`, `pending` or `inProgress`). These convert to guarded
+  unknown/review while retaining lineage and recovery history; only `success`/`failed`
+  execution with the required UID/operator evidence retains negative authority.
+  Deployment alone does not repair stored rows; no live inventory/apply occurred
+  during local implementation. See the [normalization and reviewed-recovery runbook](assisted-template-setup.md#snapshot-and-reference-reconciliation).
+- Before Cal rollout, verify actual numeric event/organizer IDs and API scope. Set
+  `CAL_EVENT_TYPE_ID`, `CAL_ORGANIZER_ID`, `CAL_API_KEY`, dedicated
+  `CAL_METADATA_SIGNING_SECRET`, and delivery-only `CAL_WEBHOOK_SECRET`. Preserve
+  the old delivery key as `CAL_LEGACY_METADATA_SECRET` before rotation; there is no
+  fallback to the current key. Setup/support share one event. Frozen references
+  survive delivery/signing-key changes; signing rotation affects new attempts only.
+- Release matching booking backend/client and retire old tabs; no receipt-protocol
+  negotiation or old context/settlement client API remains. Keep additive historical
+  schema/readers/verifiers until inventories are empty or unresolved obligations
+  safely retained/converted, old scheduled invocations drained and old issued URLs
+  accounted for. Drain wrappers `csmBookings:recoverWebhook` and
+  `csmSetupAppointments:legacyWebhook` only forward into the durable inbox.
+- Initial/replacement setup recovery is sanitized and company-authorized, using
+  original attendee proof. Webhook acknowledgement follows durable local retention,
+  with no provider IO in HTTP. Finite retry/review preserves uncertainty; erased
+  dispatch guards require exact terminal-before-investigation evidence, and positive
+  erased discovery stays closed without personal reconstruction. Appointment
+  cap/overflow resolution requires exhaustive attestation and fresh fenced proof.
+  Template release retires appointment work while retaining history/confirmed facts
+  and independent creation recovery. No provider invitations are cancelled.
+- Confirmed scheduled/cancelled header facts survive failed refresh. Scheduled
+  notices end at the confirmed call end; cancellation lasts until confirmed
+  rebooking/release. There is no unknown-status header. Cold display retains
+  concurrent config/slot GETs and the browser cache. No provider-wide exactly-once
+  or slot reservation is claimed. Live provider/scheduler/key rotation, browser,
+  inventory/apply and env/deployment checks are separate rollout prerequisites,
+  unperformed by local implementation.
+  No old `contractState:normalizeBatch`, `contractDefinitions:backfillProposals`,
+  `operationReceipts:migrateLegacy` or their removed retirement endpoints should be invoked.
+  Booking maintenance and external-delivery release checks above are still required
+  where their stored populations exist. Run any live operation only under its own authorized
+  target/rehearsal/recovery procedure.
+
 ## Verification
 
 Before release, run `node --check scripts/check-deployment.mjs`,
 `npm run verify` and `npx tsc --noEmit -p src/convex/tsconfig.json`.
-These verify script syntax, the existing 26 lifecycle/23 performance checks,
+These verify script syntax, the existing lifecycle/performance/integration checks,
 frontend/backend type checks and the production build. They do not automatically
 exercise release-checker retry, deadline or configuration-failure paths, or native
 resource/provider/browser acceptance.

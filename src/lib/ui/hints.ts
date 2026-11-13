@@ -8,13 +8,13 @@ export const hints = {
 		text: 'Create and manage buyer contracts using your company’s template and instructions.'
 	},
 	concessionAutoApproved: {
-		text: "You've auto-approved this concession yourself"
+		text: 'This option applies immediately to the current contract.'
 	},
 	concessionApprovalRequired: {
-		text: 'This concession will stay pending until you request and get approval'
+		text: 'This option stays pending until you submit it for approval and an admin approves it.'
 	},
 	concessionWithinAuthority: {
-		text: 'You have the authority to make this concession without approval'
+		text: 'You have authority to apply this option immediately.'
 	}
 } satisfies Record<string, HintDefinition>;
 

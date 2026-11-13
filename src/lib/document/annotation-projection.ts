@@ -187,11 +187,12 @@ export class DocumentAnnotationProjection {
 					element.setAttribute(
 						'aria-label',
 						annotation.pending
-							? 'Saving instructions'
+							? 'Saving changes'
 							: text
 								? `Open ${this.label}: ${text}`
 								: `Open ${this.label}`
 					);
+					if (annotation.passive) element.removeAttribute('aria-label');
 					const anchor = coverage[0].token;
 					if (owner.anchor !== anchor) reordered = true;
 					owner.anchor = anchor;
@@ -201,7 +202,13 @@ export class DocumentAnnotationProjection {
 						segments: coverage.map(({ token, range }) => this.segment(token, range)),
 						prepare: () => this.prepare(current, false)
 					});
-					this.highlights.setGroup(owner.group, 'trigger', ranges, undefined, element);
+					this.highlights.setGroup(
+						owner.group,
+						annotation.highlightKind,
+						ranges,
+						undefined,
+						annotation.passive ? undefined : element
+					);
 					positioned.add(owner);
 				}
 				this.projected.set(annotation.id, {
@@ -237,10 +244,15 @@ export class DocumentAnnotationProjection {
 		element.dataset.annotationSelected = state;
 		element.dataset.annotationPending = pending;
 		element.dataset.annotationPriority = priority;
-		element.setAttribute('role', capable ? 'button' : 'presentation');
-		element.tabIndex = capable ? 0 : -1;
+		const actionable = capable && !annotation.passive;
+		element.setAttribute('role', actionable ? 'button' : 'presentation');
+		element.tabIndex = actionable ? 0 : -1;
 		element.setAttribute('aria-pressed', state);
-		element.setAttribute('aria-disabled', String(!enabled || Boolean(annotation.pending)));
+		element.setAttribute(
+			'aria-disabled',
+			String(!enabled || Boolean(annotation.pending) || Boolean(annotation.passive))
+		);
+		if (annotation.passive) element.removeAttribute('aria-label');
 		return { changed, orderChanged };
 	}
 	private layer(page: HTMLElement) {

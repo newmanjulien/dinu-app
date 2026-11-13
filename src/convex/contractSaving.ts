@@ -1,252 +1,250 @@
-import { publishContract, requirePublicationAcknowledgment } from './contractPublication';
 import { ConvexError } from 'convex/values';
 import type { MutationCtx } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
+import type { Contract } from './contractState';
 import type { CompanyAccess } from './auth';
-import { scopedOperation } from './auth';
-import { activity, actionKey, actorOf, receipt, remember, operation } from './hubspotRecords';
-import { choicesOf, concessionSelections, sameApplications } from '../lib/contract/applications';
-import type { ActivityCommand } from '../lib/contract/activity-commands';
-import { projectCommands, MAX_SAVE_COMMANDS } from '../lib/contract/activity-commands';
-import { CompiledDocument } from '../lib/document/compiled-document';
-import { createChangeConflictChecker } from '../lib/playbook/conflicts';
-import { activeConflicts, conflictsForConcession } from '../lib/playbook/selection-conflicts';
-import { toDocumentOverlay } from '../lib/playbook/document-overlay';
-import { reviewsForSelections, recordDecision } from './reviews';
+import { prepareActivity } from './hubspotRecords';
+import { documentBytes } from './storageCapacity';
+import { playbookStates } from './reviews';
+import {
+	actionKey,
+	actorOf,
+	receipt,
+	remember,
+	operation,
+	sealReceipt,
+	planReceiptWrite,
+	receiptSealWork
+} from './operationReceipts';
+import type { PlaybookCommand } from '../lib/contract/changes';
+import { MAX_SAVE_COMMANDS } from '../lib/contract/changes';
 import { contractReader } from './contractReader';
-import { writeDirectory } from './contractDirectory';
-import { MAX_SELECTED_CONCESSIONS } from '../lib/document/selection-limits';
 import { stateOf } from './contracts';
 import { requireContractWork } from './contractPolicy';
+import { changeSession, type TransitionHooks, type TransitionWork } from './contractChanges';
+import type { ContractSaveResult } from '../lib/contract/saved';
+import { discussionTransitionHooks } from './discussionTransitions';
+import { DiscussionPreparationRequired, admitDiscussionWork } from './discussionMaps';
+import { deferDiscussionOperation, sellerPreparationActor } from './discussionPreparation';
+import { receiptChunkFingerprint } from './operationReceipts';
 
+/** Ordered commands compare only touched native heads, preserving unrelated widget merges. */
 export async function saveCommands(
 	ctx: MutationCtx,
 	access: CompanyAccess,
-	contract: Doc<'savedContracts'>,
-	args: {
-		commands: ActivityCommand[];
-		choices: ReturnType<typeof choicesOf>;
-		expectedEditRevision: number;
-		operationId: string;
-	},
-	prepared?: Awaited<ReturnType<typeof contractReader>>
-) {
+	contract: Contract,
+	args: { commands: PlaybookCommand[]; operationId: string },
+	hooks?: TransitionHooks,
+	resuming?: Doc<'operationReceipts'>
+): Promise<ContractSaveResult> {
 	const key = actionKey(access, 'save', args.operationId),
-		inputs = JSON.stringify([contract._id, args.expectedEditRevision, args.commands, args.choices]);
-	if (await receipt(ctx, key, inputs))
-		return { status: 'saved' as const, state: stateOf(contract) };
-	if (contract.editRevision !== args.expectedEditRevision)
-		return { status: 'conflict' as const, state: stateOf(contract) };
-	if (!args.commands.length) {
-		if (!sameApplications(choicesOf(contract.applications), args.choices))
-			throw new ConvexError('Reload to update your contract editor.');
-		return { status: 'saved' as const, state: stateOf(contract) };
+		inputs = JSON.stringify([contract.root._id, args]);
+	const prior = await receipt(ctx, key, inputs);
+	if (prior) {
+		if (
+			prior.companyId !== access.companyId ||
+			prior.contractId !== contract.root._id ||
+			prior.kind !== 'playbook-save'
+		)
+			throw new Error('Save receipt ownership is invalid.');
+		if (prior.state === 'preparing') {
+			if (!resuming) return { status: 'preparing', operationId: args.operationId };
+			if (resuming._id !== prior._id) throw new Error('Only the original pending save can resume.');
+		}
+		if (prior.state === 'failed')
+			throw new ConvexError(prior.error ?? 'This operation could not complete.');
+		if (prior.state === 'complete') return JSON.parse(prior.result) as ContractSaveResult;
 	}
+	if (!args.commands.length) return { status: 'saved', state: await stateOf(ctx, contract) };
 	await requireContractWork(ctx, contract);
 	if (
 		args.commands.length > MAX_SAVE_COMMANDS ||
 		new TextEncoder().encode(inputs).length > 750 * 1024
 	)
 		throw new ConvexError('Too many pending contract changes.');
-	const reader = prepared ?? (await contractReader(ctx, contract));
-	if (reader.contractId !== contract._id) throw new Error('Invalid contract preparation.');
-	let applications = contract.applications;
-	const ids = new Set<string>();
-	let compiled: CompiledDocument | undefined;
-	let conflicts: ReturnType<typeof createChangeConflictChecker> | undefined;
-	let geometryValid = false;
-	for (const command of args.commands) {
-		operation(command.id);
-		if (ids.has(command.id) || !Number.isFinite(command.occurredAt))
-			throw new ConvexError('Invalid contract change.');
-		ids.add(command.id);
-		const interactionKey = actionKey(access, 'application', command.id),
-			interactionInputs = JSON.stringify([contract._id, command]);
-		if (await receipt(ctx, interactionKey, interactionInputs))
-			throw new ConvexError(
-				'This contract change was already accepted. Reload before applying it again.'
-			);
-		const choices = projectCommands(choicesOf(applications), [command]);
-		if (Object.keys(choices).length > MAX_SELECTED_CONCESSIONS)
-			throw new ConvexError('Too many selected concessions.');
-		const selections = concessionSelections(choices);
-		// Removing a validated selection cannot introduce geometry/review invalidity.
-		const items = command.choice ? await reader.selectedItems(selections) : [];
-		const result = command.choice
-			? reviewsForSelections(items, choices, applications, access.membership.role)
-			: {
-					applications: Object.fromEntries(
-						Object.entries(applications).filter(([id]) => id !== command.itemId)
-					),
-					autoApprovedItemIds: []
-				};
-		if (command.choice) {
+	const accepted: {
+		key: string;
+		inputs: string;
+		command: PlaybookCommand;
+		description?: string;
+		contentRevision?: number;
+	}[] = [];
+	let completedState: Awaited<ReturnType<typeof stateOf>> | undefined;
+	const activityRows: Omit<Doc<'hubspotEvents'>, '_id' | '_creationTime'>[] = [];
+	const discussions = discussionTransitionHooks(ctx, contract, {
+		receipt: resuming ? (prior ?? undefined) : undefined,
+		hooks
+	});
+	try {
+		const ids = new Set<string>(),
+			expected = new Map<string, string | null>();
+		const session = await changeSession(ctx, contract);
+		for (const command of args.commands) {
+			operation(command.id);
+			if (ids.has(command.id) || !Number.isFinite(command.occurredAt))
+				throw new ConvexError('Invalid contract change.');
+			ids.add(command.id);
+			// Commands queued for the same widget share its original exact server head.
+			// Their order is retained below, including intermediate immediate applications.
+			const actual = (await session.head('playbook', command.itemId)).current?.id ?? null;
 			if (
-				items.length > 1 &&
-				applications[command.itemId]?.concessionId !== command.choice.concessionId
-			) {
-				compiled ??= await reader.compiled();
-				conflicts ??= createChangeConflictChecker(compiled.index);
-				const overlays = items.map(toDocumentOverlay);
-				const invalid = !geometryValid
-					? activeConflicts(compiled.index, overlays, selections).length
-					: conflictsForConcession(
-							compiled.index,
-							overlays,
-							selections,
-							command.itemId,
-							command.choice.concessionId,
-							conflicts
-						).length;
-				if (invalid) throw new ConvexError('Remove conflicting concessions before saving.');
-			}
-			geometryValid = true;
+				expected.has(command.itemId) &&
+				expected.get(command.itemId) !== command.expectedCurrentChangeId
+			)
+				throw new ConvexError('Commands for one widget must share their original change identity.');
+			expected.set(command.itemId, command.expectedCurrentChangeId);
+			if (actual !== command.expectedCurrentChangeId)
+				return { status: 'conflict', state: await stateOf(ctx, contract) };
 		}
+		const reader = await contractReader(ctx, contract.root);
 
-		if (result.autoApprovedItemIds.length)
-			await requirePublicationAcknowledgment(ctx, contract, access.profile._id);
-		applications = result.applications;
-		await remember(ctx, access.companyId, interactionKey, interactionInputs, args.operationId);
-		if (command.choice) {
-			const item = items.find((item) => item._id === command.itemId)!;
-			const concession = item.concessions.find((c) => c.id === command.choice!.concessionId)!;
-			if (!concession) throw new ConvexError('This concession is unavailable.');
-			await activity(
-				ctx,
-				contract,
-				actorOf(access.profile),
-				interactionKey,
-				'applied',
-				JSON.stringify({
-					itemId: item._id,
-					contentRevision: item.contentRevision,
-					concessionId: concession.id,
-					description: concession.description,
-					applicationId: command.choice.applicationId
-				}),
-				Math.min(Date.now(), command.occurredAt)
-			);
-		}
-		for (const itemId of result.autoApprovedItemIds) {
-			const a = applications[itemId];
-			await recordDecision(ctx, contract, access.profile, {
-				itemId,
-				concessionId: a.concessionId,
-				applicationId: a.approval!.applicationId,
-				operationId: scopedOperation(
-					access,
-					JSON.stringify(['save', args.operationId, command.id, itemId])
-				),
-				previousStatus: 'pending',
-				status: 'approved',
-				decidedAt: Date.now(),
-				changed: true
+		for (const command of args.commands) {
+			const commandKey = actionKey(access, 'application', command.id),
+				commandInputs = JSON.stringify([contract.root._id, command]);
+			if (await receipt(ctx, commandKey, commandInputs))
+				throw new ConvexError(
+					'This contract change was already accepted. Reload before applying it again.'
+				);
+			const item = await reader.item(command.itemId);
+			if (!item) throw new ConvexError('This Playbook option is unavailable.');
+			const current = await session.head('playbook', command.itemId);
+			if (command.action.kind === 'withdraw') {
+				await session.withdraw('playbook', command.itemId);
+				accepted.push({ key: commandKey, inputs: commandInputs, command });
+				continue;
+			}
+			const optionId = command.action.optionId;
+			if (
+				current.current?.row.kind === 'playbook' &&
+				current.current.row.source.optionId === optionId &&
+				session.status(current) !== 'rejected'
+			) {
+				accepted.push({ key: commandKey, inputs: commandInputs, command });
+				continue;
+			}
+			if (optionId === null && !current.applied) {
+				// Set-to-base never doubles as a pending-withdraw command.
+				if (current.current)
+					throw new ConvexError(
+						'Withdraw the pending transition to return to the applied wording.'
+					);
+				accepted.push({ key: commandKey, inputs: commandInputs, command });
+				continue;
+			}
+			const option =
+				optionId === null ? null : item.choices.find((choice) => choice.id === optionId);
+			if (optionId !== null && !option)
+				throw new ConvexError('This Playbook option is unavailable.');
+			await session.stage({
+				source: {
+					kind: 'playbook',
+					value: {
+						templateVersionId: contract.root.templateVersionId,
+						itemId: command.itemId,
+						optionId,
+						description: option?.description ?? 'Remove applied option',
+						target: item.primary.target
+					}
+				},
+				key: command.itemId,
+				operationId: commandKey,
+				policy: item.review.kind,
+				changes: option?.changes ?? [],
+				access
+			});
+			accepted.push({
+				key: commandKey,
+				inputs: commandInputs,
+				command,
+				description: option?.description,
+				contentRevision: item.contentRevision
 			});
 		}
-	}
-	if (!sameApplications(choicesOf(applications), args.choices))
-		throw new ConvexError('Pending changes do not match the contract selection.');
-	await remember(ctx, access.companyId, key, inputs, 'saved');
-	return commitApplications(
-		ctx,
-		access,
-		contract,
-		applications,
-		args.operationId,
-		reader,
-		compiled
-	);
-}
-
-async function commitApplications(
-	ctx: MutationCtx,
-	access: CompanyAccess,
-	contract: Doc<'savedContracts'>,
-	applications: Doc<'savedContracts'>['applications'],
-	operationId: string,
-	reader: Awaited<ReturnType<typeof contractReader>>,
-	compiled?: CompiledDocument
-) {
-	const changes = {
-		applications,
-		editRevision: contract.editRevision + 1,
-		reviewGeneration: contract.reviewGeneration + 1,
-		stateVersion: contract.stateVersion + 1,
-		reviewCompletion: undefined,
-		lastOperation: { id: operationId, callerId: access.profile._id },
-		savedAt: Date.now()
-	};
-	await ctx.db.patch('savedContracts', contract._id, changes);
-	const next = { ...contract, ...changes };
-	await writeDirectory(ctx, next);
-	await publishContract(ctx, next, reader, compiled);
-	return { status: 'saved' as const, state: stateOf(next) };
-}
-
-/** Trusted server-normalized replacement; the ordinary editor transport retains its batch cap. */
-export async function saveReplacement(
-	ctx: MutationCtx,
-	access: CompanyAccess,
-	contract: Doc<'savedContracts'>,
-	choices: ReturnType<typeof choicesOf>,
-	itemId: import('../lib/contract/item-identity').ContractItemId,
-	operationId: string,
-	reader: Awaited<ReturnType<typeof contractReader>>
-) {
-	await requireContractWork(ctx, contract);
-	operation(operationId);
-	if (reader.contractId !== contract._id || Object.keys(choices).length > MAX_SELECTED_CONCESSIONS)
-		throw new ConvexError('Too many selected concessions.');
-	const selections = concessionSelections(choices);
-	const items = await reader.selectedItems(selections);
-	const compiled = await reader.compiled();
-	if (activeConflicts(compiled.index, items.map(toDocumentOverlay), selections).length)
-		throw new ConvexError('Remove conflicting concessions before saving.');
-	const result = reviewsForSelections(
-		items,
-		choices,
-		contract.applications,
-		access.membership.role
-	);
-	if (result.autoApprovedItemIds.length)
-		await requirePublicationAcknowledgment(ctx, contract, access.profile._id);
-	const item = items.find((item) => item._id === itemId)!;
-	const concession = item.concessions.find((c) => c.id === choices[itemId].concessionId)!;
-	await activity(
-		ctx,
-		contract,
-		actorOf(access.profile),
-		actionKey(access, 'proposal-application', operationId),
-		'applied',
-		JSON.stringify({
-			itemId,
-			contentRevision: item.contentRevision,
-			concessionId: concession.id,
-			description: concession.description,
-			applicationId: choices[itemId].applicationId
-		}),
-		Date.now()
-	);
-	for (const id of result.autoApprovedItemIds) {
-		const applied = result.applications[id];
-		await recordDecision(ctx, contract, access.profile, {
-			itemId: id,
-			concessionId: applied.concessionId,
-			applicationId: applied.approval!.applicationId,
-			operationId: scopedOperation(access, JSON.stringify(['proposal', operationId, id])),
-			previousStatus: 'pending',
-			status: 'approved',
-			decidedAt: Date.now(),
-			changed: true
+		const base = await playbookStates(ctx, contract);
+		for (const entry of accepted)
+			if (entry.description && entry.command.action.kind === 'set') {
+				await admitDiscussionWork(ctx, { reads: 3, queries: 3, readBytes: 3 * 1024 * 1024 });
+				const prepared = await prepareActivity(
+					ctx,
+					contract,
+					actorOf(access.profile),
+					entry.key,
+					'applied',
+					JSON.stringify({
+						itemId: entry.command.itemId,
+						contentRevision: entry.contentRevision,
+						concessionId: entry.command.action.optionId,
+						description: entry.description
+					}),
+					Math.min(Date.now(), entry.command.occurredAt)
+				);
+				if (prepared.row) activityRows.push(prepared.row);
+			}
+		await session.commit({
+			access,
+			operationId: args.operationId,
+			hooks: discussions.hooks,
+			reserveTail: async (root) => {
+				const state = await stateOf(ctx, { ...contract, root }, session.playbookStates(base)),
+					result = JSON.stringify({ status: 'saved', state });
+				const commandWork = accepted.map(
+					(entry) =>
+						planReceiptWrite(access.companyId, entry.key, entry.inputs, args.operationId).work
+				);
+				const work: TransitionWork = {
+					documents: activityRows.length + commandWork.reduce((n, w) => n + w.documents, 0),
+					bytes:
+						activityRows.reduce(
+							(n, row) => n + documentBytes({ ...row, _id: 'x'.repeat(32), _creationTime: 0 }),
+							0
+						) + commandWork.reduce((n, w) => n + w.bytes, 0)
+				};
+				if (resuming && prior) {
+					const seal = await receiptSealWork(ctx, prior, inputs, result);
+					work.documents! += seal.writes;
+					work.bytes! += seal.bytes;
+					work.queries = seal.reads;
+					work.readDocuments = seal.reads;
+					work.readBytes = seal.readBytes;
+					work.functionsScheduled = 1;
+					work.scheduledFunctionArgsBytes = 1024;
+				} else {
+					const final = planReceiptWrite(access.companyId, key, inputs, result, {
+						contractId: contract.root._id,
+						kind: 'playbook-save'
+					}).work;
+					work.documents! += final.documents;
+					work.bytes! += final.bytes;
+				}
+				return work;
+			}
+		});
+		completedState = await stateOf(ctx, contract, session.playbookStates(base));
+	} catch (error) {
+		if (!(error instanceof DiscussionPreparationRequired) || discussions.businessWritesStarted)
+			throw error;
+		return deferDiscussionOperation(ctx, {
+			contract,
+			actor: sellerPreparationActor(access),
+			kind: 'playbook-save',
+			operationId: args.operationId,
+			key,
+			inputs,
+			prior: resuming ? (prior ?? undefined) : undefined,
+			plan: await discussions.deferredPlan(receiptChunkFingerprint(JSON.stringify([key, inputs])))
 		});
 	}
-	return commitApplications(
-		ctx,
-		access,
-		contract,
-		result.applications,
-		operationId,
-		reader,
-		compiled
-	);
+	for (const row of activityRows) await ctx.db.insert('hubspotEvents', row);
+	for (const entry of accepted)
+		await remember(ctx, access.companyId, entry.key, entry.inputs, args.operationId);
+	if (!completedState) throw new Error('Save completion lost its admitted state.');
+	const result = { status: 'saved' as const, state: completedState };
+	if (resuming && prior)
+		await sealReceipt(ctx, prior, inputs, { state: 'complete', result: JSON.stringify(result) });
+	else
+		await remember(ctx, access.companyId, key, inputs, JSON.stringify(result), {
+			contractId: contract.root._id,
+			kind: 'playbook-save'
+		});
+	return result;
 }

@@ -16,15 +16,15 @@
 </script>
 
 <article class="overflow-hidden rounded-xl border-hairline border-edge bg-surface shadow-card">
-	<div
-		class="flex flex-col gap-5 px-3 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-4"
-	>
+	<div class="flex flex-col gap-5 px-3 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-4">
 		<div class="min-w-0 flex-1">
 			<h2 class="text-[0.82rem] leading-5 text-ink">{title}</h2>
 			{#if descriptionLines.length > 0}
 				<div class="mt-3 space-y-1.5 text-[0.74rem] leading-5 text-ink-muted">
 					{#each descriptionLines as line, index (index)}
-						<p>{line}</p>
+						<p>
+							{line}
+						</p>
 					{/each}
 				</div>
 			{/if}

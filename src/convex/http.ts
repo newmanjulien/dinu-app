@@ -133,6 +133,7 @@ const recordBuyerActivity = httpAction(async (ctx, request) => {
 	try {
 		const result = await ctx.runMutation(internal.buyerActivity.record, {
 			request: body,
+			city: body.kind === 'open' ? (request.headers.get('X-Buyer-City') ?? undefined) : undefined,
 			device:
 				device === 'computer' || device === 'phone' || device === 'tablet' ? device : undefined
 		});
@@ -183,13 +184,21 @@ http.route({
 							token: body.token,
 							browserId: body.browserId
 						})
-					: await ctx.runMutation(internal.discussions.buyerWrite, {
-							token: body.token,
-							browserId: body.browserId,
-							operationId: body.operationId,
-							expectedAuthorKey: body.expectedAuthorKey,
-							command: body.command
-						});
+					: body.kind === 'result'
+						? await ctx.runQuery(internal.discussions.buyerResult, {
+								token: body.token,
+								browserId: body.browserId,
+								operationId: body.operationId,
+								expectedAuthorKey: body.expectedAuthorKey,
+								command: body.command
+							})
+						: await ctx.runMutation(internal.discussions.buyerWrite, {
+								token: body.token,
+								browserId: body.browserId,
+								operationId: body.operationId,
+								expectedAuthorKey: body.expectedAuthorKey,
+								command: body.command
+							});
 			return new Response(JSON.stringify(result), { headers });
 		} catch (error) {
 			if (
@@ -210,6 +219,30 @@ http.route({
 				);
 			console.error('Discussion request failed');
 			return failure('Comments are temporarily unavailable. Try again.', 503);
+		}
+	})
+});
+http.route({
+	path: '/buyer/name',
+	method: 'POST',
+	handler: httpAction(async (ctx, request) => {
+		const headers = { 'Cache-Control': 'private, no-store' };
+		if (
+			!env.BUYER_LINK_INGEST_SECRET ||
+			request.headers.get('X-Buyer-Ingest-Secret') !== env.BUYER_LINK_INGEST_SECRET
+		)
+			return new Response(null, { status: 403, headers });
+		const reader = request.body?.getReader();
+		if (!reader) return new Response(null, { status: 400, headers });
+		try {
+			const text = await readTextBody(reader, 512);
+			const body: unknown = text === null ? null : JSON.parse(text);
+			if (!validate(v.object({ token: v.string() }), body))
+				return new Response(null, { status: 400, headers });
+			await ctx.runMutation(internal.hubspotRecipients.buyerRequest, body);
+			return new Response(null, { status: 204, headers });
+		} catch {
+			return new Response(null, { status: 503, headers });
 		}
 	})
 });

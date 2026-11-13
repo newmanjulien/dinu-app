@@ -12,12 +12,14 @@
 		initial,
 		content,
 		onBooked,
+		inProgress = $bindable(false),
 		onClose
 	}: {
 		owner: CsmOwner;
 		initial: CalendarSelection;
 		content: SupportContent;
 		onBooked: () => void;
+		inProgress?: boolean;
 		onClose: () => void | Promise<void>;
 	} = $props();
 	let completed = $state(false);
@@ -38,10 +40,17 @@
 			Your call is booked
 		</h3>
 		<p class="mt-2 text-[13px] leading-relaxed text-ink-secondary">
-			Your video call with Julien is booked. You can close this window whenever you’re ready.
+			Your video link will be added to your calendar invitation shortly. You can close this window
+			whenever you’re ready.
 		</p>
 		<Button class="mt-5" onclick={onClose}>Close</Button>
 	</div>
 {:else}
-	<CsmBooking {owner} {initial} description={content.scheduling} onBooked={booked} />
+	<CsmBooking
+		{owner}
+		{initial}
+		bind:inProgress
+		description={content.scheduling}
+		onBooked={booked}
+	/>
 {/if}

@@ -1,6 +1,12 @@
 # Template terminology cutover
 
-A **template** is the company's reusable setup: an uploaded source document and its instructions/concessions. A **contract** is a buyer-specific document captured from a template version. **Document** names the shared renderer, source model, formatting, import and export machinery.
+> Historical implementation/review snapshot. Recorded results describe that stage only.
+> Contract conversion, tuple-chunk and compatibility instructions below are superseded by
+> the [current contract release procedure](deployment.md#backend-ownership-conversion).
+> Read the current architecture in [data model](data-model.md); no live cutover is certified here.
+
+
+A **template** is the company's reusable setup: an uploaded source document, rep instructions and concessions, and buyer explanations. A **contract** is a buyer-specific document captured from a template version. **Document** names the shared renderer, source model, formatting, import and export machinery.
 
 Canonical storage uses `templateSources`, `templateSourceChunks`, `templateSourceCertificates` and `templateSourceValidationChunks`. Company pointers, captured template versions and authoring migration records use `templateSourceId`. Buyer contract IDs, template version IDs, item/revision IDs, frozen history, source fingerprints and storage file IDs stay unchanged. Copied source/chunk/certificate rows receive new table IDs; all references and native byte accounting are updated together through the cutover. Sources keep their business timestamps; their native `_creationTime` records the copy.
 
@@ -49,6 +55,6 @@ Do not deploy the strict renamed schema directly to populated legacy storage. Fi
 
    Deploy the restored strict bundle to the same target. Native schema validation must succeed before publishing the frontend or reopening traffic. Regenerate bindings against the canonical schema. Do not commit either temporary schema state or `terminologyCanonicalSchema.ts`.
 
-7. Publish the matching frontend, reload open clients, and check template setup/instructions, existing buyer contracts, contract creation, exports and `/admin` redirects. Automatic checks cover local types/build and the existing performance/lifecycle suites; the live copy, native validation, storage recovery and browser flows require this rehearsal.
+7. Publish the matching frontend, reload open clients, and check template setup, rep instructions, buyer explanations, existing buyer contracts, contract creation, exports and `/admin` redirects. Automatic checks cover local types/build and the existing performance/lifecycle suites; the live copy, native validation, storage recovery and browser flows require this rehearsal.
 
 If migration stops after progress or data writes have committed, leave maintenance deployed and resume from its durable phase. The safe pre-write entry refusal described above is a separate case. Do not redeploy the legacy bundle, restore the strict schema early, manually clear mappings or rerun seeding once migration writes exist. Before old rows are removed, the original source data remains available, but some parent references may already have changed; reversing just a pointer is insufficient. To abandon the cutover, restore the complete database/file snapshot with its matching pre-cutover backend/frontend under a separately reviewed recovery operation. Preserve unrelated component data and scheduled work according to the deployment's backup procedure.

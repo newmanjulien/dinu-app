@@ -26,6 +26,17 @@ export function* iterateInlineTokens(
 	const tokens: InlineToken[] = [];
 	let count = 0;
 	for (const { text, ...metadata } of runs) {
+		// Preserve deletion provenance as an invisible insertion boundary.
+		if (!text.length && metadata.discussion && metadata.visualSource) {
+			tokens.push({
+				...metadata,
+				value: '\u200b',
+				lineAnchor: true,
+				generated: 'empty-hit-target'
+			});
+			yield undefined;
+			continue;
+		}
 		// Generated labels/references are atomic even if their displayed text changes length.
 		if (
 			metadata.sourceKind === 'number' ||
@@ -51,6 +62,14 @@ export function* iterateInlineTokens(
 				...(lineBreak ? { lineBreak: true } : {}),
 				...(metadata.generatedOffset !== undefined
 					? { generatedOffset: metadata.generatedOffset + offset }
+					: {}),
+				...(metadata.sourceOrigin && metadata.sourceKind === 'text'
+					? {
+							sourceOrigin: {
+								start: { ...metadata.sourceOrigin.start, offset: metadata.sourceOrigin.start.offset + offset },
+								end: { ...metadata.sourceOrigin.end, offset: metadata.sourceOrigin.start.offset + offset + value.length }
+							}
+						}
 					: {}),
 				...(source && metadata.sourceKind === 'text'
 					? {

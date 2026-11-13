@@ -3,7 +3,7 @@ import { internalAction } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
 import { env } from './_generated/server';
 import { internal } from './_generated/api';
-import { retainedUntil } from './hubspotExports';
+import { retainedUntil } from './exportRetention';
 import {
 	connectionToken,
 	hubspot,
@@ -346,13 +346,13 @@ export const send = internalAction({
 				return null;
 			}
 			const attempt = data.attempt;
-			if (event.kind === 'downloaded' && !event.fileId && attempt?.remoteFileId)
-				event = { ...event, fileId: attempt.remoteFileId };
+			if (event.kind === 'downloaded' && !event.fileId && data.delivery?.remoteFileId)
+				event = { ...event, fileId: data.delivery.remoteFileId };
 			if (
 				event.kind === 'downloaded' &&
 				!event.fileId &&
 				attempt?.fileId &&
-				retainedUntil(attempt) > Date.now()
+				retainedUntil(attempt, data.delivery) > Date.now()
 			) {
 				const blob = await ctx.storage.get(attempt.fileId);
 				if (blob) {

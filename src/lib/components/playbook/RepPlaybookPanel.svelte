@@ -1,51 +1,90 @@
 <script lang="ts">
+	import FocusedChangePreview from './FocusedChangePreview.svelte';
+	import type { FocusedPreview } from '$lib/contract/document-preview';
+	import type { PlaybookState, PlaybookCommand } from '$lib/contract/changes';
 	import type { DeepReadonly } from '$lib/immutable';
-	import { authoringInstructions } from '$lib/playbook/model';
-	import type { ContractItemRecord } from '$lib/playbook/model';
+
+	import type { ResolvedContractItem } from '$lib/contract/items';
 	import { instructionsFields } from '$lib/playbook/instructions-fields';
 	import InlineAction from './InlineAction.svelte';
 	import ConcessionRow from './ConcessionRow.svelte';
 	import PlaybookCard from './PlaybookCard.svelte';
 	import PlaybookSection from './PlaybookSection.svelte';
-	import PlaybookSummary from './PlaybookSummary.svelte';
+	import ClauseText from './ClauseText.svelte';
 	import PlaybookText from './PlaybookText.svelte';
 	import Hint from '$lib/ui/Hint.svelte';
 	import type { HintId } from '$lib/ui/hints';
 	let {
 		item,
 		selected,
-		conflicts = {},
+		entry,
+		intent,
+		preview,
+		previewBusy = false,
+		previewError,
+		onPrefetch,
+		onWithdraw,
+		onApprove,
 		disabled = false,
 		isAdmin = false,
 		animateContent = false,
 		onToggle,
 		onClose
 	}: {
-		item: DeepReadonly<ContractItemRecord>;
+		item: DeepReadonly<ResolvedContractItem>;
 		selected?: string;
-		conflicts?: Record<string, string>;
+		entry?: PlaybookState;
+		intent?: PlaybookCommand['action'];
+		preview?: FocusedPreview | null;
+		previewBusy?: boolean;
+		previewError?: string | null;
+		onPrefetch?: () => void;
+		onWithdraw: () => void;
+		onApprove?: () => void;
 		disabled?: boolean;
 		isAdmin?: boolean;
 		animateContent?: boolean;
-		onToggle: (id: string) => void;
+		onToggle: (id: string | null) => void;
 		onClose: () => void;
 	} = $props();
 	let open = $state<string | null>(null);
 	let appliedConcession = $state<string | null>(null);
 	const itemId = $derived(item._id);
-	const displayedInstructions = $derived(authoringInstructions(item));
+	const applied = $derived(entry?.appliedOptionId ?? null);
+	const pending = $derived(
+		intent?.kind === 'set' || (!intent && entry && entry.currentChangeId !== entry.appliedChangeId)
+	);
+	const pendingOption = $derived(intent?.kind === 'set' ? intent.optionId : entry?.currentOptionId);
+	const immediate = $derived(isAdmin || item.review.kind === 'none');
+	const appliedDescription = $derived(
+		item.choices.find((choice) => choice.id === applied)?.description
+	);
+	const pendingDescription = $derived(
+		item.choices.find((choice) => choice.id === pendingOption)?.description
+	);
+
+	const instructions = $derived(
+		item.origin.kind === 'template' ? item.origin.instructions : undefined
+	);
+	const displayedInstructions = $derived({
+		...instructions,
+		changesNeedApproval:
+			item.origin.kind === 'template' && item.review.kind === 'required'
+				? (item.review.instructions ?? '')
+				: ''
+	});
 	const approvalHint = $derived<HintId | null>(
 		appliedConcession && selected === appliedConcession
 			? isAdmin
 				? 'concessionAutoApproved'
-				: item.approvalPolicy.kind === 'required'
+				: item.review.kind === 'required'
 					? 'concessionApprovalRequired'
 					: 'concessionWithinAuthority'
 			: null
 	);
 	const hasSections = $derived(
 		Boolean(
-			item.concessions.length ||
+			item.choices.length ||
 			instructionsFields.slice(1).some((field) => displayedInstructions[field.key]?.trim())
 		)
 	);
@@ -56,70 +95,112 @@
 	});
 </script>
 
-<PlaybookCard label="Instruction box">
-	{#key itemId}
-		<PlaybookSummary
-			text={item.instructions?.summary ?? ''}
-			closeLabel="Close instructions"
-			{onClose}
-			{animateContent}
-		/>
-		{#if hasSections}
-			<div
-				class={`${animateContent ? 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]' : ''} flex flex-col gap-2`}
-			>
-				{#if item.instructions || item.approvalPolicy.kind === 'required'}
-					{#each instructionsFields.slice(1) as field}
-						{#if displayedInstructions[field.key]?.trim()}
-							<PlaybookSection value={field.key} label={field.label} bind:open>
-								<PlaybookText text={displayedInstructions[field.key] ?? ''} />
+<div role="group" aria-label="Playbook options" onpointerenter={onPrefetch} onfocusin={onPrefetch}>
+	<PlaybookCard label="Playbook">
+		{#key itemId}
+			<ClauseText
+				text={instructions?.summary ?? ''}
+				closeLabel="Close instructions"
+				{onClose}
+				{animateContent}
+			/>
+			{#if appliedDescription}<p class="m-0 text-ink-secondary">
+					Applied option: {appliedDescription}
+				</p>{/if}
+			{#if intent?.kind === 'withdraw'}
+				<p class="m-0 text-ink-muted" role="status">Withdrawing pending change…</p>
+			{:else if pending}
+				<p class="m-0 text-ink-secondary" role="status">
+					{entry?.status === 'rejected' && !intent ? 'Declined' : 'Pending'}
+					{pendingOption === null
+						? 'removal of the applied option'
+						: applied
+							? 'switch'
+							: 'option'}{pendingDescription ? `: ${pendingDescription}` : ''}
+				</p>
+				{#if pendingOption === null && onApprove}<InlineAction {disabled} onclick={onApprove}
+						>Approve change</InlineAction
+					>{/if}
+				<InlineAction {disabled} danger onclick={onWithdraw}>Withdraw pending change</InlineAction>
+			{/if}
+			{#if hasSections}
+				<div
+					class={`${animateContent ? 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]' : ''} flex flex-col gap-2`}
+				>
+					{#if item.origin.kind === 'template' && (instructions || item.review.kind === 'required')}
+						{#each instructionsFields.slice(1) as field}
+							{#if displayedInstructions[field.key]?.trim()}
+								<PlaybookSection value={field.key} label={field.label} bind:open>
+									<PlaybookText text={displayedInstructions[field.key] ?? ''} />
+								</PlaybookSection>
+							{/if}
+						{/each}
+					{/if}
+					{#each ['preferred', 'rare'] as tier}
+						{@const concessions = item.choices.filter(
+							(concession) => (concession.tier ?? 'preferred') === tier
+						)}
+						{#if concessions.length}
+							<PlaybookSection
+								value={tier}
+								label={`${tier === 'preferred' ? 'Preferred' : 'Rare'} ${concessions.length === 1 ? 'option' : 'options'}`}
+								danger={tier === 'rare'}
+								bind:open
+							>
+								{#each concessions as concession, i (concession.id)}
+									{@const isApplied = applied === concession.id}
+									{@const isPending = pending && pendingOption === concession.id}
+									{@const approve = isPending && isAdmin && !intent && Boolean(onApprove)}
+									{@const label = approve
+										? 'Approve change'
+										: isPending
+											? 'Withdraw pending change'
+											: isApplied && pending
+												? 'Keep applied option'
+												: isApplied
+													? immediate
+														? 'Remove option'
+														: 'Add removal to approval request'
+													: immediate
+														? 'Apply option'
+														: 'Add to approval request'}
+									{@const descriptionId = `concession-${concession.id}-description`}
+									<ConcessionRow description={concession.description} {descriptionId}>
+										<InlineAction
+											danger={isApplied || (isPending && !approve)}
+											{disabled}
+											label={concessions.length > 1
+												? `${label}, option ${i + 1} of ${concessions.length}`
+												: undefined}
+											describedBy={descriptionId}
+											onclick={() => {
+												if (approve) {
+													onApprove?.();
+													return;
+												}
+												if (isPending) {
+													onWithdraw();
+													return;
+												}
+												appliedConcession = isApplied ? null : concession.id;
+												onToggle(isApplied && !pending ? null : concession.id);
+											}}>{label}</InlineAction
+										>
+									</ConcessionRow>
+								{/each}
 							</PlaybookSection>
 						{/if}
 					{/each}
-				{/if}
-				{#each ['preferred', 'rare'] as tier}
-					{@const concessions = item.concessions.filter((concession) => concession.tier === tier)}
-					{#if concessions.length}
-						<PlaybookSection
-							value={tier}
-							label={`${tier === 'preferred' ? 'Preferred' : 'Rare'} ${concessions.length === 1 ? 'concession' : 'concessions'}`}
-							danger={tier === 'rare'}
-							bind:open
-						>
-							{#each concessions as concession, i (concession.id)}
-								{@const applied = selected === concession.id}
-								{@const conflict = !applied && conflicts[concession.id]}
-								{@const descriptionId = `concession-${concession.id}-description`}
-								<ConcessionRow description={concession.description} {descriptionId}>
-									<InlineAction
-										danger={applied}
-										disabled={disabled || Boolean(conflict)}
-										label={concessions.length > 1
-											? `${applied ? 'Remove' : 'Apply'} concession ${i + 1} of ${concessions.length}`
-											: undefined}
-										describedBy={conflict
-											? `${descriptionId} ${descriptionId}-conflict`
-											: descriptionId}
-										onclick={() => {
-											appliedConcession = applied ? null : concession.id;
-											onToggle(concession.id);
-										}}>{applied ? 'Remove concession' : 'Apply concession'}</InlineAction
-									>
-								</ConcessionRow>
-								{#if conflict}<p
-										id={`${descriptionId}-conflict`}
-										class="m-0 text-[14px] @min-[1150px]:text-[clamp(13px,1cqw,14px)] text-danger"
-									>
-										{conflict}
-									</p>{/if}
-							{/each}
-						</PlaybookSection>
-					{/if}
-				{/each}
-			</div>
-		{/if}
-	{/key}
-</PlaybookCard>
+				</div>
+			{/if}
+			{#if previewBusy}<p class="m-0 text-ink-muted" role="status">
+					Preparing change preview…
+				</p>{/if}
+			{#if previewError}<p class="m-0 text-danger" role="alert">{previewError}</p>{/if}
+			{#if preview}<FocusedChangePreview {preview} />{/if}
+		{/key}
+	</PlaybookCard>
+</div>
 
 <Hint
 	id={approvalHint}

@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import type { TemplateAudience } from '$lib/playbook/model';
+	import { templateCopy } from '$lib/playbook/template-copy';
 	import type { FloatingVirtualAnchor } from '$lib/components/ui/floating';
-	import FloatingSurface from '$lib/components/ui/FloatingSurface.svelte';
-	import Tooltip from '$lib/components/ui/Tooltip.svelte';
+	import SelectionToolbar from './SelectionToolbar.svelte';
 	import type { SelectionCandidate } from '$lib/document/selection/selection-model';
 	import type { RenderSnapshot } from '$lib/document/runtime/types';
 	import type {
@@ -20,9 +21,9 @@
 	import ArticleIcon from 'phosphor-svelte/lib/ArticleIcon';
 	import LightningIcon from 'phosphor-svelte/lib/LightningIcon';
 	import CopyIcon from 'phosphor-svelte/lib/CopyIcon';
-	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import type { CloseReason } from '$lib/components/ui/interactions';
 	let {
+		audience = 'rep',
 		container,
 		snapshot,
 		enabled,
@@ -33,8 +34,9 @@
 		evaluate,
 		onConfirm,
 		onCandidate,
-		copyExplanation
+		copyRepSummary
 	}: {
+		audience?: TemplateAudience;
 		container?: HTMLElement;
 		snapshot: RenderSnapshot;
 		enabled: boolean;
@@ -45,25 +47,21 @@
 		evaluate: (candidate: SelectionCandidate) => SelectionAvailability;
 		onConfirm: (candidate: SelectionCandidate, mode?: AuthoringMode) => boolean;
 		onCandidate?: (candidate: SelectionCandidate | null) => void;
-		copyExplanation?: {
+		copyRepSummary?: {
 			enabled: boolean;
 			reason: string;
 			run: (candidate: SelectionCandidate, current: () => boolean) => Promise<boolean>;
 		};
 	} = $props();
 	const actions = $derived([
-		{ mode: 'explain', label: 'Explain a clause', icon: ArticleIcon },
-		copyExplanation
-			? { mode: 'copy-explanation' as const, label: 'Copy explanation', icon: CopyIcon }
+		{ mode: 'add-item', label: templateCopy(audience).addAction, icon: ArticleIcon },
+		copyRepSummary
+			? { mode: 'copy-rep-summary' as const, label: 'Copy rep summary', icon: CopyIcon }
 			: { mode: 'concession' as const, label: 'Add concession', icon: LightningIcon }
 	] as const);
-	const preserveSelection = (event: PointerEvent) => event.preventDefault();
 	let actionStates = $state<SelectionActions | null>(null);
 	let anchor = $state<FloatingVirtualAnchor | null>(null);
 	let toolbarElement = $state<HTMLDivElement | null>();
-	const actionButtons = $state<
-		Partial<Record<AuthoringMode | 'copy-explanation', HTMLButtonElement | null>>
-	>({});
 	let committed: object | null = null;
 	const anchorListeners = new Set<() => void>();
 	function invalidate() {
@@ -87,7 +85,7 @@
 		if (reason !== 'outside-pointer') getDocumentSelection(container)?.clear(true);
 		onSelectionIssue(null);
 	}
-	async function confirm(mode?: AuthoringMode | 'copy-explanation') {
+	async function confirm(mode?: AuthoringMode | 'copy-rep-summary') {
 		const candidate = committed ? current()?.resolveCandidate(committed) : null;
 		if (!candidate) {
 			invalidate();
@@ -97,8 +95,8 @@
 		// Both the current selection policy and the workflow revalidate before authoring.
 		const permission = evaluate(candidate);
 		const action =
-			mode === 'copy-explanation'
-				? copyExplanation
+			mode === 'copy-rep-summary'
+				? copyRepSummary
 				: mode && permission.allowed
 					? permission.actions[mode]
 					: undefined;
@@ -115,8 +113,8 @@
 		const controller = current();
 		const token = committed;
 		const accepted =
-			mode === 'copy-explanation'
-				? await copyExplanation!.run(candidate, () => committed === token && Boolean(current()))
+			mode === 'copy-rep-summary'
+				? await copyRepSummary!.run(candidate, () => committed === token && Boolean(current()))
 				: onConfirm(candidate, mode);
 		if (committed !== token) return;
 		invalidate();
@@ -192,45 +190,23 @@
 </script>
 
 {#if enabled && !autoConfirm && anchor && actionStates}
-	<FloatingSurface
+	<SelectionToolbar
 		bind:element={toolbarElement}
-		open={true}
 		{anchor}
 		onClose={dismiss}
-		placement="bottom"
-		gap={10}
-		referenceClipping="hide"
-		role="group"
-		label="Selection actions"
-		class="flex h-[33px] items-center rounded-xl border-hairline border-edge bg-surface p-0.5 shadow-floating"
-		onpointerdown={preserveSelection}
-	>
-		{#each actions as action (action.mode)}
-			{@const state =
-				action.mode === 'copy-explanation' ? copyExplanation! : actionStates[action.mode]}
-			<Tooltip
-				text={state.enabled ? action.label : state.reason}
-				trigger={actionButtons[action.mode] ?? undefined}
-				standalone={false}
-				leaveDelay={0}
-				onpointerdown={preserveSelection}
-			>
-				{#snippet children(descriptionId)}
-					<SquareIconButton
-						bind:element={actionButtons[action.mode]}
-						class="size-[27px] rounded-[9.5px]"
-						type="button"
-						disabled={!state.enabled}
-						aria-describedby={descriptionId}
-						onclick={() => {
-							confirm(action.mode);
-						}}
-						aria-label={state.enabled ? action.label : `${action.label}: ${state.reason}`}
-					>
-						<action.icon aria-hidden="true" class="size-5" weight="regular" />
-					</SquareIconButton>
-				{/snippet}
-			</Tooltip>
-		{/each}
-	</FloatingSurface>
+		actions={actions.map((action) => {
+			const state =
+				action.mode === 'copy-rep-summary' ? copyRepSummary! : actionStates![action.mode];
+			return {
+				id: action.mode,
+				label: action.label,
+				icon: action.icon,
+				enabled: state.enabled,
+				reason: state.enabled ? undefined : state.reason,
+				onSelect: () => {
+					void confirm(action.mode);
+				}
+			};
+		})}
+	/>
 {/if}

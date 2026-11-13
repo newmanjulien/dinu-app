@@ -26,7 +26,9 @@ import {
 	templateReadCapacity,
 	versionReferences,
 	orderedHeads,
-	authoringReadCapacity
+	authoringReadCapacity,
+	templateGenerations,
+	nextTemplateGenerations
 } from './templates';
 
 const progress = v.object({
@@ -63,7 +65,7 @@ async function captured(ctx: MutationCtx, companyId: Doc<'company'>['_id']) {
 		version.templateSourceId !== templateSource._id ||
 		(migration.state !== 'complete' && templateSource.fingerprint !== migration.fingerprint) ||
 		(migration.state !== 'complete' &&
-			(pointer.authoringGeneration ?? version.authoringGeneration ?? 0) !== migration.generation)
+			templateGenerations(version, pointer).authoringGeneration !== migration.generation)
 	)
 		throw unavailable();
 	versionReferences(version);
@@ -141,7 +143,7 @@ export const begin = internalMutation({
 			templateSourceId: templateSource._id,
 			fingerprint: templateSource.fingerprint,
 			versionId: version._id,
-			generation: pointer.authoringGeneration ?? version.authoringGeneration ?? 0,
+			generation: templateGenerations(version, pointer).authoringGeneration,
 			state: 'heads' as const,
 			nextItem: 0
 		};
@@ -307,9 +309,7 @@ export const finish = internalMutation({
 			throw unavailable();
 		templateReadCapacity(version, templateSource);
 		authoringReadCapacity(version, templateSource, certificate);
-		const authoringGeneration = migration.generation + 1,
-			structuralGeneration =
-				(pointer.structuralGeneration ?? version.structuralGeneration ?? 0) + 1;
+		const { authoringGeneration, structuralGeneration } = nextTemplateGenerations(version, pointer);
 		await ctx.db.patch('templateVersions', version._id, {
 			validation: { format: VALIDATION_CODEC_VERSION, fingerprint: templateSource.fingerprint },
 			authoringGeneration,

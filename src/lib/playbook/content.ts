@@ -6,11 +6,12 @@ import type {
 	AuthoringInstructions,
 	Concession,
 	Instructions,
-	PlaybookItem,
+	RepInstruction,
 	SourceRange,
-	SourceTarget
+	SourceTarget,
+	TemplateItem
 } from './model';
-import { instructionKeys } from './model';
+import { instructionKeys, isRepItem } from './model';
 
 function semanticRange({ start, end }: SourceRange): SourceRange {
 	return {
@@ -85,7 +86,7 @@ export function equalConcession(a: DeepReadonly<Concession>, b: DeepReadonly<Con
 /** Preserve stored instruction strings, including empty strings, without UI keys. */
 export function semanticInstructions(
 	value: DeepReadonly<AuthoringInstructions> | undefined
-): Pick<PlaybookItem, 'instructions' | 'approvalPolicy'> {
+): Pick<RepInstruction, 'instructions' | 'approvalPolicy'> {
 	const instructions: Instructions = {};
 	for (const key of instructionKeys) {
 		const text = value?.[key];
@@ -101,12 +102,12 @@ export function semanticInstructions(
 }
 
 /** Strip UI keys without normalizing business text. */
-export function semanticPlaybookDraft(
+export function semanticRepInstruction(
 	draft: DeepReadonly<
-		Pick<PlaybookItem, 'trigger' | 'concessions'> &
-			Partial<Pick<PlaybookItem, 'instructions' | 'approvalPolicy'>>
+		Pick<RepInstruction, 'trigger' | 'concessions'> &
+			Partial<Pick<RepInstruction, 'instructions' | 'approvalPolicy'>>
 	>
-): PlaybookItem {
+): RepInstruction {
 	return {
 		trigger: { id: draft.trigger.id, target: semanticTarget(draft.trigger.target) },
 		...semanticInstructions(draft.instructions),
@@ -120,4 +121,15 @@ export function semanticPlaybookDraft(
 			: {}),
 		concessions: draft.concessions.map(semanticConcession)
 	};
+}
+
+/** Preserve each audience's business shape across saves and retained recovery. */
+export function semanticTemplateItem(item: DeepReadonly<TemplateItem>): TemplateItem {
+	return isRepItem(item)
+		? semanticRepInstruction(item)
+		: {
+				audience: 'buyer',
+				trigger: { id: item.trigger.id, target: semanticTarget(item.trigger.target) },
+				explanation: item.explanation
+			};
 }

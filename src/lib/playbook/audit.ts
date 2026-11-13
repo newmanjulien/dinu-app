@@ -7,7 +7,7 @@ import { playbookStructure } from './structure';
 import {
 	MAX_DOCUMENT_BLOCKS,
 	MAX_PLAYBOOK_ITEMS,
-	validatePlaybookItemContent,
+	validateTemplateItemContent,
 	validateStructuralReplacementContent,
 	validateChangeReferences
 } from './validation';
@@ -15,14 +15,14 @@ import {
 /** Call after shape validation, on the complete proposed live set, for create and update. */
 export function validatePlaybook(blocks: readonly SourceBlock[], items: readonly TemplateItem[]) {
 	if (blocks.length > MAX_DOCUMENT_BLOCKS || items.length > MAX_PLAYBOOK_ITEMS)
-		throw new PlaybookValidationError('Template exceeds the supported source or instructions size');
+		throw new PlaybookValidationError('Template exceeds the supported source or content size');
 	const compiled = new CompiledDocument(blocks);
 	const geometries = {
 		rep: new PlaybookGeometryIndex(compiled),
 		buyer: new PlaybookGeometryIndex(compiled)
 	};
 	items.forEach((item, i) => {
-		validatePlaybookItemContent(item);
+		validateTemplateItemContent(item);
 		geometries['audience' in item ? 'buyer' : 'rep'].set(String(i), playbookStructure(item));
 	});
 	Object.values(geometries).forEach((geometry) => geometry.auditGeometry());

@@ -17,10 +17,12 @@
 	let {
 		onOpen,
 		onCreate = () => {},
+		onPrepareSaved,
 		showPreview = true
 	}: {
 		onOpen: (id: Id<'savedContracts'>) => Promise<boolean>;
 		onCreate?: () => void;
+		onPrepareSaved: (id: Id<'savedContracts'>) => () => void;
 		showPreview?: boolean;
 	} = $props();
 	const runtime = getWorkspaceRuntime();
@@ -111,6 +113,7 @@
 		bind:deleted
 		{onOpen}
 		{onCreate}
+		{onPrepareSaved}
 		onDealConflict={(dealId) => {
 			if (selectedDeal?.id === dealId) selectedDeal = null;
 		}}

@@ -1,8 +1,30 @@
 import { terminologyTransition } from './terminologyMaintenance';
 import { cronJobs } from 'convex/server';
 import { internal } from './_generated/api';
+import { maintenanceResumeDue } from './discussionOperationReferences';
 const crons = cronJobs();
 if (!terminologyTransition) {
+	crons.interval(
+		'recover meeting preparation',
+		{ minutes: 1 },
+		internal.csmMeetingPreparation.pump,
+		{}
+	);
+	crons.interval(
+		'recover booking outcomes',
+		{ minutes: 1 },
+		internal.csmBookings.repairRecovery,
+		{}
+	);
+	crons.interval('process booking evidence', { minutes: 1 }, internal.csmEvidence.pump, {});
+	crons.interval(
+		'observe erased booking senders',
+		{ minutes: 1 },
+		internal.csmErasureGuards.pump,
+		{}
+	);
+	crons.cron('clean completed booking evidence', '15 3 * * *', internal.csmEvidence.cleanup, {});
+	crons.interval('resume discussion maintenance', { minutes: 1 }, maintenanceResumeDue, {});
 	crons.cron('expire buyer activity', '0 3 * * *', internal.buyerActivity.expire, {});
 	crons.interval(
 		'expire buyer activity quotas',
@@ -19,7 +41,7 @@ if (!terminologyTransition) {
 	crons.interval(
 		'expire unfinished template source uploads',
 		{ minutes: 30 },
-		internal.templateUploads.expirePrepared,
+		internal.templateUploads.expirePending,
 		{}
 	);
 	crons.cron(
@@ -49,7 +71,7 @@ if (!terminologyTransition) {
 		internal.hubspotJournal.poll,
 		{}
 	);
-	crons.interval('expire HubSpot export bytes', { minutes: 5 }, internal.hubspotExports.expire, {});
+	crons.interval('expire export bytes', { minutes: 5 }, internal.contractExports.expire, {});
 	crons.interval(
 		'expire HubSpot install states',
 		{ minutes: 15 },

@@ -1,5 +1,7 @@
 export const HIGHLIGHT_THEME = {
-	trigger: { priority: 0 },
+	'rep-attachment': { priority: 0 },
+	'buyer-attachment': { priority: 0 },
+	'discussion-proposal': { priority: 0 },
 	'revision-added': { priority: 1 },
 	'revision-removed': { priority: 1 },
 	'search-match': { priority: 2 },
@@ -9,3 +11,4 @@ export const HIGHLIGHT_THEME = {
 } as const;
 
 export type HighlightKind = keyof typeof HIGHLIGHT_THEME;
+export type AttachmentHighlightKind = 'rep-attachment' | 'buyer-attachment';

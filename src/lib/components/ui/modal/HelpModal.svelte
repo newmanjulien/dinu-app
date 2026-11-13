@@ -1,28 +1,21 @@
 <script lang="ts">
-	const helpScope = useHelpPreferenceScope();
-	import { onMount } from 'svelte';
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import { helpContent, type HelpVariant } from './help-content';
-	import { isHelpHidden, setHelpHidden, useHelpPreferenceScope } from './help-storage';
+	import type { HelpSession } from './help-session.svelte';
 
 	let {
 		variant,
 		isAdmin = false,
+		help,
 		onClose
-	}: { variant: HelpVariant; isAdmin?: boolean; onClose: () => void } = $props();
+	}: {
+		variant: HelpVariant;
+		isAdmin?: boolean;
+		help: HelpSession;
+		onClose: () => void;
+	} = $props();
 	const content = $derived(helpContent[variant]);
-
-	let hideHelp = $state(false);
-
-	onMount(() => {
-		if (variant === 'rep' || variant === 'buyer') hideHelp = isHelpHidden(variant, helpScope());
-	});
-
-	function handleHideHelpChange(checked: boolean) {
-		hideHelp = checked;
-		if (variant === 'rep' || variant === 'buyer') setHelpHidden(checked, variant, helpScope());
-	}
 </script>
 
 <ModalShell variant="panel" title={content.title} {onClose}>
@@ -51,7 +44,7 @@
 								<p class="mt-1.5 text-[14px] leading-[1.6] text-ink-muted">
 									{#if highlight && highlightStart >= 0}
 										{step.description.slice(0, highlightStart)}<span
-											class={`rounded-[3px] [box-decoration-break:clone] [-webkit-box-decoration-break:clone] ${highlight.color === 'blue' ? 'bg-[var(--document-highlight-selection,var(--color-accent-soft))]' : 'bg-[var(--document-highlight-trigger,color-mix(in_srgb,var(--color-success)_16%,transparent))]'}`}
+											class={`rounded-[3px] [box-decoration-break:clone] [-webkit-box-decoration-break:clone] ${highlight.color === 'blue' ? 'bg-[var(--document-highlight-selection,var(--color-accent-soft))]' : 'bg-[var(--document-highlight-buyer,color-mix(in_srgb,var(--color-success)_16%,transparent))]'}`}
 										>
 											{highlight.text}
 										</span>{step.description.slice(highlightStart + highlight.text.length)}
@@ -65,13 +58,17 @@
 					{/each}
 				</ol>
 
-				{#if variant === 'rep' || variant === 'buyer'}
+				{#if help.showCheckbox}
 					<Checkbox
 						label="Don't show this again"
-						checked={hideHelp}
-						onCheckedChange={handleHideHelpChange}
+						checked={help.hidden}
+						disabled={help.checkboxDisabled}
+						onCheckedChange={(hidden) => void help.setHidden(hidden)}
 						class="mt-6"
 					/>
+				{/if}
+				{#if help.error}
+					<p class="mt-2 text-sm text-danger" role="alert">{help.error}</p>
 				{/if}
 			</div>
 		</div>

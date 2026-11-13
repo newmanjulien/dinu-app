@@ -104,7 +104,8 @@ export class DocumentCompositionEngine {
 	constructor(
 		blocks: readonly SourceBlock[],
 		index?: SourceIndex,
-		readonly artifacts?: CompositionArtifactStore
+		readonly artifacts?: CompositionArtifactStore,
+		readonly baseAliases: ReadonlyMap<string, string> = new Map()
 	) {
 		this.artifacts?.useSource(blocks);
 		this.#blocks = blocks;
@@ -181,6 +182,7 @@ export class DocumentCompositionEngine {
 		for (const item of items) {
 			const concession = item.concessions.find((c) => c.id === activeConcessions[item.itemId]);
 			for (const [changeIndex, change] of (concession?.changes ?? []).entries()) {
+				if (change.suppressed) continue;
 				authoredChanges.push({
 					change,
 					origin: { itemId: item.itemId, concessionId: concession!.id, changeIndex },
@@ -217,13 +219,14 @@ export class DocumentCompositionEngine {
 			structural.generated.size || structural.removed.size
 				? structural.numberingBlocks.map((block) => [block.blockKey, block.numbering])
 				: undefined;
-		const activeKey = JSON.stringify([topology, [...structural.aliases]]);
+		const aliases = new Map([...this.baseAliases, ...structural.aliases]);
+		const activeKey = JSON.stringify([topology, [...aliases]]);
 		const current =
-			!topology && !structural.aliases.size
+			!topology && !aliases.size
 				? index.addresses
 				: activeKey === this.#activeKey
 					? previousAddresses
-					: yield* iterateNumberAddresses(structural.numberingBlocks, structural.aliases);
+					: yield* iterateNumberAddresses(structural.numberingBlocks, aliases);
 		// Resolve displayed offsets once per authored replacement, after numbering is known.
 		for (const { annotations, paragraphs } of structural.replacementGroups) {
 			let offset = 0;
@@ -608,7 +611,14 @@ export class DocumentCompositionEngine {
 					for (const run of equalRuns) {
 						runs.push(
 							part.kind === 'equal' && owner.generatedOrigin
-								? { ...run, discussion: { origin: owner.generatedOrigin, offset } }
+								? {
+										...run,
+										discussion: {
+											origin: owner.generatedOrigin,
+											offset,
+											...(run.sourceKind === 'reference' ? { atomic: true as const } : {})
+										}
+									}
 								: run
 						);
 						offset += run.text.length;
@@ -750,7 +760,15 @@ export class DocumentCompositionEngine {
 			const prefix = runs.slice(0, prefixEnd);
 			const body = runs.slice(prefixEnd);
 			const first = body.findIndex((run) => /\S/u.test(run.text));
-			if (first < 0) return prefix.at(-1)?.generated === 'separator' ? prefix.slice(0, -1) : prefix;
+			// An empty replacement still addresses a later proposal at the deletion.
+			const boundaries = body
+				.slice(0, first < 0 ? body.length : first)
+				.filter((run) => !run.text.length && run.discussion);
+			if (first < 0)
+				return [
+					...(prefix.at(-1)?.generated === 'separator' ? prefix.slice(0, -1) : prefix),
+					...boundaries
+				];
 			const content = body.slice(first);
 			const leading = /^\s+/u.exec(content[0].text)?.[0].length ?? 0;
 			if (leading) {
@@ -774,7 +792,7 @@ export class DocumentCompositionEngine {
 						: {})
 				};
 			}
-			return [...prefix, ...content];
+			return [...prefix, ...boundaries, ...content];
 		}
 		function belongsAfter(run: ResolvedRun, position: number): boolean {
 			const source =

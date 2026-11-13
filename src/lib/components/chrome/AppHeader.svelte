@@ -1,146 +1,84 @@
 <script lang="ts">
-	import { page } from '$app/state';
-	import { describeRoute } from '$lib/auth/routes';
 	import { onMount, type Snippet } from 'svelte';
-	import Avatar from '$lib/components/ui/Avatar.svelte';
+	import AppHeaderLayout from './AppHeaderLayout.svelte';
+	import AccountMenu from './AccountMenu.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import Menu from '$lib/components/ui/Menu.svelte';
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import { goto } from '$app/navigation';
-	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
+	import { warmDocumentDestination } from '$lib/auth/destination-code';
 	const viewer = useViewer();
 	const session = useViewerSession();
-	let menuOpen = $state(false);
+	function warmTemplate() {
+		if (
+			session.blocked ||
+			session.closing ||
+			viewer().company.deletionPending ||
+			viewer().membership.role !== 'admin' ||
+			!viewer().templateReady
+		)
+			return;
+		warmDocumentDestination('template');
+	}
 	let templateMenuOpen = $state(false);
 	let templateTrigger = $state<HTMLButtonElement>();
-	let trigger = $state<HTMLButtonElement>();
-	let element: HTMLElement;
+	let templateAnchor = $state<HTMLDivElement>();
+	let element = $state<HTMLElement>();
 
 	let { children, notice }: { children?: Snippet; notice?: Snippet } = $props();
 	onMount(() => {
 		const root = document.documentElement;
 		const measure = () =>
-			root.style.setProperty('--app-header-height', `${element.getBoundingClientRect().height}px`);
+			root.style.setProperty('--app-header-height', `${element!.getBoundingClientRect().height}px`);
 		const observer = new ResizeObserver(measure);
-		observer.observe(element);
+		observer.observe(element!);
 		measure();
 		return () => {
 			observer.disconnect();
 			root.style.removeProperty('--app-header-height');
 		};
 	});
-	const navItems = [
-		{ label: 'Contracts', href: '/contracts', adminOnly: false },
-		{ label: 'Template', href: '/template', adminOnly: true },
-		{ label: 'Integrations', href: '/integrations', adminOnly: true },
-		{ label: 'Guides', href: '/guides', adminOnly: false }
-	];
-	const visibleNavItems = $derived(
-		navItems.filter((item) => !item.adminOnly || viewer().membership.role === 'admin')
-	);
 </script>
 
-<header
-	bind:this={element}
-	data-app-header
-	class="sticky top-0 z-40 border-b-[length:var(--surface-border-width)] border-line bg-surface"
+<AppHeaderLayout
+	role={viewer().membership.role}
+	templateReady={viewer().templateReady}
+	loading={false}
+	bind:element
+	bind:templateAnchor
+	bind:templateTrigger
+	audienceOpen={templateMenuOpen}
+	onToggleAudience={() => (templateMenuOpen = !templateMenuOpen)}
+	onWarmTemplate={warmTemplate}
+	{notice}
+	{children}
 >
-	<div
-		class="flex h-[calc(var(--app-nav-height)-var(--surface-border-width))] w-full items-stretch px-[3px] sm:px-[7px] md:px-[13px]"
-	>
-		<nav class="flex h-full shrink-0 items-stretch" aria-label="Primary navigation">
-			{#each visibleNavItems as item (item.href)}
-				{@const active = describeRoute(page.route.id).navigation === item.href}
-				<div class="relative mr-[1.5px] flex items-stretch sm:mr-[11px]">
-					<a
-						class="relative flex items-center px-[5.5px] pt-0.5 text-[13px] leading-none transition-colors"
-						class:text-ink={active}
-						class:text-ink-muted={!active}
-						aria-current={active ? 'page' : undefined}
-						href={item.href}
-					>
-						{item.label}
-						{#if active}<span
-								class="absolute inset-x-px bottom-0 h-[1.8px] bg-ink"
-								aria-hidden="true"
-							></span>{/if}
-					</a>
-					{#if item.href === '/template'}
-						<button
-							type="button"
-							bind:this={templateTrigger}
-							class="flex w-5 items-center justify-center text-ink-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-							aria-label="Choose template audience"
-							aria-haspopup="menu"
-							aria-expanded={templateMenuOpen}
-							aria-controls="template-audience-menu"
-							onclick={() => (templateMenuOpen = !templateMenuOpen)}
-						>
-							<CaretDownIcon class="size-3" aria-hidden="true" />
-						</button>
-						<Menu
-							open={templateMenuOpen}
-							trigger={templateTrigger}
-							onClose={() => (templateMenuOpen = false)}
-							id="template-audience-menu"
-							label="Template audience"
-						>
-							{#snippet children(close)}
-								{#each [{ label: 'Rep', href: '/template' }, { label: 'Buyers', href: '/template/buyers' }] as destination}
-									<MenuItem
-										onclick={() => {
-											close();
-											void goto(destination.href);
-										}}>{destination.label}</MenuItem
-									>
-								{/each}
-							{/snippet}
-						</Menu>
-					{/if}
-				</div>
-			{/each}
-		</nav>
-		<div class="my-auto ml-auto flex min-w-0 items-center gap-1.5 sm:gap-3">
-			<button
-				bind:this={trigger}
-				class="inline-flex size-[25px] cursor-pointer items-center justify-center rounded-full transition-shadow duration-150 hover:ring-3 hover:ring-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-				aria-label="Your account"
-				aria-haspopup="menu"
-				aria-expanded={menuOpen}
-				aria-controls="account-menu"
-				onclick={() => (menuOpen = !menuOpen)}
-				><Avatar
-					name={viewer().profile.name || viewer().profile.email}
-					avatarUrl={viewer().profile.avatarUrl}
-					class="size-[25px]"
-				/></button
-			>
-			<Menu
-				open={menuOpen}
-				{trigger}
-				onClose={() => (menuOpen = false)}
-				id="account-menu"
-				label="Your account"
-			>
-				{#snippet children(close)}
-					{#each [{ label: 'Settings', href: '/settings' }, { label: 'Manage team', href: '/team' }] as item}
-						<MenuItem
-							onclick={() => {
-								close();
-								void goto(item.href);
-							}}>{item.label}</MenuItem
-						>
-					{/each}
+	{#snippet account()}<AccountMenu
+			profile={viewer().profile}
+			onSignOut={() => session.signOut()}
+		/>{/snippet}
+	{#snippet audience()}
+		<Menu
+			open={templateMenuOpen}
+			trigger={templateTrigger}
+			anchor={templateAnchor}
+			placement="bottom-start"
+			gap={6}
+			onClose={() => (templateMenuOpen = false)}
+			id="template-audience-menu"
+			label="Template audience"
+		>
+			{#snippet children(close)}
+				{#each [{ label: 'Rep template', href: '/template' }, { label: 'Buyer template', href: '/template/buyers' }] as destination}
 					<MenuItem
 						onclick={() => {
+							warmTemplate();
 							close();
-							void session.signOut();
-						}}>Log out</MenuItem
+							void goto(destination.href);
+						}}>{destination.label}</MenuItem
 					>
-				{/snippet}
-			</Menu>
-		</div>
-	</div>
-	{#if notice}{@render notice()}{/if}
-	{#if children}{@render children()}{/if}
-</header>
+				{/each}
+			{/snippet}
+		</Menu>
+	{/snippet}
+</AppHeaderLayout>

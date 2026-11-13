@@ -1,50 +1,45 @@
-import { authoredItem, authoringRecord } from './authoring-item';
-import type { InstructionAudience, PlaybookItem } from './model';
-import type { DetailRecord } from './structure';
+import type { TemplateAudience, TemplateItemId } from './model';
 import type { DeepReadonly } from '../immutable';
-import { semanticPlaybookDraft } from './content';
+import { semanticTemplateItem } from './content';
 import type { ConvexClient } from 'convex/browser';
 import type { FunctionArgs, FunctionReturnType } from 'convex/server';
 import { ConvexError } from 'convex/values';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
-import type { PlaybookItemRecord } from './model';
 
 export type SaveRequest = Omit<
-	FunctionArgs<typeof api.playbookItems.savePlaybookItem>,
-	'membershipId' | 'item'
-> & { item: PlaybookItem };
+	FunctionArgs<typeof api.playbookItems.saveTemplateItem>,
+	'membershipId'
+>;
 export type Operation =
 	| { kind: 'save'; request: SaveRequest }
-	| { kind: 'delete'; id: PlaybookItemRecord['_id']; expectedContentRevision: number };
-type RawResult =
-	| FunctionReturnType<typeof api.playbookItems.savePlaybookItem>
-	| FunctionReturnType<typeof api.playbookItems.deletePlaybookItem>
+	| { kind: 'delete'; id: TemplateItemId; expectedContentRevision: number };
+export type SaveResult =
+	| FunctionReturnType<typeof api.playbookItems.saveTemplateItem>
+	| FunctionReturnType<typeof api.playbookItems.deleteTemplateItem>
 	| { status: 'rejected'; message: string };
-type EditorResult<T> = T extends { item: unknown } ? Omit<T, 'item'> & { item: DetailRecord } : T;
-export type SaveResult = EditorResult<RawResult>;
 export type SaveTransport = (operation: DeepReadonly<Operation>) => Promise<SaveResult>;
 export const convexSaveTransport =
 	(
 		client: Pick<ConvexClient, 'mutation'>,
 		membershipId: Id<'memberships'>,
-		audience: InstructionAudience = 'rep'
+		audience: TemplateAudience = 'rep'
 	): SaveTransport =>
 	async (operation) => {
 		try {
 			const result = await (operation.kind === 'save'
-				? client.mutation(api.playbookItems.savePlaybookItem, {
+				? client.mutation(api.playbookItems.saveTemplateItem, {
 						...operation.request,
-						item: authoredItem(semanticPlaybookDraft(operation.request.item), audience),
+						item: semanticTemplateItem(operation.request.item),
 						membershipId
 					})
-				: client.mutation(api.playbookItems.deletePlaybookItem, {
+				: client.mutation(api.playbookItems.deleteTemplateItem, {
 						membershipId,
 						audience,
 						id: operation.id,
 						expectedContentRevision: operation.expectedContentRevision
 					}));
-			return 'item' in result ? { ...result, item: authoringRecord(result.item) } : result;
+			return result;
 		} catch (error) {
 			if (error instanceof ConvexError && typeof error.data === 'string')
 				return { status: 'rejected', message: error.data };

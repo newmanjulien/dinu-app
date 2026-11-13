@@ -8,7 +8,7 @@ import type { SelectionDocument } from './selection/selection-model';
 
 export type ReviewAnchor = {
 	key: string;
-	itemId: string;
+	changeId: string;
 	order: number;
 	page: number;
 	target: number;
@@ -17,7 +17,7 @@ export type ReviewAnchor = {
 type TextLocation = {
 	kind: 'text';
 	key: string;
-	itemId: string;
+	changeId: string;
 	range: SourceRange;
 	start: number;
 	end: number;
@@ -25,12 +25,13 @@ type TextLocation = {
 type BoundaryLocation = {
 	kind: 'boundary';
 	key: string;
-	itemId: string;
+	changeId: string;
 	afterBlockKey: string;
 	start: number;
 	end: number;
 };
-type Location = TextLocation | BoundaryLocation;
+type EdgeLocation = { kind: 'edge'; key: string; changeId: string; start: number; end: number };
+type Location = TextLocation | BoundaryLocation | EdgeLocation;
 type Token = {
 	span: HTMLElement;
 	start: number;
@@ -76,7 +77,7 @@ export class ReviewAnchorProjector {
 
 	project(
 		host: HTMLElement,
-		tags: readonly Pick<ReviewTag, 'itemId' | 'applicationId' | 'target'>[],
+		tags: readonly Pick<ReviewTag, 'changeId' | 'target'>[],
 		document: SelectionDocument,
 		pages: readonly PaginatedPage[],
 		scale: number,
@@ -93,14 +94,15 @@ export class ReviewAnchorProjector {
 			this.geometryKey = geometryKey;
 			this.locations = tags.flatMap<Location>((tag): Location[] => {
 				try {
-					const key = JSON.stringify([tag.itemId, tag.applicationId]);
+					const key = tag.changeId;
+					if (!tag.target) return [{ kind: 'edge', key, changeId: tag.changeId, start: 0, end: 0 }];
 					if (!isTextTarget(tag.target)) {
 						const position = targetPosition(index, tag.target);
 						return [
 							{
 								kind: 'boundary' as const,
 								key,
-								itemId: tag.itemId,
+								changeId: tag.changeId,
 								afterBlockKey: tag.target.afterBlockKey,
 								start: position,
 								end: position
@@ -111,15 +113,15 @@ export class ReviewAnchorProjector {
 						{
 							kind: 'text' as const,
 							key,
-							itemId: tag.itemId,
+							changeId: tag.changeId,
 							range: tag.target.range,
 							start: pointPosition(index, tag.target.range.start),
 							end: pointPosition(index, tag.target.range.end)
 						}
 					];
 				} catch {
-					// Invalid source is handled by the document's existing failure state.
-					return [];
+					// Retained applied evidence stays reachable after its visible source disappears.
+					return [{ kind: 'edge', key: tag.changeId, changeId: tag.changeId, start: 0, end: 0 }];
 				}
 			});
 		}
@@ -212,6 +214,7 @@ export class ReviewAnchorProjector {
 				cached.geometryKey = geometryKey;
 				cached.fallbacks.clear();
 				cached.projections = this.locations.map((location) => {
+					if (location.kind === 'edge') return { generated: false };
 					if (location.kind === 'boundary') {
 						const target = cached.boundaries.get(location.afterBlockKey);
 						const rect = target?.getBoundingClientRect();
@@ -260,7 +263,7 @@ export class ReviewAnchorProjector {
 				const target = top + local * scale;
 				anchors.push({
 					key: location.key,
-					itemId: location.itemId,
+					changeId: location.changeId,
 					order: location.start,
 					page: cached.page.number,
 					target,
@@ -277,7 +280,11 @@ export class ReviewAnchorProjector {
 				}
 			}
 			let nearest: { cached: CachedPage; top: number; fallback: Fallback } | undefined;
-			if (location.kind === 'boundary') return;
+			if (location.kind !== 'text') {
+				const first = mounted[0];
+				if (first) add(first.cached, first.top, 0);
+				return;
+			}
 			const { range, start } = location;
 			const key = JSON.stringify(range.start);
 			for (const { cached, top } of mounted) {
@@ -313,6 +320,10 @@ export class ReviewAnchorProjector {
 					nearest = { cached, top, fallback };
 			}
 			if (nearest) add(nearest.cached, nearest.top, nearest.fallback.target);
+			else {
+				const first = mounted[0];
+				if (first) add(first.cached, first.top, 0);
+			}
 		});
 		anchors.sort(
 			(a, b) =>

@@ -92,7 +92,7 @@
 		return `${Math.floor(seconds / 86_400)}d ago`;
 	}
 	function description(row: FunctionReturnType<typeof api.buyerActivity.recent>[number]) {
-		const person = `Visitor ${row.visitorNumber}`;
+		const person = `Visitor ${row.visitorNumber}${row.city ? ` in ${row.city}` : ''}`;
 		const action =
 			row.type === 'clause_opened'
 				? row.clauseCount === 1
@@ -105,13 +105,7 @@
 	}
 </script>
 
-<Tooltip
-	text="See recent activity"
-	{trigger}
-	standalone={false}
-	enabled={!open}
-	class="rounded-md border-hairline border-edge bg-surface px-2 py-1 text-xs leading-[1.4] text-ink shadow-floating"
->
+<Tooltip text="See recent activity" {trigger} standalone={false} enabled={!open}>
 	{#snippet children(descriptionId)}
 		<button
 			bind:this={trigger}
@@ -150,9 +144,7 @@
 	dismissOnFocus
 	class="w-[390px] rounded-xl border-hairline border-control-border bg-surface py-[3px] text-ink shadow-card"
 >
-	<h3 class="px-3 py-[7px] text-xs font-normal text-ink-muted/70">
-		Recent activity · recorded times
-	</h3>
+	<h3 class="px-3 py-[7px] text-xs font-normal text-ink-muted/70">Recent activity</h3>
 	{#if error}
 		<p role="alert" class="px-3 py-[7px] text-xs text-ink-muted">
 			Couldn’t load activity.
@@ -179,6 +171,13 @@
 				<li class="flex items-center justify-between gap-3 px-3 py-[7px]">
 					<div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs leading-4">
 						<span class="min-w-0 break-words">{description(row)}</span>
+						{#if row.actor}
+							<span
+								class="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[10px] leading-3 text-ink-muted"
+							>
+								{row.actor}
+							</span>
+						{/if}
 					</div>
 					<time
 						datetime={new Date(row.at).toISOString()}

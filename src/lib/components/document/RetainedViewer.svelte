@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { setDocumentWorkspace } from '$lib/document/runtime/workspace-context';
+	import { setAnnotationLabel } from '$lib/document/annotation-label';
 	import type { DocumentResource } from '$lib/document/runtime/resources.svelte';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import DocumentViewer from './DocumentViewer.svelte';
@@ -8,7 +9,16 @@
 	let { entry, paused = false }: { entry: DocumentResource; paused?: boolean } = $props();
 	setDocumentWorkspace(untrack(() => entry.workspace));
 	setInteractionOwner(untrack(() => entry.owner));
+	// Retained viewers live under DocumentHost, outside their route's context.
+	setAnnotationLabel(
+		untrack(() => (entry.id === 'template:buyer' ? 'explanation' : 'instructions'))
+	);
 	const bindings = $derived(entry.bindings);
+	let hasPanel = $state(false);
+	// Binding replacement must not briefly collapse an already open panel's space.
+	$effect.pre(() => {
+		if (bindings) hasPanel = bindings.hasPanel ?? false;
+	});
 	// Reparenting the same wrapper preserves every DocumentPage and annotation owner.
 	const readyToShow = $derived(
 		!paused && ((entry.active && (bindings?.active ?? true)) || entry.draftOwned)
@@ -22,15 +32,17 @@
 	resource={entry.id}
 >
 	<DocumentViewer
-		instructionAudience={bindings?.instructionAudience}
-		discussions={bindings?.discussions}
+		layout={entry.layout}
 		failure={bindings?.failure}
 		onRetry={bindings?.onRetry}
 		active={readyToShow}
 		interactive={!paused && entry.active && (bindings?.interactive ?? true)}
 		retained
-		prepare={!paused && entry.allowed && (bindings?.prepare ?? true)}
-		instructionPreload={entry.active ? bindings?.instructionPreload : undefined}
+		prepare={!paused &&
+			entry.allowed &&
+			entry.workspace.source.itemsCurrent &&
+			(bindings?.prepare ?? true)}
+		itemPreload={entry.active ? bindings?.itemPreload : undefined}
 		priority={entry.priority}
 		selectedConcessions={bindings?.selectedConcessions ?? entry.choices}
 		previewChanges={bindings?.previewChanges}
@@ -38,7 +50,7 @@
 		reviewGutter={entry.active ? bindings?.reviewGutter : undefined}
 		reviewNavigation={entry.active ? bindings?.reviewNavigation : undefined}
 		onReviewDecision={bindings?.onReviewDecision}
-		hasPanel={bindings?.hasPanel}
+		{hasPanel}
 		followScroll={bindings?.followScroll}
 		selectedAnnotationId={bindings?.selectedAnnotationId}
 		selectionRequest={bindings?.selectionRequest}

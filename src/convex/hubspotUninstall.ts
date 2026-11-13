@@ -11,6 +11,7 @@ import { hubspotRemovalOutcome } from './hubspotValidators';
 import { tokenExchange } from './hubspotApi';
 import schema from './schema';
 import { disableQuotes } from './hubspotQuotesInstallation';
+import { retireExportDelivery } from './hubspotExportDeliveries';
 
 // Wait out the bounded provider fetch and refresh claims before purging secrets/files.
 const REQUEST_RESERVE = 30_000;
@@ -264,28 +265,22 @@ export const progress = internalMutation({
 			if (!wait)
 				await ctx.db.patch('hubspotRemovals', id, {
 					cursor: page.isDone ? null : page.continueCursor,
-					phase: page.isDone ? 'exports' : 'events'
+					phase: page.isDone ? 'exportDeliveries' : 'events'
 				});
 			await schedule(ctx, id, wait);
 			return null;
 		}
-		if (removal.phase === 'exports') {
+		if (removal.phase === 'exportDeliveries') {
 			const page = await ctx.db
-				.query('hubspotExports')
+				.query('hubspotExportDeliveries')
 				.withIndex('by_destination_connectionId', (q) =>
 					q.eq('destination.connectionId', removal.connectionId)
 				)
 				.paginate({ cursor: removal.cursor, numItems: 25, maximumBytesRead: 2 * 1024 * 1024 });
-			for (const row of page.page) {
-				if (row.attachmentUntil !== undefined)
-					await ctx.db.patch('hubspotExports', row._id, {
-						attachmentUntil: undefined,
-						expiresAt: Math.max(row.createdAt + 60 * 60_000, Date.now()) + 15 * 60_000
-					});
-			}
+			for (const delivery of page.page) await retireExportDelivery(ctx, delivery);
 			await ctx.db.patch('hubspotRemovals', id, {
 				cursor: page.isDone ? null : page.continueCursor,
-				phase: page.isDone ? 'provider' : 'exports'
+				phase: page.isDone ? 'provider' : 'exportDeliveries'
 			});
 			await schedule(ctx, id);
 			return null;

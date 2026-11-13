@@ -40,7 +40,6 @@ interface TextEntry {
 	node: Text;
 	length: number;
 	rects: TextRect[];
-	trigger: HTMLElement | null;
 	revision: string | undefined;
 	selectable: boolean;
 	presentation: boolean;
@@ -391,7 +390,6 @@ export function buildLineMaps(
 						node: node as Text,
 						length: (node as Text).length,
 						rects,
-						trigger: node.parentElement?.closest<HTMLElement>('.playbook-trigger') ?? null,
 						revision: node.parentElement?.closest<HTMLElement>('[data-revision]')?.dataset.revision,
 						selectable: getComputedStyle(node.parentElement!).userSelect !== 'none',
 						presentation: Boolean(anchor)
@@ -592,40 +590,6 @@ export function measureRevisions(pages: PageGeometry[]): MeasuredInterval[] {
 						left: rect.left,
 						right: rect.right,
 						kind: entry.revision === 'added' ? 'revision-added' : 'revision-removed'
-					});
-			}
-			return mergeIntervals(intervals);
-		})
-	);
-}
-
-export function measureTriggers(pages: PageGeometry[]): MeasuredInterval[] {
-	const memberships = new Map<HTMLElement, readonly string[]>();
-	const annotationIds = (owner: HTMLElement) => {
-		const cached = memberships.get(owner);
-		if (cached) return cached;
-		const ids: readonly string[] = JSON.parse(owner.dataset.annotationMemberships ?? '[]');
-		memberships.set(owner, ids);
-		return ids;
-	};
-	return pages.flatMap((page) =>
-		page.containers.flatMap((container) => {
-			const intervals: MeasuredInterval[] = [];
-			for (const entry of container.texts) {
-				if (entry.presentation) continue;
-				const owner = entry.trigger;
-				if (!owner) continue;
-				const ids = annotationIds(owner);
-				for (const rect of entry.rects)
-					intervals.push({
-						page,
-						container,
-						band: rect.band,
-						left: rect.left,
-						right: rect.right,
-						kind: 'trigger',
-						owner,
-						annotationIds: ids
 					});
 			}
 			return mergeIntervals(intervals);

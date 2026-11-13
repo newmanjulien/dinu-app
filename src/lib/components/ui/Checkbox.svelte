@@ -20,7 +20,12 @@
 	<input
 		type="checkbox"
 		{checked}
-		onchange={(event) => onCheckedChange(event.currentTarget.checked)}
+		onchange={(event) => {
+			const next = event.currentTarget.checked;
+			// The supplied value stays authoritative while a caller awaits persistence.
+			event.currentTarget.checked = checked;
+			onCheckedChange(next);
+		}}
 		class="peer sr-only"
 		{disabled}
 	/>

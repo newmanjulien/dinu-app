@@ -1,10 +1,11 @@
+import type { ResolvedContractItem } from '../contract/items';
 import type { ContractItemId } from '../contract/item-identity';
 import type { DeepReadonly } from '../immutable';
 import type { Id } from '../../convex/_generated/dataModel';
 import { hasMeaningfulReplacement } from '../document/replacement-content';
 import type {
 	ContractChange,
-	PlaybookItemRecord,
+	RepInstructionRecord,
 	SourceTarget,
 	Trigger,
 	TemplateItem
@@ -62,7 +63,7 @@ export type StructureSnapshot = DeepReadonly<
 		}
 >;
 type ItemIdentity = Pick<
-	PlaybookItemRecord,
+	RepInstructionRecord,
 	'_id' | '_creationTime' | 'contentRevision' | 'renderKey'
 >;
 export type TemplateItemRecord = ItemIdentity & TemplateItem;
@@ -74,16 +75,11 @@ type DetailIdentity = {
 	renderKey: string;
 };
 export type TemplateDetailRecord = TemplateItemRecord & DetailIdentity;
-export type DetailRecord = PlaybookItemRecord & DetailIdentity;
-export type DetailSnapshot = DeepReadonly<
-	AuthoringWatermark & { ready: boolean } & (
-			{ status: 'present'; item: DetailRecord } | { status: 'missing' }
-		)
->;
+export type RepInstructionDetailRecord = RepInstructionRecord & DetailIdentity;
 /** Stable item content. Only a complete structure snapshot can establish membership. */
-export type ContentSnapshot = DeepReadonly<
+export type TemplateContentSnapshot = DeepReadonly<
 	AuthoringSourceIdentity & { ready: boolean } & (
-			{ status: 'present'; item: DetailRecord } | { status: 'missing' }
+			{ status: 'present'; item: TemplateDetailRecord } | { status: 'missing' }
 		)
 >;
 export function playbookStructure(item: {
@@ -104,19 +100,28 @@ export function playbookStructure(item: {
 	};
 }
 export function itemStructure<ItemId extends ContractItemId>(
-	item: DeepReadonly<
-		Pick<
-			PlaybookItemRecord<ItemId>,
-			'_id' | '_creationTime' | 'contentRevision' | 'renderKey' | 'trigger'
-		> & { audience?: 'buyer'; concessions?: import('./model').Concession[] }
-	>,
-	renderKey = item.renderKey ?? item._id
+	item:
+		| DeepReadonly<
+				Pick<
+					RepInstructionRecord<ItemId>,
+					'_id' | '_creationTime' | 'contentRevision' | 'renderKey' | 'trigger'
+				> & { audience?: 'buyer'; concessions?: import('./model').Concession[] }
+		  >
+		| DeepReadonly<ResolvedContractItem>,
+	renderKey = ('renderKey' in item ? item.renderKey : undefined) ?? item._id
 ): StructureItem<ItemId> {
 	return {
 		_id: item._id as ItemId,
 		_creationTime: item._creationTime,
 		contentRevision: item.contentRevision,
 		renderKey,
-		...playbookStructure(item)
+		...playbookStructure(
+			'primary' in item
+				? {
+						trigger: item.primary,
+						concessions: item.choices
+					}
+				: item
+		)
 	};
 }

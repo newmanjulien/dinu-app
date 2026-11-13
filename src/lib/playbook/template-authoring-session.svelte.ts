@@ -1,5 +1,4 @@
-import { authoringRecord } from './authoring-item';
-import type { InstructionAudience } from './model';
+import type { TemplateAudience } from './model';
 import type { SnapshotClient } from '../query-once';
 import { getContext, setContext } from 'svelte';
 import type { ConvexClient } from 'convex/browser';
@@ -20,14 +19,16 @@ import {
 } from './save-transport';
 import {
 	itemStructure,
-	playbookStructure,
 	type AuthoringWatermark,
-	type ContentSnapshot,
+	type TemplateContentSnapshot,
 	type AuthoringSourceIdentity,
 	type StructureSnapshot
 } from './structure';
-import type { PlaybookItemRecord, SourceTarget } from './model';
+import type { SourceTarget } from './model';
+import type { TemplateItemRecord } from './structure';
+import { templateCopy } from './template-copy';
 import { equalItemStructure } from './structure-codec';
+import type { TemplateSource } from './template-source.svelte';
 import type { AnnotationAdmission, AuthoringSelectionRequest } from './authoring-selection';
 
 type Confirmation = Extract<SaveResult, { status: 'saved' | 'deleted' }>;
@@ -67,20 +68,26 @@ const PRELOAD_CONCURRENCY = 8;
 const RECENT_ITEMS = 8;
 type DetailSubscription = {
 	release?: () => void;
-	snapshot?: ContentSnapshot;
+	snapshot?: TemplateContentSnapshot;
 	error?: string;
 	awaiting: boolean;
 	bytes: number;
 };
 
-/** Membership lifetime. No DOM, renderer, route callbacks or template source prose is retained here. */
+/** Membership lifetime. Read demand is independent of drafts and mounted authoring. */
 export class TemplateAuthoringSession {
+	private readers = 0;
+	private releaseSource?: () => void;
+	private readonly sourceRead: TemplateSource;
+	get templateSource() {
+		return this.sourceRead.read;
+	}
 	structure = $state.raw<StructureSnapshot | null>(null);
 	structureError = $state('');
 	private structureLoading = $state(false);
 	private details = new Map<string, DetailSubscription>();
 	private detailVersion = $state(0);
-	private projectedDetails: DeepReadonly<PlaybookItemRecord[]> = [];
+	private projectedDetails: DeepReadonly<TemplateItemRecord[]> = [];
 	private preloadTemplateSource: string | null = null;
 	private recentIds: string[] = [];
 	private nearbyIds: readonly string[] = [];
@@ -122,11 +129,16 @@ export class TemplateAuthoringSession {
 			client: SnapshotClient & Pick<ConvexClient, 'mutation'>;
 			membershipId: Id<'memberships'>;
 			companyId: Id<'company'>;
-			audience?: InstructionAudience;
+			audience?: TemplateAudience;
+			templateSource: TemplateSource;
 			registerEditor: (editor: SessionEditor) => () => void;
 		}
 	) {
+		this.sourceRead = options.templateSource;
 		this.transport = convexSaveTransport(options.client, options.membershipId, options.audience);
+	}
+	private get copy() {
+		return templateCopy(this.options.audience);
 	}
 	start() {
 		const owner = this;
@@ -163,6 +175,18 @@ export class TemplateAuthoringSession {
 		}
 		this.syncSubscriptions();
 	}
+	/** Compact opening reads cannot create, restore or discard a template draft. */
+	retainReads() {
+		this.readers++;
+		this.syncSubscriptions();
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.readers--;
+			this.syncSubscriptions();
+		};
+	}
 	private Controller?: typeof AuthoringController;
 	installController(Controller: typeof AuthoringController) {
 		this.Controller = Controller;
@@ -171,7 +195,7 @@ export class TemplateAuthoringSession {
 		if (!this.editor) {
 			const owner = this;
 			if (!this.Controller)
-				throw new Error('Open the template editor before creating an instruction draft.');
+				throw new Error('Open the template editor before creating a template draft.');
 			this.editor = new this.Controller(
 				() => this.source?.() ?? unavailable,
 				{
@@ -179,13 +203,13 @@ export class TemplateAuthoringSession {
 						return owner.canSubmit;
 					},
 					get reason() {
-						if (!owner.available) return 'Instruction editing is temporarily unavailable.';
+						if (!owner.available) return owner.copy.unavailable;
 						if (owner.frozen || owner.suspended) return 'Waiting for your account to be ready…';
 						if (owner.slot?.phase === 'recovery')
 							return 'Restore or discard the retained draft before saving another draft.';
 						if (owner.slot)
 							return 'Wait for the submitted save to finish before saving another draft.';
-						return owner.structureError || 'Refreshing instructions…';
+						return owner.structureError || owner.copy.refreshing;
 					},
 					submit: (operation, recovery) => this.submit(operation, recovery)
 				},
@@ -214,8 +238,8 @@ export class TemplateAuthoringSession {
 	get pending() {
 		return Boolean(this.slot || (this.attached && this.editor?.hasUnsavedWork));
 	}
-	get hydratedDetails(): DeepReadonly<PlaybookItemRecord[]> {
-		const records: DeepReadonly<PlaybookItemRecord>[] = [];
+	get hydratedDetails(): DeepReadonly<TemplateItemRecord[]> {
+		const records: DeepReadonly<TemplateItemRecord>[] = [];
 		if (this.selectedId) {
 			const detail = this.detail(this.selectedId);
 			if (detail) records.push(detail);
@@ -261,15 +285,13 @@ export class TemplateAuthoringSession {
 	get status() {
 		switch (this.slot?.phase) {
 			case 'saving':
-				return 'Saving instructions…';
+				return this.copy.saving;
 			case 'confirmed':
-				return this.structureError || this.detailError
-					? 'Instructions saved; refresh needed'
-					: 'Instructions saved';
+				return this.structureError || this.detailError ? this.copy.savedRefresh : this.copy.saved;
 			case 'uncertain':
-				return 'Instruction save needs confirmation';
+				return this.copy.confirmationNeeded;
 			case 'recovery':
-				return 'Instruction draft needs attention';
+				return this.copy.draftNeedsAttention;
 			default:
 				return null;
 		}
@@ -280,6 +302,9 @@ export class TemplateAuthoringSession {
 			this.slot?.phase === 'recovery' ||
 			(this.slot?.phase === 'confirmed' && Boolean(this.structureError || this.detailError))
 		);
+	}
+	get hasPanel() {
+		return Boolean(this.editor?.entry || this.pendingPanel);
 	}
 	get pendingPanel() {
 		const request = this.requestedSelection;
@@ -336,15 +361,18 @@ export class TemplateAuthoringSession {
 						contentRevision: operation.request.expectedContentRevision + 1,
 						renderKey: old?.renderKey ?? operation.request.operationId
 					};
-		const projected = {
-			...itemStructure(record, record.renderKey ?? old?.renderKey),
-			companyId: this.options.companyId
-		};
+		const projected = this.projectItemStructure(record, record.renderKey ?? old?.renderKey);
 		return {
 			...base,
 			items: old
 				? base.items.map((item) => (item._id === id ? projected : item))
 				: [...base.items, projected]
+		};
+	}
+	private projectItemStructure(item: DeepReadonly<TemplateItemRecord>, renderKey?: string) {
+		return {
+			...itemStructure(item, renderKey),
+			companyId: this.options.companyId
 		};
 	}
 	/** Read eligibility is independent of renderer/selection readiness. */
@@ -354,7 +382,7 @@ export class TemplateAuthoringSession {
 		this.resetPreloading();
 		this.syncSubscriptions();
 	}
-	get instructionPreload() {
+	get itemPreload() {
 		return this.nearbyReporter;
 	}
 	private get canPreload() {
@@ -375,7 +403,7 @@ export class TemplateAuthoringSession {
 		const entry = this.details.get(id);
 		return entry?.error ? undefined : entry?.snapshot;
 	}
-	private authoritativeDetail(id: string, value: ContentSnapshot | undefined) {
+	private authoritativeDetail(id: string, value: TemplateContentSnapshot | undefined) {
 		const base = this.structure;
 		if (!this.current || !base?.ready || !value?.ready || !sameSource(value, base)) return;
 		const head = base.items.find((item) => item._id === id);
@@ -390,7 +418,7 @@ export class TemplateAuthoringSession {
 		)
 			return value;
 	}
-	detail(id: string): DeepReadonly<PlaybookItemRecord> | null {
+	detail(id: string): DeepReadonly<TemplateItemRecord> | null {
 		const ordinary = this.authoritativeDetail(id, this.observedDetail(id));
 		if (ordinary) return ordinary.item;
 		const slot = this.slot,
@@ -571,8 +599,8 @@ export class TemplateAuthoringSession {
 							result.status === 'rejected'
 								? result.message
 								: result.status === 'conflict'
-									? 'These instructions changed elsewhere. Your submitted draft is retained. Open Template to restore it against the current version.'
-									: 'These instructions were deleted. Your submitted draft is retained.'
+									? this.copy.submittedConflict
+									: this.copy.submittedDeleted
 					};
 				}
 				this.syncSubscriptions();
@@ -624,7 +652,7 @@ export class TemplateAuthoringSession {
 					: head.contentRevision >= result.item.contentRevision &&
 						(head.contentRevision > result.item.contentRevision ||
 							(head.renderKey === result.item.renderKey &&
-								equalItemStructure(head, playbookStructure(result.item)))));
+								equalItemStructure(head, this.projectItemStructure(result.item)))));
 		const detail = id ? this.authoritativeDetail(id, this.observedDetail(id)) : undefined;
 		const detailAccepted =
 			slot.detailAccepted ||
@@ -720,11 +748,15 @@ export class TemplateAuthoringSession {
 		}
 	}
 	private syncReads() {
-		const needed = this.available && !this.suspended && (this.attached || Boolean(this.slot));
+		const needed =
+			this.available &&
+			!this.suspended &&
+			(this.attached || Boolean(this.slot) || (!this.frozen && this.readers > 0));
 		if (!needed) {
 			this.releaseSubscriptions();
 			return;
 		}
+		this.releaseSource ??= this.sourceRead.retain();
 		if (!this.structureRelease) {
 			this.structureLoading = true;
 			let subscription: () => void;
@@ -750,10 +782,7 @@ export class TemplateAuthoringSession {
 						this.memberIds = members;
 						this.rankingDirty = true;
 					}
-					this.structure = immutable({
-						...value,
-						items: value.items.map(({ audience: _audience, ...item }) => item)
-					});
+					this.structure = immutable(value);
 					this.structureError = '';
 					this.structureLoading = false;
 					this.syncSubscriptions();
@@ -762,7 +791,7 @@ export class TemplateAuthoringSession {
 				() => {
 					if (this.disposed || this.structureRelease !== subscription) return;
 					this.structureLoading = false;
-					this.structureError = 'Unable to refresh instructions. Your submitted work is retained.';
+					this.structureError = this.copy.refreshFailed;
 					this.syncSubscriptions();
 					this.settleLeave();
 				}
@@ -842,8 +871,7 @@ export class TemplateAuthoringSession {
 				id: id as Id<'playbookItems'>,
 				audience: this.options.audience
 			},
-			(raw) => {
-				const value = raw.status === 'present' ? { ...raw, item: authoringRecord(raw.item) } : raw;
+			(value) => {
 				if (this.disposed || this.details.get(id) !== entry) return;
 				const prior = entry.snapshot;
 				if (
@@ -884,8 +912,7 @@ export class TemplateAuthoringSession {
 				entry.snapshot = undefined;
 				entry.bytes = 0;
 				if (this.pinnedIds().has(id)) {
-					entry.error =
-						'Unable to load these instructions. Retry the refresh or select the clause again.';
+					entry.error = this.copy.loadFailed;
 					this.detailVersion++;
 					this.settleLeave();
 				} else {
@@ -899,7 +926,7 @@ export class TemplateAuthoringSession {
 	/** Resolve both button readiness and execution against the same current authority. */
 	private recoveryContext(): {
 		slot: Submission;
-		current: DeepReadonly<PlaybookItemRecord> | null;
+		current: DeepReadonly<TemplateItemRecord> | null;
 	} | null {
 		if (
 			!this.slot ||
@@ -1014,10 +1041,13 @@ export class TemplateAuthoringSession {
 		this.settleLeave();
 	}
 	retryReads() {
+		this.templateSource.retry();
 		this.releaseSubscriptions();
 		this.syncSubscriptions();
 	}
 	private releaseSubscriptions() {
+		this.releaseSource?.();
+		this.releaseSource = undefined;
 		this.resetPreloading();
 		const release = this.structureRelease;
 		this.structureRelease = undefined;
@@ -1038,8 +1068,8 @@ export class TemplateAuthoringSession {
 const key = Symbol('template-authoring-session');
 export const setTemplateAuthoringSession = (
 	session: TemplateAuthoringSession,
-	audience: InstructionAudience = 'rep'
+	audience: TemplateAudience = 'rep'
 ) => setContext(audience === 'buyer' ? buyerKey : key, session);
 const buyerKey = Symbol('buyer-template-authoring-session');
-export const getTemplateAuthoringSession = (audience: InstructionAudience = 'rep') =>
+export const getTemplateAuthoringSession = (audience: TemplateAudience = 'rep') =>
 	getContext<TemplateAuthoringSession>(audience === 'buyer' ? buyerKey : key);

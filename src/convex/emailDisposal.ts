@@ -20,6 +20,17 @@ async function schedule(ctx: MutationCtx, delivery: Doc<'emailDeliveries'>, dela
 	});
 	await ctx.db.patch('emailDeliveries', delivery._id, { disposal: { generation, jobId } });
 }
+/** The committing caller reserves this constant-size retirement, never a chunk scan.
+ * Sent evidence remains immutable until ordinary contract/company cleanup. */
+export async function retireSnapshotDelivery(ctx: MutationCtx, delivery: Doc<'emailDeliveries'>) {
+	if (delivery.state.kind === 'sent' || delivery.disposal) return;
+	await cancelDelivery(ctx, delivery);
+	await schedule(
+		ctx,
+		delivery,
+		providerDispatchInProgress(delivery) ? RETIRED_DELIVERY_RECHECK : 0
+	);
+}
 
 async function dispose(
 	ctx: MutationCtx,

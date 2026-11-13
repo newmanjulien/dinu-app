@@ -1,8 +1,22 @@
 # Current data model
 
-Reusable company setup is a **template**; a buyer-specific instance is a **contract**. Shared text/rendering machinery is a **document**. See [the terminology cutover](template-terminology-rollout.md) before deploying the renamed storage.
+Reusable company setup is a **template**; a buyer-specific instance is a **contract**. Shared text/rendering machinery is a **document**. The authoritative table map is [schema.ts](../src/convex/schema.ts).
 
-The schema's table map is [src/convex/schema.ts](../src/convex/schema.ts). Read it by domain: accounts, templates, contracts, email, and maintenance. Business content, stored records, and API views have separate responsibilities.
+| Owner                 | Authority                                                                                          | Lifetime                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Accounts              | Profiles, memberships and company ownership                                                        | Person or company                           |
+| Template authoring    | Compact heads, immutable revision bodies, current manifest and certified source                    | Company                                     |
+| Frozen templates      | Permanently frozen template manifests and referenced Playbook/source content                       | Company, including after contract deletion  |
+| Contracts             | One small `savedContracts` root and its approved document                                          | Contract                                    |
+| Native changes        | Immutable patches, exact current/applied heads and immutable decisions                             | Contract; output evidence has its own owner |
+| Browse and buyer view | Derived `contractDirectory` and permanent `buyerLinks.currentView`                                 | Contract                                    |
+| Discussions           | Shared contract threads/messages, interval claims, transient maps and exact unread/support indexes | Contract                                    |
+| Operations            | Original-input/result `operationReceipts` and separately paged evidence sections                   | Company; no age cutoff                      |
+| Outputs               | Word attempts in `hubspotExports`, Quote pushes and their owning reservation receipts              | Company; generated files expire separately  |
+| Integrations          | Captured destinations, leases, dispatch and reconciliation                                         | Each protocol's retention                   |
+| Maintenance           | Bounded deletion, preparation and cleanup progress                                                 | Until owned work completes                  |
+
+The seller dashboard and both anonymous and authenticated buyer-link views display one current approved document. Pending alternatives appear only in focused reviews. The current schema and clients require a coordinated reset/reload release; there is no retained-contract converter or browser intent translator. Local preparation does not deploy or reset a database. See [release procedure](deployment.md#backend-ownership-conversion).
 
 ## People and company access
 
@@ -10,20 +24,55 @@ The schema's table map is [src/convex/schema.ts](../src/convex/schema.ts). Read 
 
 `accounts.viewer` returns a profile, optional membership, optional company, and derived permissions. `requireMembership` returns an explicit access object with an actual profile and membership. The server derives identity, checks expected membership IDs, and rejects unavailable or deleting companies. Role is never an account-profile property in the canonical API.
 
+`profiles.helpPreferences` contains required `rep` and `buyer` booleans, where
+`true` suppresses automatic Help. Both default to `false`. Only the authenticated
+profile owner can change either flag through `profiles.setHelpHidden`; the mutation
+preserves the other flag. The private account and seller-context queries return the
+preferences at the top level; shared profile/colleague views do not expose them.
+Seller buyer preview has no checkbox and cannot initiate preference writes.
+Anonymous buyers keep per-link browser preferences. This required shape assumes a
+database reset before deploying the matching frontend/backend; there is no legacy
+fallback or preference migration.
+
 `profiles`, `memberships`, and `companies` own their respective update APIs. `avatars` owns avatar authorization/storage operations. Invitations capture their own lifecycle; their delivery summary is a list projection of an authoritative email delivery.
 
-Home’s setup prompts guide reps to create a contract and then copy its buyer link. `accounts.setupHints` selects the rep’s latest own contract for the copy task. A successful clipboard write records `memberships.buyerLinkCopiedAt` through the authenticated, idempotent `accounts.recordBuyerLinkCopy` mutation, so completion survives navigation and sign-in. A deployment- and membership-scoped browser marker retains unacknowledged copy progress; the existing workspace acknowledgment loop retries it on entry, transport recovery, and every 30 seconds while the workspace is active. Only a successful acknowledgment clears the marker. When browser storage is unavailable, pending progress remains in memory for the page lifetime. Creating or previewing a link and the manual-copy fallback do not complete this task. Admins retain their integrations and invite-colleagues prompts; integration read errors do not advance to invitations.
+Home’s setup prompts guide both reps and admins to create a contract and then create a buyer link for their latest own contract. The “Create link” button uses the shared `BuyerLinkController` to create and copy the link directly from Home. `accounts.setupHints` checks the member’s latest own contract and reads `buyerLinks` through its company/creator index. Any link created by the member in the current company, or an existing link for their latest contract, satisfies this step. Link creation through any entry point advances setup even if copying fails; previewing alone does not. Clipboard successes and failures use the shared workspace feedback. Setup no longer needs a client copy-progress marker or acknowledgment mutation; the optional `memberships.buyerLinkCopiedAt` field is retained only for stored-document compatibility. Admins continue to integrations and inviting colleagues; integration read errors do not advance to invitations.
 
-`company.csmCallBookedAt` records the first confirmed setup booking. Native accepted
-creation/recovery commits it atomically with the receipt; verified legacy Cal
-webhooks retain their one-way completion policy. The viewer projects it as
-`csmCallBooked`, permanently switching admin-only setup to Support across workspace
-routes and members. Support bookings never change it. `csmBookingAttempts` stores
-durable creation receipts and unresolved acknowledgement recovery, not current
-appointment history or occupancy. Confirmation is immutable; Cal owns later
-cancellation/rescheduling. Exact signed attempt association attributes native
-provider facts; a separately signed company/purpose reference supports legacy
-webhooks. `csmSetupAppointments` separately stores one mutable setup-chain snapshot with
+`company.pendingTemplateSourceId` identifies at most one company-owned pending
+DOCX. Successful valid import adopts it atomically with `uploadedAt` and a 90-day
+`expiresAt`; replacing it retires the previous pending source through bounded
+cleanup. Uploader attribution does not make it personal data owned by that member.
+Cancellation, rebooking and uploader departure retain it. Only internal
+`operator.releasePendingTemplate`, scoped to company, exact source and expected
+fingerprint, can release an ordinary upload into `company.templateSourceId` and
+the first canonical version. Until then, the editor and instructions stay gated.
+The admin-only `templateUploads.status` returns booking/upload/waiting/released
+and bounded pending metadata; reps receive no pending metadata. See the
+[operator runbook](assisted-template-setup.md).
+
+`company.setupAppointmentId` identifies the company's current native setup call.
+Its owned appointment's last decisive `bookingConfirmation` (`accepted` or
+`cancelled`) controls pre-release upload and operator-release qualification. An
+accepted creation qualifies while provider refresh is checking and after the call
+ends; pending proof or refresh failure preserves the last decisive fact. A known
+cancellation requires an exact replacement appointment ID/current UID before new
+setup work. A dangling or uncertain target never becomes a fresh initial booking.
+The viewer projects `setupBookingConfirmed`; support bookings never qualify setup.
+The header may hide ended calls without changing this durable qualification.
+
+`csmBookingAttempts` stores durable creation receipts and unresolved acknowledgement
+recovery, not current appointment history or occupancy. With no current setup
+appointment, unresolved initial attempts serialize new setup bookings across
+company admins; another admin sees neutral progress, never a private receipt.
+Exact receipt replay/recovery remains available before new-work admission. Native
+accepted settlement binds the company pointer; historical receipt replay cannot
+move it backwards. Exact signed attempt association attributes native provider
+facts; a separately signed company/purpose reference supports legacy webhooks.
+Canonical attempt format 2 requires creation confirmation for booked rows and a
+noncreation basis for failures. Legacy/unverifiable outcomes fence fresh work
+without inventing confirmation; this assisted setup flow adds no migration or
+legacy qualification.
+`csmSetupAppointments` separately stores one mutable setup-chain snapshot with
 immutable source attribution, current provider facts and bounded sync/deadline jobs.
 Its optional `pendingSuccessors` object holds at most eight unresolved UIDs and a
 sticky overflow flag; the old optional `successorHint` remains read compatible.
@@ -76,12 +125,12 @@ flowchart LR
     Contract --> Applications[Selected applications and approvals]
 ```
 
-Each company owns an active template source and live playbook items. Source blocks are ordered, bounded child documents. Playbook business validators live in `src/lib/playbook/validators.ts`; shared content normalization/equality lives in `content.ts`. UI field labels do not define persistence.
+Each company owns an active template source and live playbook items. Source blocks are ordered, bounded child documents. Template item business validators live in `src/lib/playbook/validators.ts`; shared content normalization/equality lives in `content.ts`. UI field labels do not define persistence. Rep content is `RepInstruction` (instructions, approval guidance and concessions); buyer content is `BuyerExplanation` (a text trigger and explanation). `TemplateItem` is their union and `TemplateAudience` identifies `rep` or `buyer`. Buyer explanations use their own field throughout authoring, saving and recovery. The existing playbook table names and stored shapes remain valid; this terminology change requires no data migration.
 
 Source and resolved tables share one `rows: string[][]` shape. Cells have no source coordinates, references, annotations or concession changes. Composition returns each immutable table unchanged. Pagination prepares one plain display token per cell, and Word export consumes the strings. Selections cannot target cells or cross any table, including an empty table.
 
 A live head stores company/revision/replay identity, stable render identity and packed
-structure. `playbookItemRevisions.body` is the sole instruction/replacement-content
+structure. `playbookItemRevisions.body` is the sole instruction/explanation/replacement-content
 authority. Revision wrappers preserve original item identity and current compatibility
 metadata; historical projections omit that transport metadata. Original item IDs remain
 meaningful after deletion. `templateSourceCertificates` and `templateSourceValidationChunks` contain
@@ -95,32 +144,48 @@ and structural generations with head/revision/receipt/manifest/pointer changes. 
 saves serialize only the changed historical body. Structural changes validate affected
 relations against certified compact facts and heads; prose edits need only metadata and
 the changed body. Initial/bulk acceptance and conversion perform complete audits.
-`currentStructure` serves annotations; `detail` hydrates selected instruction content;
-the compatibility full list resolves the revision manifest directly. Native admission
+`currentStructure` serves annotations; `content` hydrates selected item content. Native admission
 and rollback checks remain independent of business JSON limits.
 
-## Contracts, applications, and review
+## Contracts, documents, and review
 
-`savedContracts` reference a captured template and use `buyerCompanyName` for the buyer. `companyId` always means the owning workspace company. The canonical API is `contracts`.
+```mermaid
+flowchart LR
+    Template[Frozen template and Playbook] --> Root[Current contract root]
+    Root --> Document[Approved immutable document]
+    Root --> Heads[Native current and applied heads]
+    Heads --> Changes[Immutable patches and decisions]
+    Root --> Directory[Stable listing projection]
+    Root --> Link[Permanent buyer current-view pointer]
+    Document --> View[Seller and buyer wording]
+    Root --> Receipt[Output reservation receipt]
+    Receipt --> Proof[Paged immutable authorization proof]
+    Receipt --> Output[Word attempt or Quote push]
+```
 
-Each contract stores one bounded `applications` map keyed by original playbook-item ID. Each value contains a concession ID and, when required, `approval: { applicationId, status }`. The immutable template determines whether approval is required. A save command carries choices and application IDs; it cannot submit approval status. Confirmed state, local intent, and an outstanding immutable request remain separate because they represent different moments.
+`savedContracts` is the sole small business root: company/creator, frozen template, title/buyer, `documentId`, `documentRevision`, `stateRevision`, `savedAt`, last-operation acknowledgment, bounded Playbook counts and two fixed review contexts. Creation inserts a root with a temporarily null document pointer, materializes its owned document and patches the root in the same transaction. Every committed readable root has a document. There is no partial-root recovery lifecycle or growing selection/application array.
 
-Playbook `approvalPolicy` is explicitly `none` or `required` with guidance text. The existing text editor maps nonblank approval guidance to `required` and clearing it to `none`. Business readiness reads the policy discriminator, independently of layout or whether the guidance is currently displayed.
+`documentRevision` advances only when approved wording changes. `stateRevision` fences business state relevant to commands and output admission. A meaningful save/decision writes final root metadata once; creation uses two atomic root writes. No-op/replay preserves existing zero-write behavior except required acknowledgment receipts. `contractState.Contract` joins this root and its optional HubSpot association; document reads do not require a second mutable working-state record.
 
-`contractApprovals` owns requests, decisions, and completion/reset operations. Decisions compare contract, item, concession, and application identity. Admin applications retain automatic approval and immutable decision receipts. Reset and remove/reapply behavior establish fresh review identities; retries preserve the original identity. `concessionDecisions` is the audit/replay history. `approvalRequests` holds only the latest request per contract; email deliveries retain their own outcomes.
+`contractDocuments` and `contractDocumentChunks` hold immutable wording, piece origins and numbering aliases with unchanged chunk reuse. Frozen `templateVersions` and `playbookItemRevisions` remain necessary source owners. Cumulative redlines compare with the frozen original. Pending work and metadata-only changes do not rewrite approved wording.
 
-| Name                 | Meaning                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------- |
-| `contentRevision`    | A playbook item's business-content revision                                            |
-| `editRevision`       | Concurrency guard for saved contract choices/application resets                        |
-| `stateVersion`       | Freshness of all mutable contract state, including renaming, decisions, and completion |
-| `reviewGeneration`   | Invalidates stale completion/reset and decision-email context                          |
-| `applicationId`      | One application of one concession, including its current review identity               |
-| `operationId`        | One immutable request's retry/replay identity                                          |
-| Transport generation | One connection lifetime; stale outcomes cannot update its replacement                  |
-| Delivery attempt     | One provider attempt, with its own idempotency and uncertainty rules                   |
+`contractChanges` has native `playbook` and `buyer-proposal` variants. `contractChangeContents` stores exact before/after/reversal/dependency payload once. Each change freezes policy, initiating actor, original operation, predecessor and source. Playbook source identifies a frozen item/option and apply/removal action. Buyer source freezes the exact root message/revision, replacement text and original anchor/quote/document identity. A thread reference is never an existence prerequisite for undo of an applied change.
 
-`contractDirectory` is one derived browse/search row per contract. Its writer updates it transactionally with relevant contract changes; browsing does not read growing application state. Creator references may outlive profiles and fall back to former-colleague attribution. Creation receipts deliberately survive deletion to prevent retries resurrecting removed records.
+`contractChangeHeads` has one indexed head per contract, native kind and semantic key. It stores current/applied change references and their exact decision references. `contractChangeDecisions` stores immutable admin evidence; status derives from policy and the effective decision. A replayed no-op does not add a semantic decision. Restricted option removal/replacement remains pending over its applied predecessor. Withdrawing pending work restores that predecessor. Undo uses exact immutable inverse/dependency checks and retains its reason when conflicts disable it.
+
+A floating buyer support (`current != applied`) is effective only while its exact source root revision and passage survive committed discussion maps. Invalid support immediately exposes its applied predecessor/decision or absence. Applied equality is source-independent. Logical cancellation updates readiness, request coverage, context freshness and unread in the approved-document transaction; it does not require a physical write for every affected buyer head. Maintenance later normalizes those exact stale heads before retiring their cancellation maps. Raw unsupported buyer proposals never block first share or seller output.
+
+The two approval contexts are `playbook` and `buyer-link`. The root stores one constant-size semantic freshness token and optional completion record for each. A token changes only when that context's effective change/decision tuples change; unrelated title/document edits and physical maintenance leave it fixed. Readiness reads exact bounded Playbook counts and the discussion control's exact buyer support counts. Review/blocker details page through native heads, preserving native continuation/split metadata and empty nonterminal pages.
+
+`contracts.saveChanges` retains per-item expectations, ordered immutable operation inputs and disjoint-command merging. `contractApprovals.decideChange` applies native decisions; `discussionProposals.support/withdraw` handles buyer support without fake Playbook options or a duplicate buyer decision API. `contractApprovals.request/confirmCompletion` handles explicit submission and the existing completion-notification choice. Exceptional work returns an owned preparing result; the original journal/controller retains the same operation until completion.
+
+`approvalRequests` retains only the latest request for each contract/context. Its immutable delivery snapshot identifies exact native changes and the root state-revision cutoff. Current coverage intersects each original entry with its exact effective pending head; canceling A cannot erase B's submitted status. Pending activation revisions renew on reactivation. The support control maintains exact covered/unsubmitted counts under the cutoff. Large snapshots stage through existing delivery/selection chunks on the original receipt, and activate only after a complete seal. Completion checks the current context token and counts. Email filtering pages the snapshot, then fences its filtered manifest before granting the existing send lease; sent/failed/uncertain evidence and explicit notification choice remain.
+
+`contractDirectory` is a maintained derived listing/search/provider projection, with title, creator, saved/created ordering, association summary and exact `hasUnreadComment`. One centralized writer patches only actual projected-field changes. Root/head/receipt/index/preparation churn alone does not invalidate Home, search or Past links. Creator presentation is memoized per read. Provider delivery retains its real-root/association fallback when a directory projection is absent, plus original destination, generation, credential, block and reconciliation fences.
+
+The permanent buyer link has a small `currentView` pointer to approved document/revision, displayed title, frozen template/source and buyer name. It updates atomically only for buyer-visible changes and is synchronously revoked on logical contract deletion. `buyerLinks.currentDocument({token})` serves the same document to both audiences through that pointer and immutable data. Public acquisition is independent of seller account readiness and private root/head subscriptions. Every read still checks the live link/company/deletion gate; pointers, directory rows and retained documents never authorize independently. Buyer download binds the displayed identity before and after generation and returns those exact bytes or a conflict.
+
+Optional `contractHubspotAssociations` owns the CRM destination; `contractBuyerRefreshes` separately owns destination-bound buyer-name freshness. Buyer names stay outside saved intent and confirmed caches. Association/provider generations are independent safety fences and remain.
 
 ## Targets, rendering, and lifecycle owners
 
@@ -148,37 +213,56 @@ setup completion. See [CSM calls](delegation.md).
 
 ## Email, caches, and maintenance
 
-`emailDeliveries` owns dispatch, provider outcome, retry, cancellation, and disposal. Named event validators distinguish approval, decision, and invitation events. `emailSelectionChunks` contains ordered, bounded captured selections; optional approval metadata is one atomic object. Invitation summaries have a centralized writer and delivery/generation guards. An uncertain outcome never proves non-delivery or authorizes automatic replay.
+`operationReceipts` owns original operation identity, immutable input/result bytes and required `preparing | complete | failed` state. Its ordinary payload remains within the existing inline/63-chunk envelope. Normal replay decodes only the `payload` section. Receipt keys derive from authenticated company/actor ownership, rather than caller operation IDs alone. Receipts outlive individual contracts and are erased with the company.
+
+Word returns a small `{attemptId, reservationManifest}`; Quote reservations return the small manifest. The manifest freezes document/fingerprint, title, template, canonical source identity, actor and destination, plus a constant-size proof reference. Full effective applied changes, dependencies and exact decision/actor evidence live in an immutable `output-proof` section of the same `operationReceiptChunks` table. Section/generation/order indexes and contiguous count/hash seals support bounded verified pages without a total proof-count cap. Proof bytes never enter ordinary result serialization, whole-payload decoding or final payload rewrite. `remember` returns the server receipt ID; Word attempts and Quote pushes reference that owner. A deduped reservation keeps its own receipt while an existing push retains its original owner.
+
+`contractExports` owns Word reservation, file-byte publication, release and acknowledgment; `exportActions` generates bytes. Physical `hubspotExports` IDs remain stable for current-schema download journals. Mutable operational rows keep required file/provider/gating fields; source title/actor/authorization comes from the reservation receipt. Large proof construction and release validation resume through the original operation. Final activation/release adopts a sealed proof and compares fresh source/destination fences without rescanning or rewriting the full proof. Canonical output identity is separate from context freshness and can match after an exact reversal.
+
+Output proof is independent of source threads and native change-row lifetime. The receipt's indexed `documentId` owns retained document reachability. Contract cleanup pages and validates every proof section and owned document/chunk before deleting source evidence, then reclaims unowned manifests/chunks in bounded turns. Retained attempts/pushes and company-lifetime receipts preserve truthful release/dispatch history; generated files expire independently. No contract-history capture or global capture-deduplication owner is allocated.
+
+`hubspotExportDeliveries` separately owns the captured destination, remote-file
+identity and attachment entitlement. A late acknowledgement uses the original
+actor/destination even after file expiry or contract deletion. It cannot attach
+unavailable bytes. Uninstall retires provider entitlement; company erasure drains
+both core and provider owners. Provider-specific admission, delivery and booking
+state machines remain separate.
+
+`emailDeliveries` owns dispatch, provider outcome, retry, cancellation, and disposal. Named event validators distinguish approval, decision, and invitation events. `emailSelectionChunks` contains ordered, bounded immutable native review entries and their snapshot hashes. Invitation summaries have a centralized writer and delivery/generation guards. An uncertain outcome never proves non-delivery or authorizes automatic replay.
 
 Browser confirmed caches receive an immutable scope containing deployment/profile/membership identity. Cache replacement disposes old work, closes its recent-opening store, clears disposable data, and publishes the new resource. Constructors receive scope directly. Shared template flights, metadata-only writes, entry/byte bounds, deadlines, and storage fallback remain in place.
 
 The separate tab-scoped draft journal owns pending user intent. Its namespace, accepted payload formats, bounded commands, immutable retry identities and discard rules are documented in [template storage](template-storage.md#browser-persistence), along with the independent disposable confirmed cache. Confirmed-cache upgrades never clear current journals. Cache contents never replace fresh authorization and saved-state confirmation when opening a contract. Deletion is terminal for persistence: outstanding transport outcomes cannot recreate a cleared checkpoint.
 
-Account deletion, company cleanup, and file sweeps retain bounded work and their own retention rules. Parent deletion does not imply that every historical reference must immediately disappear.
+Account deletion, company cleanup, and file sweeps retain bounded work and their own retention rules. Parent deletion does not imply that every historical reference must immediately disappear. Company deletion shares one transaction budget across core and provider drains. Final phases recheck newly introduced children so already-running cleanup markers cannot skip them.
 
 The canonical seed retires the monthly-fee discount rule and five concessions. It has 112 blocks, three static tables, 55 items, 21 concessions and 29 changes. Table strings match the already-reset development and production databases. No table compatibility conversion is needed. These local cleanup changes do not deploy or reset a database.
 
-## Compatibility and release
+## Browser storage and release
 
-Temporary v1 adapters keep old account, contract, authoring, template, approval, and export calls usable across a non-atomic release. Canonical code uses `accounts`, `contracts`, `contractApprovals`, `playbookItems.current`, and `templates.content`. The v1 block projection in `legacyViews` omits title roles from flow blocks and shares canonical static table strings, including template, template source and Node export reads. Compatibility views are isolated in the `legacy*` modules and old API entry points; they do not define stored records. Retire them after the supported old clients/actions have been accounted for.
+Disposable confirmed data uses namespace `dinu:v7`; current contract intent uses `dinu:drafts:v6` and envelope version 10; download acknowledgment uses `dinu:download-acks:v2`. They remain isolated by deployment/account/membership. Current-schema journals keep independent base, intent and exact in-flight request bytes, original operation IDs, malformed-record errors and storage fallback. An apparent current choice match is not acknowledgment. Old intent/acknowledgment namespaces are ignored or removed and never translated/replayed.
 
-See [production releases](deployment.md) for release mechanics. Ordinary pushes to `main` do not convert stored data.
+This direct clean-schema change requires the separately controlled database reset and matching client reload described in [deployment](deployment.md#backend-ownership-conversion). Historical work artifacts describe retired designs, not current APIs. Immutable template versions, cache format versions, renderer/event publication and generated-file readiness publication have separate purposes and remain.
 
-## Buyer publication and discussions
+## Buyer links and shared discussions
 
-Each contract has one permanent buyer code in `buyerLinks`, formatted as a 39-digit string carrying 128 random bits, including leading zeros. Allocation is transactional and concurrent/retried requests return the same code. `contractBuyerState` separately stores the immutable template reference, public title, released selections, and monotonically increasing `buyerRevision`. Public link status is `current` with the title and buyer revision, or `unavailable`; publication updates preserve the code.
+Each contract retains one permanent 39-digit buyer code carrying 128 random bits, including leading zeros. First creation checks exact current readiness and allocates no publication/capture. Existing-link lookup/copy stays small and independent of editor/source/proof hydration. Buyer URLs carry only the permanent link identity. Private seller review controls have their own authorized lifetime; public DTOs expose approved wording, buyer explanations and safe geometry, without private policy/decisions.
 
-Saved changes needing no approval publish immediately. Approved replacements publish in the same transaction as the decision; pending/rejected replacements retain released wording. Resetting reviews does not retract published text. Cross-conflicting old/new selections form publication groups, so related edits wait together while independent eligible edits publish. Review-completion email delivery never gates publication. Downloads capture and recheck the displayed buyer revision.
+Discussions exist only on the shared buyer link, including authenticated seller review there. `discussionThreads`, `discussionMessages` and ordinary discussion receipts are contract-scoped. Server ingress derives anonymous authorship from its HttpOnly browser cookie; public author keys grant no authority. Only the real author may edit/delete using the exact message revision. Replies do not withdraw support. Editing/deleting a supported root withdraws only that exact pending support/request entry; new wording requires fresh support/submission. Applied source evidence stays private and independent after the source is removed.
 
-`contractConcessions` stores immutable contract-owned wording alternatives, sharing typed application, approval, rendering, and export semantics with template items. Applying a proposal preserves secondary effects and atomically replaces affected selections through the normal save machinery. Proposal and application revisions prevent stale or duplicate application; editing a proposal cannot mutate an applied definition.
+A thread stores one nonempty interval on the approved document's UTF-16/structural tape, indexed document revision, exact unread-message count and permanent tombstone. Unresolved proposal roots have one indexed `discussionPassageClaims` interval; comments can overlap. The shared bounded predecessor probe runs on creation, declined-root reopening and re-support, including admin paths. It refuses closed on unfinished stale probing, retains the original operation and resumes after already-durable maintenance. There is no global proposal/thread/reply cap.
 
-`discussionThreads`, `discussionMessages`, and durable operation receipts implement shared comments and replies. Indexed bounded feeds run only while the contract is open. Source coordinates and immutable replacement provenance anchor messages; changed passages keep their quote and replies. Root deletion retains a tombstone. Only the verified author can edit/delete, using an expected message revision.
+Every approved transition with live discussions commits monotone `discussionInvalidations` maps derived from actual document patches, including references and structural dependencies. At most eight undrained events bound the revision chain. Small maps are inline; larger maps use indexed 4-KiB `discussionTransitionMapChunks`, without a total-map cap. A thread survives only if its complete interval fits an unchanged span of every later map. Historical seams are never merged, so insertion/undo or restored text cannot resurrect an invalidated thread.
 
-Workspace identities come from authentication; public author views expose current account names/avatars without email or private profile fields. Buyers use a placeholder and a contract-scoped public author key. The trusted server ingress derives anonymous ownership from an HttpOnly browser cookie; that public key grants no editing authority. Buyer writes bind retries to the original author and use dedicated rate-limiter budgets. No buyer identity form or discussion notification delivery is involved.
+`discussionUnreadNodes` and the small `discussionUnreadControls` maintain focused revision-cohort B+ trees. The unread lane contains one entry per positive-unread thread; prefix maximum-start summaries find an exact surviving witness. A separate support lane includes floating supports even at zero unread, handles overlapping declined intervals, and folds exact pending/declined/fallback/covered counts. `reviewCount = appliedBase + effectiveSupport - effectiveSupportWithAppliedFallback`. Nodes have bounded fanout/encoded size and there are at most nine cohorts; these are storage/work bounds, never proposal limits. The approved document, logical thread removal, support cancellation and `contractDirectory.hasUnreadComment` change atomically. Listing reads do not traverse these trees or resolve a pending badge.
 
-`publicationAcknowledgments` remembers an admin's publication warning once per contract/profile. The server enforces it for explicit approvals and admin applications that autoapprove. Reset confirmations explain that the buyer retains already released wording. All discussion, local-definition, acknowledgment, receipt, and quota rows participate in bounded contract/company cleanup.
+Messages retain exact `unreadByTeam` flags. Buyer writes/edits update message revision and thread count atomically; deletion clears the applicable unread contribution. A teammate viewing readable text for 500ms in a focused, unobscured view acknowledges that exact revision using the authenticated client, including View as buyer. An older acknowledgment cannot clear unseen newer text. Public discussion DTOs expose no private read state.
 
-This model uses the agreed fresh-database rollout; versioned buyer links and their compatibility/migration paths are removed.
+The single per-contract maintenance chain drains the oldest revision prefix in bounded batches. Before tombstoning an affected thread and removing its support/claim/unread entries, it restores or deletes only its still-exact floating head. Survivors rebase thread/support/claim/unread coordinates together. An event retires only after that prefix is empty, preserving cancellation evidence; child messages/receipts drain independently so one large reply thread cannot occupy an event slot. A one-minute `discussionMaintenance.resumeDue` cron repairs absent/failed scheduled jobs. Tombstones and normalized heads prevent resurrection after maps retire.
+
+Small commands keep one-mutation fast paths. Exceptional native construction, geometry, unread/support folds or a full event backlog prepare on the existing original receipt. Durable phases/cursors and actor/source/native/storage/support/unread/request-generation fences own staged documents/patches/maps. Staged rows are invisible until their sealed references are adopted with bounded head/root/event/control/receipt writes in one business commit. The old approved text and exact badge remain visible until then; pending is never success. Authenticated result attachment uses `contracts.operationResult`; anonymous attachment uses the protected same-origin ingress with original input bytes, cookie/account context and `no-store` responses. Live company/deletion and original actor ownership are rechecked before revealing results.
+
+Buyer changes invalidate the complete affected template annotation footprint. Pending/declined proposals do not hide annotations; valid exact reversal can restore them. Applied review tags remain source-independent with gutter fallback and disabled undo reasons. All discussion/index/map/claim/staging rows participate in bounded contract/company cleanup; output proof remains under its independent operation owner.
 
 ## Buyer-link activity
 

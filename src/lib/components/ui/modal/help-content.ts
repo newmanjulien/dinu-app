@@ -19,7 +19,8 @@ export const helpContent = {
 			{
 				title: 'Understand a clause',
 				highlight: { text: 'Green clauses have explanations.', color: 'green' },
-				description: 'Green clauses have explanations. Select one to read a plain English summary.'
+				description:
+					'Green clauses have explanations. Select one to read a plain English explanation.'
 			},
 			{
 				title: 'Find what you need',
@@ -28,7 +29,7 @@ export const helpContent = {
 			{
 				title: 'Discuss next steps',
 				description:
-					'Contact the person who sent you this link with questions or proposed changes. Download a Word copy when available.'
+					'Leave comments or propose changes on the contract. Word downloads always contain the latest published contract.'
 			}
 		]
 	},
@@ -38,8 +39,9 @@ export const helpContent = {
 		steps: [
 			{
 				title: 'Open a clause',
-				highlight: { text: 'Blue clauses have details.', color: 'blue' },
-				description: 'Blue clauses have details. Click to open up an explanation of the clause.'
+				highlight: { text: 'Blue clauses have instructions.', color: 'blue' },
+				description:
+					'Blue clauses have instructions. Select one to read the instructions for that clause.'
 			},
 			{
 				title: 'Understand the clause',
@@ -50,6 +52,11 @@ export const helpContent = {
 				title: 'Negotiate safely',
 				description: 'Automatically apply concessions to the clauses you can negotiate.',
 				adminNote: 'Concessions are automatically approved because you’re an admin.'
+			},
+			{
+				title: 'Publish approved wording',
+				description:
+					'Open the buyer link as a seller and choose Publish to buyer once every submitted change is approved. Each publication creates a version. Downloads and HubSpot use the latest published version.'
 			}
 		]
 	},
@@ -65,18 +72,18 @@ export const helpContent = {
 				title: 'Write an explanation',
 				highlight: { text: 'Green clauses have explanations.', color: 'green' },
 				description:
-					'Choose Explain a clause, write your explanation, then Save. Green clauses have explanations. Select one to edit it.'
+					'Choose Add explanation, write your explanation, then Save. Green clauses have explanations. Select one to edit it.'
 			},
 			{
 				title: 'Start from rep wording',
 				description:
-					'Copy explanation copies the full saved rep Summary when your selection is inside a rep clause with a summary. Edit and save the copy for buyers. Rep and buyer instructions stay independent.'
+					'Copy rep summary copies the full saved rep Summary when your selection is inside a rep clause with a summary. Edit and save the copy for buyers. Rep instructions and buyer explanations stay independent.'
 			}
 		]
 	},
 	template: {
 		title: 'Add and edit instructions',
-		intro: 'Add explanations, negotiation guidance, and approved concessions to your template.',
+		intro: 'Add summaries, negotiation guidance, and approved concessions for your reps.',
 		steps: [
 			{
 				title: 'Select template wording',
@@ -86,7 +93,7 @@ export const helpContent = {
 			{
 				title: 'Explain in plain English',
 				description:
-					'Explain a clause lets you add a plain English description so reps understand what the template says.'
+					'Add instructions lets you add a plain English summary so reps understand what the template says.'
 			},
 			{
 				title: 'Let reps make concessions',

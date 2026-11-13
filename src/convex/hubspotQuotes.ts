@@ -1,4 +1,4 @@
-import { ConvexError, v } from 'convex/values';
+import { ConvexError, v, type Infer } from 'convex/values';
 import { internal } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
 import {
@@ -11,26 +11,50 @@ import {
 	type QueryCtx
 } from './_generated/server';
 import { accessibleContract, availableCompany, liveCompanyMember, requireMembership } from './auth';
+import { readContract, seller, type Contract } from './contractState';
+import { contractRenderTransport } from './contractValidators';
+import { contractDocumentToRenderTransport } from '../lib/document/contract-document';
 import { installation, requireContractWork } from './contractPolicy';
-import { approvedExport } from './documentExport';
+import { reservedExport } from './documentExport';
+import { requireExpectedSource, staleSource } from './contractSource';
 import { quoteInstallationFor } from './hubspotQuotesInstallation';
-import { hubspotDestination } from './hubspotValidators';
 import {
 	hasQuoteScopes,
 	quoteSummary,
 	quoteProviderFailure,
-	quoteRunningUntil
+	quoteRunningUntil,
+	quoteRequest,
+	quoteReservation
 } from './hubspotQuoteValidators';
-import { exportRequest } from './savedContractValidators';
-import { sourceBlock } from '../lib/document/source-validators';
-import { contractItem } from './contractItemValidators';
 import { pool } from './hubspotDelivery';
-import { receipt, remember, actionKey } from './hubspotRecords';
+import {
+	receipt,
+	receiptPayload,
+	remember,
+	actionKey,
+	sealReceipt,
+	receiptSealWork
+} from './operationReceipts';
 import { deleteUnownedFile } from './storageOwnership';
 import schema from './schema';
 import { hubspotErrorIdentifier } from './hubspotApi';
+import {
+	advanceOutputProof,
+	initialOutputPreparation,
+	requireOutputFence,
+	sealedManifest,
+	outputReservation
+} from './outputProof';
+import { scheduleOutputPreparation } from './outputReservations';
+import { queueOutputProofCleanup } from './outputProofCleanup';
+import { authorizePreparedOperation, sellerPreparationActor } from './discussionPreparation';
+import { documentBytes, assertStorageCapacity } from './storageCapacity';
+import { canonicalJson } from '../lib/document/canonical-json';
 
 type Push = Doc<'hubspotQuotePushes'>;
+type Reservation = Infer<typeof quoteReservation>;
+type Request = Infer<typeof quoteRequest> & { operationId: string };
+const requestArgs = quoteRequest.extend({ operationId: v.string() });
 const summary = (row: Push) => ({
 	id: row._id,
 	state: row.state,
@@ -39,10 +63,17 @@ const summary = (row: Push) => ({
 	message: row.message ?? null
 });
 const retention = 30 * 24 * 60 * 60_000;
+const sameDestination = (a: Request['destination'], b: Request['destination']) =>
+	a.connectionId === b.connectionId &&
+	a.accountId === b.accountId &&
+	a.dealId === b.dealId &&
+	a.generation === b.generation;
+const requestInputs = (args: Request) =>
+	JSON.stringify([args.id, 'hubspot-quote', args.expectedSource, args.destination]);
 
-async function requireQuotes(ctx: QueryCtx, contract: Doc<'savedContracts'>) {
-	const connection = await requireContractWork(ctx, contract);
-	const quotes = await quoteInstallationFor(ctx, contract.companyId);
+async function requireQuotes(ctx: QueryCtx, contract: Contract) {
+	const connection = await requireContractWork(ctx, contract),
+		quotes = await quoteInstallationFor(ctx, contract.root.companyId);
 	if (!connection || connection.status !== 'connected')
 		throw new ConvexError('Reconnect HubSpot before pushing this contract.');
 	if (
@@ -59,174 +90,487 @@ async function requireQuotes(ctx: QueryCtx, contract: Doc<'savedContracts'>) {
 		env.HUBSPOT_QUOTES_PUSH_ENABLED !== 'true'
 	)
 		throw new ConvexError('Pushing to HubSpot Quotes is temporarily unavailable.');
-	// requireContractWork proved the connected installation has an available matching link.
-	return { connection, quotes, destination: contract.hubspot! };
+	const { availability, ...destination } = contract.hubspot!;
+	return { connection, quotes, destination };
 }
-
-/** Background authorization uses the captured actor's current membership, never browser auth. */
-async function authorized(ctx: QueryCtx, row: Push, checkApprovals = false) {
+/** The immutable owner identifies the real actor and original installation/deal. */
+async function gated(ctx: QueryCtx, reservation: Reservation) {
+	const { companyId, contractId, membershipId, actor, destination } = reservation;
 	if (
-		!(await availableCompany(ctx, row.companyId)) ||
-		!(await liveCompanyMember(ctx, row.companyId, row.profileId))
+		!(await availableCompany(ctx, companyId)) ||
+		!(await liveCompanyMember(ctx, companyId, actor.profileId))
 	)
 		return null;
-	const member = await ctx.db.get('memberships', row.membershipId);
-	const contract = await ctx.db.get('savedContracts', row.contractId);
+	const member = await ctx.db.get('memberships', membershipId),
+		root = await ctx.db.get('savedContracts', contractId);
 	if (
 		!member ||
-		member.profileId !== row.profileId ||
-		member.companyId !== row.companyId ||
-		!contract ||
-		contract.companyId !== row.companyId ||
-		contract.editRevision !== row.editRevision ||
-		contract.reviewGeneration !== row.reviewGeneration ||
-		contract.templateVersionId !== row.templateVersionId ||
-		contract.buyerCompanyName !== row.title
+		member.profileId !== actor.profileId ||
+		member.companyId !== companyId ||
+		!root ||
+		root.companyId !== companyId ||
+		(await ctx.db
+			.query('contractCleanups')
+			.withIndex('by_contractId', (q) => q.eq('contractId', contractId))
+			.unique())
 	)
 		return null;
 	try {
-		const { connection, quotes, destination } = await requireQuotes(ctx, contract);
+		const contract = await readContract(ctx, root),
+			access = await requireQuotes(ctx, contract);
 		if (
-			quotes._id !== row.installationId ||
-			quotes.epoch !== row.epoch ||
-			connection._id !== row.destination.connectionId ||
-			destination.accountId !== row.destination.accountId ||
-			destination.dealId !== row.destination.dealId ||
-			destination.generation !== row.destination.generation
+			access.quotes._id !== destination.installationId ||
+			access.quotes.epoch !== destination.epoch ||
+			!destination.hubspot ||
+			!sameDestination(access.destination, destination.hubspot)
 		)
 			return null;
-		if (checkApprovals) await approvedExport(ctx, contract);
-		return connection;
+		return { ...access, contract };
 	} catch {
 		return null;
 	}
 }
-
-export const content = internalQuery({
-	args: exportRequest.fields,
-	returns: v.object({
-		contract: schema.doc('savedContracts'),
-		blocks: v.array(sourceBlock),
-		items: v.array(contractItem)
-	}),
-	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
-		const contract = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
-		if (!contract) throw new ConvexError('This contract was deleted.');
-		await requireQuotes(ctx, contract);
-		if (contract.editRevision !== args.expectedEditRevision)
-			throw new ConvexError('This contract changed. Wait for it to finish saving.');
-		const { reader, items } = await approvedExport(ctx, contract);
-		return { contract, blocks: await reader.blocks(), items };
+async function requireQuoteFence(ctx: QueryCtx, row: Doc<'operationReceipts'>, contract: Contract) {
+	const preparation = row.outputPreparation;
+	if (!preparation) throw new Error('Missing Quote proof preparation.');
+	const access = await requireQuotes(ctx, contract),
+		destination = preparation.fence.destination;
+	if (
+		!destination.hubspot ||
+		destination.installationId !== access.quotes._id ||
+		destination.epoch !== access.quotes.epoch ||
+		destination.connectionGeneration !== access.connection.generation ||
+		!sameDestination(destination.hubspot, access.destination)
+	)
+		throw new ConvexError(
+			'The contract access or linked HubSpot deal changed. Prepare a new push.'
+		);
+	await requireOutputFence(ctx, contract, preparation);
+	return access.connection;
+}
+export const checkPrepared = internalMutation({
+	args: { receiptId: v.id('operationReceipts') },
+	returns: v.null(),
+	handler: async (ctx, { receiptId }) => {
+		const row = await ctx.db.get('operationReceipts', receiptId);
+		if (!row || row.kind !== 'quote-reservation') throw new Error('Invalid Quote receipt.');
+		const { contract } = await authorizePreparedOperation(ctx, row);
+		await requireQuoteFence(ctx, row, contract);
+		return null;
 	}
 });
-
+async function activate(ctx: MutationCtx, row: Doc<'operationReceipts'>) {
+	const { contract, access } = await authorizePreparedOperation(ctx, row),
+		preparation = row.outputPreparation;
+	if (
+		!access ||
+		row.state !== 'preparing' ||
+		row.kind !== 'quote-reservation' ||
+		!preparation ||
+		preparation.purpose !== 'reservation' ||
+		preparation.phase !== 'sealed'
+	)
+		throw new Error('Invalid original Quote reservation owner.');
+	const payload = await receiptPayload(ctx, row),
+		input: unknown = JSON.parse(payload.inputs);
+	if (
+		!Array.isArray(input) ||
+		input.length !== 4 ||
+		input[0] !== row.contractId ||
+		input[1] !== 'hubspot-quote' ||
+		actionKey(access, 'quote-reservation', row.operationId!) !== row.key
+	)
+		throw new Error('Original Quote reservation input changed.');
+	await requireQuoteFence(ctx, row, contract);
+	const reservationManifest = sealedManifest(row, preparation),
+		result = JSON.stringify(reservationManifest),
+		work = await receiptSealWork(ctx, row, payload.inputs, result);
+	await assertStorageCapacity(ctx, {
+		documents: work.writes + 1,
+		bytes:
+			work.bytes +
+			documentBytes({ ...row, reservationManifest, outputPreparation: undefined }) +
+			16_384,
+		queries: 8
+	});
+	await ctx.db.patch('operationReceipts', row._id, {
+		reservationManifest,
+		outputPreparation: undefined
+	});
+	await sealReceipt(ctx, row, payload.inputs, { state: 'complete', result });
+	return reservationManifest;
+}
+export const activatePrepared = internalMutation({
+	args: { receiptId: v.id('operationReceipts') },
+	returns: v.null(),
+	handler: async (ctx, { receiptId }) => {
+		const row = await ctx.db.get('operationReceipts', receiptId);
+		if (row?.state === 'preparing') await activate(ctx, row);
+		return null;
+	}
+});
+async function reserved(ctx: QueryCtx, args: Request) {
+	const access = await requireMembership(ctx, args.membershipId),
+		key = actionKey(access, 'quote-reservation', args.operationId),
+		row = await receipt(ctx, key, requestInputs(args));
+	if (
+		!row ||
+		row.kind !== 'quote-reservation' ||
+		row.companyId !== access.companyId ||
+		row.contractId !== args.id ||
+		row.state !== 'complete' ||
+		!row.documentId
+	)
+		throw new ConvexError('This push reservation is unavailable. Prepare a new push.');
+	const { reservationManifest: reservation } = await outputReservation(ctx, {
+		companyId: access.companyId,
+		contractId: args.id,
+		reservationReceiptId: row._id,
+		documentId: row.documentId
+	});
+	if (
+		reservation.membershipId !== access.membershipId ||
+		reservation.actor.profileId !== access.profile._id ||
+		canonicalJson(JSON.parse(row.result)) !== canonicalJson(reservation)
+	)
+		throw new Error('Invalid push reservation ownership.');
+	return { access, key, reservation, owner: row };
+}
+async function committed(ctx: QueryCtx, args: Request, reservation: Reservation) {
+	const access = await requireMembership(ctx, args.membershipId),
+		stored = await ctx.db
+			.query('operationReceipts')
+			.withIndex('by_key', (q) => q.eq('key', actionKey(access, 'quote', args.operationId)))
+			.unique();
+	if (!stored) return null;
+	if (
+		stored.kind !== 'quote-commit' ||
+		stored.companyId !== access.companyId ||
+		stored.contractId !== args.id ||
+		stored.documentId !== reservation.documentId
+	)
+		throw new ConvexError('This push operation was already used.');
+	const payload = await receiptPayload(ctx, stored),
+		id = ctx.db.normalizeId('hubspotQuotePushes', payload.result),
+		push = id ? await ctx.db.get('hubspotQuotePushes', id) : null;
+	if (
+		!push ||
+		push.companyId !== access.companyId ||
+		push.contractId !== args.id ||
+		stored.providerOperationId !== push._id
+	)
+		throw new ConvexError('This push result is unavailable.');
+	return summary(push);
+}
+/** Exact retries keep the original owner, inputs, actor, destination and proof. */
 export const reserve = internalMutation({
-	args: exportRequest.extend({
-		operationId: v.string(),
-		fileId: v.optional(v.id('_storage')),
-		fingerprint: v.string(),
-		payloadHash: v.string(),
-		canonicalKey: v.string(),
-		reviewGeneration: v.number(),
-		destination: hubspotDestination,
-		title: v.string(),
-		templateVersionId: v.id('templateVersions')
-	}).fields,
+	args: requestArgs.fields,
 	returns: v.union(
-		v.object({ kind: v.literal('reused'), summary: quoteSummary }),
-		v.object({ kind: v.literal('payload-required') })
+		v.object({ kind: v.literal('preparing'), receiptId: v.id('operationReceipts') }),
+		v.object({ kind: v.literal('reserved'), reservation: quoteReservation }),
+		v.object({ kind: v.literal('committed'), summary: quoteSummary })
 	),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		if (!/^[\w-]{1,100}$/u.test(args.operationId)) throw new ConvexError('Invalid push operation.');
-		const contract = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
-		if (!contract) throw new ConvexError('This contract was deleted.');
-		const { connection, quotes, destination } = await requireQuotes(ctx, contract);
-		if (
-			contract.editRevision !== args.expectedEditRevision ||
-			contract.reviewGeneration !== args.reviewGeneration ||
-			contract.templateVersionId !== args.templateVersionId ||
-			contract.buyerCompanyName !== args.title ||
-			destination.connectionId !== args.destination.connectionId ||
-			destination.accountId !== args.destination.accountId ||
-			destination.dealId !== args.destination.dealId ||
-			destination.generation !== args.destination.generation
-		)
-			throw new ConvexError('This contract changed. Wait for it to finish saving.');
-		await approvedExport(ctx, contract);
-		const operationKey = actionKey(access, 'quote', args.operationId);
-		const inputs = JSON.stringify([contract._id, contract.editRevision, args.canonicalKey]);
-		const operation = await receipt(ctx, operationKey, inputs);
-		const prior = await ctx.db
-			.query('hubspotQuotePushes')
-			.withIndex('by_canonicalKey', (q) => q.eq('canonicalKey', args.canonicalKey))
-			.unique();
-		const now = Date.now();
-		const lastRequest = await ctx.db
-			.query('hubspotQuotePushes')
-			.withIndex('by_contractId_and_requestedAt', (q) => q.eq('contractId', contract._id))
+		const key = actionKey(access, 'quote-reservation', args.operationId),
+			inputs = requestInputs(args),
+			prior = await receipt(ctx, key, inputs);
+		if (prior?.state === 'failed')
+			throw new ConvexError(prior.error ?? 'This push preparation failed. Prepare a new push.');
+		if (prior?.state === 'preparing') {
+			await scheduleOutputPreparation(ctx, prior);
+			return { kind: 'preparing' as const, receiptId: prior._id };
+		}
+		if (prior) {
+			const { reservation } = await reserved(ctx, args),
+				result = await committed(ctx, args, reservation);
+			return result
+				? { kind: 'committed' as const, summary: result }
+				: { kind: 'reserved' as const, reservation };
+		}
+		const { contract } = await seller(ctx, args);
+		requireExpectedSource(contract, args.expectedSource);
+		const { quotes, connection, destination } = await requireQuotes(ctx, contract);
+		if (!sameDestination(args.destination, destination))
+			throw new ConvexError('The linked HubSpot deal changed. Prepare a new push.');
+		const latest = await ctx.db
+			.query('operationReceipts')
+			.withIndex('by_contractId_and_kind_and_requestedAt', (q) =>
+				q.eq('contractId', args.id).eq('kind', 'quote-reservation')
+			)
 			.order('desc')
 			.first();
-		// Serialize explicit uses even when two requests arrive in the same millisecond.
-		const requestedAt = Math.max(
-			now,
-			(lastRequest?.requestedAt ?? lastRequest?._creationTime ?? 0) + 1
-		);
-		const reusable =
-			prior &&
-			!['rejected', 'retired'].includes(prior.state) &&
-			(prior.state !== 'queued' || (await authorized(ctx, prior, true)));
-		if (reusable) {
-			if (!operation) await remember(ctx, access.companyId, operationKey, inputs, prior._id);
-			await ctx.db.patch('hubspotQuotePushes', prior._id, { requestedAt });
-			return { kind: 'reused' as const, summary: summary(prior) };
-		}
-		// Admission and the allocating commit share this transaction/decision path.
-		if (prior && quoteRunningUntil(prior) > now)
-			throw new ConvexError('This push is still stopping. Wait a moment, then push again.');
-		if (!args.fileId) return { kind: 'payload-required' as const };
-		if (prior?.workId)
-			await pool.cancel(ctx, prior.workId as import('@convex-dev/workpool').WorkId);
-		const value = {
-			companyId: access.companyId,
-			contractId: contract._id,
-			membershipId: access.membershipId,
-			profileId: access.profile._id,
+		const preparation = await initialOutputPreparation(ctx, contract, access, 'reservation', 0, {
+			hubspot: args.destination,
+			connectionGeneration: connection.generation,
 			installationId: quotes._id,
-			epoch: quotes.epoch,
-			destination: {
-				connectionId: connection._id,
-				accountId: destination.accountId,
-				dealId: destination.dealId,
-				generation: destination.generation
+			epoch: quotes.epoch
+		});
+		preparation.base.requestedAt = Math.max(Date.now(), (latest?.requestedAt ?? 0) + 1);
+		const receiptId = await remember(
+			ctx,
+			access.companyId,
+			key,
+			inputs,
+			'',
+			{
+				contractId: args.id,
+				documentId: contract.root.documentId,
+				kind: 'quote-reservation',
+				requestedAt: preparation.base.requestedAt
 			},
-			canonicalKey: args.canonicalKey,
-			fingerprint: args.fingerprint,
-			payloadHash: args.payloadHash,
-			templateVersionId: contract.templateVersionId,
-			editRevision: contract.editRevision,
-			reviewGeneration: contract.reviewGeneration,
-			title: contract.buyerCompanyName,
-			...(prior?.previousQuoteId ? { previousQuoteId: prior.previousQuoteId } : {}),
-			...(prior?.recoveryEvidence ? { recoveryEvidence: prior.recoveryEvidence } : {}),
-			...(prior?.providerFailure ? { providerFailure: prior.providerFailure } : {}),
-			...(prior?.correlationId ? { correlationId: prior.correlationId } : {}),
-			state: 'queued' as const,
-			requestedAt,
-			updatedAt: now,
-			fileId: args.fileId,
-			payloadExpiresAt: now + retention,
-			readAttempts: 0,
-			dueAt: now
-		};
-		const id = prior?._id ?? (await ctx.db.insert('hubspotQuotePushes', value));
-		if (prior) {
-			await ctx.db.replace('hubspotQuotePushes', id, value);
-			if (prior.fileId && prior.fileId !== args.fileId) await deleteUnownedFile(ctx, prior.fileId);
+			{
+				actor: sellerPreparationActor(access),
+				operationId: args.operationId,
+				outputPreparation: preparation
+			}
+		);
+		const row = (await ctx.db.get('operationReceipts', receiptId))!,
+			progress = await advanceOutputProof(ctx, row, contract, true),
+			live = (await ctx.db.get('operationReceipts', receiptId))!;
+		if (progress.phase === 'sealed')
+			return { kind: 'reserved' as const, reservation: await activate(ctx, live) };
+		await scheduleOutputPreparation(ctx, live);
+		return { kind: 'preparing' as const, receiptId };
+	}
+});
+export const content = internalQuery({
+	args: requestArgs.fields,
+	returns: v.object({ source: quoteReservation, document: contractRenderTransport }),
+	handler: async (ctx, args) => {
+		const { reservation, owner } = await reserved(ctx, args),
+			{ document } = await reservedExport(ctx, {
+				companyId: reservation.companyId,
+				contractId: reservation.contractId,
+				reservationReceiptId: owner._id,
+				documentId: reservation.documentId
+			});
+		return { source: reservation, document: contractDocumentToRenderTransport(document) };
+	}
+});
+/** Current-source proof is another generation on the same original operation owner. */
+async function prepareCurrent(ctx: MutationCtx, owner: Doc<'operationReceipts'>) {
+	const { contract, access } = await authorizePreparedOperation(ctx, owner);
+	if (!access || !owner.reservationManifest || !(await gated(ctx, owner.reservationManifest)))
+		throw new ConvexError(
+			'The contract access or linked HubSpot deal changed. Prepare a new push.'
+		);
+	let preparation = owner.outputPreparation;
+	if (preparation) {
+		if (preparation.purpose !== 'release')
+			throw new Error('Invalid Quote current-source proof purpose.');
+		try {
+			await requireQuoteFence(ctx, owner, contract);
+		} catch {
+			await ctx.db.patch('operationReceipts', owner._id, { outputPreparation: undefined });
+			await queueOutputProofCleanup(ctx, owner._id, preparation.generation);
+			preparation = undefined;
 		}
-		if (!operation) await remember(ctx, access.companyId, operationKey, inputs, id);
-		await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
+	}
+	if (!preparation) {
+		const { connection, quotes, destination } = await requireQuotes(ctx, contract),
+			generation = (owner.outputGeneration ?? 0) + 1;
+		preparation = await initialOutputPreparation(ctx, contract, access, 'release', generation, {
+			hubspot: destination,
+			connectionGeneration: connection.generation,
+			installationId: quotes._id,
+			epoch: quotes.epoch
+		});
+		await ctx.db.patch('operationReceipts', owner._id, {
+			outputPreparation: preparation,
+			outputGeneration: generation
+		});
+	}
+	if (preparation.phase !== 'sealed')
+		preparation = await advanceOutputProof(
+			ctx,
+			{ ...owner, outputPreparation: preparation },
+			contract,
+			true
+		);
+	if (preparation.phase !== 'sealed')
+		await scheduleOutputPreparation(ctx, (await ctx.db.get('operationReceipts', owner._id))!);
+	return preparation.phase === 'sealed';
+}
+async function authorized(ctx: QueryCtx, row: Push) {
+	try {
+		const { owner, reservationManifest } = await outputReservation(ctx, row),
+			access = await gated(ctx, reservationManifest),
+			preparation = owner.outputPreparation;
+		if (
+			!access ||
+			!preparation ||
+			preparation.purpose !== 'release' ||
+			preparation.phase !== 'sealed' ||
+			preparation.identity !== reservationManifest.identity
+		)
+			return null;
+		await authorizePreparedOperation(ctx, owner);
+		return await requireQuoteFence(ctx, owner, access.contract);
+	} catch {
+		return null;
+	}
+}
+export const prepareCommit = internalMutation({
+	args: requestArgs.fields,
+	returns: v.object({ complete: v.boolean(), receiptId: v.id('operationReceipts') }),
+	handler: async (ctx, args) => {
+		const { owner } = await reserved(ctx, args);
+		return { complete: await prepareCurrent(ctx, owner), receiptId: owner._id };
+	}
+});
+export const prepareDispatch = internalMutation({
+	args: { id: v.id('hubspotQuotePushes'), claim: v.string(), generation: v.number() },
+	returns: v.object({ complete: v.boolean(), receiptId: v.id('operationReceipts') }),
+	handler: async (ctx, args) => {
+		const row = await ctx.db.get('hubspotQuotePushes', args.id);
+		if (
+			!row ||
+			row.state !== 'queued' ||
+			row.claim !== args.claim ||
+			(row.leaseUntil ?? 0) <= Date.now()
+		)
+			throw new ConvexError('This push lease expired.');
+		const { owner, reservationManifest } = await outputReservation(ctx, row),
+			access = await gated(ctx, reservationManifest);
+		if (!access || access.connection.generation !== args.generation)
+			throw new ConvexError('The HubSpot credentials changed.');
+		return { complete: await prepareCurrent(ctx, owner), receiptId: owner._id };
+	}
+});
+/** Commit immutable bytes and provider identity; reused pushes retain their first owner. */
+export const commit = internalMutation({
+	args: requestArgs.extend({
+		fileId: v.optional(v.id('_storage')),
+		fingerprint: v.string(),
+		payloadHash: v.string(),
+		canonicalKey: v.string()
+	}).fields,
+	returns: v.union(
+		v.object({ kind: v.literal('reused'), summary: quoteSummary }),
+		v.object({ kind: v.literal('payload-required') }),
+		v.object({ kind: v.literal('preparing'), receiptId: v.id('operationReceipts') })
+	),
+	handler: async (ctx, args) => {
+		const { access, key: reservationKey, reservation, owner } = await reserved(ctx, args);
+		if (
+			![args.fingerprint, args.payloadHash, args.canonicalKey].every((value) =>
+				/^[a-f0-9]{64}$/u.test(value)
+			)
+		)
+			throw new ConvexError('Invalid immutable push payload.');
+		const key = actionKey(access, 'quote', args.operationId),
+			inputs = JSON.stringify([
+				reservationKey,
+				owner._id,
+				args.canonicalKey,
+				args.fingerprint,
+				args.payloadHash
+			]),
+			priorCommit = await receipt(ctx, key, inputs);
+		if (priorCommit) {
+			const result = await committed(ctx, args, reservation);
+			if (!result) throw new Error('Missing committed push result.');
+			return { kind: 'reused' as const, summary: result };
+		}
+		if (
+			!owner.outputVerification?.complete ||
+			owner.outputVerification.generation !== reservation.proof.generation
+		)
+			throw new ConvexError({
+				code: 'OUTPUT_PENDING',
+				message: 'This push evidence is still being checked. Try again shortly.'
+			});
+		const current = await gated(ctx, reservation),
+			fresh = owner.outputPreparation;
+		if (!current)
+			throw new ConvexError(
+				'The contract access or linked HubSpot deal changed. Prepare a new push.'
+			);
+		if (!fresh || fresh.purpose !== 'release' || fresh.phase !== 'sealed')
+			return { kind: 'preparing' as const, receiptId: owner._id };
+		await requireQuoteFence(ctx, owner, current.contract);
+		if (fresh.identity !== reservation.identity) throw staleSource();
+		let prior: Push | null = null;
+		for (const state of [
+			'unknown',
+			'dispatched',
+			'verifying',
+			'verified',
+			'attention',
+			'queued'
+		] as const) {
+			const candidate = await ctx.db
+				.query('hubspotQuotePushes')
+				.withIndex('by_canonicalKey_and_state', (q) =>
+					q.eq('canonicalKey', args.canonicalKey).eq('state', state)
+				)
+				.order('desc')
+				.first();
+			if (!candidate) continue;
+			if (
+				candidate.companyId !== access.companyId ||
+				candidate.contractId !== args.id ||
+				candidate.fingerprint !== args.fingerprint ||
+				candidate.destination.accountId !== reservation.destination.hubspot!.accountId ||
+				candidate.destination.dealId !== reservation.destination.hubspot!.dealId
+			)
+				throw new Error('Invalid quote deduplication identity.');
+			if (state !== 'queued') {
+				prior = candidate;
+				break;
+			}
+			try {
+				const existing = await outputReservation(ctx, candidate);
+				if (!(await prepareCurrent(ctx, existing.owner)))
+					return { kind: 'preparing' as const, receiptId: existing.owner._id };
+				if (await authorized(ctx, candidate)) {
+					prior = candidate;
+					break;
+				}
+			} catch {
+				/* An unsent obsolete reservation can be stopped after its running lease. */
+			}
+			if (quoteRunningUntil(candidate) > Date.now())
+				throw new ConvexError('This push is still stopping. Wait a moment, then push again.');
+			await stop(
+				ctx,
+				candidate,
+				'The reserved authorization changed before sending. Prepare a new push.'
+			);
+		}
+		if (!prior && !args.fileId) return { kind: 'payload-required' as const };
+		const now = Date.now(),
+			id =
+				prior?._id ??
+				(await ctx.db.insert('hubspotQuotePushes', {
+					companyId: reservation.companyId,
+					contractId: reservation.contractId,
+					reservationReceiptId: owner._id,
+					documentId: reservation.documentId,
+					destination: reservation.destination.hubspot!,
+					canonicalKey: args.canonicalKey,
+					fingerprint: args.fingerprint,
+					payloadHash: args.payloadHash,
+					state: 'queued',
+					updatedAt: now,
+					fileId: args.fileId!,
+					payloadExpiresAt: now + retention,
+					readAttempts: 0,
+					dueAt: now
+				}));
+		await remember(ctx, access.companyId, key, inputs, id, {
+			contractId: args.id,
+			documentId: reservation.documentId,
+			kind: 'quote-commit',
+			providerOperationId: id,
+			requestedAt: reservation.requestedAt
+		});
+		if (prior) {
+			await ctx.db.patch('operationReceipts', owner._id, { outputPreparation: undefined });
+			await queueOutputProofCleanup(ctx, owner._id, fresh.generation);
+		} else await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
 		return {
 			kind: 'reused' as const,
 			summary: summary((await ctx.db.get('hubspotQuotePushes', id))!)
@@ -246,31 +590,36 @@ export const latest = query({
 		if (!accessibleContract(await ctx.db.get('savedContracts', args.id), access)) return null;
 		let row = args.pushId ? await ctx.db.get('hubspotQuotePushes', args.pushId) : null;
 		if (!args.pushId) {
-			const requested = await ctx.db
-				.query('hubspotQuotePushes')
-				.withIndex('by_contractId_and_requestedAt', (q) => q.eq('contractId', args.id))
-				.order('desc')
-				.first();
-			// Bounded compatibility while the additive timestamp backfill completes.
-			const legacy = await ctx.db
-				.query('hubspotQuotePushes')
-				.withIndex('by_contractId_and_requestedAt', (q) =>
-					q.eq('contractId', args.id).eq('requestedAt', undefined)
+			const latest = await ctx.db
+				.query('operationReceipts')
+				.withIndex('by_contractId_and_kind_and_requestedAt', (q) =>
+					q.eq('contractId', args.id).eq('kind', 'quote-commit')
 				)
 				.order('desc')
 				.first();
-			row =
-				legacy &&
-				(!requested || legacy._creationTime > (requested.requestedAt ?? requested._creationTime))
-					? legacy
-					: requested;
+			if (latest && latest.companyId === access.companyId) {
+				const value = await receiptPayload(ctx, latest);
+				const id = ctx.db.normalizeId('hubspotQuotePushes', value.result);
+				row = id ? await ctx.db.get('hubspotQuotePushes', id) : null;
+			}
 		}
 		return row?.companyId === access.companyId && row.contractId === args.id ? summary(row) : null;
 	}
 });
 
 /** Retire only work proven unsent, or stop readback while preserving its known quote. */
+async function clearCurrent(ctx: MutationCtx, row: Push) {
+	const owner = await ctx.db.get('operationReceipts', row.reservationReceiptId);
+	const proof = owner?.outputPreparation;
+	if (owner && (owner.companyId !== row.companyId || owner.contractId !== row.contractId))
+		throw new Error('Quote proof cleanup ownership changed.');
+	if (owner && proof?.purpose === 'release') {
+		await ctx.db.patch('operationReceipts', owner._id, { outputPreparation: undefined });
+		await queueOutputProofCleanup(ctx, owner._id, proof.generation);
+	}
+}
 async function stop(ctx: MutationCtx, row: Push, message: string) {
+	await clearCurrent(ctx, row);
 	if (row.workId) await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
 	await ctx.db.patch('hubspotQuotePushes', row._id, {
 		state: row.quoteId ? 'attention' : 'retired',
@@ -294,6 +643,18 @@ export const pump = internalMutation({
 				.withIndex('by_state_and_dueAt', (q) => q.eq('state', state).lte('dueAt', now))
 				.take(20);
 			for (const row of rows) {
+				const metrics = await ctx.meta.getTransactionMetrics();
+				if (
+					metrics.bytesRead.remaining < 3_000_000 ||
+					metrics.bytesWritten.remaining < 1_500_000 ||
+					metrics.databaseQueries.remaining < 100 ||
+					metrics.documentsRead.remaining < 100 ||
+					metrics.documentsWritten.remaining < 40 ||
+					metrics.functionsScheduled.remaining < 8
+				) {
+					await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
+					return null;
+				}
 				if (quoteRunningUntil(row) > now) continue;
 				if (state === 'dispatched') {
 					// Retain the claim so truthful late settlement can still record a returned ID.
@@ -305,6 +666,23 @@ export const pump = internalMutation({
 							'HubSpot may have created this quote. Contact Dinu support before pushing this version again.'
 					});
 					continue;
+				}
+				if (state === 'queued' && row.fileId && (row.payloadExpiresAt ?? 0) > now) {
+					try {
+						const { owner } = await outputReservation(ctx, row);
+						if (!(await prepareCurrent(ctx, owner))) {
+							await ctx.db.patch('hubspotQuotePushes', row._id, { dueAt: now + 1000 });
+							await ctx.scheduler.runAfter(1000, internal.hubspotQuotes.pump, {});
+							continue;
+						}
+					} catch {
+						await stop(
+							ctx,
+							row,
+							'The reserved authorization changed before sending. Prepare a new push.'
+						);
+						continue;
+					}
 				}
 				if (
 					!row.fileId ||
@@ -354,7 +732,8 @@ export const start = internalMutation({
 	returns: v.union(
 		v.object({
 			push: schema.doc('hubspotQuotePushes'),
-			connection: schema.doc('hubspotConnections')
+			connection: schema.doc('hubspotConnections'),
+			title: v.string()
 		}),
 		v.null()
 	),
@@ -367,9 +746,26 @@ export const start = internalMutation({
 			!['queued', 'verifying'].includes(row.state)
 		)
 			return null;
+		if (row.state === 'queued' && !(await authorized(ctx, row))) {
+			try {
+				const { owner } = await outputReservation(ctx, row);
+				if (!(await prepareCurrent(ctx, owner))) {
+					await ctx.db.patch('hubspotQuotePushes', row._id, { dueAt: Date.now() + 1000 });
+					await ctx.scheduler.runAfter(1000, internal.hubspotQuotes.pump, {});
+					return null;
+				}
+			} catch {
+				await stop(
+					ctx,
+					row,
+					'The reserved authorization changed before sending. Prepare a new push.'
+				);
+				return null;
+			}
+		}
 		const connection =
 			row.state === 'queued'
-				? await authorized(ctx, row, true)
+				? await authorized(ctx, row)
 				: (await availableCompany(ctx, row.companyId))
 					? await installation(ctx, row.companyId)
 					: null;
@@ -390,7 +786,8 @@ export const start = internalMutation({
 		}
 		const leaseUntil = Date.now() + 90_000;
 		await ctx.db.patch('hubspotQuotePushes', row._id, { leaseUntil, dueAt: leaseUntil + 30_000 });
-		return { push: { ...row, leaseUntil }, connection };
+		const { reservationManifest } = await outputReservation(ctx, row);
+		return { push: { ...row, leaseUntil }, connection, title: reservationManifest.title };
 	}
 });
 
@@ -399,10 +796,11 @@ export const dispatch = internalMutation({
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const row = await ctx.db.get('hubspotQuotePushes', args.id);
-		const connection = row ? await authorized(ctx, row, true) : null;
+		const connection = row ? await authorized(ctx, row) : null;
 		if (
 			!row ||
 			row.state !== 'queued' ||
+			row.dispatchedAt !== undefined ||
 			row.claim !== args.claim ||
 			(row.leaseUntil ?? 0) <= Date.now() ||
 			!connection
@@ -411,8 +809,10 @@ export const dispatch = internalMutation({
 		if (connection.generation !== args.generation) return false;
 		await ctx.db.patch('hubspotQuotePushes', row._id, {
 			state: 'dispatched',
+			dispatchedAt: Date.now(),
 			updatedAt: Date.now()
 		});
+		await clearCurrent(ctx, row);
 		// A lost execution is observed, never retried as a second POST.
 		await ctx.scheduler.runAfter(
 			Math.max(0, quoteRunningUntil(row) - Date.now()),
@@ -493,6 +893,7 @@ export const settle = internalMutation({
 			leaseUntil: undefined,
 			workId: undefined
 		});
+		if (state !== 'queued') await clearCurrent(ctx, row);
 		if (dueAt !== undefined)
 			await ctx.scheduler.runAfter(
 				Math.max(0, dueAt - Date.now()),
@@ -564,8 +965,7 @@ export const expire = internalMutation({
 		for (const row of page.page) {
 			if (kind === 'diagnostic') {
 				await ctx.db.patch('hubspotQuotePushes', row._id, {
-					providerFailure: undefined,
-					correlationId: undefined
+					providerFailure: undefined
 				});
 				continue;
 			}
@@ -600,6 +1000,7 @@ export const expire = internalMutation({
 						}
 					: {})
 			});
+			await clearCurrent(ctx, row);
 			if (row.fileId) await deleteUnownedFile(ctx, row.fileId);
 		}
 		if (!page.isDone)
@@ -619,22 +1020,21 @@ export const expire = internalMutation({
 	}
 });
 
-/** Compatibility only: native creation time is the conservative historical latest-use fallback. */
-export const backfillRequestedAt = internalMutation({
-	args: { cursor: v.optional(v.string()) },
+/** A bounded preparation turn can outlive an action without consuming a provider attempt. */
+export const deferPreparation = internalMutation({
+	args: { id: v.id('hubspotQuotePushes'), claim: v.string() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const page = await ctx.db
-			.query('hubspotQuotePushes')
-			.withIndex('by_contractId')
-			.paginate({ cursor: args.cursor ?? null, numItems: 25 });
-		for (const row of page.page)
-			if (row.requestedAt === undefined)
-				await ctx.db.patch('hubspotQuotePushes', row._id, { requestedAt: row._creationTime });
-		if (!page.isDone)
-			await ctx.scheduler.runAfter(0, internal.hubspotQuotes.backfillRequestedAt, {
-				cursor: page.continueCursor
+		const row = await ctx.db.get('hubspotQuotePushes', args.id);
+		if (row?.state === 'queued' && row.claim === args.claim && row.dispatchedAt === undefined) {
+			await ctx.db.patch('hubspotQuotePushes', row._id, {
+				claim: undefined,
+				workId: undefined,
+				leaseUntil: undefined,
+				dueAt: Date.now() + 1000
 			});
+			await ctx.scheduler.runAfter(1000, internal.hubspotQuotes.pump, {});
+		}
 		return null;
 	}
 });

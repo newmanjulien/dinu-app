@@ -3,18 +3,28 @@ import { env, type ActionCtx } from './_generated/server';
 import { RateLimiter } from '@convex-dev/rate-limiter';
 import { components } from './_generated/api';
 import type { Infer } from 'convex/values';
-import { hmac } from '@noble/hashes/hmac.js';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { bookingMode, providerBooking } from './csmBookingValidators';
 import { readTextBody } from '../lib/http-body';
 
-export const EVENT_ID = 2928313;
-export const HOST = 'juliennewman';
-export const EVENT_SLUG = 'julien';
+import {
+	configuredScope,
+	creationScope,
+	sameProviderScope,
+	type ProviderScope
+} from './csmIdentity';
+import { historicalBookingInScope, matchesHistoricalCompanyReference } from './csmHistory';
+import {
+	CalReadError,
+	CalRateLimitError,
+	retryDelay,
+	providerRequestId,
+	type CalFailureDetails,
+	type CalOperation
+} from './csmProviderFailures';
+export { CalReadError, CalRateLimitError } from './csmProviderFailures';
 export type BookingMode = Infer<typeof bookingMode>;
 export type ProviderBooking = Infer<typeof providerBooking>;
-const encoder = new TextEncoder();
+export const MEETING_PLACEHOLDER = 'Video link to follow';
 const limiter = new RateLimiter(components.rateLimiter, {
 	provider: { kind: 'token bucket', rate: 80, period: 60_000, capacity: 12 }
 });
@@ -90,130 +100,123 @@ export function dateInZone(timeZone: string) {
 			.join('-');
 	};
 }
-export function referenceMessage(companyId: string, mode: BookingMode) {
-	return `csm-booking:v2:${env.CONVEX_CLOUD_URL}:${mode}:${companyId}`;
-}
-export function signature(message: string) {
-	if (!env.CAL_WEBHOOK_SECRET) throw new Error('Booking is unavailable.');
-	return bytesToHex(hmac(sha256, encoder.encode(env.CAL_WEBHOOK_SECRET), encoder.encode(message)));
-}
-export function companyReference(companyId: string, mode: BookingMode) {
-	return `${companyId}.${mode}.${signature(referenceMessage(companyId, mode))}`;
-}
-/** New compatibility links bind the original source; already issued v2 links remain readable. */
-export function sourceMessage(companyId: string, mode: BookingMode, profileId: string) {
-	return `csm-source:v1:${env.CONVEX_CLOUD_URL}:${mode}:${companyId}:${profileId}`;
-}
-export function sourceReference(companyId: string, mode: BookingMode, profileId: string) {
-	return `${companyId}.${mode}.${profileId}.${signature(sourceMessage(companyId, mode, profileId))}`;
-}
-export async function parseCompanyReference(reference: string) {
-	const parts = reference.split('.');
-	if (
-		!env.CAL_WEBHOOK_SECRET ||
-		(parts.length !== 3 && parts.length !== 4) ||
-		(parts[1] !== 'setup' && parts[1] !== 'support')
-	)
-		return null;
-	const [companyId, mode] = parts as [string, BookingMode];
-	const profileId = parts.length === 4 ? parts[2] : undefined;
-	const message = profileId
-		? sourceMessage(companyId, mode, profileId)
-		: referenceMessage(companyId, mode);
-	return (await verifySignature(env.CAL_WEBHOOK_SECRET, message, parts.at(-1)!))
-		? { companyId, mode, profileId }
-		: null;
-}
-export function attemptMessage(a: {
-	_id: string;
-	companyId: string;
-	mode: BookingMode;
-	requestedStart: string;
-}) {
-	return `csm-attempt:v1:${env.CONVEX_CLOUD_URL}:${a.companyId}:${a.mode}:${a.requestedStart}:${a._id}`;
-}
-export function attemptReference(a: Parameters<typeof attemptMessage>[0]) {
-	return `${a._id}.${signature(attemptMessage(a))}`;
-}
-export async function verifySignature(secret: string, message: string, value: string) {
-	if (!/^[a-f\d]{64}$/i.test(value)) return false;
-	const key = await crypto.subtle.importKey(
-		'raw',
-		encoder.encode(secret),
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['verify']
-	);
-	return crypto.subtle.verify('HMAC', key, hexToBytes(value), encoder.encode(message));
-}
-export class CalReadError extends Error {}
-export class CalRateLimitError extends CalReadError {
-	constructor(readonly retryAfter: number) {
-		super('The calendar is busy. Try again shortly.');
-	}
+function operationFor(path: string, method: string): CalOperation {
+	return method === 'PATCH'
+		? 'locationUpdate'
+		: method === 'POST'
+			? 'create'
+			: path.startsWith('event-types/')
+				? 'configuration'
+				: path.startsWith('slots?')
+					? 'slots'
+					: path.startsWith('bookings?')
+						? 'bookingList'
+						: 'bookingRead';
 }
 /** No provider body, URL, attendee or credential is included in thrown errors/logs. */
 export async function calRequest(
 	ctx: ActionCtx,
 	path: string,
 	version: string,
+	method: 'GET' | 'POST' | 'PATCH',
 	body?: unknown,
 	onDispatch?: () => void
 ) {
-	if (!env.CAL_API_KEY) throw new CalReadError('Booking is unavailable.');
+	const operation = operationFor(path, method);
+	if (!env.CAL_API_KEY)
+		throw new CalReadError('Booking is unavailable.', { operation, category: 'configuration' });
 	// Serialize before admission/dispatch: a local failure cannot be mistaken for a sent POST.
-	const serialized = body === undefined ? undefined : JSON.stringify(body);
-	const url = `https://api.cal.com/v2/${path}`;
-	const headers = {
-		Authorization: `Bearer ${env.CAL_API_KEY}`,
-		'cal-api-version': version,
-		'User-Agent': 'Dinu/1.0',
-		...(body === undefined ? {} : { 'Content-Type': 'application/json' })
-	};
+	let serialized: string | undefined;
+	try {
+		serialized = body === undefined ? undefined : JSON.stringify(body);
+	} catch {
+		throw new CalReadError('Invalid calendar request.', { operation, category: 'body' });
+	}
 	const admission = await limiter.limit(ctx, 'provider');
 	if (!admission.ok) {
 		if (!Number.isFinite(admission.retryAfter) || admission.retryAfter < 0)
-			throw new CalReadError('Booking is unavailable.');
-		throw new CalRateLimitError(admission.retryAfter);
+			throw new CalReadError('Booking is unavailable.', { operation, category: 'quota' });
+		throw new CalRateLimitError(admission.retryAfter, { operation, category: 'quota' });
 	}
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), body === undefined ? 12_000 : 20_000);
+	let responseDetails: CalFailureDetails | undefined;
 	try {
 		onDispatch?.();
-		const response = await fetch(url, {
-			method: body === undefined ? 'GET' : 'POST',
-			headers,
+		const response = await fetch(`https://api.cal.com/v2/${path}`, {
+			method,
+			headers: {
+				Authorization: `Bearer ${env.CAL_API_KEY}`,
+				'cal-api-version': version,
+				'User-Agent': 'Dinu/1.0',
+				...(body === undefined ? {} : { 'Content-Type': 'application/json' })
+			},
 			...(serialized === undefined ? {} : { body: serialized }),
 			signal: controller.signal,
 			redirect: 'error'
 		});
-		const reader = response.body?.getReader();
-		const text = reader ? await readTextBody(reader, 2 * 1024 * 1024) : null;
-		if (text === null) throw new CalReadError('Invalid calendar response.');
-		const result: unknown = JSON.parse(text);
-		return { ok: response.ok, status: response.status, body: result };
-	} catch {
-		throw new CalReadError('The calendar request could not be completed.');
+		responseDetails = {
+			operation,
+			category: 'body',
+			status: response.status,
+			...(providerRequestId(response.headers)
+				? { requestId: providerRequestId(response.headers) }
+				: {}),
+			...(response.status === 429 || response.headers.has('retry-after')
+				? { retryAfter: retryDelay(response.headers.get('retry-after')) }
+				: {})
+		};
+		let result: unknown;
+		try {
+			const reader = response.body?.getReader();
+			const text = reader ? await readTextBody(reader, 2 * 1024 * 1024) : null;
+			if (text === null) throw new Error('Invalid body');
+			result = JSON.parse(text);
+		} catch {
+			const details = {
+				...responseDetails,
+				category: controller.signal.aborted ? ('timeout' as const) : ('body' as const)
+			};
+			if (body === undefined && response.status === 429)
+				throw new CalRateLimitError(responseDetails.retryAfter!, details);
+			throw new CalReadError('Invalid calendar response.', details);
+		}
+		if (body === undefined && !response.ok) {
+			const details = { ...responseDetails, category: 'http' as const };
+			if (response.status === 429) throw new CalRateLimitError(details.retryAfter!, details);
+			throw new CalReadError('The calendar could not be loaded.', details);
+		}
+		return { ok: response.ok, status: response.status, body: result, details: responseDetails };
+	} catch (error) {
+		if (error instanceof CalReadError) throw error;
+		throw new CalReadError('The calendar request could not be completed.', {
+			...(responseDetails ?? { operation }),
+			category: controller.signal.aborted ? 'timeout' : 'transport'
+		});
 	} finally {
 		clearTimeout(timer);
 	}
 }
 export async function calRead(ctx: ActionCtx, path: string, version: string): Promise<unknown> {
-	const response = await calRequest(ctx, path, version);
-	if (!response.ok || !object(response.body) || response.body.status !== 'success')
-		throw new CalReadError('The calendar could not be loaded.');
+	const response = await calRequest(ctx, path, version, 'GET');
+	if (!object(response.body) || response.body.status !== 'success')
+		throw new CalReadError('Invalid calendar response.', {
+			...response.details,
+			category: 'response'
+		});
 	return response.body.data;
 }
-export async function configuration(ctx: ActionCtx) {
-	if (!env.CAL_WEBHOOK_SECRET || !env.CAL_API_KEY) return null;
-	const event = await calRead(ctx, `event-types/${EVENT_ID}`, '2026-06-12');
+export async function configuration(ctx: ActionCtx, expectedScope?: ProviderScope) {
+	const scope = creationScope();
+	if (!scope || (expectedScope && !sameProviderScope(scope, expectedScope))) return null;
+	const event = await calRead(ctx, `event-types/${scope.eventTypeId}`, '2026-06-12');
 	if (
 		!object(event) ||
-		event.id !== EVENT_ID ||
-		event.slug !== EVENT_SLUG ||
+		event.id !== scope.eventTypeId ||
 		!Array.isArray(event.users) ||
-		!event.users.some((u) => object(u) && u.username === HOST) ||
+		!event.users.some((u) => object(u) && u.id === scope.organizerId) ||
 		typeof event.lengthInMinutes !== 'number' ||
+		!Number.isSafeInteger(event.lengthInMinutes) ||
 		event.lengthInMinutes <= 0 ||
 		typeof event.price !== 'number' ||
 		event.price !== 0 ||
@@ -232,34 +235,54 @@ export async function configuration(ctx: ActionCtx) {
 					!(f.field === 'title' && f.hidden === true))
 		) ||
 		!Array.isArray(event.locations) ||
-		event.locations.length !== 1
+		![1, 2].includes(event.locations.length)
 	)
 		return null;
-	const location = event.locations[0];
+	const location = event.locations.find((l) => object(l) && l.type === 'integration');
+	const split = event.locations.length === 2;
+	if (
+		split &&
+		(!object(location) ||
+			location.integration !== 'google-meet' ||
+			event.locations.filter((l) => object(l) && l.type === 'attendeeDefined').length !== 1)
+	)
+		return null;
 	if (
 		!object(location) ||
 		location.type !== 'integration' ||
 		!['google-meet', 'zoom', 'cal-video', 'daily'].includes(String(location.integration))
 	)
 		return null;
-	// Only derive a UI navigation bound for a known calendar-day window. Cal remains authoritative.
-	const window = event.bookingWindow;
+	// A bound is useful only for one recognized enabled window. Unknown/ambiguous windows
+	// retain the calendar's existing conservative navigation limit; Cal enforces availability.
+	const windows = Array.isArray(event.bookingWindow)
+		? event.bookingWindow
+		: event.bookingWindow
+			? [event.bookingWindow]
+			: [];
+	const enabled = windows.filter((window) => !object(window) || window.disabled !== true);
+	const window = enabled.length === 1 ? enabled[0] : undefined;
 	let lastDate: string | null = null;
 	if (
 		object(window) &&
+		window.disabled === false &&
 		window.type === 'calendarDays' &&
 		typeof window.value === 'number' &&
-		Number.isFinite(window.value)
+		Number.isSafeInteger(window.value) &&
+		window.value >= 0
 	) {
-		const milliseconds = Date.now() + (window.value + 1) * 86_400_000;
-		const date = new Date(milliseconds);
-		if (Number.isFinite(milliseconds) && Number.isFinite(date.getTime()))
-			lastDate = date.toISOString().slice(0, 10);
+		const date = new Date(Date.now() + (window.value + 1) * 86_400_000);
+		if (Number.isFinite(date.getTime())) lastDate = date.toISOString().slice(0, 10);
 	}
 	return {
+		scope,
 		duration: event.lengthInMinutes,
 		lastDate,
-		location: { type: 'integration', integration: String(location.integration) }
+		location: split
+			? { type: 'attendeeDefined', location: MEETING_PLACEHOLDER }
+			: { type: 'integration', integration: String(location.integration) },
+		meetingPolicy: split ? ('google-meet-after-booking' as const) : undefined,
+		videoProvider: String(location.integration)
 	};
 }
 export async function slots(
@@ -267,10 +290,16 @@ export async function slots(
 	start: string,
 	end: string,
 	timeZone: string,
-	duration?: number
+	duration?: number,
+	scope = creationScope()
 ) {
+	if (!scope)
+		throw new CalReadError('Booking is unavailable.', {
+			operation: 'slots',
+			category: 'configuration'
+		});
 	const q = new URLSearchParams({
-		eventTypeId: String(EVENT_ID),
+		eventTypeId: String(scope.eventTypeId),
 		start,
 		end,
 		timeZone,
@@ -278,17 +307,19 @@ export async function slots(
 		format: 'range'
 	});
 	const data = await calRead(ctx, `slots?${q}`, '2024-09-04');
-	if (!object(data)) throw new CalReadError('Invalid calendar response.');
+	const invalid = () =>
+		new CalReadError('Invalid calendar response.', { operation: 'slots', category: 'response' });
+	if (!object(data)) throw invalid();
 	const result: { start: string; end: string }[] = [];
 	for (const day of Object.values(data)) {
-		if (!Array.isArray(day)) throw new CalReadError('Invalid calendar response.');
+		if (!Array.isArray(day)) throw invalid();
 		for (const slot of day) {
-			if (!object(slot)) throw new CalReadError('Invalid calendar response.');
+			if (!object(slot)) throw invalid();
 			const a = iso(slot.start),
 				b = iso(slot.end);
-			if (!a || !b || b <= a) throw new CalReadError('Invalid calendar response.');
+			if (!a || !b || b <= a) throw invalid();
 			if (Date.parse(a) > Date.now()) result.push({ start: a, end: b });
-			if (result.length > 6000) throw new CalReadError('Calendar response is too large.');
+			if (result.length > 6000) throw invalid();
 		}
 	}
 	return [...new Map(result.map((s) => [s.start, s])).values()].sort((a, b) =>
@@ -296,11 +327,22 @@ export async function slots(
 	);
 }
 /** Validate scope on every API result, including explicitly linked reschedule successors. */
-export function parseBooking(data: unknown, attendeeEmail: string): ProviderBooking | null {
+export function bookingInScope(data: Record<string, unknown>, scope?: ProviderScope) {
+	return scope
+		? data.eventTypeId === scope.eventTypeId &&
+				Array.isArray(data.hosts) &&
+				data.hosts.some((host) => object(host) && host.id === scope.organizerId)
+		: historicalBookingInScope(data);
+}
+export function parseBooking(
+	data: unknown,
+	attendeeEmail: string,
+	scope?: ProviderScope
+): ProviderBooking | null {
 	if (
 		!object(data) ||
 		!validBookingUid(data.uid) ||
-		data.eventTypeId !== EVENT_ID ||
+		!bookingInScope(data, scope) ||
 		!Array.isArray(data.attendees) ||
 		!data.attendees.some(
 			(a) =>
@@ -343,19 +385,23 @@ export function parseBooking(data: unknown, attendeeEmail: string): ProviderBook
 }
 
 /** An immutable, previously proven UID replaces attendee-email retention for appointment reads. */
-export function parseSetupBooking(
+function parseScopedSetupBooking(
 	data: unknown,
 	uid: string,
-	scope?: { companyId: string; profileId: string; attemptReference?: string }
+	scope?: {
+		companyId: string;
+		profileId: string;
+		providerScope?: ProviderScope;
+		attemptReference?: string;
+		legacyReference?: string;
+	},
+	providerScope = scope?.providerScope
 ): ProviderBooking | null {
 	if (
 		!object(data) ||
 		data.uid !== uid ||
 		!validBookingUid(uid) ||
-		data.eventTypeId !== EVENT_ID ||
-		!Array.isArray(data.hosts) ||
-		!data.hosts.some((h) => object(h) && h.username === HOST) ||
-		(object(data.eventType) && data.eventType.slug !== EVENT_SLUG)
+		!bookingInScope(data, providerScope)
 	)
 		return null;
 	if (data.metadata !== undefined && data.metadata !== null && !object(data.metadata)) return null;
@@ -368,8 +414,12 @@ export function parseSetupBooking(
 			return null;
 		if (
 			metadata.dinuCsmReference !== undefined &&
-			metadata.dinuCsmReference !== companyReference(scope.companyId, 'setup') &&
-			metadata.dinuCsmReference !== sourceReference(scope.companyId, 'setup', scope.profileId)
+			metadata.dinuCsmReference !== scope.legacyReference &&
+			!matchesHistoricalCompanyReference(
+				metadata.dinuCsmReference,
+				scope.companyId,
+				scope.profileId
+			)
 		)
 			return null;
 	}
@@ -405,12 +455,35 @@ export function parseSetupBooking(
 		toUid
 	};
 }
+/** Established appointment proof always uses the original stored scope and association. */
+export function parseSetupBooking(
+	data: unknown,
+	uid: string,
+	scope: NonNullable<Parameters<typeof parseScopedSetupBooking>[2]>
+) {
+	return parseScopedSetupBooking(data, uid, scope);
+}
+/** Discovery only: locators cannot publish facts or establish ownership. Historical scope
+ * remains original; new unassociated reads may follow the explicitly configured scope.
+ */
+export function parseSetupLocator(data: unknown, uid: string) {
+	if (!object(data)) return null;
+	const scope = configuredScope();
+	return parseScopedSetupBooking(
+		data,
+		uid,
+		undefined,
+		scope && bookingInScope(data, scope) ? scope : undefined
+	);
+}
 export function validBookingUid(value: unknown): value is string {
 	return typeof value === 'string' && value.length > 0 && value.length <= 200;
 }
 
 /** Only known pre-creation rejections may release an already dispatched request.
- * Cal's ErrorsBookingsService_2024_08_13 maps these guards to HTTP 400 before creation.
+ * Version-dependent boundary: ErrorsBookingsService_2024_08_13's exact HTTP 400 mappings.
+ * https://github.com/calcom/cal.com/blob/main/apps/api/v2/src/platform/bookings/2024-08-13/services/errors.service.ts
+ * The mapping alone cannot prove SaaS error timing; never broaden it to generic status rules.
  * Unrecognized errors, including all 5xx responses, remain uncertain.
  */
 export function noncreatingRejection(status: number, body: unknown): 'conflict' | 'limit' | null {

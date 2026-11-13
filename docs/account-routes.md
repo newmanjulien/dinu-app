@@ -20,9 +20,11 @@ The authenticated account host mounts after Clerk supplies an identity. It remai
 
 `AccountGate` sets the cache identity from the confirmed viewer before workspace children mount. Account or membership changes release the old snapshot cache and discard its persistent namespace. The root session owns cache cleanup on logout, account switching, and teardown; its resource registration survives route changes. Navigation to entry screens preserves confirmed snapshots and opening history.
 
-`AccountSession` also owns a shared workspace-role hint for loading presentation. Once Clerk identifies the user, it uses any available account result (including matching server startup assistance), otherwise reads a versioned, deployment/user-scoped local-storage record containing membership ID, company ID, and role. A missing or invalid record starts one bounded `accounts.workspaceRole` HTTP query alongside full account startup, including during sign-in; retries follow the session's transport generation. Live viewer membership overrides the hint and updates storage. Confirmed membership loss, company departure, and account deletion remove the record; ordinary sign-out clears active state while keeping the user's hint for a later sign-in. Late results cannot cross identities or overwrite live membership. Storage failure leaves the in-memory result usable. Hints never admit private content or grant permissions.
+`AccountSession` also owns shared workspace presentation hints for loading. Once Clerk identifies the user, it uses any available account result (including matching server startup assistance), otherwise reads a versioned, deployment/user-scoped local-storage record containing membership ID, company ID, role, and optional buyer-link presence. A missing or invalid record starts one bounded `accounts.workspaceRole` HTTP query alongside full account startup, including during sign-in; retries follow the session's transport generation. Live viewer membership overrides the role hint and updates storage, retaining buyer-link presence only for the same membership and company. Confirmed membership loss, company departure, and account deletion remove the record; ordinary sign-out clears active state while keeping the user's hint for a later sign-in. Late results cannot cross identities or overwrite live membership. Storage failure leaves the in-memory result usable. Hints never admit private content or grant permissions.
 
 `WorkspaceSkeleton` consumes that shared role for the Integrations catalog and header tab, Settings' company cards, and Team's Invite/pending-invitations section. Presentational skeletons receive the role as a prop and perform no storage access or fetching. All account, workspace-module, and Contracts-module loading boundaries use this same selector. Server HTML and initial hydration show common structure because the server cannot read local storage; the browser selects the role-specific structure after identity and the remembered role or lookup resolve. Unknown roles never default to admin. Document skeletons remain shared.
+
+`Contracts` records buyer-link presence from its company-wide live query: any returned row establishes presence, while only an error-free, exhausted empty result establishes absence. Loading, query failures, and empty intermediate pages do not clear the hint. `WorkspaceSkeleton` passes remembered presence into `ContractsSkeleton`; both it and the mounted Contracts page use the matching buyer-link skeleton while presence is known and rows are pending. The sidebar keeps its 450px desktop column and stacks below contracts on smaller screens. Unknown presence uses the common full-width grid, so a first visit without remembered data can still change layout when links arrive. Buyer-link loading never gates the contract list. Skeletons do not fetch or read storage.
 
 `WorkspaceBoundary` requires a live profile, membership, and company. `WorkspaceScope` is keyed by profile and membership and supplies viewer context plus the contract editing sessions that survive route changes. Each workspace captures its own cache instance, cancels its pending reads, and destroys its document resources on teardown; an old workspace cannot cancel a replacement's cache. Membership loss clears the previous membership's draft journal and removes the workspace. Role changes preserve its identity and mounted drafts.
 
@@ -85,11 +87,20 @@ email uses the default runtime and Loops HTTP. When the server skips anonymous p
 the route uses the shared account-loading recovery while Clerk initializes, so a
 failed initialization exposes the existing retry control.
 
-Document help belongs to `WorkspaceChrome`, alongside its Help buttons. Template help waits
-for prepared, visible document content; saved contracts wait for their existing
-visible-state reconciliation. Template help opens only from its button. Each rep
-workspace opening checks the “Don't show this again” preference once, and its Help
-button can reopen the guide.
+Document Help uses a shared session owned by `RepWorkspace` or the buyer-link
+`BuyerContract`, so renderer, version, and preview changes retain the opening
+decision. Rep and normal seller buyer-link views automatically open Help once per
+opening unless hidden; the two independent preferences live on the authenticated
+profile and follow the account across links, browsers, and devices. Actual buyers
+use a fresh browser-local `dinu:help:anonymous-buyer-link:<token hash>` key for each
+link. Templates and seller View as buyer preview only open Help from the rail and
+have no preference checkbox. Entering preview closes Help and consumes its automatic
+opening decision; returning to seller view does not reopen it. Manual Help is
+available as soon as the document is ready, even if preference readiness is still
+pending, and consumes any pending automatic decision. Checkbox changes wait for
+persistence, retain the confirmed value on failure, and expose an inline retryable
+error. Seller writes use the authenticated account transport; public buyer reads
+remain anonymous.
 Loading, missing-contract, and failed-opening views cannot mount the guide. During
 creation, `ContractRoute` admits the prepared saved workspace only after the naming
 dialog completes its opening handoff; background recovery after a failed attempt
@@ -135,24 +146,66 @@ either mode. The former post-upload instructions guide has been removed.
 
 ## Public buyer routes
 
-`/[token=buyerCode]` displays the contract's current publication directly, beneath the
+`/[token=buyerCode]` displays the contract's current approved document directly, beneath the
 buyer header at the existing navigation height. `/[token=buyerCode]/contract` remains a
 supported alias. Codes are 39-digit strings carrying 128 random bits. The routes live
 in the shared `(buyer)` layout. Existing `/buyer/[token]/contract` URLs remain
 supported; `/buyer/[token]/details` and `/buyer/[token]` redirect to the contract.
-These routes bypass Clerk/account initialization, including for signed-in visitors,
-and own an anonymous Convex client. Responses use no-store, no-referrer and noindex.
+These routes bypass full account/workspace initialization and own an anonymous
+Convex client for the approved document. Existing dashboard sessions are recognised
+separately: a session-cookie hint may load the existing Clerk session, then a private
+Convex transport subscribes to the token-scoped `buyerLinks.sellerContext`. Only a
+verified member of the contract's company gets seller controls. Missing profiles,
+unrelated-company accounts and signed-out visitors get the buyer presentation.
+There is no sign-in flow on the link; sellers sign in through the dashboard.
+Responses use no-store, no-referrer and noindex.
 There is no buyer form, autosave, readiness submission, or dirty-departure prompt.
 
+The dashboard contract workspace contains private rep instructions, concessions and
+admin approvals. Shared buyer guidance, comments and proposals live on the buyer link.
+The dashboard's **Open buyer collaboration** action prepares the same permanent URL
+as copying, preserving saved-state/deal gates without emitting copy feedback.
+Seller view adds an avatar linking to the dashboard, a blue underlined
+**View as buyer** button, proposal handling and the shared support widget.
+Buyer preview hides the avatar and shows muted **You are in buyer view.** text with a
+blue underlined **Back to your view** button, matching the company setup prompts.
+It uses the same
+buyer document and public discussions below it in read-only mode. Stored author
+names replace the seller-relative “You”; authoring, account recovery, private
+proposal facts and seller actions are hidden. Unsent drafts remain private and
+pending submissions retain their original author, payload and operation ID. Mode
+transitions prevent delayed auth/bootstrap/write work from dispatching in preview
+or becoming valid again after a quick return. Already-dispatched requests settle
+without reopening editors or moving preview focus. Public reading, pagination,
+navigation and downloads remain available. The header's return button restores
+seller view, and seller visits remain excluded from buyer analytics.
+Actual buyers see the original header/layout and no support widget.
+Seller-only reads expose native proposal support, current/applied changes and exact
+review eligibility. These facts never enter public discussion responses and clear
+on preview or access loss.
+
+Supporting a shared proposal creates a native buyer-proposal change. Permitted work
+applies immediately; restricted work waits for admin approval while the current
+approved wording remains visible. Source and decision expectations fence stale work;
+see [contract change reviews](lifecycle.md#contract-change-reviews) for support,
+approval and source-independent applied undo. Permanent URLs remain stable.
+New proposal work receives the existing fresh HubSpot check. Cancelling before
+dispatch retires that captured action; uncertain dispatched writes retain their exact
+revisions and operation ID for receipt-first retries. Discussion viewer requests also
+belong to an account epoch: a superseded cookie-setting request settles under its
+original lock, while the new account waits for its own viewer result. Drafts and
+original-author recovery identities survive the transition.
+
 Each contract has one permanent buyer link. Document blocks are acquired once per
-opening; a live publication subscription updates the title, released selections and
-buyer revision while the contract is attached. Pending acquisition is canceled on
+opening; its live approved-view pointer updates the title, buyer name and document
+identity while the contract is attached. See the
+[buyer-link model](data-model.md#buyer-links-and-shared-discussions). Pending acquisition is canceled on
 exit. Public status is `current` or `unavailable`; losing access discards the document,
 and recovering access reacquires it. Seller activity refreshes while its panel is open.
 
 Public content and Word downloads independently check access. Downloads also require
-connection and recheck the displayed buyer revision so an outdated document cannot
-be released after publication changes. Activity delivery is independent of document
+connection and recheck the displayed document identity so an outdated document cannot
+be released after approved wording changes. Activity delivery is independent of document
 access. A separate cookie preserves anonymous discussion ownership. Retired form data has a bounded
 [cleanup procedure](buyer-form-removal.md).
 
@@ -161,12 +214,15 @@ The route catalog explicitly classifies loading presentations, including integra
 ## Contract-card link activity
 
 The anchored panel beside Copy link shows recorded openings and distinct-clause
-activity from the newest ten eligible openings, with five measured rows before
+activity from the newest ten eligible visits, with five measured rows before
 scrolling. It uses an authorized trusted-clock mutation while open, refreshes every
 30 seconds and removes expired rows locally. No city or account tags are collected.
-Visitor numbers are contract-local approximate browsers/page openings, not people.
-A new page opening from a recognized browser is a return; inactivity never
-invents an opening. Times are labelled as recorded times. Outside click,
+Visitor numbers are contract-local approximate browsers, not people.
+Page openings from the same browser share a visit until 30 minutes without
+meaningful activity. Refreshes and extra tabs within that window add no opening
+row. Scrolling, direct interaction and clause clicks update the inactivity clock;
+background polling and visibility changes do not. Only a new page opening after
+the gap records a return; inactivity never invents an opening. Outside click,
 focus leaving and Escape retain existing dismissal and focus behavior.
 
 Buyer activity records openings and clause clicks automatically. Browser recognition

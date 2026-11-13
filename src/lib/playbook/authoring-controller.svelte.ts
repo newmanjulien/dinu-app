@@ -10,16 +10,19 @@ import { immutable, type DeepReadonly } from '../immutable';
 import { AuthoringContext, type Workflow } from './authoring-context.svelte';
 import { semanticConcession } from './content';
 import { triggerAnnotationId } from './document-overlay';
-import { newPlaybookDraft, type PlaybookDraft } from './draft';
+import { newTemplateDraft, templateDraft, type TemplateDraft } from './draft';
 import type { PlaybookGeometryIndex } from './geometry-index';
 import {
 	authoringInstructions,
 	newConcessionId,
 	type AuthoringInstructions,
 	type Concession,
-	type PlaybookItemRecord,
+	isRepItem,
+	type TemplateItem,
 	type SourceTarget
 } from './model';
+import type { TemplateItemRecord } from './structure';
+import { templateCopy } from './template-copy';
 import type { Operation } from './save-transport';
 import {
 	evaluateConcessionAddition,
@@ -43,13 +46,13 @@ export type AuthoringSource = {
 	itemsCurrent: boolean;
 	addresses?: ReadonlyMap<string, Address>;
 	lookup: (id: string) => {
-		record: DeepReadonly<PlaybookItemRecord>;
+		record: DeepReadonly<TemplateItemRecord>;
 		annotations: readonly import('./document-overlay').DocumentAnnotation[];
 	} | null;
 	detailStatus?: (id: string) => 'present' | 'missing' | 'loading';
 };
 export type AuthoringRecovery = {
-	item: DeepReadonly<import('./model').PlaybookItem>;
+	item: DeepReadonly<TemplateItem>;
 };
 export type AuthoringTransition =
 	| { kind: 'switch-item'; itemId: string }
@@ -84,8 +87,11 @@ export class AuthoringController {
 			readonly reason: string;
 			submit(operation: DeepReadonly<Operation>, recovery: AuthoringRecovery): boolean;
 		},
-		readonly audience: import('./model').InstructionAudience = 'rep'
+		readonly audience: import('./model').TemplateAudience = 'rep'
 	) {}
+	get copy() {
+		return templateCopy(this.audience);
+	}
 	get entry(): object | null {
 		return this.context;
 	}
@@ -153,15 +159,14 @@ export class AuthoringController {
 		if (this.statusMessage) return this.statusMessage;
 		const source = this.source();
 		if (source.editingUnavailableReason) return source.editingUnavailableReason;
-		if (!source.itemsCurrent) return 'Refreshing instructions…';
+		if (!source.itemsCurrent) return this.copy.refreshing;
 		const id = this.context?.confirmed?._id;
 		if (id && source.detailStatus) {
 			const status = source.detailStatus(id);
-			if (status === 'loading') return 'Loading these instructions…';
-			if (status === 'missing')
-				return 'These instructions are no longer available. Cancel and select the clause again.';
+			if (status === 'loading') return this.copy.loadingSelected;
+			if (status === 'missing') return this.copy.missingSelected;
 		}
-		return 'Instruction editing is temporarily unavailable.';
+		return this.copy.unavailable;
 	}
 	get canCancel() {
 		return Boolean(this.context);
@@ -178,9 +183,9 @@ export class AuthoringController {
 		const phase = this.phase;
 		switch (phase?.kind) {
 			case 'conflict':
-				return 'This instruction box changed elsewhere. Your local edits are retained.';
+				return this.copy.conflict;
 			case 'missing':
-				return 'This instruction box was deleted elsewhere. Cancel to dismiss your local draft.';
+				return this.copy.deleted;
 			default:
 				return '';
 		}
@@ -240,7 +245,7 @@ export class AuthoringController {
 		if (workflow?.kind !== 'adding-concession') return '';
 		const context = this.context!;
 		const reason = !context.confirmed
-			? 'This instruction box is no longer available'
+			? 'These instructions are no longer available'
 			: !this.canEdit
 				? this.statusMessage
 				: '';
@@ -248,11 +253,11 @@ export class AuthoringController {
 		const range = context.trigger.id === workflow.triggerId ? context.trigger.target : undefined;
 		const captured = workflow.concession.changes[0].target;
 		if (!range || !sameSourceTarget(range, captured))
-			return 'This instruction box or its selected text changed. Cancel and start the addition again.';
+			return 'These instructions or their selected text changed. Cancel and start the addition again.';
 		return '';
 	}
 	get feedback() {
-		return this.warning || (this.issue ? selectionIssueMessage(this.issue) : '');
+		return this.warning || (this.issue ? selectionIssueMessage(this.issue, this.audience) : '');
 	}
 	get lastStep() {
 		return this.step === 'other-part' || !this.affectsOtherParts;
@@ -346,7 +351,7 @@ export class AuthoringController {
 			return this.hasUnsavedWork
 				? {
 						kind: 'confirm-discard',
-						message: 'Abandon your unsaved instruction-box changes and leave?'
+						message: this.copy.leaveConfirm
 					}
 				: { kind: 'allowed' };
 		if (!this.hasUnsavedWork) return { kind: 'allowed' };
@@ -361,7 +366,7 @@ export class AuthoringController {
 			if (context.hasCompositionChanges)
 				return 'Finish or cancel the new concession, then save or cancel your changes.';
 			return action.kind === 'start'
-				? 'Save or cancel your changes before starting another instruction box.'
+				? this.copy.startUnsaved
 				: 'Save or cancel your changes first.';
 		}
 		if (context?.hasCompositionChanges) {
@@ -413,7 +418,7 @@ export class AuthoringController {
 		)
 			context.selectedAnnotationId = null;
 	}
-	private observe(record: DeepReadonly<PlaybookItemRecord>) {
+	private observe(record: DeepReadonly<TemplateItemRecord>) {
 		const context = this.context!;
 		if (!context.remote || record.contentRevision > context.remote.contentRevision)
 			context.remote = immutable(record);
@@ -437,20 +442,20 @@ export class AuthoringController {
 		)
 			this.adopt(context.remote);
 	}
-	private adopt(record: DeepReadonly<PlaybookItemRecord>) {
+	private adopt(record: DeepReadonly<TemplateItemRecord>) {
 		const context = this.context!;
 		context.confirmed = immutable(record);
-		context.instructions = authoringInstructions(record);
+		context.adoptContent(record);
 		context.trigger = record.trigger;
-		context.concessions = record.concessions;
+		context.concessions = isRepItem(record) ? record.concessions : [];
 		context.workflow = { kind: 'editing' };
 		context.operation = { kind: 'editing' };
 		context.previewConcessionId = null;
 		this.reconcileSelection();
 	}
 	private begin(
-		draft: DeepReadonly<PlaybookDraft>,
-		confirmed: DeepReadonly<PlaybookItemRecord> | null,
+		draft: DeepReadonly<TemplateDraft>,
+		confirmed: DeepReadonly<TemplateItemRecord> | null,
 		workflow: Workflow
 	) {
 		this.release();
@@ -468,10 +473,20 @@ export class AuthoringController {
 	}
 	setInstruction(key: keyof AuthoringInstructions, text: string) {
 		const context = this.context;
-		if (!context || !this.canEdit) return;
-		const saved = context.confirmed ? authoringInstructions(context.confirmed)[key] : undefined;
-		if (text === (saved ?? '') && saved === undefined) delete context.instructions[key];
-		else context.instructions[key] = text;
+		if (!context || context.content.audience !== 'rep' || !this.canEdit) return;
+		const saved =
+			context.confirmed && isRepItem(context.confirmed)
+				? authoringInstructions(context.confirmed)[key]
+				: undefined;
+		if (text === (saved ?? '') && saved === undefined) delete context.content.instructions[key];
+		else context.content.instructions[key] = text;
+		this.clearFeedback();
+		this.reconcile();
+	}
+	setExplanation(text: string) {
+		const context = this.context;
+		if (!context || context.content.audience !== 'buyer' || !this.canEdit) return;
+		context.content.explanation = text;
 		this.clearFeedback();
 		this.reconcile();
 	}
@@ -525,17 +540,14 @@ export class AuthoringController {
 			!geometry ||
 			!selectionContext ||
 			selectionContext.index !== document.index ||
-			!context?.composer
+			!context?.composer ||
+			!isRepItem(context.draft)
 		)
 			return { allowed: false, issue: { kind: 'unavailable' } };
 		return evaluateSecondarySelection(
 			document.index,
 			range,
-			{
-				...context.payload,
-				instructions: context.payload.instructions ?? {},
-				persistedId: context.confirmed?._id
-			},
+			context.draft,
 			geometry,
 			selectionContext,
 			context.composer
@@ -596,16 +608,14 @@ export class AuthoringController {
 		}
 		return permission;
 	}
-	startExplanationFromSelection(candidate: SelectionCandidate) {
+	startItemFromSelection(candidate: SelectionCandidate) {
 		const range = candidate.target;
 		if (this.textSelectionPurpose !== 'new-item') {
-			this.reportBlocked(
-				'Finish or cancel the current authoring task before starting an explanation.'
-			);
+			this.reportBlocked(this.copy.startBlocked);
 			return false;
 		}
-		if (!this.requireSelectionAction(candidate, 'explain')) return false;
-		this.begin(newPlaybookDraft(range), null, { kind: 'creating-explanation' });
+		if (!this.requireSelectionAction(candidate, 'add-item')) return false;
+		this.begin(newTemplateDraft(range, this.audience), null, { kind: 'creating-item' });
 		return true;
 	}
 	startConcessionFromSelection(candidate: SelectionCandidate) {
@@ -640,7 +650,7 @@ export class AuthoringController {
 			description: '',
 			changes: [{ target: range, replacement: [{ kind: 'text', text: '' }] }]
 		};
-		this.begin(newPlaybookDraft(range), null, {
+		this.begin(newTemplateDraft(range), null, {
 			kind: 'creating-concession',
 			step: 'concession',
 			affectsOtherParts: false,
@@ -655,7 +665,7 @@ export class AuthoringController {
 		const annotation = retained?.annotations.find((annotation) => annotation.id === annotationId);
 		if (!item || !annotation || !this.permit({ kind: 'switch-item', itemId })) return false;
 		if (this.draft?.persistedId !== itemId)
-			this.begin({ ...item, instructions: item.instructions ?? {}, persistedId: item._id }, item, {
+			this.begin(templateDraft(item, item._id), item, {
 				kind: 'editing'
 			});
 		else this.clearFeedback();
@@ -664,6 +674,7 @@ export class AuthoringController {
 		return true;
 	}
 	addConcession(tier: Concession['tier']) {
+		if (this.audience !== 'rep') return false;
 		if (!this.permit({ kind: 'start-addition' })) return false;
 		const { document, items, available, geometry, selectionContext } = this.source();
 		if (
@@ -678,11 +689,8 @@ export class AuthoringController {
 			return false;
 		}
 		const context = this.context!;
-		const draft = {
-			...context.payload,
-			instructions: context.payload.instructions ?? {},
-			persistedId: context.confirmed?._id
-		};
+		const draft = context.draft;
+		if (!isRepItem(draft)) return false;
 		const trigger = draft.trigger;
 		const range: SourceTarget =
 			trigger.target.kind === 'boundary'
@@ -732,7 +740,7 @@ export class AuthoringController {
 		const context = this.context;
 		if (this.creating || !context?.confirmed || !this.canEdit) {
 			this.reportBlocked(
-				'Finish or cancel the current operation or creation before updating this instruction box'
+				'Finish or cancel the current operation or creation before updating these instructions'
 			);
 			return false;
 		}
@@ -818,19 +826,13 @@ export class AuthoringController {
 		return 'closed';
 	}
 	/** Recovery is a new editing attempt; submitting it captures a fresh operation/revision. */
-	restore(recovery: AuthoringRecovery, current: DeepReadonly<PlaybookItemRecord> | null) {
-		const context = this.begin(
-			{
-				...recovery.item,
-				instructions: recovery.item.instructions ?? {},
-				...(current ? { persistedId: current._id } : {})
-			},
-			current,
-			{ kind: current ? 'editing' : 'creating-explanation' }
-		);
-		context.instructions = authoringInstructions(recovery.item);
+	restore(recovery: AuthoringRecovery, current: DeepReadonly<TemplateItemRecord> | null) {
+		const context = this.begin(templateDraft(recovery.item, current?._id), current, {
+			kind: current ? 'editing' : 'creating-item'
+		});
+		context.adoptContent(recovery.item);
 		context.trigger = immutable(recovery.item.trigger);
-		context.concessions = immutable(recovery.item.concessions);
+		context.concessions = immutable(isRepItem(recovery.item) ? recovery.item.concessions : []);
 	}
 	cancel(): AuthoringOutcome {
 		if (!this.permit({ kind: 'cancel' })) return 'retained';

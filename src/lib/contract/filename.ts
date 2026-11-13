@@ -1,8 +1,8 @@
 import { textPrefix } from '../text';
 
-export function contractName(buyerCompanyName: string): string {
+export function contractName(title: string): string {
 	const company = textPrefix(
-		buyerCompanyName
+		title
 			.replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '')
 			.trim()
 			.replace(/[. ]+$/g, ''),

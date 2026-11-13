@@ -1,4 +1,5 @@
 <script lang="ts">
+	import TeamLayout from '$lib/components/workspace/TeamLayout.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { page } from '$app/state';
 	import { localReturn } from '$lib/auth/navigation';
@@ -8,6 +9,8 @@
 	import { api } from '../../../convex/_generated/api';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
+	import TeamListLayout from '$lib/components/workspace/TeamListLayout.svelte';
+	import TeamRowLayout from '$lib/components/workspace/TeamRowLayout.svelte';
 	import TeamRowsSkeleton from '$lib/components/workspace/TeamRowsSkeleton.svelte';
 	import InviteColleaguesModal from '$lib/features/settings/InviteColleaguesModal.svelte';
 	import { Button } from '$lib/ui';
@@ -170,62 +173,52 @@
 			: 'success'}
 />
 
-<main
-	class="min-h-[calc(100dvh-var(--app-header-height))] bg-surface px-4 pt-8 pb-8 sm:px-6 md:px-8 md:pt-10"
->
-	{#if colleaguesLoading || invitationsLoading}
-		<span role="status" class="sr-only"
-			>{colleaguesLoading && invitationsLoading
-				? 'Loading colleagues and invitations'
-				: colleaguesLoading
-					? 'Loading colleagues'
-					: 'Loading invitations'}</span
-		>
-	{/if}
-	<div class="mx-auto max-w-4xl space-y-8">
-		<h1 class="text-lg font-medium">Manage team</h1>
+<TeamLayout role={viewer().membership.role} companyName={viewer().company.name} {canManage}>
+	{#snippet status()}
+		{#if colleaguesLoading || invitationsLoading}
+			<span role="status" class="sr-only"
+				>{colleaguesLoading && invitationsLoading
+					? 'Loading colleagues and invitations'
+					: colleaguesLoading
+						? 'Loading colleagues'
+						: 'Loading invitations'}</span
+			>
+		{/if}
+	{/snippet}
+	{#snippet notice()}
 		{#if invitationReturn}<a href={invitationReturn} class="text-sm underline"
 				>Return to invitation</a
 			>{/if}
-		<div class="flex items-center justify-between gap-4">
-			<div>
-				<h2 class="text-sm font-medium">{viewer().company.name}</h2>
-				<p class="mt-2 text-sm text-ink-muted">
-					Your company is private. Colleagues join by invitation.
-				</p>
-			</div>
-			{#if canManage}<Button
-					disabled={busy || session.blocked}
-					onclick={() => {
-						modalError = null;
-						modalOpen = true;
-					}}><PlusIcon class="size-[15px]" aria-hidden="true" />Invite</Button
-				>{/if}
-		</div>
-		<section aria-labelledby="colleagues-heading">
-			<h2 id="colleagues-heading" class="mb-3 text-sm font-medium">Colleagues</h2>
-			{#if colleaguesLoading}
-				<TeamRowsSkeleton />
-			{:else}
-				<ul
-					class="divide-y-[length:var(--surface-border-width)] divide-line rounded-xl border-hairline border-edge bg-surface shadow-card"
-				>
-					{#each colleagues.error ? [] : colleagues.results as person (person.membershipId)}
-						<li class="flex flex-wrap items-center gap-3 p-3.5">
-							<Avatar
+	{/snippet}
+	{#snippet invite()}
+		{#if canManage}<Button
+				disabled={busy || session.blocked}
+				onclick={() => {
+					modalError = null;
+					modalOpen = true;
+				}}><PlusIcon class="size-[15px]" aria-hidden="true" />Invite</Button
+			>{/if}
+	{/snippet}
+	{#snippet colleaguesContent()}
+		{#if colleaguesLoading}
+			<TeamRowsSkeleton {canManage} />
+		{:else}
+			<TeamListLayout>
+				{#each colleagues.error ? [] : colleagues.results as person (person.membershipId)}
+					<TeamRowLayout>
+						{#snippet avatar()}<Avatar
 								name={person.name || person.email}
 								avatarUrl={person.avatarUrl}
 								class="size-7"
 								decorative
-							/>
-							<div class="min-w-0 flex-1">
-								<p class="text-sm">
-									{person.name || person.email}{person.membershipId === membershipId
-										? ' (you)'
-										: ''}
-								</p>
-								<p class="text-xs text-ink-muted">{person.email}</p>
-							</div>
+							/>{/snippet}
+						{#snippet identity()}
+							<p class="text-sm">
+								{person.name || person.email}{person.membershipId === membershipId ? ' (you)' : ''}
+							</p>
+							<p class="text-xs text-ink-muted">{person.email}</p>
+						{/snippet}
+						{#snippet actions()}
 							<span class="text-xs text-ink-muted"
 								>{person.role === 'admin' ? 'Admin' : 'Rep'}{person.isOwner ? ' · Owner' : ''}</span
 							>
@@ -259,89 +252,85 @@
 										})}>Remove</Button
 								>
 							{/if}
-						</li>
-					{/each}
-				</ul>
-			{/if}
-			{#if colleagues.error || colleaguesTimedOut}<p role="alert" class="mt-3 text-sm text-danger">
-					Unable to load colleagues. <button class="underline" onclick={() => colleaguesRetry++}
-						>Try again</button
-					>
-				</p>{/if}
-			{#if colleagues.status === 'CanLoadMore'}<Button
-					variant="ghost"
-					onclick={() => colleagues.loadMore(50)}>Load more colleagues</Button
-				>{/if}
-		</section>
-		{#if canManage}
-			<section aria-labelledby="invitations-heading">
-				<h2 id="invitations-heading" class="mb-3 text-sm font-medium">Pending invitations</h2>
-				{#if invitationsLoading}
-					<TeamRowsSkeleton invitations />
-				{:else}
-					<ul
-						class="divide-y-[length:var(--surface-border-width)] divide-line rounded-xl border-hairline border-edge bg-surface shadow-card"
-					>
-						{#each invitations.error ? [] : invitations.results as invitation (invitation.id)}
-							<li class="flex flex-wrap items-center gap-3 p-3.5">
-								<div class="flex-1">
-									<p class="text-sm">{invitation.email}</p>
-									<p class="text-xs text-ink-muted">
-										{invitation.expiresAt <= now
-											? 'Expired'
-											: invitation.deliveryStatus === 'failed'
-												? 'Delivery unconfirmed'
-												: invitation.deliveryStatus === 'sending'
-													? 'Sending…'
-													: 'Waiting to join'}
-									</p>
-								</div>
-								<Button
-									variant="secondary"
-									disabled={busy || session.blocked}
-									onclick={() =>
-										run(async () => {
-											const [delivery] = await client.action(api.invitationEmail.invite, {
-												membershipId,
-												emails: [invitation.email],
-												resend: true
-											});
-											if (delivery.error) throw new Error(delivery.error);
-										})}>Resend</Button
-								>
-								<Button
-									variant="ghost"
-									disabled={busy || session.blocked}
-									onclick={() =>
-										run(() =>
-											client.mutation(api.companyInvitations.revoke, {
-												membershipId,
-												invitationId: invitation.id
-											})
-										)}>Revoke</Button
-								>
-							</li>
-						{:else}{#if !invitations.error && invitations.status === 'Exhausted'}<li
-									class="p-3.5 text-[13px] text-ink-muted"
-								>
-									No pending invitations.
-								</li>{/if}{/each}
-					</ul>
-				{/if}
-				{#if invitations.error || invitationsTimedOut}<p
-						role="alert"
-						class="mt-3 text-sm text-danger"
-					>
-						Unable to load invitations. <button class="underline" onclick={() => invitationsRetry++}
-							>Try again</button
-						>
-					</p>{/if}
-				{#if invitations.status === 'CanLoadMore'}<Button
-						variant="ghost"
-						onclick={() => invitations.loadMore(50)}>Load more invitations</Button
-					>{/if}
-			</section>
+						{/snippet}
+					</TeamRowLayout>
+				{/each}
+			</TeamListLayout>
 		{/if}
+		{#if colleagues.error || colleaguesTimedOut}<p role="alert" class="mt-3 text-sm text-danger">
+				Unable to load colleagues. <button class="underline" onclick={() => colleaguesRetry++}
+					>Try again</button
+				>
+			</p>{/if}
+		{#if colleagues.status === 'CanLoadMore'}<Button
+				variant="ghost"
+				onclick={() => colleagues.loadMore(50)}>Load more colleagues</Button
+			>{/if}
+	{/snippet}
+	{#snippet invitationsContent()}
+		{#if invitationsLoading}
+			<TeamRowsSkeleton invitations />
+		{:else}
+			<TeamListLayout>
+				{#each invitations.error ? [] : invitations.results as invitation (invitation.id)}
+					<TeamRowLayout invitations>
+						{#snippet identity()}
+							<p class="text-sm">{invitation.email}</p>
+							<p class="text-xs text-ink-muted">
+								{invitation.expiresAt <= now
+									? 'Expired'
+									: invitation.deliveryStatus === 'failed'
+										? 'Delivery unconfirmed'
+										: invitation.deliveryStatus === 'sending'
+											? 'Sending…'
+											: 'Waiting to join'}
+							</p>
+						{/snippet}
+						{#snippet actions()}
+							<Button
+								variant="secondary"
+								disabled={busy || session.blocked}
+								onclick={() =>
+									run(async () => {
+										const [delivery] = await client.action(api.invitationEmail.invite, {
+											membershipId,
+											emails: [invitation.email],
+											resend: true
+										});
+										if (delivery.error) throw new Error(delivery.error);
+									})}>Resend</Button
+							>
+							<Button
+								variant="ghost"
+								disabled={busy || session.blocked}
+								onclick={() =>
+									run(() =>
+										client.mutation(api.companyInvitations.revoke, {
+											membershipId,
+											invitationId: invitation.id
+										})
+									)}>Revoke</Button
+							>
+						{/snippet}
+					</TeamRowLayout>
+				{:else}{#if !invitations.error && invitations.status === 'Exhausted'}<li
+							class="p-3.5 text-[13px] text-ink-muted"
+						>
+							No pending invitations.
+						</li>{/if}{/each}
+			</TeamListLayout>
+		{/if}
+		{#if invitations.error || invitationsTimedOut}<p role="alert" class="mt-3 text-sm text-danger">
+				Unable to load invitations. <button class="underline" onclick={() => invitationsRetry++}
+					>Try again</button
+				>
+			</p>{/if}
+		{#if invitations.status === 'CanLoadMore'}<Button
+				variant="ghost"
+				onclick={() => invitations.loadMore(50)}>Load more invitations</Button
+			>{/if}
+	{/snippet}
+	{#snippet afterLists()}
 		{#if confirmAction}
 			<div class="rounded-xl border-hairline border-edge bg-surface p-4 shadow-card">
 				<p class="mb-3 text-sm">{confirmAction.message}</p>
@@ -354,46 +343,45 @@
 				</div>
 			</div>
 		{/if}
-		<section class="border-t-[length:var(--surface-border-width)] border-line pt-6">
-			<h2 class="text-sm font-medium">Leave company</h2>
-			{#if isOwner}<p class="mt-2 text-sm text-ink-muted">
-					Transfer ownership to a colleague before leaving or deleting your account.
+	{/snippet}
+	{#snippet leaveContent()}
+		{#if isOwner}<p class="mt-2 text-sm text-ink-muted">
+				Transfer ownership to a colleague before leaving or deleting your account.
+			</p>
+		{:else}
+			<p class="mt-2 text-sm text-ink-muted">
+				Your contracts stay with {viewer().company.name}. You’ll need a new invitation to return.
+			</p>
+			{#if leaving}
+				<p class="mt-4 text-sm">
+					Leave {viewer().company.name}? We’ll save your pending changes first.
 				</p>
-			{:else}
-				<p class="mt-2 text-sm text-ink-muted">
-					Your contracts stay with {viewer().company.name}. You’ll need a new invitation to return.
-				</p>
-				{#if leaving}
-					<p class="mt-4 text-sm">
-						Leave {viewer().company.name}? We’ll save your pending changes first.
-					</p>
-					<div class="mt-3 flex flex-wrap gap-2">
-						<Button disabled={busy || session.blocked} onclick={() => leave()}
-							>{busy ? 'Saving and leaving…' : 'Save and leave'}</Button
-						>{#if leaveFailed}<Button
-								variant="secondary"
-								disabled={busy}
-								onclick={() => leave(true)}>Discard changes and leave</Button
-							>{/if}<Button
-							variant="ghost"
-							disabled={busy}
-							onclick={() => {
-								leaving = false;
-								leaveFailed = false;
-								error = '';
-							}}>Cancel</Button
-						>
-					</div>
-				{:else}<Button
+				<div class="mt-3 flex flex-wrap gap-2">
+					<Button disabled={busy || session.blocked} onclick={() => leave()}
+						>{busy ? 'Saving and leaving…' : 'Save and leave'}</Button
+					>{#if leaveFailed}<Button variant="secondary" disabled={busy} onclick={() => leave(true)}
+							>Discard changes and leave</Button
+						>{/if}<Button
 						variant="ghost"
-						disabled={busy || session.blocked}
-						onclick={() => (leaving = true)}>Leave company</Button
-					>{/if}
-			{/if}
-		</section>
+						disabled={busy}
+						onclick={() => {
+							leaving = false;
+							leaveFailed = false;
+							error = '';
+						}}>Cancel</Button
+					>
+				</div>
+			{:else}<Button
+					variant="ghost"
+					disabled={busy || session.blocked}
+					onclick={() => (leaving = true)}>Leave company</Button
+				>{/if}
+		{/if}
+	{/snippet}
+	{#snippet feedback()}
 		{#if error}<p role="alert" class="text-sm text-danger">{error}</p>{/if}
-	</div>
-</main>
+	{/snippet}
+</TeamLayout>
 <InviteColleaguesModal
 	open={modalOpen && canManage}
 	value={emailInput}

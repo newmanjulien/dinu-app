@@ -18,6 +18,7 @@
 		open,
 		anchor,
 		trigger,
+		owner = parentOwner,
 		onClose,
 		placement = 'bottom-end',
 		gap = 8,
@@ -41,6 +42,7 @@
 		open: boolean;
 		anchor?: FloatingAnchor;
 		trigger?: HTMLElement;
+		owner?: symbol;
 		onClose: (reason: CloseReason) => void;
 		placement?: Placement;
 		gap?: number;
@@ -70,7 +72,7 @@
 		const surface = element;
 		const releaseInteraction = controller.register({
 			id: interactionId,
-			owner: parentOwner,
+			owner,
 			kind,
 			dismissOnFocus,
 			visible: () =>

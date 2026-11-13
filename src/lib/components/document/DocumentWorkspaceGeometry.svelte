@@ -3,6 +3,8 @@
 	import type { Snippet } from 'svelte';
 	import { PAGE_FORMAT } from '$lib/document/pagination/page-format';
 	import {
+		type DocumentLayout,
+		REVIEW_GUTTER_WIDTH,
 		RAIL_SAFE_GUTTER,
 		PANEL_MIN_WIDTH,
 		PANEL_COMFORTABLE_WIDTH,
@@ -11,11 +13,13 @@
 	} from './workspace-layout';
 
 	let {
+		layout = 'standard',
 		reviewGutter = 0,
 		hasPanel = false,
 		onPageResize,
 		children
 	}: {
+		layout?: DocumentLayout;
 		reviewGutter?: number;
 		hasPanel?: boolean;
 		onPageResize?: (width: number) => void;
@@ -40,8 +44,8 @@
 		class="document-workspace-geometry relative w-full"
 		class:has-panel={hasPanel}
 		style:--paper-max-width={`${PAGE_FORMAT.width}px`}
-		style:--paper-min-width={`${reviewGutter ? 120 : 280}px`}
 		style:--review-gutter-max={`${reviewGutter}px`}
+		style:--desktop-review-gutter-max={`${layout === 'contract' ? REVIEW_GUTTER_WIDTH : reviewGutter}px`}
 		style:--rail-safe-gutter={`${RAIL_SAFE_GUTTER}px`}
 		style:--panel-min-width-floor={`${PANEL_MIN_WIDTH}px`}
 		style:--panel-comfortable-width={`${PANEL_COMFORTABLE_WIDTH}px`}

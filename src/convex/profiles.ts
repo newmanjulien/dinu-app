@@ -20,7 +20,8 @@ export const initialize = mutation({
 				issuer: identity.issuer,
 				clerkId: identity.subject,
 				email,
-				name: textPrefix((identity.name ?? '').trim(), 32)
+				name: textPrefix((identity.name ?? '').trim(), 32),
+				helpPreferences: { rep: false, buyer: false }
 			});
 		return null;
 	}
@@ -66,4 +67,15 @@ export const setName = mutation({
 	}
 });
 
-export { startup, viewer } from './legacyAccounts';
+/** Personal Help choices follow the authenticated profile across links and devices. */
+export const setHelpHidden = mutation({
+	args: { variant: v.union(v.literal('rep'), v.literal('buyer')), hidden: v.boolean() },
+	returns: v.null(),
+	handler: async (ctx, { variant, hidden }) => {
+		const profile = await requireProfile(ctx);
+		await ctx.db.patch('profiles', profile._id, {
+			helpPreferences: { ...profile.helpPreferences, [variant]: hidden }
+		});
+		return null;
+	}
+});

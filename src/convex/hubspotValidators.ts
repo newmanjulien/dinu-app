@@ -115,7 +115,7 @@ export const hubspotRemoval = v.object({
 	phase: v.union(
 		v.literal('quotes'),
 		v.literal('events'),
-		v.literal('exports'),
+		v.literal('exportDeliveries'),
 		v.literal('provider')
 	),
 	cursor: v.union(v.string(), v.null()),
@@ -134,47 +134,4 @@ export const hubspotAccountRemoval = v.object({
 	deleteStartedAt: v.optional(v.number()),
 	settledAt: v.optional(v.number()),
 	diagnostic: v.optional(v.string())
-});
-export const hubspotReceipt = v.object({
-	companyId: v.id('company'),
-	key: v.string(),
-	inputs: v.string(),
-	chunked: v.optional(v.boolean()),
-	result: v.string()
-});
-export const hubspotExport = v.object({
-	companyId: v.id('company'),
-	contractId: v.id('savedContracts'),
-	membershipId: v.id('memberships'),
-	profileId: v.id('profiles'),
-	key: v.string(),
-	inputs: v.string(),
-	destination: v.optional(hubspotDestination),
-	title: v.string(),
-	actor: v.object({ name: v.string(), email: v.string() }),
-	templateVersionId: v.id('templateVersions'),
-	editRevision: v.number(),
-	reviewGeneration: v.number(),
-	createdAt: v.number(),
-	expiresAt: v.number(),
-	state: v.union(v.literal('preparing'), v.literal('ready'), v.literal('expired')),
-	claim: v.string(),
-	fileId: v.optional(v.id('_storage')),
-	filename: v.string(),
-	sha256: v.optional(v.string()),
-	size: v.optional(v.number()),
-	releasedAt: v.optional(v.number()),
-	acknowledgedAt: v.optional(v.number()),
-	acknowledgedOn: v.optional(v.number()),
-	attachmentUntil: v.optional(v.number()),
-	remoteFileId: v.optional(v.string()),
-	// Only tuple-v1 chunks are written; deployment inventory contained no legacy attempts.
-	provenance: v.literal('tuple-v1')
-	// Content lives in immutable template versions; the bounded selection is chunked separately.
-});
-export const hubspotExportChunk = v.object({
-	companyId: v.id('company'),
-	attemptId: v.id('hubspotExports'),
-	order: v.number(),
-	data: v.string()
 });

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { isRepItem } from '$lib/playbook/model';
 	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
-	import { concessionSelections } from '$lib/contract/applications';
+	import RouteTitle from '$lib/auth/RouteTitle.svelte';
+	import type { Id } from '../../../convex/_generated/dataModel';
 	import { onDestroy, untrack } from 'svelte';
 	import { ReadAttempt } from '$lib/auth/attempt';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
@@ -10,36 +10,28 @@
 	import { getContractEditors } from '$lib/contract/editors.svelte';
 	import { creationPhase } from '$lib/contract/creation-perf';
 	import { recordColdStart } from '$lib/document/runtime/render-perf';
-	import LoadingPagination from '$lib/components/document/LoadingPagination.svelte';
-	import { REVIEW_GUTTER_WIDTH } from '$lib/components/document/workspace-layout';
-	import { selectedReviewApplications } from '$lib/contract/approval';
+	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import RepWorkspace from './RepWorkspace.svelte';
 	let {
 		id,
 		interactionAdmitted = true,
 		onVisible,
-		onFailure
+		onFailure,
+		onAcquired
 	}: {
 		id: string;
 		interactionAdmitted?: boolean;
 		onVisible?: () => void;
 		onFailure?: () => void;
+		onAcquired?: () => () => void;
 	} = $props();
 	const mountedId = untrack(() => id);
 	const sessions = getContractEditors();
 	const acquired = untrack(() => sessions.acquire(mountedId));
 	const editor = acquired.editor;
-	const reviewGutter = $derived(
-		editor.snapshot &&
-			selectedReviewApplications(
-				editor.snapshot.items.filter(isRepItem),
-				editor.persistence?.choices ??
-					(editor.metadata ? concessionSelections(editor.metadata.applications) : {})
-			).length
-			? REVIEW_GUTTER_WIDTH
-			: 0
-	);
+	const releaseOpeningOwner = untrack(() => onAcquired?.());
+	onDestroy(() => releaseOpeningOwner?.());
 	const account = useViewerSession();
 	const runtime = getWorkspaceRuntime();
 	const presentation = useWorkspacePresentation();
@@ -134,6 +126,10 @@
 	}
 </script>
 
+{#if editor.metadata && editor.buyerName}
+	<RouteTitle title={`Negotiate with ${editor.buyerName}`} />
+{/if}
+
 {#if editor.snapshot && editor.metadata && editor.persistence}
 	<div hidden={Boolean(editor.error)} inert={!interactionAdmitted || account.blocked}>
 		<RepWorkspace
@@ -141,6 +137,7 @@
 			openingRevision={opening?.token}
 			{editor}
 			{interactionAdmitted}
+			onRetry={retry}
 			onVisible={() => {
 				if (opening) visible(opening.token);
 			}}
@@ -167,7 +164,16 @@
 			<h1 class="text-sm font-medium">Contract not found</h1>
 			<p class="mt-2 text-ink-muted">This contract may have been deleted.</p>
 		{:else}
-			<p role="alert">We couldn’t load this contract.</p>
+			<p role="alert">
+				We couldn’t load this contract.
+				{#if editor.journal.recoveryError}<button
+						class="mt-3 block underline"
+						onclick={() => {
+							editor.discard();
+							editor.retry();
+						}}>Discard stored browser selections</button
+					>{/if}
+			</p>
 			<Button variant="secondary" class="mt-4" onclick={retry}>Try again</Button>
 		{/if}
 		<a href="/contracts" class="mt-6 block underline">Back to Contracts</a>
@@ -176,4 +182,4 @@
 		active={interactionAdmitted && !runtime.paused}
 		outcome="pending"
 		revision={opening?.token}
-	/><LoadingPagination label="Loading contract" {reviewGutter} />{/if}
+	/><DocumentSkeleton layout="contract" label="Loading contract" />{/if}

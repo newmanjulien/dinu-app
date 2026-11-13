@@ -1,5 +1,5 @@
 <script lang="ts">
-	import LinkActivity from '$lib/buyer/LinkActivity.svelte';
+	import ContractCardLayout from './ContractCardLayout.svelte';
 	import CopyBuyerLink from '$lib/buyer/CopyBuyerLink.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import type { SaveStatus } from '$lib/contract/editors.svelte';
@@ -26,8 +26,6 @@
 				? 'deal-unavailable'
 				: null
 	);
-	let hovered = false;
-	let focused = false;
 	const date = $derived(
 		new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(
 			contract._creationTime
@@ -35,37 +33,13 @@
 	);
 </script>
 
-<article
-	use:observe={contract}
-	class="relative flex min-w-0 flex-col rounded-xl border-hairline border-edge bg-surface shadow-card transition-colors hover:border-control-border"
->
-	<a
-		href={`/contracts/${contract._id}`}
-		data-sveltekit-preload-data="off"
-		onmouseenter={() => {
-			hovered = true;
-			onWarm();
-		}}
-		onfocus={() => {
-			focused = true;
-			onWarm();
-		}}
-		onmouseleave={() => {
-			hovered = false;
-			if (!focused) onCool();
-		}}
-		onblur={() => {
-			focused = false;
-			if (!hovered) onCool();
-		}}
-		class="flex flex-1 flex-col justify-between gap-1.5 rounded-xl py-[9px] pr-[80px] pl-[11px] outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-1 focus-visible:after:ring-accent"
-		aria-label={`Open contract for ${contract.buyerCompanyName}`}
-	>
+<ContractCardLayout {contract} {observe} {onWarm} {onCool}>
+	{#snippet content()}
 		<h2
-			class="min-w-0 truncate text-[13.5px] leading-5 font-medium"
-			title={contract.buyerCompanyName}
+			class="min-w-0 truncate text-[13px] leading-5 font-normal"
+			title={`${contract.title} contract`}
 		>
-			{contract.buyerCompanyName}
+			{contract.title} contract
 		</h2>
 		<div class="flex min-w-0 items-center gap-2 text-xs text-ink-muted">
 			<Avatar
@@ -82,9 +56,8 @@
 		<p class="text-xs text-ink-muted">
 			Created <time datetime={new Date(contract._creationTime).toISOString()}>{date}</time>
 		</p>
-	</a>
-	<div class="absolute top-[9px] right-[11px] z-10 inline-flex items-center">
+	{/snippet}
+	{#snippet action()}
 		<CopyBuyerLink id={contract._id} reason={workBlock ? workBlockMessage(workBlock) : null} />
-		<LinkActivity id={contract._id} />
-	</div>
-</article>
+	{/snippet}
+</ContractCardLayout>

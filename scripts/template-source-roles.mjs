@@ -144,7 +144,7 @@ try {
 			);
 		}
 		const reviewed = assignParagraphRoles(existing.blocks, assignments);
-		const output = composeExport({ blocks: existing.blocks, items: [], activeConcessions: {} });
+		const output = composeExport({ blocks: existing.blocks });
 		const decisionMap = new Map(decisions.map((decision) => [decision.blockKey, decision]));
 		const manifest = {
 			version: 1,

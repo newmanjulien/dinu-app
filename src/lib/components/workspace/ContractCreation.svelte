@@ -17,7 +17,6 @@
 		isHubSpotInstallationRetired,
 		saveError
 	} from '$lib/contract/saved';
-	import { ReadAttempt } from '$lib/auth/attempt';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
 	import type { TemplateContent } from '$lib/template/model';
 	import type { ContractCreationInput, ReadyContract } from '$lib/contract/saved';
@@ -28,6 +27,7 @@
 	let {
 		onOpen,
 		onCreate,
+		onPrepareSaved,
 		onDealConflict = () => {},
 		showPreview = true,
 		createdId = $bindable<Id<'savedContracts'> | null>(null),
@@ -38,6 +38,7 @@
 	}: {
 		onOpen: (id: Id<'savedContracts'>) => Promise<boolean>;
 		onCreate: () => void;
+		onPrepareSaved: (id: Id<'savedContracts'>) => () => void;
 		onDealConflict?: (dealId: string) => void;
 		showPreview?: boolean;
 		createdId?: Id<'savedContracts'> | null;
@@ -53,12 +54,16 @@
 	const membershipId = viewer().membership.id;
 	const cache = getContractSnapshotCache(client);
 	const resources = getDocumentResources();
-	const currentTemplate = useReadQuery(api.templates.current, () =>
-		createdId || runtime.paused ? 'skip' : { membershipId }
+	const currentTemplate = useReadQuery(
+		api.templates.preview,
+		() => (createdId || runtime.paused ? 'skip' : { membershipId }),
+		() => session.transportGeneration
 	);
+	// Keep the accepted preview visible while its subscription pauses during handoff.
 	let template = $state.raw<TemplateContent>();
-	let previewError = $state(false),
-		previewRetry = $state(0);
+	$effect(() => {
+		if (currentTemplate.data) template = currentTemplate.data;
+	});
 	const preview = $derived(currentTemplate.error ? undefined : template);
 	const previewModule = loadComponent(
 		() => import('./ContractPreview.svelte'),
@@ -67,35 +72,8 @@
 	);
 	const ContractPreview = $derived(previewModule.component);
 	let draft = $state.raw<DocumentResource>();
-	let draftSnapshot: TemplateContent | undefined;
-	let draftVersion: Id<'templateVersions'> | undefined;
 	let host = $state<HTMLDivElement>();
 	let confirmed: ReadyContract['contract'] | undefined;
-	$effect(() => {
-		void previewRetry;
-		const versionId = currentTemplate.data?.versionId;
-		const generation = session.transportGeneration;
-		if (!versionId || createdId || runtime.paused) return;
-		previewError = false;
-		const attempt = new ReadAttempt(15_000);
-		let current = true;
-		void cache
-			.loadVersion(versionId, viewer().company.id, attempt.signal)
-			.then((snapshot) => {
-				if (attempt.signal.aborted || !active || session.transportGeneration !== generation) return;
-				template = snapshot;
-				draftSnapshot = snapshot;
-				draftVersion = versionId;
-			})
-			.catch(() => {
-				if (current && active && generation === session.transportGeneration) previewError = true;
-			})
-			.finally(() => attempt.complete());
-		return () => {
-			current = false;
-			attempt.abort();
-		};
-	});
 	$effect(() => {
 		const snapshot = preview;
 		if (!resources || !runtime.hostReady || runtime.paused || createdId || !snapshot) return;
@@ -125,8 +103,15 @@
 		  }
 		| undefined;
 	let active = true;
+	let releasePreparation: (() => void) | undefined;
+	function releasePrepared() {
+		const release = releasePreparation;
+		releasePreparation = undefined;
+		release?.();
+	}
 	onDestroy(() => {
 		active = false;
+		releasePrepared();
 		if (draft && resources) resources.releaseDraft(draft);
 	});
 	export async function submit(input?: ContractCreationInput) {
@@ -157,7 +142,7 @@
 							})
 						: await client.mutation(api.contracts.create, {
 								membershipId,
-								buyerCompanyName: frozen.name,
+								title: frozen.name,
 								operationId: frozen.operationId
 							});
 				if (!active) return;
@@ -178,18 +163,15 @@
 				creationPhase('confirmed');
 			}
 			if (runtime.paused) throw new Error('Company activity paused');
+			// Keep the live editor attached while its reads overlap the frozen snapshot handoff.
+			releasePreparation = onPrepareSaved(createdId);
 			const contract = confirmed!;
 			const versionId = contract.templateVersionId;
 			if (!versionId) throw new Error('Missing template version');
-			const snapshot =
-				draftVersion === versionId && draftSnapshot
-					? draftSnapshot
-					: await cache.loadVersion(versionId, contract.companyId);
+			const snapshot = await cache.loadFrozenVersion(versionId, contract.companyId);
 			if (!active) return;
 			if (session.transportGeneration !== generation) throw new ConnectionInterruptedError();
 			if (runtime.paused) throw new Error('Company activity paused');
-			draftVersion = versionId;
-			draftSnapshot = snapshot;
 			const data: ReadyContract = { id: createdId, status: 'ready', contract, snapshot };
 			if (resources) {
 				if (!draft)
@@ -236,6 +218,7 @@
 						? 'Your contract was created, but we couldn’t open it. Try again.'
 						: saveError(cause, 'We couldn’t create this contract. Try again.');
 		} finally {
+			releasePrepared();
 			if (active) busy = false;
 		}
 	}
@@ -255,12 +238,11 @@
 		{/if}
 	</main>{/if}
 
-{#if showPreview && (previewError || currentTemplate.error || previewModule.failed)}
+{#if showPreview && (currentTemplate.error || previewModule.failed)}
 	<p role="alert" class="p-4 text-center text-sm">
 		Preview unavailable. <button
 			class="underline"
 			onclick={() => {
-				previewRetry++;
 				currentTemplate.retry();
 				previewModule.retry();
 			}}>Retry preview</button

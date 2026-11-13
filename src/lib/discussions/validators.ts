@@ -1,15 +1,6 @@
 import { v, type Infer } from 'convex/values';
 import { sourcePoint } from '../document/source-validators';
-import { contractItemId } from '../contract/item-identity';
-export const discussionOrigin = v.object({
-	itemId: contractItemId,
-	concessionId: v.string(),
-	changeIndex: v.number()
-});
-export const discussionPoint = v.union(
-	v.object({ kind: v.literal('source'), point: sourcePoint }),
-	v.object({ kind: v.literal('replacement'), origin: discussionOrigin, offset: v.number() })
-);
+export const discussionPoint = v.object({ kind: v.literal('source'), point: sourcePoint });
 export const discussionAnchor = v.object({
 	start: discussionPoint,
 	end: discussionPoint,
@@ -17,11 +8,14 @@ export const discussionAnchor = v.object({
 });
 export type DiscussionAnchor = Infer<typeof discussionAnchor>;
 export type DiscussionPoint = Infer<typeof discussionPoint>;
+export const discussionAccess = v.object({ token: v.string() });
+export type DiscussionAccess = Infer<typeof discussionAccess>;
 export const discussionCommand = v.union(
 	v.object({
 		kind: v.literal('create'),
 		anchor: discussionAnchor,
 		revision: v.number(),
+		contentIdentity: v.string(),
 		text: v.string(),
 		type: v.union(v.literal('comment'), v.literal('proposal'))
 	}),
@@ -54,12 +48,34 @@ export const discussionMessage = v.object({
 });
 export const discussionThread = v.object({
 	id: v.id('discussionThreads'),
+	contentIdentity: v.string(),
+	contentRevision: v.number(),
 	anchor: discussionAnchor,
 	type: v.union(v.literal('comment'), v.literal('proposal')),
-	root: discussionMessage,
-	applied: v.boolean()
+	root: discussionMessage
 });
-export const writeResult = v.object({
+export const completedWriteResult = v.object({
+	status: v.literal('complete'),
+	operationId: v.string(),
 	threadId: v.id('discussionThreads'),
 	messageId: v.id('discussionMessages')
 });
+
+export const preparingDiscussionResult = v.object({
+	status: v.literal('preparing'),
+	operationId: v.string()
+});
+export const writeResult = v.union(completedWriteResult, preparingDiscussionResult);
+export const seenMessages = v.array(
+	v.object({ messageId: v.id('discussionMessages'), revision: v.number() })
+);
+export const markSeenResult = v.union(
+	v.object({ status: v.literal('complete'), operationId: v.string() }),
+	preparingDiscussionResult
+);
+export const discussionOperationResult = v.union(
+	v.null(),
+	preparingDiscussionResult,
+	v.object({ status: v.literal('complete'), operationId: v.string(), result: v.string() }),
+	v.object({ status: v.literal('failed'), operationId: v.string(), error: v.string() })
+);

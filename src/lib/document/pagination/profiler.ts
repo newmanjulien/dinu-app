@@ -24,7 +24,7 @@ export interface LayoutProfileMetrics {
 }
 
 export interface LayoutProfileSurface {
-	/** Undefined while fonts are loading or the surface is detached. Always read live. */
+	/** Undefined while the surface is detached. Mount and style identity must be read live. */
 	readonly epoch: string | undefined;
 	/** The visitor and any exact upgrade finish before the shared DOM is cleared. */
 	withBlock<T>(

@@ -1,7 +1,7 @@
-import type { CompositionInput } from '../compose';
 import { DocumentCompositionEngine } from '../compose';
 import type { CanonicalNumbering } from './numbering';
 import type { SourceBlock, ResolvedRun } from '../model';
+import { documentIndex, type ContractDocument } from '../contract-document';
 
 export type ExportBlock =
 	| {
@@ -26,14 +26,20 @@ function exportText(runs: ResolvedRun[]): string {
 	return text.replace(/\r\n|\r/g, '\n');
 }
 
-/** Export source and saved concessions, never the screen's redlines or draft previews. */
+/** Export materialized wording, or plain template blocks for source tooling. */
 export function composeExport(
-	input: Pick<CompositionInput, 'items' | 'activeConcessions'> & {
-		blocks: readonly SourceBlock[];
-	}
+	input: { blocks: readonly SourceBlock[] } | { document: ContractDocument }
 ): ExportBlock[] {
-	const engine = new DocumentCompositionEngine(input.blocks);
-	const resolved = [...engine.compose({ ...input, view: 'effective' })];
+	const engine =
+		'document' in input
+			? new DocumentCompositionEngine(
+					input.document.blocks,
+					documentIndex(input.document),
+					undefined,
+					new Map(input.document.aliases)
+				)
+			: new DocumentCompositionEngine(input.blocks);
+	const resolved = [...engine.compose({ items: [], activeConcessions: {}, view: 'effective' })];
 	const numbered = new Map(
 		engine.numberingBlocks.flatMap((block) =>
 			block.numbering
