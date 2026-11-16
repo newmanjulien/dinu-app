@@ -2,7 +2,7 @@ import { ConvexError, v, type Infer } from 'convex/values';
 
 import { normalizedEmailAddress } from '../lib/email-address';
 import {
-	approvalContext,
+	changeKind,
 	buyerProposalSource,
 	changeActor,
 	playbookSource
@@ -34,7 +34,7 @@ export const nativeEmailEntry = v.object({
 	actor: changeActor,
 	source: v.union(
 		v.object({ kind: v.literal('playbook'), value: playbookSource }),
-		v.object({ kind: v.literal('buyer-proposal'), value: buyerProposalSource })
+		v.object({ kind: v.literal('buyer-link'), value: buyerProposalSource })
 	),
 	decision: v.union(v.null(), v.object({ actor: changeActor, decidedAt: v.number() }))
 });
@@ -82,7 +82,7 @@ export const emailSnapshot = v.object({
 	hash: v.string()
 });
 const nativeReviewEvent = {
-	context: approvalContext,
+	context: changeKind,
 	identity: v.string(),
 	buyerToken: v.optional(v.string()),
 	contractId: v.id('savedContracts'),

@@ -5,12 +5,8 @@ import type { Doc } from './_generated/dataModel';
 import type { CompanyAccess } from './auth';
 import type { Contract } from './contractState';
 import type { QueryCtx } from './_generated/server';
-import type {
-	ChangeKind,
-	ChangeReview,
-	ApprovalContext,
-	PlaybookState
-} from '../lib/contract/changes';
+import type { ChangeKind, ChangeReview, PlaybookState } from '../lib/contract/changes';
+import { reviewGroupKey } from '../lib/contract/changes';
 import {
 	applyDocumentChange,
 	reverseDocumentChange,
@@ -21,9 +17,10 @@ import {
 	mapDocumentTarget
 } from '../lib/document/contract-document';
 import { approvedDocument, playbookStateOf, hydrateHead, readChange } from './contractChanges';
+import { currentDecisionId, appliedDecisionId } from './contractChangeHeads';
 
 /** Context-local semantic tokens and exact counters replace whole-head identities. */
-export async function reviewSet(ctx: QueryCtx, contract: Contract, context: ApprovalContext) {
+export async function reviewSet(ctx: QueryCtx, contract: Contract, context: ChangeKind) {
 	const summary =
 		context === 'buyer-link'
 			? (await DiscussionIndex.open(ctx, contract.root)).supportSummary
@@ -32,10 +29,7 @@ export async function reviewSet(ctx: QueryCtx, contract: Contract, context: Appr
 	const pendingCount = summary?.pendingCount ?? contract.root.playbookPendingCount;
 	return {
 		context,
-		identity:
-			context === 'playbook'
-				? contract.root.playbookReviewIdentity
-				: contract.root.buyerLinkReviewIdentity,
+		identity: contract.root.reviews[reviewGroupKey(context)].identity,
 		count,
 		pendingCount,
 		declinedCount: summary?.declinedCount ?? contract.root.playbookDeclinedCount,
@@ -180,7 +174,7 @@ export function reviewOf(
 			applicability = error.message;
 		}
 		try {
-			if (isApplied && row.kind === 'buyer-proposal' && isCurrent)
+			if (isApplied && row.kind === 'buyer-link' && isCurrent)
 				reverseDocumentChange(document, patch);
 		} catch (error) {
 			if (!(error instanceof DocumentChangeConflict)) throw error;
@@ -206,7 +200,7 @@ export function reviewOf(
 					: null;
 	const undoReason = !admin
 		? 'Only an admin can undo this proposal.'
-		: row.kind !== 'buyer-proposal' || !isApplied
+		: row.kind !== 'buyer-link' || !isApplied
 			? 'Only an applied buyer proposal can be undone.'
 			: !isCurrent
 				? 'This buyer proposal is no longer the applied head.'
@@ -219,9 +213,9 @@ export function reviewOf(
 		action: row.kind === 'playbook' && row.source.optionId === null ? 'remove' : 'apply',
 		description: row.kind === 'playbook' ? row.source.description : row.source.text,
 		status,
-		currentChangeId: head.currentChangeId ?? null,
-		appliedChangeId: head.appliedChangeId ?? null,
-		decisionId: (isCurrent ? head.currentDecisionId : head.appliedDecisionId) ?? null,
+		currentChangeId: head.current?.changeId ?? null,
+		appliedChangeId: head.applied?.changeId ?? null,
+		decisionId: isCurrent ? currentDecisionId(head.current) : appliedDecisionId(head.applied),
 		target,
 		previewIdentity: `${contract.root.documentId}:${row._id}`,
 		detailRequired: !document || (!resolved && (approveReason === null || undoReason === null)),
@@ -258,7 +252,7 @@ export async function changeReviews(
 			const needsPatch =
 				access.membership.role === 'admin' &&
 				((row._id === current?._id && row._id !== applied?._id) ||
-					(row.kind === 'buyer-proposal' && row._id === applied?._id && row._id === current?._id));
+					(row.kind === 'buyer-link' && row._id === applied?._id && row._id === current?._id));
 			if (document && needsPatch)
 				try {
 					patch = (await readChange(ctx, row._id, contract, { deferOnCapacity: true, row })).patch;

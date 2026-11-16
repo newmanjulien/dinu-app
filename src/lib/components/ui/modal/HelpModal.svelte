@@ -3,6 +3,7 @@
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import { helpContent, type HelpVariant } from './help-content';
 	import type { HelpSession } from './help-session.svelte';
+	import { recordDocumentLoadingMilestone } from '$lib/document/runtime/render-perf';
 
 	let {
 		variant,
@@ -18,7 +19,12 @@
 	const content = $derived(helpContent[variant]);
 </script>
 
-<ModalShell variant="panel" title={content.title} {onClose}>
+<ModalShell
+	variant="panel"
+	title={content.title}
+	{onClose}
+	onOpen={() => recordDocumentLoadingMilestone('help-modal-open', { opening: help.loadingOpening })}
+>
 	<div class="flex min-h-full flex-col justify-between gap-6 pt-1">
 		<div class="space-y-6">
 			<p class="text-[14px] leading-[1.5] text-ink-muted">

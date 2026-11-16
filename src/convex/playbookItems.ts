@@ -1,5 +1,4 @@
 import { templateAudience, templateItem } from '../lib/playbook/validators';
-import { itemAudience } from '../lib/playbook/model';
 import { containsRange } from '../lib/document/ranges';
 import { v } from 'convex/values';
 import { sourceTarget } from '../lib/document/source-validators';
@@ -61,7 +60,7 @@ const structureItem = v.object({
 	companyId: v.id('company'),
 	contentRevision: v.number(),
 	renderKey: v.string(),
-	audience: v.optional(v.literal('buyer')),
+	audience: templateAudience,
 	trigger,
 	concessions: v.array(
 		v.object({
@@ -157,9 +156,9 @@ async function validateStructure(
 	geometry.loadCertified(
 		ordered
 			.map((head) => [head._id, headStructure(head)] as const)
-			.filter(([, structure]) => itemAudience(structure) === itemAudience(item))
+			.filter(([, structure]) => structure.audience === item.audience)
 	);
-	if (!('audience' in item)) {
+	if (item.audience === 'rep') {
 		validateStructuralReplacementContent(item);
 		validateChangeReferences(contract, item);
 	}
@@ -202,7 +201,7 @@ export const saveTemplateItem = mutation({
 				head = await ctx.db.get('playbookItems', receipt.itemId);
 				if (!head || head.companyId !== access.companyId)
 					return { status: 'missing' as const, ...(await committed(ctx, access.company)) };
-				if (itemAudience(headStructure(head)) !== itemAudience(item))
+				if (headStructure(head).audience !== item.audience)
 					return {
 						status: 'rejected' as const,
 						message: 'The template item audience cannot change.'
@@ -235,7 +234,7 @@ export const saveTemplateItem = mutation({
 			? await ctx.db.get('playbookItemRevisions', head.currentRevisionId)
 			: null;
 		const current = head ? await hydrateHead(ctx, head, currentRevision) : null;
-		if (current && itemAudience(current) !== itemAudience(item))
+		if (current && current.audience !== item.audience)
 			return { status: 'rejected' as const, message: 'The template item audience cannot change.' };
 
 		if (
@@ -253,7 +252,7 @@ export const saveTemplateItem = mutation({
 			return { status: 'missing' as const, ...(await committed(ctx, access.company)) };
 		try {
 			validateTemplateItemContent(item);
-			if (current && !('audience' in current) && !('audience' in item))
+			if (current?.audience === 'rep' && item.audience === 'rep')
 				validateConcessionUpdate(current, item);
 		} catch (error) {
 			return rejection(error);
@@ -357,10 +356,7 @@ export const deleteTemplateItem = mutation({
 	handler: async (ctx, { membershipId, id, expectedContentRevision, audience = 'rep' }) => {
 		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
 		const head = await ctx.db.get('playbookItems', id);
-		if (
-			head &&
-			(head.companyId !== access.companyId || itemAudience(headStructure(head)) !== audience)
-		)
+		if (head && (head.companyId !== access.companyId || headStructure(head).audience !== audience))
 			throw new Error('This item is unavailable.');
 		if (!head) return { status: 'deleted' as const, ...(await committed(ctx, access.company)) };
 		const revision = head.currentRevisionId
@@ -414,13 +410,13 @@ export const currentStructure = query({
 			...observed(state),
 			ready: true,
 			items: ordered
-				.filter((head) => itemAudience(headStructure(head)) === audience)
+				.filter((head) => headStructure(head).audience === audience)
 				.map((head) => ({
 					_id: head._id,
 					_creationTime: head._creationTime,
 					companyId: head.companyId,
 					contentRevision: head.contentRevision,
-					renderKey: 'format' in head ? head.renderKey : head._id,
+					renderKey: head.renderKey,
 					...headStructure(head)
 				}))
 		};
@@ -470,7 +466,7 @@ export const content = query({
 			!scope.ready ||
 			!head ||
 			head.companyId !== access.companyId ||
-			itemAudience(headStructure(head)) !== audience
+			headStructure(head).audience !== audience
 		)
 			return { ...scope, status: 'missing' as const };
 		return { ...scope, status: 'present' as const, item: await hydrateHead(ctx, head) };
@@ -505,14 +501,14 @@ export const repSummary = query({
 		const matches = heads.filter((head) => {
 			const structure = headStructure(head);
 			return (
-				!structure.audience &&
+				structure.audience === 'rep' &&
 				structure.trigger.target.kind === 'text' &&
 				containsRange(facts.index, structure.trigger.target.range, target.range)
 			);
 		});
 		if (matches.length !== 1) return null;
 		const item = await hydrateHead(ctx, matches[0]);
-		if ('audience' in item || !item.instructions?.summary?.trim()) return null;
+		if (item.audience !== 'rep' || !item.instructions?.summary?.trim()) return null;
 		return item.instructions.summary;
 	}
 });

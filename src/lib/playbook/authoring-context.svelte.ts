@@ -3,6 +3,7 @@ import type { CompiledDocument } from '../document/compiled-document';
 import { immutable, type DeepReadonly } from '../immutable';
 import {
 	equalConcession,
+	semanticApprovalPolicy,
 	semanticInstructions,
 	semanticRepInstruction,
 	semanticTarget
@@ -10,8 +11,8 @@ import {
 import { type TemplateDraft, type ReadonlyDraft } from './draft';
 import { GeometryError } from './geometry';
 import type { PlaybookGeometryIndex } from './geometry-index';
-import type { AuthoringInstructions, Concession, TemplateItem } from './model';
-import { authoringInstructionKeys, authoringInstructions, isRepItem } from './model';
+import type { ApprovalPolicy, Instructions, Concession, TemplateItem } from './model';
+import { instructionKeys, isRepItem } from './model';
 import type { TemplateItemRecord } from './structure';
 import { geometrySelectionIssue, selectionIssueMessage } from './source-picking';
 import {
@@ -52,7 +53,7 @@ export class AuthoringContext {
 	confirmed = $state.raw<DeepReadonly<TemplateItemRecord> | null>(null);
 	remote = $state.raw<DeepReadonly<TemplateItemRecord> | null>(null);
 	content = $state<
-		| { audience: 'rep'; instructions: AuthoringInstructions }
+		| { audience: 'rep'; instructions?: Instructions; approvalPolicy: ApprovalPolicy }
 		| { audience: 'buyer'; explanation: string }
 	>()!;
 	trigger = $state.raw<DeepReadonly<TemplateDraft['trigger']>>()!;
@@ -110,16 +111,21 @@ export class AuthoringContext {
 					...(this.confirmed ? { persistedId: this.confirmed._id } : {})
 				}
 			: {
+					audience: 'rep',
 					...(this.confirmed ? { persistedId: this.confirmed._id } : {}),
 					instructions: this.content.instructions,
-					approvalPolicy: semanticInstructions(this.content.instructions).approvalPolicy,
+					approvalPolicy: this.content.approvalPolicy,
 					trigger: this.trigger,
 					concessions: this.concessions
 				}
 	);
 	adoptContent(item: DeepReadonly<TemplateItem>) {
 		this.content = isRepItem(item)
-			? { audience: 'rep', instructions: authoringInstructions(item) }
+			? {
+					audience: 'rep',
+					instructions: semanticInstructions(item.instructions),
+					approvalPolicy: semanticApprovalPolicy(item.approvalPolicy)
+				}
 			: { audience: 'buyer', explanation: item.explanation };
 	}
 	private persistedDirty = $derived.by(() => {
@@ -131,11 +137,11 @@ export class AuthoringContext {
 			);
 		const saved = confirmed && isRepItem(confirmed) ? confirmed : null;
 		return (
-			authoringInstructionKeys.some(
-				(key) =>
-					(content.instructions[key] ?? '') !==
-					((saved ? authoringInstructions(saved)[key] : '') ?? '')
-			) ||
+			instructionKeys.some((key) => content.instructions?.[key] !== saved?.instructions?.[key]) ||
+			content.approvalPolicy.kind !== (saved?.approvalPolicy.kind ?? 'none') ||
+			(content.approvalPolicy.kind === 'required' &&
+				content.approvalPolicy.instructions !==
+					(saved?.approvalPolicy.kind === 'required' ? saved.approvalPolicy.instructions : '')) ||
 			this.concessions.length !== (saved?.concessions.length ?? 0) ||
 			this.concessions.some((concession, i) => concession.id !== saved?.concessions[i]?.id)
 		);
@@ -179,7 +185,13 @@ export class AuthoringContext {
 						trigger: this.normalizedTrigger,
 						explanation: this.content.explanation
 					}
-				: { ...this.structure, ...semanticInstructions(this.content.instructions) }
+				: {
+						...this.structure,
+						...(this.content.instructions === undefined
+							? {}
+							: { instructions: semanticInstructions(this.content.instructions) }),
+						approvalPolicy: semanticApprovalPolicy(this.content.approvalPolicy)
+					}
 		)
 	);
 	private stagedPayload = $derived(
@@ -252,6 +264,7 @@ export class AuthoringContext {
 		void this.geometryVersion;
 		return this.validationReason(() =>
 			this.validateGeometry!(this.confirmed?._id, {
+				audience: this.audience,
 				trigger: this.trigger,
 				concessions
 			})

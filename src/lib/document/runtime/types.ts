@@ -33,6 +33,11 @@ export interface RenderSnapshot {
 	readonly addresses: ReadonlyMap<string, Address>;
 	readonly pages: readonly PaginatedPage[];
 }
+/** The exact mounted pages and source needed to paint annotation highlights. */
+export type AnnotationProjectionDocument = Pick<
+	RenderSnapshot,
+	'id' | 'layoutEpoch' | 'view' | 'source' | 'concessions' | 'pages'
+>;
 export interface SourceIssue {
 	blocksFailed: boolean;
 	itemsFailed: boolean;
@@ -49,6 +54,9 @@ export interface RenderJobMeta {
 	readonly previewChanges: DeepReadonly<ContractChange[]>;
 	readonly layoutEpoch: string | undefined;
 	readonly pages: readonly PaginatedPage[];
+	/** Exact closed pages can be admitted independently of complete custom metadata. */
+	readonly initialBatchReady: boolean;
+	readonly paginationComplete: boolean;
 	readonly progressive: boolean;
 	readonly status: 'running' | 'failed';
 }

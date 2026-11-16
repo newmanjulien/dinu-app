@@ -8,6 +8,11 @@
 	import { workspaceDestination } from '../navigation';
 	import { afterStartupPaint, recordStartup } from '../startup-perf';
 	import { preloadDestination } from '../destination-code';
+	import {
+		csmPreviewScope,
+		useCsmOnboardingPreview
+	} from '$lib/components/chrome/csm-onboarding-preview.svelte';
+	import { browserTimeZone } from '$lib/components/chrome/csm-time';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import ArrowLeftIcon from 'phosphor-svelte/lib/ArrowLeftIcon';
 	import ChooseCompanyStep from './ChooseCompanyStep.svelte';
@@ -20,6 +25,7 @@
 	const account = useAccount();
 	const client = useConvexClient();
 	const session = useViewerSession();
+	const csmPreview = useCsmOnboardingPreview();
 	const destination = $derived(workspaceDestination(page.url.searchParams.get('returnTo')));
 	let step = $state<Step>('choose');
 	let name = $state('');
@@ -74,6 +80,20 @@
 		return afterStartupPaint(() => {
 			if (canPreload && current(generation)) void preloadDestination('/template').catch(() => {});
 		});
+	});
+	$effect(() => {
+		if (step !== 'create' || pending || session.blocked || session.closing || account()?.membership)
+			return;
+		const scope = csmPreviewScope(
+			session.userId,
+			session.preparedSessionId,
+			session.transportGeneration
+		);
+		if (!scope) return;
+		const timeZone = browserTimeZone();
+		csmPreview?.start(scope, timeZone, () =>
+			client.action(api.csmBookings.onboardingAvailability, { timeZone })
+		);
 	});
 
 	function showStep(next: Step) {

@@ -1,20 +1,16 @@
 'use node';
 
-import { v } from 'convex/values';
-import { internal } from './_generated/api';
+import { type Infer } from 'convex/values';
 import { action } from './_generated/server';
-import { exportRequest } from './savedContractValidators';
+import { wordExportRequest, wordExportResult } from './savedContractValidators';
+import { generateWordExport } from './wordExportGeneration';
 
 /** Every new download has a stable attempt, including companies without HubSpot. */
 export const generate = action({
-	args: exportRequest.extend({ operationId: v.string(), claim: v.optional(v.string()) }).fields,
-	returns: v.object({ url: v.string(), filename: v.string(), attemptId: v.id('hubspotExports') }),
+	args: wordExportRequest.fields,
+	returns: wordExportResult,
 	handler: (
 		ctx,
 		args
-	): Promise<{
-		url: string;
-		filename: string;
-		attemptId: import('./_generated/dataModel').Id<'hubspotExports'>;
-	}> => ctx.runAction(internal.exportActions.generate, args)
+	): Promise<Infer<typeof wordExportResult>> => generateWordExport(ctx, args)
 });

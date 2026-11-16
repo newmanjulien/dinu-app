@@ -16,6 +16,7 @@ export type DiscussionOperation = {
 	buyer: boolean;
 	readonly account: boolean;
 	uncertain: boolean;
+	blocked?: boolean;
 	readonly command: Infer<typeof discussionCommand>;
 };
 

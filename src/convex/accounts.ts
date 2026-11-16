@@ -1,6 +1,5 @@
 import { paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
-import { itemAudience } from '../lib/playbook/model';
 import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/validation';
 import { headStructure } from './playbookItemRevisions';
 import type { Id } from './_generated/dataModel';
@@ -28,7 +27,7 @@ async function hasRepInstructions(ctx: QueryCtx, companyId: Id<'company'>) {
 		.withIndex('by_companyId', (q) => q.eq('companyId', companyId))) {
 		if (++count > MAX_PLAYBOOK_ITEMS)
 			throw new ConvexError('The playbook list exceeds supported size.');
-		if (itemAudience(headStructure(head)) === 'rep') return true;
+		if (headStructure(head).audience === 'rep') return true;
 	}
 	return false;
 }
@@ -163,6 +162,11 @@ const setupStep = v.union(
 	v.literal('team'),
 	v.null()
 );
+const setupProgress = v.object({
+	complete: v.boolean(),
+	nextStep: setupStep,
+	contractId: v.union(v.id('savedContracts'), v.null())
+});
 
 /** One authoritative checklist for the workspace prompt and support experience. */
 async function readSetupProgress(ctx: QueryCtx, access: CompanyAccess) {
@@ -207,13 +211,22 @@ async function readSetupProgress(ctx: QueryCtx, access: CompanyAccess) {
 
 export const setupHints = query({
 	args: { membershipId: v.id('memberships') },
-	returns: v.object({
-		complete: v.boolean(),
-		nextStep: setupStep,
-		contractId: v.union(v.id('savedContracts'), v.null())
-	}),
+	returns: setupProgress,
 	handler: async (ctx, args) =>
 		readSetupProgress(ctx, await requireMembership(ctx, args.membershipId))
+});
+
+/** Independent full-refresh hint so the setup prompt can precede list results. */
+export const setupStartup = query({
+	args: {},
+	returns: v.object({ membershipId: v.id('memberships'), progress: setupProgress }),
+	handler: async (ctx) => {
+		const access = await requireMembership(ctx);
+		return {
+			membershipId: access.membershipId,
+			progress: await readSetupProgress(ctx, access)
+		};
+	}
 });
 
 /** The client requests detection; only current, authenticated database facts can complete setup. */

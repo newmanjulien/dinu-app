@@ -1,3 +1,4 @@
+import { currentDecisionId, restoreAppliedHead, assertChangeHead } from './contractChangeHeads';
 import type { Doc, Id } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import {
@@ -351,39 +352,36 @@ export class DiscussionIndex {
 		const head = await ctx.db
 			.query('contractChangeHeads')
 			.withIndex('by_contractId_and_kind_and_key', (q) =>
-				q.eq('contractId', this.owner.contractId).eq('kind', 'buyer-proposal').eq('key', thread._id)
+				q.eq('contractId', this.owner.contractId).eq('kind', 'buyer-link').eq('key', thread._id)
 			)
 			.unique();
 		if (head && head.companyId !== this.owner.companyId)
 			throw new Error('Support head ownership is invalid.');
+		if (head) assertChangeHead(head);
 		if (!entry) {
-			if (head?.currentChangeId && head.currentChangeId !== head.appliedChangeId)
+			if (head?.current && head.current.changeId !== head.applied?.changeId)
 				throw new Error('A floating support lost its aggregate before normalization.');
 			return;
 		}
 		if (
 			head &&
-			head.currentChangeId === entry.changeId &&
-			(head.currentDecisionId ?? null) === entry.decisionId &&
-			head.currentChangeId !== head.appliedChangeId
+			head.current?.changeId === entry.changeId &&
+			currentDecisionId(head.current) === entry.decisionId &&
+			head.current?.changeId !== head.applied?.changeId
 		) {
 			const change = await ctx.db.get('contractChanges', entry.changeId);
 			if (
 				!change ||
 				change.companyId !== this.owner.companyId ||
 				change.contractId !== this.owner.contractId ||
-				change.kind !== 'buyer-proposal' ||
+				change.kind !== 'buyer-link' ||
 				change.source.threadId !== thread._id ||
 				change.source.rootMessageId !== entry.rootMessageId ||
 				change.source.rootRevision !== entry.rootRevision
 			)
 				throw new Error('Support normalization lost its exact source.');
-			if (head.appliedChangeId)
-				await ctx.db.patch('contractChangeHeads', head._id, {
-					currentChangeId: head.appliedChangeId,
-					currentDecisionId: head.appliedDecisionId,
-					pendingAdmissionRevision: undefined
-				});
+			const restored = restoreAppliedHead(head);
+			if (restored) await ctx.db.replace('contractChangeHeads', head._id, restored);
 			else await ctx.db.delete('contractChangeHeads', head._id);
 		}
 		if (!(await this.supportTree(thread.indexedDocumentRevision).remove(entry)))

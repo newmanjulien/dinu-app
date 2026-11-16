@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack, type Snippet } from 'svelte';
+	import { onDestroy, untrack, type Snippet } from 'svelte';
 	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
 	import InlineAction from '$lib/components/playbook/InlineAction.svelte';
 	import type { DiscussionThread, DiscussionSession } from './session.svelte';
@@ -25,10 +25,12 @@
 	} = $props();
 	const draft = $derived(session.replyDraft(thread.id));
 	let replyTrigger: HTMLButtonElement | undefined;
-	const replies = untrack(() => session.replyState(thread.id));
+	const replyLease = untrack(() => session.acquireReplies(thread.id));
+	const replies = replyLease.state;
+	onDestroy(replyLease.release);
 	const feed = replies.feed;
 	$effect(() => {
-		const active = session.active;
+		const active = session.active && session.feed.authorized && session.feed.firstPageAccepted;
 		untrack(() => replies.setActive(active));
 		return () => replies.setActive(false);
 	});

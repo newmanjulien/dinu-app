@@ -191,6 +191,9 @@
 	const discussionPrivate = $derived(Boolean(seller?.visible));
 	let discussions = $state.raw<DiscussionSession>();
 	$effect(() => {
+		// A different document may no longer contain these passages. Keep drafts in
+		// their recovery owner, but never carry its old readable discussion windows.
+		void content.contentIdentity;
 		const identity = discussionIdentity,
 			accountIdentity = discussionAccount,
 			privateClient = seller?.client,
@@ -389,6 +392,7 @@
 		active={active && prepare}
 		helpVariant="buyer"
 		help={publicContract.help}
+		helpHosted
 		helpReady={workspace.viewer.interactionEnabled}
 		onTools={bindTools}
 	/>

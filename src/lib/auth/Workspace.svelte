@@ -3,7 +3,10 @@
 	import { useConvexClient } from 'convex-svelte';
 	import { page } from '$app/state';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
-	import WorkspaceSkeleton from './WorkspaceSkeleton.svelte';
+	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
+	import WorkspaceRouteFrame from '$lib/components/workspace/WorkspaceRouteFrame.svelte';
+	import type { TemplateRouteFrameState } from '$lib/components/workspace/template-route-frame';
+	import { loadDocumentSearch } from '$lib/components/document/document-tools';
 	import { useViewer, useViewerSession } from './viewer-session.svelte';
 	import { DocumentResources, setDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { env } from '$env/dynamic/public';
@@ -29,7 +32,7 @@
 	} from '$lib/document/runtime/layout-context.svelte';
 	import { onMount, onDestroy, type Snippet, untrack } from 'svelte';
 	import { describeRoute } from './routes';
-	import { setWorkspaceRuntime } from './workspace-context.svelte';
+	import { setWorkspaceRuntime, getWorkspaceDestinations } from './workspace-context.svelte';
 	import { setDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	import { getTemplateAuthoringSession } from '$lib/playbook/template-authoring-session.svelte';
 	let { children }: { children: Snippet } = $props();
@@ -40,6 +43,10 @@
 	const repAuthoring = getTemplateAuthoringSession();
 	const buyerAuthoring = getTemplateAuthoringSession('buyer');
 	const cache = getContractSnapshotCache(client);
+	const destinations = getWorkspaceDestinations();
+	$effect(() => {
+		destinations?.configure(Boolean(presentation?.canStart()));
+	});
 	$effect(() => {
 		const membershipId = viewer().membership.id;
 		void session.transportGeneration;
@@ -52,7 +59,6 @@
 		return () => clearInterval(timer);
 	});
 	let navigationIntent = 0;
-	let openingDownload: AbortController | undefined;
 
 	beforeNavigate((navigation) => {
 		navigationIntent++;
@@ -144,6 +150,11 @@
 		() => session.transportGeneration
 	);
 	const TemplateWorkspace = $derived(template.component);
+	let templateFrame = $state.raw<TemplateRouteFrameState>();
+	$effect(() => {
+		if (route.document === 'template' && !templatePending && !deletionPending)
+			void loadDocumentSearch().catch(() => {});
+	});
 	$effect(() => {
 		if (
 			route.document !== 'template' ||
@@ -156,10 +167,13 @@
 			return;
 		const audience = page.url.pathname === '/template/buyers' ? 'buyer' : 'rep';
 		const authoring = audience === 'buyer' ? buyerAuthoring : repAuthoring;
-		return untrack(() => authoring.retainReads());
+		return untrack(() => destinations?.retain(page.url.pathname) ?? authoring.retainReads());
 	});
 	let templateAudience = $state<'rep' | 'buyer'>(
 		untrack(() => (page.url.pathname === '/template/buyers' ? 'buyer' : 'rep'))
+	);
+	const activeTemplateFrame = $derived(
+		templateFrame?.audience === templateAudience ? templateFrame : undefined
 	);
 	$effect(() => {
 		if (route.document === 'template')
@@ -199,6 +213,10 @@
 		)
 			templateDetour = true;
 		if (deletionPending) return;
+		if (to) {
+			const release = destinations?.navigate(to.url.pathname);
+			void complete.catch(() => release?.());
+		}
 		const destination = describeRoute(to?.route.id ?? null);
 		const id =
 			destination.document === 'template'
@@ -208,24 +226,7 @@
 				: destination.document === 'saved'
 					? to?.params?.id
 					: undefined;
-		const previousDownload = openingDownload;
-		openingDownload = undefined;
-		if (destination.document === 'saved' && id) {
-			const download = (openingDownload = new AbortController());
-			// Acquire incoming demand before releasing an interrupted navigation's owner.
-			void cache.load(id, undefined, { signal: download.signal }).finally(() => {
-				if (openingDownload === download) openingDownload = undefined;
-			});
-			void complete.then(
-				() => {
-					// A committed destination can still be waiting for its host/editor code.
-					if (page.params.id !== id || describeRoute(page.route.id).document !== 'saved')
-						download.abort();
-				},
-				() => download.abort()
-			);
-		}
-		previousDownload?.abort();
+
 		return id ? resources?.beginOpen(id) : undefined;
 	});
 	onMount(() =>
@@ -239,7 +240,6 @@
 	);
 	onDestroy(() => {
 		navigationIntent++;
-		openingDownload?.abort();
 		cache.cancelPending();
 		resources?.destroy();
 		layoutProfiles?.scheduler.destroy();
@@ -262,30 +262,50 @@
 		{@render children()}
 	{/if}
 </div>
-{#if templateMounted && TemplateWorkspace}
-	{#key templateAudience}<TemplateWorkspace
+{#if (templateMounted && TemplateWorkspace) || (route.document === 'template' && !templatePending && !deletionPending)}
+	<div hidden={route.document !== 'template'} inert={route.document !== 'template'}>
+		<WorkspaceRouteFrame
+			kind="template"
 			audience={templateAudience}
-			active={route.document === 'template'}
-		/>{/key}
-{:else if route.document === 'template' && !templatePending && !deletionPending && runtime.hostReady}
-	<WorkspacePresentationReporter outcome={template.failed ? 'error' : 'pending'} />
-	{#if !template.failed}
-		<WorkspaceSkeleton
-			label="Loading template editor"
-			hasPanel={(templateAudience === 'buyer' ? buyerAuthoring : repAuthoring).hasPanel}
-		/>
-	{:else}
-		<LoadingState layout="workspace">
-			<p role="alert" class="text-sm">Unable to load the template editor.</p>
-			<button
-				class="text-sm underline"
-				onclick={() => {
-					presentation?.restart();
-					template.retry();
-				}}>Try again</button
-			>
-		</LoadingState>
-	{/if}
+			helpVariant={templateAudience === 'buyer' ? 'buyer-template' : 'template'}
+			helpReady={activeTemplateFrame?.workspace.viewer.layoutPrepared ?? false}
+			active={route.document === 'template' &&
+				viewer().membership.role === 'admin' &&
+				(activeTemplateFrame?.available ?? true)}
+			workspace={activeTemplateFrame?.workspace}
+			interactionOwner={activeTemplateFrame?.interactionOwner}
+		>
+			{#if templateMounted && TemplateWorkspace}
+				{#key templateAudience}<TemplateWorkspace
+						audience={templateAudience}
+						active={route.document === 'template'}
+						onFrame={(next) => {
+							templateFrame = next;
+							return () => {
+								if (templateFrame === next) templateFrame = undefined;
+							};
+						}}
+					/>{/key}
+			{:else if template.failed || runtime.error}
+				<WorkspacePresentationReporter outcome="error" />
+				<LoadingState layout="workspace">
+					<p role="alert" class="text-sm">
+						{template.failed ? 'Unable to load the template editor.' : runtime.error}
+					</p>
+					<button
+						class="text-sm underline"
+						onclick={() => {
+							template.retry();
+							runtime.retry();
+						}}>Try again</button
+					>
+				</LoadingState>
+			{:else}
+				<WorkspacePresentationReporter outcome="pending" />
+				<DocumentSkeleton template embedded label="Loading template editor" />
+			{/if}
+		</WorkspaceRouteFrame>
+	</div>
 {/if}
 {#if DocumentHost}<DocumentHost
 		profiles={layoutProfiles}

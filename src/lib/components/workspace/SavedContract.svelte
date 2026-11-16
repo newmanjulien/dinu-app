@@ -1,39 +1,50 @@
 <script lang="ts">
 	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
-	import RouteTitle from '$lib/auth/RouteTitle.svelte';
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { onDestroy, untrack } from 'svelte';
 	import { ReadAttempt } from '$lib/auth/attempt';
-	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
+	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
+	import { useReadQuery } from '$lib/auth/read-query.svelte';
+	import { api } from '../../../convex/_generated/api';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import { getContractEditors } from '$lib/contract/editors.svelte';
 	import { creationPhase } from '$lib/contract/creation-perf';
 	import { recordColdStart } from '$lib/document/runtime/render-perf';
 	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
 	import Button from '$lib/ui/Button.svelte';
-	import RepWorkspace from './RepWorkspace.svelte';
+	import SavedDocumentFrame from './SavedDocumentFrame.svelte';
+	import type { SavedRouteFrameState } from './saved-route-frame';
 	let {
 		id,
 		interactionAdmitted = true,
 		onVisible,
 		onFailure,
-		onAcquired
+		onFrame
 	}: {
 		id: string;
 		interactionAdmitted?: boolean;
 		onVisible?: () => void;
 		onFailure?: () => void;
-		onAcquired?: () => () => void;
+		onFrame: (frame: SavedRouteFrameState) => () => void;
 	} = $props();
 	const mountedId = untrack(() => id);
 	const sessions = getContractEditors();
 	const acquired = untrack(() => sessions.acquire(mountedId));
 	const editor = acquired.editor;
-	const releaseOpeningOwner = untrack(() => onAcquired?.());
-	onDestroy(() => releaseOpeningOwner?.());
 	const account = useViewerSession();
 	const runtime = getWorkspaceRuntime();
+	const membershipId = useViewer()().membership.id;
+	// Resolve link status alongside the contract opening, before the document frame mounts.
+	const latestBuyerLink = useReadQuery(api.buyerLinks.latest, () =>
+		sessions.accessAvailable &&
+		!runtime.paused &&
+		editor.metadata !== null &&
+		!editor.persistence?.deleted &&
+		!editor.persistence?.workBlock
+			? { membershipId, id: mountedId as Id<'savedContracts'> }
+			: 'skip'
+	);
 	const presentation = useWorkspacePresentation();
 	let opening = $state.raw<{
 		token: symbol;
@@ -42,7 +53,8 @@
 	}>();
 	let openingError = $state(false);
 	let retryAttempt = $state(0);
-	let completionSettled = false;
+	let visibleReported = false;
+	let failureReported = false;
 	let active = true;
 	onDestroy(() => {
 		active = false;
@@ -96,7 +108,7 @@
 		});
 	});
 	$effect(() => {
-		if (editor.error || editor.viewError || editor.metadata === null) {
+		if (editor.error || editor.viewError || editor.metadata === null || runtime.error) {
 			const token = opening?.token;
 			if (token) untrack(() => failure(token));
 		}
@@ -105,8 +117,8 @@
 		if (!active || opening?.token !== token || opening.outcome !== 'pending') return;
 		opening.deadline.complete();
 		opening = { ...opening, outcome: 'visible' };
-		if (!completionSettled) {
-			completionSettled = true;
+		if (!visibleReported) {
+			visibleReported = true;
 			onVisible?.();
 		}
 	}
@@ -114,29 +126,27 @@
 		if (!active || opening?.token !== token || opening.outcome !== 'pending') return;
 		opening.deadline.complete();
 		opening = { ...opening, outcome: 'failed' };
-		if (!completionSettled) {
-			completionSettled = true;
+		if (!failureReported) {
+			failureReported = true;
 			onFailure?.();
 		}
 	}
 	function retry() {
 		presentation?.restart();
+		if (runtime.error) runtime.retry();
 		retryAttempt++;
 		editor.retry();
 	}
 </script>
 
-{#if editor.metadata && editor.buyerName}
-	<RouteTitle title={`Negotiate with ${editor.buyerName}`} />
-{/if}
-
-{#if editor.snapshot && editor.metadata && editor.persistence}
-	<div hidden={Boolean(editor.error)} inert={!interactionAdmitted || account.blocked}>
-		<RepWorkspace
-			snapshot={editor.snapshot}
+{#if editor.readable && runtime.hostReady}
+	<div inert={!interactionAdmitted || account.blocked}>
+		<SavedDocumentFrame
 			openingRevision={opening?.token}
 			{editor}
+			{latestBuyerLink}
 			{interactionAdmitted}
+			{onFrame}
 			onRetry={retry}
 			onVisible={() => {
 				if (opening) visible(opening.token);
@@ -146,14 +156,14 @@
 			}}
 		/>
 	</div>
-	{#if openingError || editor.error || editor.viewError}<p
+	{#if openingError || editor.error || editor.viewError || runtime.error}<p
 			role="alert"
 			class="p-4 text-center text-sm"
 		>
 			We couldn’t refresh this contract. <button class="underline" onclick={retry}>Try again</button
 			>
 		</p>{/if}
-{:else if openingError || editor.error || editor.viewError || editor.metadata === null}
+{:else if openingError || editor.error || editor.viewError || editor.metadata === null || runtime.error}
 	<WorkspacePresentationReporter
 		active={interactionAdmitted && !runtime.paused}
 		outcome="error"
@@ -167,6 +177,9 @@
 			<p role="alert">
 				We couldn’t load this contract.
 				{#if editor.journal.recoveryError}<button
+						class="mt-3 block underline"
+						onclick={() => editor.journal.downloadRecovery()}>Save stored selections</button
+					><button
 						class="mt-3 block underline"
 						onclick={() => {
 							editor.discard();
@@ -182,4 +195,4 @@
 		active={interactionAdmitted && !runtime.paused}
 		outcome="pending"
 		revision={opening?.token}
-	/><DocumentSkeleton layout="contract" label="Loading contract" />{/if}
+	/><DocumentSkeleton layout="contract" embedded label="Loading contract" />{/if}

@@ -162,6 +162,5 @@ export const attemptView = v.object({
 export const availabilityResult = v.object({
 	status: v.union(v.literal('ready'), v.literal('unavailable')),
 	slots: v.array(v.object({ start: v.string(), end: v.string() })),
-	duration: v.number(),
-	lastDate: v.union(v.string(), v.null())
+	duration: v.number()
 });

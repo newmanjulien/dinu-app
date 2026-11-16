@@ -21,7 +21,7 @@
 	});
 	// Reparenting the same wrapper preserves every DocumentPage and annotation owner.
 	const readyToShow = $derived(
-		!paused && ((entry.active && (bindings?.active ?? true)) || entry.draftOwned)
+		!paused && Boolean(entry.target) && entry.active && (bindings?.active ?? true)
 	);
 </script>
 
@@ -37,17 +37,22 @@
 		onRetry={bindings?.onRetry}
 		active={readyToShow}
 		interactive={!paused && entry.active && (bindings?.interactive ?? true)}
+		annotationsVisible={bindings?.annotationsVisible ?? true}
 		retained
 		prepare={!paused &&
 			entry.allowed &&
-			entry.workspace.source.itemsCurrent &&
+			entry.workspace.source.renderReady &&
 			(bindings?.prepare ?? true)}
 		itemPreload={entry.active ? bindings?.itemPreload : undefined}
 		priority={entry.priority}
 		selectedConcessions={bindings?.selectedConcessions ?? entry.choices}
 		previewChanges={bindings?.previewChanges}
-		reviewTags={entry.active ? bindings?.reviewTags : undefined}
-		reviewGutter={entry.active ? bindings?.reviewGutter : undefined}
+		reviewTags={entry.active && bindings?.annotationsVisible !== false
+			? bindings?.reviewTags
+			: undefined}
+		reviewGutter={entry.active && bindings?.annotationsVisible !== false
+			? bindings?.reviewGutter
+			: 0}
 		reviewNavigation={entry.active ? bindings?.reviewNavigation : undefined}
 		onReviewDecision={bindings?.onReviewDecision}
 		{hasPanel}

@@ -26,10 +26,10 @@ export async function unresolvedProposal(
 		root.deleted
 	)
 		return false;
-	const head = await changeHead(ctx, { root: index.root }, 'buyer-proposal', thread._id, index);
+	const head = await changeHead(ctx, { root: index.root }, 'buyer-link', thread._id, index);
 	const current = head?.current;
 	return !(
-		current?.kind === 'buyer-proposal' &&
+		current?.kind === 'buyer-link' &&
 		current.source.rootMessageId === root._id &&
 		current.source.rootRevision === root.revision &&
 		head?.head.status !== 'pending'

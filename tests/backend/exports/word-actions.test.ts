@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import * as word from '../../../src/lib/server/document/export/word';
@@ -28,7 +29,7 @@ async function args(f: Awaited<ReturnType<typeof fixture>>, operationId = 'real-
 		membershipId: f.owner.membershipId,
 		id: f.id,
 		expectedSource: await expectedSource(f),
-		operationId,
+		operationId: fixtureOperationId(operationId),
 		claim: 'real-word-claim'
 	};
 }
@@ -57,6 +58,7 @@ describe('seller Word generation action and approval fences', () => {
 		const request = await args(f);
 		const result = await f.t.action(api.wordExport.generate, request);
 		const stored = (await f.t.run(({ db }) => db.get('hubspotExports', result.attemptId)))!;
+		if (stored?.format !== 'full') throw new Error('Expected full output evidence');
 		expect(stored).toMatchObject({ state: 'ready', releasedAt: NOW });
 		expect(result.filename).toBe('Original deal & contract - Contract - 2026-11-07 12-00-00.docx');
 		expect(result.url).toMatch(/^https?:\/\//u);
@@ -112,11 +114,11 @@ describe('seller Word generation action and approval fences', () => {
 			await f.repClient.mutation(api.contracts.saveChanges, {
 				membershipId: f.rep.membershipId,
 				id: f.id,
-				operationId: 'pending-removal',
+				operationId: fixtureOperationId('pending-removal'),
 				commands: [
 					{
 						...application(f).commands[0],
-						id: 'remove',
+						id: fixtureOperationId('remove'),
 						expectedCurrentChangeId: (await playbookState(f)).playbook[0].currentChangeId,
 						action: { kind: 'set', optionId: null }
 					}

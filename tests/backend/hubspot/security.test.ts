@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
 import { sha256 } from '../../../src/convex/operationReceipts';
@@ -78,7 +79,7 @@ describe('integration authorization', () => {
 				contractId: f.id,
 				expectedGeneration: 1,
 				dealId: '202',
-				operationId: 'foreign'
+				operationId: fixtureOperationId('foreign')
 			})
 		).rejects.toThrow('changed');
 		// Even valid credentials for the caller's own company cannot authorize a foreign contract.
@@ -105,7 +106,7 @@ describe('integration authorization', () => {
 				contractId: f.id,
 				expectedGeneration: 1,
 				dealId: '202',
-				operationId: 'foreign-own-credentials'
+				operationId: fixtureOperationId('foreign-own-credentials')
 			})
 		).rejects.toThrow('deleted');
 		await expect(
@@ -133,7 +134,7 @@ describe('integration authorization', () => {
 			contractId: f.id,
 			expectedGeneration: 1,
 			dealId: '202',
-			operationId: 'rep-repair'
+			operationId: fixtureOperationId('rep-repair')
 		});
 		expect(await currentContract(f)).toMatchObject({
 			hubspot: { dealId: '202', availability: 'available' }

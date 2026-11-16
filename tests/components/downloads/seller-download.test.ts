@@ -3,7 +3,7 @@ import { ConvexError } from 'convex/values';
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContractEditor } from '../../../src/lib/contract/editors.svelte';
-import Workspace from '../../../src/lib/components/workspace/RepWorkspace.svelte';
+import Workspace from '../../../src/lib/components/workspace/SavedDocumentFrame.svelte';
 import { downloadWord } from '../../../src/lib/document/export/download';
 import { journalDownload } from '../../../src/lib/contract/download-journal';
 import { downloadState } from './download-state.svelte';
@@ -62,6 +62,10 @@ vi.mock(
 	'$lib/components/workspace/WorkspaceChrome.svelte',
 	() => import('./DownloadChrome.svelte')
 );
+vi.mock(
+	'$lib/components/workspace/WorkspaceDocumentFeedback.svelte',
+	() => import('./DownloadChrome.svelte')
+);
 vi.mock('$lib/buyer/BuyerLinkBar.svelte', () => import('./DownloadEmpty.svelte'));
 vi.mock('$lib/components/playbook/BoxDismissal.svelte', () => import('./DownloadEmpty.svelte'));
 vi.mock('$lib/document/export/download', () => ({ downloadWord: vi.fn() }));
@@ -85,7 +89,8 @@ afterEach(async () => {
 const output = {
 	url: 'https://storage.test/document',
 	filename: 'Contract.docx',
-	attemptId: 'a'.repeat(32)
+	attemptId: 'a'.repeat(32),
+	releasedAt: Date.now()
 };
 async function fixture() {
 	const f = downloadState();
@@ -104,8 +109,15 @@ async function fixture() {
 	mounted = mount(Workspace, {
 		target: document.body,
 		props: {
-			snapshot: f.ready.snapshot,
 			editor: f.editor as unknown as ContractEditor,
+			latestBuyerLink: {
+				data: null,
+				error: undefined,
+				rejected: false,
+				isLoading: false,
+				isStale: false,
+				retry: vi.fn()
+			},
 			onRetry() {}
 		}
 	});
@@ -153,7 +165,12 @@ describe('seller Word download wiring', () => {
 		file.resolve(new Response(new Blob(['docx'])));
 		await settle();
 		expect(downloadWord).toHaveBeenCalledWith(expect.any(Blob), output.filename);
-		expect(journalDownload).toHaveBeenCalledWith('member', output.attemptId, expect.any(Number));
+		expect(journalDownload).toHaveBeenCalledWith(
+			'member',
+			output.attemptId,
+			expect.any(Number),
+			output.releasedAt
+		);
 		expect(vi.mocked(downloadWord).mock.invocationCallOrder[0]).toBeLessThan(
 			vi.mocked(journalDownload).mock.invocationCallOrder[0]
 		);

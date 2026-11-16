@@ -6,30 +6,17 @@
 
 	let {
 		feedback = null,
-		renderPending = false,
 		renderError = null,
 		sourceStale = false,
 		onRetryRender,
 		saveFeedback
 	}: {
 		feedback?: StatusItem | null;
-		renderPending?: boolean;
 		renderError?: RenderFailure | null;
 		sourceStale?: boolean;
 		onRetryRender?: () => void;
 		saveFeedback?: Snippet;
 	} = $props();
-	// Presentation only. Pending generations do not reset the delay during a burst.
-	let showUpdating = $state(false);
-	$effect(() => {
-		showUpdating = false;
-		if (!renderPending) return;
-		const timer = setTimeout(() => {
-			showUpdating = true;
-		}, 250);
-		return () => clearTimeout(timer);
-	});
-	const updating = $derived(renderPending && showUpdating && !renderError);
 </script>
 
 {#snippet status(item: StatusItem)}
@@ -48,16 +35,15 @@
 {#if feedback?.urgent}{@render status(feedback)}{/if}
 {#if renderError}
 	{@render status({
-		message: `${renderError.message} Showing the last successfully rendered document.`,
+		message: renderError.message,
 		urgent: true,
 		actions: onRetryRender ? [{ label: 'Retry', run: onRetryRender }] : undefined
 	})}
 {/if}
 {#if sourceStale}
 	{@render status({
-		message: 'The latest source updates are unavailable. Your current document is still displayed.'
+		message: 'The latest source updates are unavailable.'
 	})}
 {/if}
 {@render saveFeedback?.()}
 {#if feedback && !feedback.urgent}{@render status(feedback)}{/if}
-{#if updating}{@render status({ message: 'Updating document…' })}{/if}

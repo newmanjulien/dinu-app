@@ -1,5 +1,6 @@
 import { getDocumentHighlights, type DocumentHighlightController } from '../highlights/controller';
 import type { PaginatedPage } from '../pagination/types';
+import type { MountedDocumentRevision } from '../runtime/viewer.svelte';
 import { DocumentSearchCache, DocumentSearchRanges } from './document-search';
 import { getDocumentViewportMetrics } from '../document-viewport';
 import { countSearchWork } from '../runtime/render-perf';
@@ -17,6 +18,7 @@ export class DocumentSearchSession {
 	#cache = new DocumentSearchCache();
 	#mounted = new DocumentSearchRanges();
 	#pages: readonly PaginatedPage[] = [];
+	#domRevision: MountedDocumentRevision | null = null;
 	#ranges = new Map<number, Range>();
 	#resultsByPage = new Map<number, number[]>();
 	#eagerPages: ReadonlySet<number> = new Set();
@@ -25,8 +27,9 @@ export class DocumentSearchSession {
 	#scrollOnRefresh = false;
 	#destroyed = false;
 	setPages(pages: readonly PaginatedPage[]) {
-		if (this.#destroyed) return;
+		if (this.#destroyed || this.#pages === pages) return false;
 		this.#pages = pages;
+		return true;
 	}
 
 	#target: HTMLElement | undefined;
@@ -53,6 +56,7 @@ export class DocumentSearchSession {
 		this.#unsubscribePages = undefined;
 		this.#clearHighlights();
 		this.#mounted.reset();
+		this.#domRevision = null;
 		this.#ranges.clear();
 		this.#resultsByPage.clear();
 		this.#eagerPages = new Set();
@@ -63,6 +67,37 @@ export class DocumentSearchSession {
 			if (this.#refreshTimer === undefined && this.#resultsByPage.size)
 				this.#materializeHighlights();
 		});
+	}
+
+	/** Search is bound to one committed page revision; keep the query during handoffs. */
+	setMountedDocument(target: HTMLElement | undefined, revision: MountedDocumentRevision | null) {
+		if (this.#destroyed) return;
+		if (!target || !revision) {
+			if (!this.#target && !this.#domRevision) return;
+			this.setTarget(undefined);
+			this.#domRevision = null;
+			this.setPages([]);
+			this.#cache.reset();
+			this.refresh(false);
+			return;
+		}
+		if (
+			this.#target === target &&
+			this.#controller === getDocumentHighlights(target) &&
+			this.#domRevision?.id === revision.id
+		)
+			return;
+		if (this.#target !== target || this.#controller !== getDocumentHighlights(target)) {
+			this.setTarget(target);
+		} else {
+			this.#cancelRefresh();
+			this.#clearHighlights();
+			this.#mounted.reset();
+			this.#ranges.clear();
+		}
+		this.#domRevision = revision;
+		this.setPages(revision.pages);
+		this.refresh(false);
 	}
 
 	setQuery(query: string) {
@@ -189,6 +224,7 @@ export class DocumentSearchSession {
 		this.#unsubscribePages?.();
 		this.#unsubscribePages = undefined;
 		this.#target = undefined;
+		this.#domRevision = null;
 		this.#eagerPages = new Set();
 		this.#pages = [];
 		this.#panel = undefined;

@@ -6,7 +6,7 @@ import {
 import type { SourceTarget } from '../lib/document/source-model';
 
 function buyerExplanation(item: import('./playbookItemRevisions').HistoricalItem) {
-	if (!('audience' in item)) throw new Error('Expected a buyer explanation');
+	if (item.audience !== 'buyer') throw new Error('Expected a buyer explanation');
 	return { itemId: item._id, trigger: item.trigger, explanation: item.explanation };
 }
 

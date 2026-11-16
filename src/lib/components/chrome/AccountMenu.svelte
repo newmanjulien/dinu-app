@@ -2,14 +2,17 @@
 	import { goto } from '$app/navigation';
 	import type { AccountViewer } from '$lib/auth/viewer-session.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
+	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import Menu from '$lib/components/ui/Menu.svelte';
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 
 	let {
 		profile,
+		avatarPending = false,
 		onSignOut
 	}: {
 		profile: Pick<AccountViewer['profile'], 'name' | 'email' | 'avatarUrl'>;
+		avatarPending?: boolean;
 		onSignOut: () => Promise<void>;
 	} = $props();
 	let open = $state(false);
@@ -48,12 +51,16 @@
 		}
 	}}
 >
-	<Avatar
-		name={profile.name || profile.email}
-		avatarUrl={profile.avatarUrl}
-		decorative
-		class="size-[25px] transition-shadow duration-150 group-hover:ring-3 group-hover:ring-canvas group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent"
-	/>
+	{#if avatarPending}
+		<SkeletonBlock class="size-[25px] rounded-full" />
+	{:else}
+		<Avatar
+			name={profile.name || profile.email}
+			avatarUrl={profile.avatarUrl}
+			decorative
+			class="size-[25px] transition-shadow duration-150 group-hover:ring-3 group-hover:ring-canvas group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent"
+		/>
+	{/if}
 </button>
 <Menu
 	{open}

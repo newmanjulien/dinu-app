@@ -13,9 +13,8 @@ import { triggerAnnotationId } from './document-overlay';
 import { newTemplateDraft, templateDraft, type TemplateDraft } from './draft';
 import type { PlaybookGeometryIndex } from './geometry-index';
 import {
-	authoringInstructions,
 	newConcessionId,
-	type AuthoringInstructions,
+	type Instructions,
 	type Concession,
 	isRepItem,
 	type TemplateItem,
@@ -471,15 +470,24 @@ export class AuthoringController {
 		this.context = null;
 		this.clearFeedback();
 	}
-	setInstruction(key: keyof AuthoringInstructions, text: string) {
+	setInstruction(key: keyof Instructions, text: string) {
 		const context = this.context;
 		if (!context || context.content.audience !== 'rep' || !this.canEdit) return;
 		const saved =
 			context.confirmed && isRepItem(context.confirmed)
-				? authoringInstructions(context.confirmed)[key]
+				? context.confirmed.instructions?.[key]
 				: undefined;
-		if (text === (saved ?? '') && saved === undefined) delete context.content.instructions[key];
-		else context.content.instructions[key] = text;
+		if (text === '' && saved === undefined) delete context.content.instructions?.[key];
+		else (context.content.instructions ??= {})[key] = text;
+		this.clearFeedback();
+		this.reconcile();
+	}
+	setApprovalGuidance(text: string) {
+		const context = this.context;
+		if (!context || context.content.audience !== 'rep' || !this.canEdit) return;
+		context.content.approvalPolicy = text.trim()
+			? { kind: 'required', instructions: text }
+			: { kind: 'none' };
 		this.clearFeedback();
 		this.reconcile();
 	}

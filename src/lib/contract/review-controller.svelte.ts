@@ -1,3 +1,9 @@
+import { createOperationId } from './operation-identity';
+import {
+	assertOperationRetryable,
+	isOperationRecovery,
+	OperationResultFailure
+} from './operation-recovery';
 import { reviewOperationInputs } from './changes';
 import type { ConvexClient } from 'convex/browser';
 import type { FunctionArgs, FunctionReturnType } from 'convex/server';
@@ -34,6 +40,7 @@ export class ContractReviewController {
 	navigation = $state.raw<ReviewNavigation>();
 	decisionError = $state.raw<{ changeId: string; message: string } | null>(null);
 	private decisions = new Map<string, DecisionArgs>();
+	private uncertain = new Set<string>();
 	private requestAttempt: RequestArgs | null = null;
 	private completionAttempt: CompletionArgs | null = null;
 	private active = true;
@@ -42,7 +49,7 @@ export class ContractReviewController {
 	private waiters = new Set<AbortController>();
 	constructor(private options: Options) {}
 	get completion() {
-		const current = this.options.persistence.confirmed.playbookCompletion;
+		const current = this.options.persistence.confirmed.reviews.playbook.completion;
 		return this.options.isAdmin() && current?.completion.kind === 'awaitingConfirmation'
 			? current
 			: null;
@@ -72,7 +79,6 @@ export class ContractReviewController {
 			this.completionGeneration !== this.completionAttempt.expectedIdentity &&
 			!this.completionBusy
 		) {
-			this.completionAttempt = null;
 			this.completionError = null;
 		}
 	}
@@ -82,6 +88,7 @@ export class ContractReviewController {
 		result: T
 	): Promise<T> {
 		if (result.status !== 'preparing') return result;
+		this.uncertain.add(args.operationId);
 		const waiter = new AbortController();
 		this.waiters.add(waiter);
 		if (!this.active || !this.available) waiter.abort();
@@ -100,6 +107,14 @@ export class ContractReviewController {
 		} finally {
 			this.waiters.delete(waiter);
 		}
+	}
+	private retain(error: unknown, operationId: string | undefined) {
+		if (!operationId) return false;
+		if (!(error instanceof ConvexError)) this.uncertain.add(operationId);
+		return (
+			isOperationRecovery(error) ||
+			(!(error instanceof OperationResultFailure) && this.uncertain.has(operationId))
+		);
 	}
 	async decide(tag: ReviewTag, action: ReviewDecision) {
 		const current = this.options.tags().find((value) => value.changeId === tag.changeId);
@@ -146,10 +161,11 @@ export class ContractReviewController {
 						documentId: state.documentId,
 						documentRevision: state.documentRevision
 					},
-					operationId: crypto.randomUUID()
+					operationId: createOperationId()
 				};
 				this.decisions.set(key, args);
 			}
+			assertOperationRetryable(args.operationId);
 			await this.settle(
 				'change-decision',
 				args,
@@ -158,7 +174,7 @@ export class ContractReviewController {
 			this.decisions.delete(key);
 			if (this.active) this.navigation = { afterChangeId: tag.changeId };
 		} catch (error) {
-			if (error instanceof ConvexError) this.decisions.delete(key);
+			if (!this.retain(error, this.decisions.get(key)?.operationId)) this.decisions.delete(key);
 			if (this.active && this.available)
 				this.decisionError = {
 					changeId: tag.changeId,
@@ -189,9 +205,10 @@ export class ContractReviewController {
 						documentId: state.documentId,
 						documentRevision: state.documentRevision
 					},
-					operationId: crypto.randomUUID()
+					operationId: createOperationId()
 				};
 			}
+			assertOperationRetryable(this.requestAttempt.operationId);
 			await this.settle(
 				'approval-request',
 				this.requestAttempt,
@@ -199,7 +216,7 @@ export class ContractReviewController {
 			);
 			this.requestAttempt = null;
 		} catch (error) {
-			if (error instanceof ConvexError) this.requestAttempt = null;
+			if (!this.retain(error, this.requestAttempt?.operationId)) this.requestAttempt = null;
 			if (this.active && this.available)
 				this.requestError = saveError(error, 'We couldn’t request approval. Try again.');
 		} finally {
@@ -226,10 +243,11 @@ export class ContractReviewController {
 				id: this.options.contractId,
 				context: 'playbook',
 				expectedIdentity: this.completion!.reviewIdentity,
-				operationId: crypto.randomUUID(),
+				operationId: createOperationId(),
 				notify
 			};
 			const args = this.completionAttempt;
+			assertOperationRetryable(args.operationId);
 			const result: FunctionReturnType<typeof api.contractApprovals.confirmCompletion> =
 				await this.settle(
 					'review-completion',
@@ -242,7 +260,8 @@ export class ContractReviewController {
 					'The review changed. Review the current changes before sending results.'
 				);
 		} catch (error) {
-			if (error instanceof ConvexError) this.completionAttempt = null;
+			if (error instanceof ConvexError && !isOperationRecovery(error))
+				this.completionAttempt = null;
 			if (this.active && this.available)
 				this.completionError = saveError(error, 'We couldn’t save your choice. Try again.');
 		} finally {

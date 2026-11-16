@@ -54,7 +54,7 @@ export function discussionTransitionHooks(
 		beforePlan: options.hooks?.beforePlan,
 		beforeCommit: async (plan) => {
 			const external = await options.hooks?.beforeCommit?.(plan);
-			const buyerHeads = plan.heads.filter((value) => value.kind === 'buyer-proposal');
+			const buyerHeads = plan.heads.filter((value) => value.kind === 'buyer-link');
 			if (!plan.documentChanged && !buyerHeads.length) return external;
 			const current = await open();
 			const live =
@@ -247,17 +247,15 @@ export async function prepareBuyerHeadEffects(
 	const bindings: { entry: SupportEntry; head: (typeof heads)[number] }[] = [];
 	for (const head of heads) {
 		const old = head.old?.storedCurrent;
-		const oldFloating = old?.kind === 'buyer-proposal' && old._id !== head.old?.applied?._id;
-		const next =
-			head.floating && head.nextCurrent?.kind === 'buyer-proposal' ? head.nextCurrent : null;
+		const oldFloating = old?.kind === 'buyer-link' && old._id !== head.old?.applied?._id;
+		const next = head.floating && head.nextCurrent?.kind === 'buyer-link' ? head.nextCurrent : null;
 		if (next && !(await effectiveBuyerSource(ctx, index, next)))
 			throw new ConvexError('This proposal changed. Review its current wording.');
 		index.changeAppliedBuyerCount(
 			Number(head.nextApplied?.policy === 'required') -
 				Number(head.old?.applied?.policy === 'required')
 		);
-		const source =
-			next?.source ?? (oldFloating && old?.kind === 'buyer-proposal' ? old.source : null);
+		const source = next?.source ?? (oldFloating && old?.kind === 'buyer-link' ? old.source : null);
 		const thread = source ? await index.thread(source.threadId) : null;
 		if (!thread) continue;
 		const entry: SupportEntry | null = next
@@ -278,7 +276,7 @@ export async function prepareBuyerHeadEffects(
 			old: Boolean(
 				oldFloating &&
 				head.old?.current?._id === old?._id &&
-				old?.kind === 'buyer-proposal' &&
+				old?.kind === 'buyer-link' &&
 				(await effectiveBuyerSource(ctx, index, old, manifest))
 			),
 			next: Boolean(next && (await effectiveBuyerSource(ctx, index, next, manifest)))

@@ -2,7 +2,7 @@ import { contractItemId } from '../lib/contract/item-identity';
 import { v } from 'convex/values';
 
 import { hubspotLink } from './hubspotValidators';
-import { approvalContext } from '../lib/contract/changes';
+import { changeKind } from '../lib/contract/changes';
 export { contractRenderTransport } from '../lib/document/contract-document-validators';
 
 export const selections = v.record(contractItemId, v.string());
@@ -27,6 +27,14 @@ export const contextCompletion = v.object({
 	reviewIdentity: v.string(),
 	completion: reviewCompletion
 });
+export const reviewGroup = v.object({
+	identity: v.string(),
+	completion: v.optional(contextCompletion)
+});
+export const contractReviews = v.object({
+	playbook: reviewGroup,
+	buyerLink: reviewGroup
+});
 /** documentId is null only within the atomic root/document creation transaction. */
 export const contractRoot = v.object({
 	companyId: v.id('company'),
@@ -41,12 +49,15 @@ export const contractRoot = v.object({
 	playbookReviewCount: v.number(),
 	playbookPendingCount: v.number(),
 	playbookDeclinedCount: v.number(),
-	playbookReviewIdentity: v.string(),
-	buyerLinkReviewIdentity: v.string(),
+	reviews: contractReviews,
 	savedAt: v.number(),
-	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') })),
-	playbookCompletion: v.optional(contextCompletion),
-	buyerLinkCompletion: v.optional(contextCompletion)
+	quoteRequests: v.optional(
+		v.object({
+			watermark: v.number(),
+			latest: v.optional(v.object({ requestedAt: v.number(), pushId: v.id('hubspotQuotePushes') }))
+		})
+	),
+	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') }))
 });
 export const storedContractHubspotAssociation = hubspotLink.extend({
 	companyId: v.id('company'),
@@ -72,7 +83,7 @@ export const contractBuyerRefresh = buyerRefreshTiming.extend({
 export const storedContract = contractRoot;
 export const approvalRequest = v.object({
 	id: v.string(),
-	context: approvalContext,
+	context: changeKind,
 	identity: v.string(),
 	cutoff: v.number(),
 	title: v.string(),
@@ -93,7 +104,7 @@ export const approvalRequest = v.object({
 	retryEligible: v.boolean()
 });
 export const storedApprovalRequest = v.object({
-	context: approvalContext,
+	context: changeKind,
 	identity: v.string(),
 	cutoff: v.number(),
 	count: v.number(),

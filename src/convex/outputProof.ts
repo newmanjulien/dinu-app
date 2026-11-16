@@ -1,3 +1,4 @@
+import type { FullOutput } from './outputLifecycle';
 import { ConvexError, type Infer } from 'convex/values';
 import type { Doc, Id } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
@@ -20,13 +21,14 @@ import {
 	effectiveDecision,
 	MAX_APPROVED_CHANGE_CHAIN
 } from './contractChanges';
-import { requireNativeReachability } from './nativeStage';
+import { nativeReachable, requireNativeReachability } from './nativeStage';
+import { assertChangeHead, assertHeadChange, appliedDecisionId } from './contractChangeHeads';
 import type { outputDestination, outputProof } from './outputValidators';
 import type { OutputPreparation, OutputProofCursor, ReservationManifest } from './outputValidators';
 
 const encoder = new TextEncoder();
 const FRAGMENT_UNITS = 8 * 1024;
-type ProofChunk = Omit<Doc<'operationReceiptChunks'>, '_id' | '_creationTime'>;
+type ProofChunk = Omit<Doc<'contractOutputChunks'>, '_id' | '_creationTime'>;
 type OrdinaryProofWalk = {
 	chunks: ProofChunk[];
 	heads?: AsyncIterator<Doc<'contractChangeHeads'>>;
@@ -131,10 +133,12 @@ export async function initialOutputPreparation(
 		dueAt: Date.now()
 	};
 }
-export function proofSeed(row: Doc<'operationReceipts'>, preparation: OutputPreparation) {
+export function proofSeed(row: FullOutput, preparation: OutputPreparation) {
 	return receiptChunkFingerprint(
 		canonicalJson({
-			receiptId: row._id,
+			outputId: row._id,
+			companyId: row.companyId,
+			contractId: row.contractId,
 			key: row.key,
 			operationId: row.operationId,
 			actor: row.actor,
@@ -147,15 +151,21 @@ export function proofSeed(row: Doc<'operationReceipts'>, preparation: OutputPrep
 	);
 }
 export function sealedManifest(
-	row: Doc<'operationReceipts'>,
+	row: FullOutput,
 	preparation: OutputPreparation
 ): ReservationManifest {
 	if (preparation.phase !== 'sealed') throw new Error('Output proof is not sealed.');
+	if (
+		preparation.base.companyId !== row.companyId ||
+		preparation.base.contractId !== row.contractId ||
+		preparation.base.documentId !== row.documentId
+	)
+		throw new Error('Output proof seal ownership changed.');
 	return {
 		...preparation.base,
 		identity: preparation.identity,
 		proof: {
-			receiptId: row._id,
+			outputId: row._id,
 			companyId: row.companyId,
 			contractId: preparation.base.contractId,
 			schema: 1,
@@ -171,7 +181,7 @@ export function sealedManifest(
 }
 async function append(
 	ctx: MutationCtx,
-	row: Doc<'operationReceipts'>,
+	row: FullOutput,
 	preparation: OutputPreparation,
 	record: unknown,
 	walk?: OrdinaryProofWalk
@@ -184,7 +194,8 @@ async function append(
 		order = preparation.chunks;
 	const chunk: ProofChunk = {
 		companyId: row.companyId,
-		receiptId: row._id,
+		contractId: row.contractId,
+		outputId: row._id,
 		section: 'output-proof',
 		generation: preparation.generation,
 		order,
@@ -193,7 +204,7 @@ async function append(
 		data
 	};
 	if (walk) walk.chunks.push(chunk);
-	else await ctx.db.insert('operationReceiptChunks', chunk);
+	else await ctx.db.insert('contractOutputChunks', chunk);
 	preparation.hash = receiptSectionHash(preparation.hash, order, fingerprint, 1);
 	preparation.chunks++;
 	preparation.records++;
@@ -202,7 +213,7 @@ async function append(
 /** Every serialized immutable row is frozen in bounded ordered fragments. No patch is hydrated. */
 async function fragment(
 	ctx: MutationCtx,
-	row: Doc<'operationReceipts'>,
+	row: FullOutput,
 	preparation: OutputPreparation,
 	kind: string,
 	id: string,
@@ -247,16 +258,7 @@ function immutableDecision(row: Doc<'contractChangeDecisions'>) {
 	return value;
 }
 async function committedDecision(ctx: QueryCtx, decision: Doc<'contractChangeDecisions'>) {
-	if (!decision.stage) return true;
-	const owner = await ctx.db.get('operationReceipts', decision.stage.receiptId);
-	return !!(
-		decision.stage.sealed &&
-		owner?.state === 'complete' &&
-		owner.companyId === decision.companyId &&
-		owner.contractId === decision.contractId &&
-		owner.nativeResult?.generation === decision.stage.generation &&
-		owner.nativeResult.decisionIds.includes(decision._id)
-	);
+	return nativeReachable(ctx, 'contractChangeDecisions', decision._id, decision);
 }
 async function currentProofChange(
 	ctx: QueryCtx,
@@ -273,7 +275,7 @@ async function currentProofChange(
 /** One native-key/ancestor/content/decision unit. State is a constant-size durable cursor. */
 async function unit(
 	ctx: MutationCtx,
-	row: Doc<'operationReceipts'>,
+	row: FullOutput,
 	contract: Contract,
 	preparation: OutputPreparation,
 	sources: ProofSources,
@@ -314,12 +316,13 @@ async function unit(
 			throw new Error('Output head ownership changed.');
 		// Applied evidence deliberately has no live discussion/source predicate. Pending buyer
 		// supports are certified by exact readiness summaries, including effective cancellation.
-		if (!head.appliedChangeId) return;
-		const change = await currentProofChange(ctx, contract, head.appliedChangeId, sources);
-		if (change.kind !== head.kind || change.key !== head.key)
-			throw new Error('Invalid applied output head.');
-		const decision = head.appliedDecisionId
-			? await effectiveDecision(ctx, contract, change._id, head.appliedDecisionId)
+		assertChangeHead(head);
+		if (!head.applied) return;
+		const change = await currentProofChange(ctx, contract, head.applied.changeId, sources);
+		assertHeadChange(head, 'applied', change);
+		const decisionId = appliedDecisionId(head.applied);
+		const decision = decisionId
+			? await effectiveDecision(ctx, contract, change._id, decisionId)
 			: null;
 		if (
 			(change.policy === 'required' && decision?.status !== 'approved') ||
@@ -377,10 +380,7 @@ async function unit(
 			}
 			return;
 		}
-		if (
-			sources.part?.changeId !== change._id ||
-			sources.part.order !== preparation.contentOrder
-		) {
+		if (sources.part?.changeId !== change._id || sources.part.order !== preparation.contentOrder) {
 			const chunk = await ctx.db
 				.query('contractChangeContents')
 				.withIndex('by_changeId_and_order', (q) =>
@@ -468,7 +468,7 @@ async function unit(
 /** Small reservations finish here; larger proofs checkpoint actual progress on their owner. */
 export async function advanceOutputProof(
 	ctx: MutationCtx,
-	row: Doc<'operationReceipts'>,
+	row: FullOutput,
 	contract: Contract,
 	ordinary = false
 ) {
@@ -497,16 +497,16 @@ export async function advanceOutputProof(
 	}
 	if (walk) {
 		if (preparation.phase === 'sealed')
-			for (const chunk of walk.chunks) await ctx.db.insert('operationReceiptChunks', chunk);
+			for (const chunk of walk.chunks) await ctx.db.insert('contractOutputChunks', chunk);
 		else {
 			// The ordinary attempt has made no writes. Only actual work/metric overflow
-			// falls back to the existing durable native-page traversal on this receipt.
+			// falls back to the existing durable native-page traversal on this output.
 			preparation = structuredClone(row.outputPreparation!);
 			preparation.hash = proofSeed(row, preparation);
 		}
 	}
 	preparation.dueAt = preparation.phase === 'sealed' ? undefined : Date.now();
-	await ctx.db.patch('operationReceipts', row._id, { outputPreparation: preparation });
+	await ctx.db.patch('contractOutputs', row._id, { outputPreparation: preparation });
 	return preparation;
 }
 export function initialProofCursor(proof: Infer<typeof outputProof>): OutputProofCursor {
@@ -522,10 +522,10 @@ export async function foldOutputProofPage(
 		next = { ...cursor };
 	if (next.order > proof.chunks) throw new Error('Output proof cursor exceeds its seal.');
 	const chunks = await ctx.db
-		.query('operationReceiptChunks')
-		.withIndex('by_receiptId_and_section_and_generation_and_order', (q) =>
+		.query('contractOutputChunks')
+		.withIndex('by_outputId_and_section_and_generation_and_order', (q) =>
 			q
-				.eq('receiptId', proof.receiptId)
+				.eq('outputId', proof.outputId)
 				.eq('section', proof.section)
 				.eq('generation', proof.generation)
 				.gte('order', next.order)
@@ -535,6 +535,10 @@ export async function foldOutputProofPage(
 		const bytes = encoder.encode(chunk.data).byteLength;
 		if (
 			chunk.companyId !== proof.companyId ||
+			chunk.contractId !== proof.contractId ||
+			chunk.outputId !== proof.outputId ||
+			chunk.section !== proof.section ||
+			chunk.generation !== proof.generation ||
 			chunk.order !== next.order ||
 			chunk.order >= proof.chunks ||
 			chunk.recordCount !== 1 ||
@@ -556,34 +560,42 @@ export async function foldOutputProofPage(
 		throw new Error('Output proof does not match its immutable seal.');
 	return { cursor: next, complete };
 }
+/** Canonical seal replaces the old duplicated whole-manifest receipt result. */
+export const outputManifestHash = (manifest: ReservationManifest) =>
+	receiptChunkFingerprint(canonicalJson(manifest));
 /** Replay reads only the bounded manifest and its owner seal. No proof flattening. */
 export async function outputReservation(
 	ctx: QueryCtx,
 	source: {
 		companyId: Id<'company'>;
 		contractId: Id<'savedContracts'>;
-		reservationReceiptId: Id<'operationReceipts'>;
-		documentId: Id<'contractDocuments'>;
+		outputId: Id<'contractOutputs'>;
+		documentId?: Id<'contractDocuments'>;
 	}
 ) {
-	const owner = await ctx.db.get('operationReceipts', source.reservationReceiptId),
-		manifest = owner?.reservationManifest;
+	const owner = await ctx.db.get('contractOutputs', source.outputId),
+		manifest = owner?.format === 'full' ? owner.reservationManifest : undefined;
 	if (
 		!owner ||
+		owner.format !== 'full' ||
+		owner.compaction ||
+		owner.disposal ||
 		owner.state !== 'complete' ||
 		!manifest ||
 		owner.companyId !== source.companyId ||
 		owner.contractId !== source.contractId ||
-		owner.documentId !== source.documentId ||
+		(source.documentId !== undefined && owner.documentId !== source.documentId) ||
 		manifest.companyId !== source.companyId ||
 		manifest.contractId !== source.contractId ||
-		manifest.documentId !== source.documentId ||
-		manifest.proof.receiptId !== owner._id ||
+		manifest.documentId !== owner.documentId ||
+		manifest.proof.outputId !== owner._id ||
 		manifest.proof.companyId !== owner.companyId ||
 		manifest.proof.contractId !== owner.contractId ||
 		manifest.proof.section !== 'output-proof' ||
 		manifest.proof.schema !== 1
 	)
 		throw new ConvexError('This output reservation is unavailable. Prepare a new output.');
+	if (owner.manifestHash !== outputManifestHash(manifest))
+		throw new Error('Invalid output reservation ownership.');
 	return { owner, reservationManifest: manifest };
 }

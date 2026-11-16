@@ -21,7 +21,7 @@ export async function hiddenAnnotations(
 	// and structural removals remain represented even when they produced no text piece.
 	const buyers = new Set(
 			document.pieces.flatMap((piece) =>
-				piece.annotationKind === 'buyer-proposal' && piece.createdBy ? [piece.createdBy] : []
+				piece.annotationKind === 'buyer-link' && piece.createdBy ? [piece.createdBy] : []
 			)
 		),
 		buyerBoundaries = new Set<string>();

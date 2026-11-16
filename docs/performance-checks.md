@@ -35,7 +35,7 @@ stubbed; the viewer integration tests mount the actual viewer and page component
 | Saved contract reopening | Existing immutable-content download checks are complemented by real resource/workspace/renderer reuse. Actual viewer deactivation/reactivation preserves page element identity, snapshots and profiling work.                                                                                                                                                                                                                 |
 | Concession changes       | Local intent/checkpointing update before acknowledgement; real rendering displays changed wording while saving remains unresolved. Real alternative prewarming eliminates new profiling transactions, and unchanged pages are reused.                                                                                                                                                                                         |
 | Instruction-only updates | The actual mounted viewer preserves its snapshot and page elements after a compact structure/detail revision update, with zero new renderer requests or profiling transactions.                                                                                                                                                                                                                                               |
-| Prepared creation        | The actual creation component adopts its prepared preview resource, source and rendered pages, with one template load and one workspace construction. Creation acknowledgement/open handoff does not repeat preparation.                                                                                                                                                                                                      |
+| Canonical creation       | The actual route/cache/editor/viewer handoff performs no speculative composition or pagination. After confirmed authority, one canonical resource/source/snapshot and prepared page nodes survive delayed module admission and real saved attachment without extra profiling.                                                                                                                                                 |
 | Home                     | Startup cards display with the live first page still pending. Visible-card warming waits for live readiness, two animation frames and deferred dispatch; scrolling pauses it through the interaction cooldown. Pending replacement search retains existing cards.                                                                                                                                                             |
 | Document search          | Results publish before the DOM debounce. Repeating the query and navigating matches reuse scanned text and materialized ranges. Changed page text alone is rescanned; viewport movement limits range materialization.                                                                                                                                                                                                         |
 | Overlay work             | Geometry measurement is confined to visible pages and their neighbors in the controlled viewport; revisiting measured pages reuses it. Pointer bursts coalesce into one hover check per frame. Idle and unchanged selection notifications add no work or frames.                                                                                                                                                              |
@@ -86,13 +86,13 @@ parsing and Word generation live under `src/lib/server/contract`; importing them
 from browser code, directly or indirectly, fails the build. Shared document logic,
 upload limits, and the browser download helper remain outside that directory.
 
-| Group      | Automated guarantees                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one-selection saves skip template source reads and compilation, validate membership, and advance state. Replays succeed; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. A changed two-selection save confirms the read/compiler observers execute real code.                                      |
-| Scheduling | Foreground dispatches before queued background work. Aborted queued callbacks never run. Destroy rejects queued work and cancels dispatch.                                                                                                                                                                                                                                                                                                                                                                   |
-| Caching    | Compact metadata and an immutable template load once through Convex; the snapshot reopens from memory without another request, then from IndexedDB after memory release without downloading. Confirmed state updates survive reopening without rewriting the immutable snapshot store.                                                                                                                                                                                                                       |
+| Group      | Automated guarantees                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one-selection saves skip template source reads and compilation, validate membership, and advance state. Replays succeed; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. A changed two-selection save confirms the read/compiler observers execute real code.                                   |
+| Scheduling | Foreground dispatches before queued background work. Aborted queued callbacks never run. Destroy rejects queued work and cancels dispatch.                                                                                                                                                                                                                                                                                                                                                                |
+| Caching    | Compact metadata and an immutable template load once through Convex; the snapshot reopens from memory without another request, then from IndexedDB after memory release without downloading. Confirmed state updates survive reopening without rewriting the immutable snapshot store.                                                                                                                                                                                                                    |
 | Creation   | Creation owns one contract root and approved document, freezes a mutable template version on its first contract capture, and reuses already frozen versions. The existing frozen-template fixture checks two root writes, two other writes, one directory write, one source-content read and three document writes. Existing checks also cover template save replay, exhausted-capacity rejection, frozen content after later authoring/deletion, import races, creation retries and saved-version reads. |
-| Startup    | Repeated opening requests navigate once. Returning accounts do not provision; confirmed missing state initializes once per transport generation without unnecessary initialization writes.                                                                                                                                                                                                                                                                                                                   |
+| Startup    | Repeated opening requests navigate once. Returning accounts do not provision; confirmed missing state initializes once per transport generation without unnecessary initialization writes.                                                                                                                                                                                                                                                                                                                |
 
 Saving observers count directory writes separately while preserving the original
 contract-write assertions. Unchanged saves and replays perform zero writes to either
@@ -108,7 +108,7 @@ the operation. The mutation response shape is unchanged.
 The capacity fixture checks the application's exhausted transaction-budget rejection;
 it no longer stages writes across multiple tables to check platform rollback. Startup
 checks no longer construct an unattached prepared DOCX or assert its non-adoption and
-absence of scheduled work. Prepared-creation resource adoption remains checked separately.
+absence of scheduled work. Canonical saved creation and its actual prepared attachment reuse are checked separately.
 
 Tests observe work at database/compiler/storage boundaries, retain real
 implementations, and restore timers, globals, cache ownership, and isolated storage.
@@ -141,6 +141,25 @@ teardown, timeout and retry.
 
 These checks do not certify live HubSpot behavior, Word's visual rendering or actual
 browser download behavior. Simultaneous version consumers remain unverified.
+
+Output fixtures use durable `contractOutputs`/`contractOutputChunks` ownership and
+explicit full-row narrowing for Word attempts and Quote pushes. The saving observer
+still counts root/head/receipt work, document materialization and directory writes
+separately; output retention adds no chunk reference-count writes to hot saves. The
+existing exact cost, byte-expiry, fresh approval/release, actor/destination, canonical
+reuse, immutable retry and acknowledgement assertions remain required. Fixture
+maintenance preserves those assertions without adding coverage.
+
+The [retention model](retention.md) additionally has immutable seven-day retry and
+acknowledgement windows, 90-day full-evidence settlement, actual-owner native promotion,
+hourly collection with a fixed cutoff and deleted-contract coarse waiting/drain.
+Existing suites do not exhaustively prove those time boundaries, partial-promotion
+and compaction/deletion races, scheduler recovery/fairness, shared physical-file/chunk
+reclamation, company catch-up or populated preservation conversion. Source/type review
+does not establish runtime or platform-budget success. The mandatory performance
+suite, production build and necessary existing export/quote/activity/delivery/security/
+uninstall suites must be recorded separately from those unverified guarantees; no live
+provider or browser result is implied.
 
 Admin authoring now uses compact certified structure, revision-authoritative details, atomic
 changed-body/version deltas and template source-lived rendering artifacts. Save publishes pending
@@ -180,3 +199,65 @@ admission and access-withdrawal checks above remain.
 Recovery checks cover shared hung deal-request eviction and late-result fencing, snapshot acquisition cancellation/deadline, retained history plus access rejection, buyer resource/scheduler retention, and clipboard callback/latest-success dismissal. Existing Home, editor, creation, CSM and save/cache/scheduling assertions remain required. Startup server-load checks prove independently settling account/cards and bounded streamed invitation preview; backend tests verify assistance scope and setup-hint authorization.
 
 The production build emits module metadata; `verify:loading-bundles` checks static closures for public frames, mounted Home and the buyer contract entry, while requiring demanded document modules to exist. Small download helpers and persistence owners are allowed. These guarantees establish DOM/state/order/ownership and dependency boundaries, not physical paint, layout, native focus/dialog stacking, clipboard activation, screen-reader delivery, deployed streaming buffering or production speed. User browser acceptance covers those behaviors; no browser automation is added.
+
+## Progressive usable loading guarantees
+
+`npm run test:snappiness` discovers the component regressions below; `npm run verify`
+also runs them with the existing suites, mandatory performance suite, type checks and a
+fresh production build/loading manifest. These assert actual work, request counts, object
+and DOM identity, controlled focus and visible ordering rather than latency targets.
+
+- `materialized-composition-snappiness.test.ts` exercises the real materialized compositor,
+  artifact dependency ownership beyond the 256 optional budget, cancellation and invalidation,
+  repeat resolved/prepared/page identity and zero added profile work. `tests/client/caching.test.ts`
+  preserves approved payload authority, one accepted size calculation and durable bounds.
+- `progressive-viewer-snappiness.test.ts` holds real pagination/metadata work to check the
+  three-page visible batch, complete one/two-page admission, stable appended page DOM,
+  before/after-threshold errors, warm reuse and complete-only custom work. It also checks
+  that an early annotation highlight stays visible through every later page append and
+  the complete snapshot handoff, while native selection stays attached. Controlled
+  visibility/priority/host/cancellation checks retain scheduler fences and hidden-tab policy.
+- Home's persistent-frame tests hold its lazy results module: the actual input, query, caret
+  focus and debounce survive arrival/retry; typing suppresses the redundant default browse.
+  Create readiness is independent of cards/links and existing warming/privacy bounds remain.
+- `creation/creation-snappiness.test.ts` mounts actual ContractRoute, canonical cache/editor,
+  SavedContract/SavedDocumentFrame, resource owner and retained pages. It checks business
+  submission with the inert document skeleton behind the naming dialog before host readiness,
+  zero speculative preparation, exact approved authority,
+  one canonical construction, lease protection and prepared source/snapshot/page-node reuse
+  through the real attachment, uncertain operation identity, scoped eligibility and retries.
+  Its saved-route cases check first complete help while code/host/authority are pending,
+  functional checkbox/save/error, focus across completion, pending preference, A→B→A,
+  stale opening writes, account replacement, naming/help non-stacking and same-opening retry.
+- `viewer/tools-help-snappiness.test.ts` mounts actual chrome, rails, search adapter and modal.
+  It checks parallel search/shared-policy starts, reverse readiness, ready-disabled controls,
+  absence skipping, every visible applicable prefix on both rails, same-flush admission,
+  failed upper module retry and actual shared integration error/timeout/retry with one active
+  status observation. Rep/buyer templates remain manual. Existing buyer lifecycle/help tests
+  protect public-link preference/preview behavior.
+- `viewer/buyer-header-snappiness.test.ts` holds account classification after link status
+  resolves. The buyer and seller headers appear before the heading and document body;
+  the seller account control reserves an avatar circle while its separate read is pending,
+  and that read does not delay the body. Seller preview copy has no contract fallback.
+  `viewer/buyer-link-bar-snappiness.test.ts` mounts
+  the saved footer admission boundary and checks matching first pages, link result/error,
+  later pagination, interaction admission and unavailable state.
+  `viewer/buyer-link-bar-copy-snappiness.test.ts` mounts the actual footer and checks
+  create/copy/retry labels, the reserved longest label and button identity across a link update.
+- `tests/ssr/contract-titles.test.ts` checks the actual first-response `<title>` for saved
+  contracts and buyer links across authorized named, unnamed, unavailable and read-error
+  cases. It also checks seller/buyer audience titles and that the seller credential is not
+  serialized. Run it with `npm run test:ssr`; `test:snappiness` only runs component tests.
+
+The emitted bundle check bans static renderer/factory/profiler/search-controller/panel coupling
+at public, persistent Contracts, creation and saved/help admission roots. Dynamic imports may
+prepare in parallel without admitting heavyweight UI. The fresh production manifest is required;
+source import inspection alone does not certify the emitted graph.
+
+Automated jsdom focus and modal identity/order are checked separately from native browser
+acceptance. Physical paint, native scroll/selection/caret, responsive layout, assistive-technology
+delivery and live HubSpot/network behavior remain user checks. Synthetic timings do not establish
+production speed or eliminate every cancellation/ownership permutation. The header test
+controls account classification, and the footer admission test replaces the bar body to isolate its
+timing. These do not prove live avatar fetch timing, CSS width stability, or browser
+tab paint timing.

@@ -8,12 +8,14 @@
 	import type { Action } from 'svelte/action';
 	let {
 		contract,
+		metadataCurrent = true,
 		status,
 		observe,
 		onWarm,
 		onCool
 	}: {
 		contract: SavedContractCard;
+		metadataCurrent?: boolean;
 		status?: SaveStatus;
 		observe: Action<HTMLElement, SavedContractCard>;
 		onWarm: () => void;
@@ -58,6 +60,9 @@
 		</p>
 	{/snippet}
 	{#snippet action()}
-		<CopyBuyerLink id={contract._id} reason={workBlock ? workBlockMessage(workBlock) : null} />
+		<CopyBuyerLink
+			id={contract._id}
+			reason={metadataCurrent && workBlock ? workBlockMessage(workBlock) : null}
+		/>
 	{/snippet}
 </ContractCardLayout>

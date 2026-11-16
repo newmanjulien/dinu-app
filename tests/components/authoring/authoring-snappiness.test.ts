@@ -190,7 +190,7 @@ it('a formerly warm instruction waits for its current revision rather than prese
 	f.network.publishDetail(updated._id, f.data.detail(0, updated));
 	expect(f.session.pendingPanel).toBeNull();
 	const draft = f.session.controller.draft;
-	expect(draft && isRepItem(draft) ? draft.instructions.summary : undefined).toBe(
+	expect(draft && isRepItem(draft) ? draft.instructions?.summary : undefined).toBe(
 		'Current guidance'
 	);
 });

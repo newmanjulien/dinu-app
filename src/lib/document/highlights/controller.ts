@@ -104,6 +104,7 @@ function sameHighlights(a: readonly HighlightRect[], b: readonly HighlightRect[]
 type Group = {
 	kind: HighlightKind;
 	owner?: HTMLElement;
+	rebindFromSource: boolean;
 	ranges: Map<Range, RangeRecord>;
 	pages?: ReadonlySet<number>;
 };
@@ -136,9 +137,11 @@ export class DocumentHighlightController {
 	#pageGroups = new Map<number, Map<string, Set<Range>>>();
 	#pages = new Map<number, PageRecord>();
 	#publication: PageHighlights = new Map();
+	#retainedHighlightPages = new Set<number>();
 	#listeners = new Set<(pages: PageHighlights) => void>();
 	#hoveredAnnotationId: string | null = null;
 	#geometryListeners = new Set<(change: GeometryChange) => void>();
+	#annotationRebindListeners = new Set<(pages: ReadonlySet<number>) => void>();
 	#layoutEpoch: string | undefined;
 	/** Synchronous measurement always drains dirty pages from the latest committed DOM. */
 	#geometryDirty = new Set<number>();
@@ -155,14 +158,16 @@ export class DocumentHighlightController {
 	#selectionProjection: readonly Range[] | null = null;
 	#frame: number | undefined;
 	#destroyed = false;
+	#measurementBatchSize: number;
 	#events = new AbortController();
 	#resize: ResizeObserver;
 	#intersection: IntersectionObserver;
 	#mutations: MutationObserver;
 	#observed = new Map<Element, ObservedContent>();
 
-	constructor(stage: HTMLElement) {
+	constructor(stage: HTMLElement, { measurementBatchSize = Infinity } = {}) {
 		this.#stage = stage;
+		this.#measurementBatchSize = measurementBatchSize;
 		controllers.set(stage, this);
 		const options = { signal: this.#events.signal };
 		document.addEventListener('selectionchange', this.#selectionChanged, options);
@@ -244,7 +249,8 @@ export class DocumentHighlightController {
 		kind: HighlightKind,
 		ranges: readonly Range[],
 		includedPages?: ReadonlySet<number>,
-		owner?: HTMLElement
+		owner?: HTMLElement,
+		{ rebindFromSource = false }: { rebindFromSource?: boolean } = {}
 	) {
 		if (this.#destroyed) return;
 		let group = this.#groups.get(name);
@@ -259,8 +265,10 @@ export class DocumentHighlightController {
 			)
 		);
 		if (!group && !next.size) return;
-		if (!group) this.#groups.set(name, (group = { kind, ranges: new Map(), owner }));
+		if (!group)
+			this.#groups.set(name, (group = { kind, ranges: new Map(), owner, rebindFromSource }));
 		group.owner = owner;
+		group.rebindFromSource = rebindFromSource;
 		group.pages = includedPages ? new Set(includedPages) : undefined;
 		if (next.size === group.ranges.size) {
 			const previous = [...group.ranges.values()];
@@ -494,10 +502,37 @@ export class DocumentHighlightController {
 				}
 			}
 		}
+		const rebindPages = new Set<number>();
+		const invalid = new Map<string, Map<Range, RangeRecord>>();
 		for (const [name, ranges] of affected) {
-			const group = this.#groups.get(name)!;
+			const group = this.#groups.get(name);
+			if (!group?.rebindFromSource) continue;
+			for (const range of ranges.keys()) {
+				const record = group.ranges.get(range);
+				if (
+					!record ||
+					(!range.collapsed &&
+						sameRange(range, record) &&
+						this.#stage.contains(range.startContainer) &&
+						this.#stage.contains(range.endContainer))
+				)
+					continue;
+				let entries = invalid.get(name);
+				if (!entries) invalid.set(name, (entries = new Map()));
+				entries.set(range, record);
+				for (const number of record.pages) rebindPages.add(number);
+			}
+		}
+		// Recreate source-owned ranges before the next frame can publish empty geometry.
+		if (rebindPages.size)
+			for (const listener of this.#annotationRebindListeners) listener(rebindPages);
+		for (const [name, ranges] of affected) {
+			const group = this.#groups.get(name);
+			if (!group) continue;
 			for (const [range, numbers] of ranges) {
-				const record = group.ranges.get(range)!;
+				if (invalid.get(name)?.has(range)) continue;
+				const record = group.ranges.get(range);
+				if (!record) continue;
 				if (
 					!this.#stage.contains(range.startContainer) ||
 					!this.#stage.contains(range.endContainer)
@@ -505,6 +540,12 @@ export class DocumentHighlightController {
 					this.#dropRange(name, group, range, record);
 				} else this.#updateRange(name, group, range, measured ? numbers : undefined);
 			}
+		}
+		for (const [name, ranges] of invalid) {
+			const group = this.#groups.get(name);
+			if (!group) continue;
+			for (const [range, record] of ranges)
+				if (group.ranges.get(range) === record) this.#dropRange(name, group, range, record);
 		}
 	}
 	clearGroup(name: string) {
@@ -677,6 +718,12 @@ export class DocumentHighlightController {
 			this.#geometryListeners.delete(listener);
 		};
 	}
+	subscribeAnnotationRebind(listener: (pages: ReadonlySet<number>) => void) {
+		this.#annotationRebindListeners.add(listener);
+		return () => {
+			this.#annotationRebindListeners.delete(listener);
+		};
+	}
 	/** Visible pages and one neighbor on each side, shared with search materialization. */
 	subscribeEagerPages(listener: (pages: ReadonlySet<number>) => void) {
 		this.#eagerPageListeners.add(listener);
@@ -783,6 +830,13 @@ export class DocumentHighlightController {
 		// Text geometry still reuses exact prepared pages; structural targets rebind lazily.
 		this.#structuralBoundaries.clear();
 		this.#observeContent();
+		if (previousEpoch === layoutEpoch)
+			for (const number of changedPages)
+				if (
+					this.#pages.get(number)?.geometry.element === this.#pageElements.get(number) &&
+					this.#publication.has(number)
+				)
+					this.#retainedHighlightPages.add(number);
 		this.#invalidatePages(
 			previousEpoch !== layoutEpoch ? [...this.#pageElements.keys()] : changedPages
 		);
@@ -825,6 +879,7 @@ export class DocumentHighlightController {
 			this.#intersection.unobserve(element);
 			this.#visiblePages.delete(number);
 			this.#pages.delete(number);
+			this.#retainedHighlightPages.delete(number);
 			this.#geometryDirty.delete(number);
 			this.#paintDirty.add(number);
 		}
@@ -943,6 +998,37 @@ export class DocumentHighlightController {
 			for (const number of group.pages) targets.add(number);
 		return targets;
 	}
+	#nextMeasurementTarget(targets: ReadonlySet<number>) {
+		// Keep the page being read ahead of its neighbors when an opening is still appending.
+		for (const number of this.#pageElements.keys())
+			if (this.#visiblePages.has(number) && targets.has(number) && this.#geometryDirty.has(number))
+				return number;
+		for (const number of targets) if (this.#geometryDirty.has(number)) return number;
+		return undefined;
+	}
+	#measurementBatch(targets: ReadonlySet<number>) {
+		if (this.#measurementBatchSize === Infinity) return targets;
+		const batch = new Set<number>();
+		const add = (number: number) => {
+			if (targets.has(number) && this.#geometryDirty.has(number)) batch.add(number);
+		};
+		for (const number of this.#pageElements.keys()) {
+			if (this.#visiblePages.has(number)) add(number);
+			if (batch.size >= this.#measurementBatchSize) return batch;
+		}
+		for (const number of targets) {
+			add(number);
+			if (batch.size >= this.#measurementBatchSize) break;
+		}
+		return batch;
+	}
+	setSnapshotComplete(complete: boolean) {
+		// Retained, complete documents keep their immediate all-page measurement.
+		const size = complete ? (this.#measurementBatchSize === Infinity ? Infinity : 3) : 1;
+		if (this.#measurementBatchSize === size) return;
+		this.#measurementBatchSize = size;
+		this.#schedule();
+	}
 
 	#ensureGeometry(targets: ReadonlySet<number>) {
 		const pending = new Set([...targets].filter((number) => this.#geometryDirty.has(number)));
@@ -955,6 +1041,7 @@ export class DocumentHighlightController {
 			updated.reduce((count, page) => count + page.textIndex.length, 0)
 		);
 		for (const number of pending) this.#geometryDirty.delete(number);
+		for (const number of pending) this.#retainedHighlightPages.delete(number);
 		for (const geometry of updated) {
 			this.#pages.set(geometry.number, {
 				geometry,
@@ -1004,7 +1091,7 @@ export class DocumentHighlightController {
 							)
 						: [];
 			const targets = this.#measurementTargets();
-			this.#ensureGeometry(targets);
+			this.#ensureGeometry(this.#measurementBatch(targets));
 			if (this.#selectionDirty) {
 				this.#measureSelection(ranges);
 			}
@@ -1021,6 +1108,12 @@ export class DocumentHighlightController {
 				for (const number of this.#paintDirty) {
 					const page = this.#pages.get(number);
 					if (!page || this.#geometryDirty.has(number)) {
+						if (
+							page &&
+							this.#retainedHighlightPages.has(number) &&
+							page.geometry.element === this.#pageElements.get(number)
+						)
+							continue;
 						changed = publication.delete(number) || changed;
 						continue;
 					}
@@ -1048,7 +1141,9 @@ export class DocumentHighlightController {
 					for (const listener of this.#listeners) listener(publication);
 				}
 			}
-			this.#stage.setAttribute('data-highlights-ready', '');
+			if (this.#nextMeasurementTarget(this.#measurementTargets()) === undefined)
+				this.#stage.setAttribute('data-highlights-ready', '');
+			if (this.#measurementBatchSize !== Infinity) this.#schedule();
 		});
 	};
 	destroy() {
@@ -1061,6 +1156,7 @@ export class DocumentHighlightController {
 		this.#observed.clear();
 		this.#listeners.clear();
 		this.#geometryListeners.clear();
+		this.#annotationRebindListeners.clear();
 		this.#eagerPageListeners.clear();
 		this.#groups.clear();
 		this.#boundaryGroups.clear();
@@ -1068,6 +1164,7 @@ export class DocumentHighlightController {
 		this.#boundaryElements.clear();
 		this.#pageGroups.clear();
 		this.#pages.clear();
+		this.#retainedHighlightPages.clear();
 		this.#pageElements.clear();
 		this.#geometryDirty.clear();
 		this.#eagerPages.clear();

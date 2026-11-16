@@ -2,11 +2,21 @@ import { afterEach, expect, it, vi } from 'vitest';
 import {
 	CsmAvailability,
 	type Availability,
-	type CalendarSelection
+	type AvailabilitySelection
 } from '../../src/lib/components/chrome/csm-availability';
 import { ReadAttempt, waitForRead } from '../../src/lib/auth/attempt';
-const selection: CalendarSelection = { mode: 'setup', month: '2026-11', timeZone: 'UTC' };
-const ready: Availability = { status: 'ready', slots: [], duration: 30, lastDate: null };
+const selection: AvailabilitySelection = { mode: 'setup', timeZone: 'UTC' };
+const ready: Availability = { status: 'ready', slots: [], duration: 30 };
+const zones = [
+	'America/Toronto',
+	'America/Vancouver',
+	'Europe/Paris',
+	'Europe/Rome',
+	'Asia/Tokyo',
+	'Asia/Seoul',
+	'Australia/Sydney',
+	'Pacific/Auckland'
+];
 function deferred<T>() {
 	let resolve!: (value: T) => void, reject!: (error: unknown) => void;
 	const promise = new Promise<T>((yes, no) => {
@@ -16,7 +26,7 @@ function deferred<T>() {
 	return { promise, resolve, reject };
 }
 afterEach(() => vi.useRealTimers());
-it('coalesces upload, expansion and opening; retains empty months for two minutes from completion', async () => {
+it('coalesces upload, expansion and opening; retains empty availability windows for two minutes from completion', async () => {
 	vi.useFakeTimers();
 	const pending = deferred<Availability>(),
 		load = vi.fn(() => pending.promise);
@@ -43,7 +53,7 @@ it('retains A→B→A but evicts least recently used entries beyond eight', asyn
 	await resource.read(selection);
 	expect(load).toHaveBeenCalledTimes(2);
 	for (let index = 0; index < 7; index++)
-		await resource.read({ ...selection, month: String(index) });
+		await resource.read({ ...selection, timeZone: zones[index] });
 	expect(resource.peek(selection)).toEqual(ready);
 	expect(resource.peek(other)).toBeUndefined();
 });
@@ -86,7 +96,8 @@ it('prevents late work from restoring invalidated, evicted or disposed entries',
 	);
 	const first = evicted.read(selection);
 	await Promise.resolve();
-	for (let index = 0; index < 8; index++) void evicted.read({ ...selection, month: String(index) });
+	for (let index = 0; index < 8; index++)
+		void evicted.read({ ...selection, timeZone: zones[index] });
 	delayed.resolve(ready);
 	await first;
 	expect(evicted.peek(selection)).toBeUndefined();

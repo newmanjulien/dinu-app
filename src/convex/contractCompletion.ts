@@ -1,13 +1,13 @@
 import { ConvexError, v, type Infer } from 'convex/values';
 import type { QueryCtx } from './_generated/server';
 import { seller } from './contractState';
-import { approvalContext } from '../lib/contract/changes';
+import { changeKind, reviewGroupKey } from '../lib/contract/changes';
 import { reviewSet } from './reviews';
 
 export const completionArgs = v.object({
 	membershipId: v.id('memberships'),
 	id: v.id('savedContracts'),
-	context: approvalContext,
+	context: changeKind,
 	expectedIdentity: v.string(),
 	token: v.optional(v.string())
 });
@@ -26,10 +26,7 @@ export async function completionContext(ctx: QueryCtx, args: Infer<typeof comple
 	)
 		throw new ConvexError('This contract is unavailable.');
 	const summary = await reviewSet(ctx, contract, args.context);
-	const completion =
-		args.context === 'playbook'
-			? contract.root.playbookCompletion
-			: contract.root.buyerLinkCompletion;
+	const completion = contract.root.reviews[reviewGroupKey(args.context)].completion;
 	if (
 		!summary.complete ||
 		summary.identity !== args.expectedIdentity ||

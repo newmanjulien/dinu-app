@@ -1,7 +1,6 @@
 import type { DeepReadonly } from '../immutable';
 import { semanticTarget } from './content';
 import type {
-	AuthoringInstructions,
 	BuyerExplanation,
 	RepInstruction,
 	TemplateItemId,
@@ -9,10 +8,9 @@ import type {
 	TemplateAudience,
 	TemplateItem
 } from './model';
-import { authoringInstructions, isRepItem, newTriggerId } from './model';
+import { newTriggerId } from './model';
 
 export type RepInstructionDraft = RepInstruction & {
-	instructions: AuthoringInstructions;
 	persistedId?: TemplateItemId;
 };
 export type TemplateDraft =
@@ -27,6 +25,7 @@ export function newTemplateDraft(
 	return audience === 'buyer'
 		? { audience, trigger, explanation: '' }
 		: {
+				audience,
 				instructions: {},
 				approvalPolicy: { kind: 'none' },
 				trigger,
@@ -34,13 +33,11 @@ export function newTemplateDraft(
 			};
 }
 
-/** Editor-only approval guidance belongs exclusively to rep instructions. */
+/** Drafts retain the canonical business shape for both audiences. */
 export function templateDraft(
 	item: DeepReadonly<TemplateItem>,
 	persistedId?: TemplateItemId
 ): ReadonlyDraft {
 	const identity = persistedId ? { persistedId } : {};
-	return isRepItem(item)
-		? { ...item, instructions: authoringInstructions(item), ...identity }
-		: { ...item, ...identity };
+	return { ...item, ...identity };
 }

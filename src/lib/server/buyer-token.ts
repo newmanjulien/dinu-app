@@ -7,13 +7,14 @@ export type BuyerCredential =
 	{ kind: 'anonymous' } | { kind: 'account'; token: string } | { kind: 'unknown' };
 
 /** Presence is only a conservative hint; Convex verifies every supplied credential. */
-export async function buyerCredential(
+async function resolveBuyerCredential(
 	request: Request,
 	origin: string,
-	fetcher: typeof fetch
+	fetcher: typeof fetch,
+	acceptIngressBearer: boolean
 ): Promise<BuyerCredential> {
 	const authorization = request.headers.get('authorization');
-	if (authorization !== null) {
+	if (authorization !== null && acceptIngressBearer) {
 		return authorization.length <= 16_384 && /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/u.test(authorization)
 			? { kind: 'account', token: authorization.slice(7) }
 			: { kind: 'unknown' };
@@ -23,6 +24,7 @@ export async function buyerCredential(
 		url.searchParams.has('__clerk_handshake') || url.searchParams.has('__clerk_handshake_nonce');
 	const cookies = request.headers.get('cookie') ?? '';
 	const account =
+		authorization !== null ||
 		/(?:^|;\s*)__(?:session|refresh|clerk_[^=;]*)(?:_[^=;]+)?=/u.test(cookies) ||
 		/(?:^|;\s*)__client_uat(?:_[^=;]+)?=(?!0(?:;|$))[^;]+/u.test(cookies);
 	if (!handshake && !account) return { kind: 'anonymous' };
@@ -85,6 +87,16 @@ export async function buyerCredential(
 	} finally {
 		attempt.complete();
 	}
+}
+
+/** Ingress bearer tokens are verified by Convex after forwarding. */
+export function buyerCredential(request: Request, origin: string, fetcher: typeof fetch) {
+	return resolveBuyerCredential(request, origin, fetcher, true);
+}
+
+/** A page read accepts only an account session authenticated by Clerk. */
+export function buyerPageCredential(request: Request, origin: string, fetcher: typeof fetch) {
+	return resolveBuyerCredential(request, origin, fetcher, false);
 }
 
 /** Discussion ingress retains its existing explicit account-recovery contract. */

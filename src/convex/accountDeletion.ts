@@ -4,6 +4,7 @@ import { cancelAppointmentJobs } from './csmSetupAppointments';
 import { clearSetupAppointment } from './csmSetupState';
 import { preserveErasedInitial } from './csmErasureGuards';
 import { eraseProfileEvidence } from './csmEvidence';
+import { retireAccountOperations } from './accountOperationCleanup';
 import { eraseReplacementAttempt } from './csmReplacements';
 import { paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
@@ -334,6 +335,11 @@ export const clean = internalMutation({
 		// A retried or superseded cleanup job cannot continue an older chain.
 		if (!marker || marker.complete || generation !== marker.cleanupGeneration) return null;
 		const profileId = marker.profileId;
+		const budget = cleanupBudget(ctx);
+		if (!(await retireAccountOperations(ctx, profileId, budget))) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
 		if (!(await eraseProfileEvidence(ctx, profileId))) {
 			await scheduleCleanup(ctx, marker);
 			return null;
@@ -384,64 +390,23 @@ export const clean = internalMutation({
 			return null;
 		}
 		// Remove current identity-linked visits and their receipts before the profile.
-		const activityBudget = cleanupBudget(ctx);
+		const activityBudget = budget;
 		const activityDone = await activityBudget.drain(
 			'buyerActivityOpenings',
 			ctx.db
 				.query('buyerActivityOpenings')
 				.withIndex('by_profileId', (q) => q.eq('profileId', profileId)),
 			{
-				beforeDelete: async (opening) => {
-					for (const table of ['buyerActivityReceipts', 'buyerActivityClauses'] as const) {
-						if (
-							!(await activityBudget.drain(
-								table,
-								ctx.db
-									.query(table)
-									.withIndex('by_openingId_and_itemId', (q) => q.eq('openingId', opening._id))
-							))
-						)
-							return false;
-					}
-				}
+				beforeDelete: (opening) =>
+					activityBudget.drain(
+						'buyerActivityReceipts',
+						ctx.db
+							.query('buyerActivityReceipts')
+							.withIndex('by_openingId_and_itemId', (q) => q.eq('openingId', opening._id))
+					)
 			}
 		);
 		if (!activityDone) {
-			await scheduleCleanup(ctx, marker);
-			return null;
-		}
-		// Retired tables still need bounded erasure until explicit retirement.
-		if (marker.legacyActivityPhase !== 'done') {
-			const phase = marker.legacyActivityPhase ?? 'opens';
-			const budget = cleanupBudget(ctx);
-			if (phase === 'opens') {
-				const done =
-					(await budget.drain(
-						'buyerLinkOpens',
-						ctx.db
-							.query('buyerLinkOpens')
-							.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
-					)) &&
-					(await budget.drain(
-						'buyerLinkOpens',
-						ctx.db
-							.query('buyerLinkOpens')
-							.withIndex('by_visitorKey', (q) => q.eq('visitorKey', `account:${profileId}`))
-					));
-				await ctx.db.patch('deletedUsers', marker._id, {
-					legacyActivityPhase: done ? 'visits' : 'opens',
-					legacyActivityCursor: undefined
-				});
-			} else {
-				const done = await budget.drain(
-					'buyerVisits',
-					ctx.db.query('buyerVisits').withIndex('by_profileId', (q) => q.eq('profileId', profileId))
-				);
-				await ctx.db.patch('deletedUsers', marker._id, {
-					legacyActivityPhase: done ? 'done' : 'visits',
-					legacyActivityCursor: undefined
-				});
-			}
 			await scheduleCleanup(ctx, marker);
 			return null;
 		}
@@ -485,6 +450,12 @@ export const clean = internalMutation({
 			await ctx.db.patch('company', owned._id, { ownerProfileId: successor?.profileId });
 		}
 		if (membership) await ctx.db.delete('memberships', membership._id);
+		// Recheck after succession/other cleanup: earlier phases may have admitted
+		// children before the deleted-user fence became visible to their callbacks.
+		if (!(await retireAccountOperations(ctx, profileId, budget))) {
+			await scheduleCleanup(ctx, marker);
+			return null;
+		}
 		const profile = await ctx.db.get('profiles', profileId);
 		if (profile) await ctx.db.delete('profiles', profile._id);
 		if (profile?.avatarId) await deleteUnownedFile(ctx, profile.avatarId);

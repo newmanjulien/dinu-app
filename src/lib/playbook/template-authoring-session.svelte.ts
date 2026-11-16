@@ -1,3 +1,4 @@
+import { detailMatches } from '$lib/auth/workspace-read-storage';
 import type { TemplateAudience } from './model';
 import type { SnapshotClient } from '../query-once';
 import { getContext, setContext } from 'svelte';
@@ -71,6 +72,8 @@ type DetailSubscription = {
 	snapshot?: TemplateContentSnapshot;
 	error?: string;
 	awaiting: boolean;
+	observed: boolean;
+	token?: object;
 	bytes: number;
 };
 
@@ -84,17 +87,29 @@ export class TemplateAuthoringSession {
 	}
 	structure = $state.raw<StructureSnapshot | null>(null);
 	structureError = $state('');
+	structureRejected = $state(false);
 	private structureLoading = $state(false);
+	private structureObserved = false;
+	private structureReady = $state(false);
+	private storageEpoch = 0;
+	private hydrated = false;
+	private scheduledView?: () => void;
+	private scheduledDetails = new Map<string, () => void>();
+	private writtenView?: StructureSnapshot;
+	private writtenDetails = new Map<string, TemplateContentSnapshot>();
+	private releaseEffects?: () => void;
 	private details = new Map<string, DetailSubscription>();
 	private detailVersion = $state(0);
 	private projectedDetails: DeepReadonly<TemplateItemRecord[]> = [];
 	private preloadTemplateSource: string | null = null;
 	private recentIds: string[] = [];
+	private openedAt = new Map<string, number>();
 	private nearbyIds: readonly string[] = [];
 	private memberIds: string[] = [];
 	private ranking: string[] = [];
 	private rankingDirty = true;
 	private failedPreloads = new Set<string>();
+	private rejectedDetails = new Set<string>();
 	private byteCutoff = Infinity;
 	private nearbyReporter = $state.raw<((ids: readonly string[]) => void) | undefined>();
 	private syncing = false;
@@ -107,6 +122,8 @@ export class TemplateAuthoringSession {
 	private disposed = false;
 	private source: (() => AuthoringSource) | null = null;
 	private editor = $state.raw<AuthoringController | null>(null);
+	private trackedEntry: object | null = null;
+	private entrySource: AuthoringSourceIdentity | null = null;
 	private selectedId = $state<string | null>(null);
 	private requestedSelection = $state.raw<
 		| (AuthoringSelectionRequest & {
@@ -136,6 +153,21 @@ export class TemplateAuthoringSession {
 	) {
 		this.sourceRead = options.templateSource;
 		this.transport = convexSaveTransport(options.client, options.membershipId, options.audience);
+		// One accepted complete pair is the persistence unit, never a pending projection.
+		this.releaseEffects = $effect.root(() => {
+			$effect(() => {
+				const prose = this.templateSource.data,
+					structure = this.structure;
+				const current = this.current;
+				if (
+					current &&
+					prose &&
+					structure?.ready &&
+					prose.templateSourceFingerprint === structure.templateSourceFingerprint
+				)
+					this.scheduleView(prose, structure);
+			});
+		});
 	}
 	private get copy() {
 		return templateCopy(this.options.audience);
@@ -167,6 +199,19 @@ export class TemplateAuthoringSession {
 		});
 	}
 	configure(available: boolean, frozen: boolean, transportGeneration: number) {
+		if (!available && this.available) {
+			this.storageEpoch++;
+			this.scheduledView?.();
+			this.scheduledView = undefined;
+			for (const cancel of this.scheduledDetails.values()) cancel();
+			this.scheduledDetails.clear();
+			this.hydrated = false;
+			this.structure = null;
+			for (const id of this.details.keys()) this.releaseDetail(id, true);
+			this.writtenView = undefined;
+			this.writtenDetails.clear();
+			this.sourceRead.storage?.clearTemplates(this.options.audience ?? 'rep');
+		}
 		this.available = available;
 		this.frozen = frozen;
 		if (transportGeneration !== this.transportGeneration) {
@@ -235,6 +280,16 @@ export class TemplateAuthoringSession {
 			this.syncSubscriptions();
 		};
 	}
+	/** Retained dirty intent stays in its original owner; it never binds to a new source. */
+	get entryMatchesSource() {
+		const entry = this.editor?.entry;
+		return (
+			!entry ||
+			entry !== this.trackedEntry ||
+			Boolean(this.entrySource && this.structure && sameSource(this.entrySource, this.structure))
+		);
+	}
+
 	get pending() {
 		return Boolean(this.slot || (this.attached && this.editor?.hasUnsavedWork));
 	}
@@ -257,11 +312,27 @@ export class TemplateAuthoringSession {
 		return this.projectedDetails;
 	}
 	get canSubmit() {
-		return this.available && !this.frozen && !this.suspended && !this.slot && this.current;
+		return (
+			this.available &&
+			!this.frozen &&
+			!this.suspended &&
+			!this.slot &&
+			this.current &&
+			this.entryMatchesSource
+		);
 	}
+	get coherent() {
+		return Boolean(this.structure?.ready && this.sourceRead.matchesEnvelope(this.structure));
+	}
+
 	get current() {
 		return Boolean(
-			this.structure?.ready &&
+			this.coherent &&
+			this.structureReady &&
+			!this.templateSource.rejected &&
+			(!this.templateSource.data ||
+				this.templateSource.data.templateSourceFingerprint ===
+					this.structure?.templateSourceFingerprint) &&
 			!this.structureLoading &&
 			!this.structureError &&
 			this.available &&
@@ -312,7 +383,8 @@ export class TemplateAuthoringSession {
 		void this.detailVersion;
 		return {
 			...request,
-			error: this.details.get(request.itemId)?.error ?? ''
+			error: this.details.get(request.itemId)?.error ?? '',
+			body: this.readDetail(request.itemId)
 		};
 	}
 	get selectionRequest(): AuthoringSelectionRequest | null {
@@ -401,7 +473,7 @@ export class TemplateAuthoringSession {
 	private observedDetail(id: string) {
 		void this.detailVersion;
 		const entry = this.details.get(id);
-		return entry?.error ? undefined : entry?.snapshot;
+		return entry?.error || !entry?.observed || !entry.release ? undefined : entry.snapshot;
 	}
 	private authoritativeDetail(id: string, value: TemplateContentSnapshot | undefined) {
 		const base = this.structure;
@@ -418,6 +490,25 @@ export class TemplateAuthoringSession {
 		)
 			return value;
 	}
+	/** Exact-head retained reading never enters the editable/recovery projection. */
+	readDetail(id: string): DeepReadonly<TemplateItemRecord> | null {
+		void this.detailVersion;
+		const value = this.details.get(id)?.snapshot,
+			base = this.structure;
+		return this.available &&
+			this.coherent &&
+			!this.slot &&
+			!this.templateSource.rejected &&
+			(!this.templateSource.data ||
+				this.templateSource.data.templateSourceFingerprint === base?.templateSourceFingerprint) &&
+			base &&
+			value &&
+			detailMatches(base, value) &&
+			value.status === 'present'
+			? value.item
+			: null;
+	}
+
 	detail(id: string): DeepReadonly<TemplateItemRecord> | null {
 		const ordinary = this.authoritativeDetail(id, this.observedDetail(id));
 		if (ordinary) return ordinary.item;
@@ -440,10 +531,14 @@ export class TemplateAuthoringSession {
 		return this.authoritativeDetail(id, this.observedDetail(id)) ? 'present' : 'loading';
 	}
 	acceptSource() {
+		if (this.editor?.entry !== this.trackedEntry) {
+			this.trackedEntry = this.editor?.entry ?? null;
+			this.entrySource = this.structure;
+		}
 		const editorId = this.editor?.draft?.persistedId,
 			selectedId = this.selectedId,
 			request = this.requestedSelection;
-		this.editor?.accept();
+		if (this.entryMatchesSource) this.editor?.accept();
 		if (this.requestedSelection && this.editor?.entry !== this.requestedSelection.entry) {
 			this.requestedSelection = null;
 			this.selectedId = this.editor?.draft?.persistedId ?? null;
@@ -461,15 +556,28 @@ export class TemplateAuthoringSession {
 			this.syncSubscriptions();
 	}
 	private rememberOpen(itemId: string) {
+		this.openedAt.set(itemId, Date.now());
 		if (this.recentIds[0] === itemId) return;
 		this.recentIds = [itemId, ...this.recentIds.filter((id) => id !== itemId)].slice(
 			0,
 			RECENT_ITEMS
 		);
 		this.rankingDirty = true;
+		for (const id of this.openedAt.keys())
+			if (!this.recentIds.includes(id)) this.openedAt.delete(id);
 	}
 	select(itemId: string, annotationId: string): AnnotationAdmission {
-		if (!this.current || itemId.startsWith('pending:')) return { status: 'rejected' };
+		if (
+			!this.available ||
+			!this.coherent ||
+			this.templateSource.rejected ||
+			(this.templateSource.data &&
+				this.templateSource.data.templateSourceFingerprint !==
+					this.structure?.templateSourceFingerprint) ||
+			!this.structure?.ready ||
+			itemId.startsWith('pending:')
+		)
+			return { status: 'rejected' };
 		const head = this.structure?.items.find((item) => item._id === itemId);
 		if (!head) return { status: 'rejected' };
 		if (
@@ -484,7 +592,9 @@ export class TemplateAuthoringSession {
 		}
 		this.selectedId = itemId;
 		this.rememberOpen(itemId);
-		if (this.details.get(itemId)?.error) this.releaseDetail(itemId);
+		this.writtenDetails.delete(itemId);
+		this.scheduleDetail(itemId);
+		if (this.details.get(itemId)?.error) this.releaseDetail(itemId, true);
 		const token = {};
 		this.requestedSelection = {
 			token,
@@ -496,6 +606,7 @@ export class TemplateAuthoringSession {
 		};
 		this.openRequestedSelection();
 		this.syncSubscriptions();
+		this.hydrateDetail(itemId);
 		return { status: 'accepted', token };
 	}
 	cancelSelection() {
@@ -699,16 +810,38 @@ export class TemplateAuthoringSession {
 		if (target) ids.add(target);
 		return ids;
 	}
-	private releaseDetail(id: string) {
+	private releaseDetail(id: string, discard = false) {
 		const entry = this.details.get(id);
-		if (!entry) return;
-		this.details.delete(id);
-		entry.release?.();
+		if (!entry || (!discard && !entry.release && entry.snapshot)) return;
+		const release = entry.release;
+		entry.release = undefined;
+		entry.token = undefined;
+		entry.observed = false;
+		entry.awaiting = false;
+		release?.();
+		if (discard || !entry.snapshot) this.details.delete(id);
 		if (this.pinnedIds().has(id)) this.detailVersion++;
 	}
+	private trimRetained() {
+		const pins = this.pinnedIds();
+		const optional = [...this.details].filter(([id]) => !pins.has(id));
+		optional.sort(
+			([a, av], [b, bv]) =>
+				Number(Boolean(bv.release)) - Number(Boolean(av.release)) ||
+				(this.ranking.indexOf(a) < 0 ? Infinity : this.ranking.indexOf(a)) -
+					(this.ranking.indexOf(b) < 0 ? Infinity : this.ranking.indexOf(b))
+		);
+		let count = 0,
+			bytes = 0;
+		for (const [id, entry] of optional) {
+			count++;
+			bytes += entry.bytes;
+			if (count > PRELOAD_ITEMS || bytes > PRELOAD_BYTES) this.releaseDetail(id, true);
+		}
+	}
+
 	private resetPreloading() {
 		this.nearbyReporter = undefined;
-		this.recentIds = [];
 		this.nearbyIds = [];
 		this.ranking = [];
 		this.rankingDirty = true;
@@ -756,7 +889,7 @@ export class TemplateAuthoringSession {
 			this.releaseSubscriptions();
 			return;
 		}
-		this.releaseSource ??= this.sourceRead.retain();
+		this.releaseSource ??= this.sourceRead.retain(false);
 		if (!this.structureRelease) {
 			this.structureLoading = true;
 			let subscription: () => void;
@@ -774,6 +907,16 @@ export class TemplateAuthoringSession {
 						value.authoringGeneration < this.structure.authoringGeneration
 					)
 						return;
+					this.structureObserved = true;
+					this.structureReady = value.ready;
+					if (!value.ready) {
+						this.structureLoading = false;
+						this.structureError = '';
+						this.structureRejected = false;
+						this.syncSubscriptions();
+						this.settleLeave();
+						return;
+					}
 					const members = value.items.map((item) => item._id as string);
 					if (
 						members.length !== this.memberIds.length ||
@@ -782,8 +925,29 @@ export class TemplateAuthoringSession {
 						this.memberIds = members;
 						this.rankingDirty = true;
 					}
+					if (this.structure && !sameSource(this.structure, value)) {
+						this.storageEpoch++;
+						this.writtenView = undefined;
+						this.writtenDetails.clear();
+						this.recentIds = [];
+						this.openedAt.clear();
+						this.rejectedDetails.clear();
+						for (const id of this.details.keys()) this.releaseDetail(id, true);
+						this.requestedSelection = null;
+						if (!this.editor?.hasUnsavedWork) this.editor?.discard();
+						this.selectedId = this.editor?.draft?.persistedId ?? null;
+					}
+					this.structureObserved = true;
 					this.structure = immutable(value);
+					this.sourceRead.observeEnvelope(this.structure);
+					for (const [id, entry] of this.details)
+						if (entry.snapshot && !detailMatches(this.structure, entry.snapshot)) {
+							entry.snapshot = undefined;
+							entry.bytes = 0;
+						}
+					this.detailVersion++;
 					this.structureError = '';
+					this.structureRejected = false;
 					this.structureLoading = false;
 					this.syncSubscriptions();
 					this.reconcile();
@@ -791,14 +955,27 @@ export class TemplateAuthoringSession {
 				() => {
 					if (this.disposed || this.structureRelease !== subscription) return;
 					this.structureLoading = false;
+					this.storageEpoch++;
+					this.structure = null;
+					for (const id of this.details.keys()) this.releaseDetail(id, true);
+					this.sourceRead.storage?.clearTemplates(this.options.audience ?? 'rep');
+					this.structureRejected = true;
 					this.structureError = this.copy.refreshFailed;
 					this.syncSubscriptions();
 					this.settleLeave();
 				}
 			);
 		}
+		this.hydrateView();
 		const pins = new Set(
-			[...this.pinnedIds()].filter((id) => this.current && this.memberIds.includes(id))
+			[...this.pinnedIds()].filter(
+				(id) =>
+					this.coherent &&
+					(!this.templateSource.data ||
+						this.templateSource.data.templateSourceFingerprint ===
+							this.structure?.templateSourceFingerprint) &&
+					this.memberIds.includes(id)
+			)
 		);
 		const target = this.submissionTarget();
 		if (this.slot && target && target !== this.slot.learnedTargetId)
@@ -846,7 +1023,7 @@ export class TemplateAuthoringSession {
 					this.byteCutoff = i;
 					break;
 				}
-				const pending = !entry || entry.awaiting;
+				const pending = !entry?.release || entry.awaiting;
 				if (pending && awaiting >= PRELOAD_CONCURRENCY) continue;
 				optional.add(id);
 				bytes += entry?.bytes ?? 0;
@@ -859,10 +1036,15 @@ export class TemplateAuthoringSession {
 		// Foreground dispatch is independent of the optional first-result pump.
 		for (const id of pins) this.subscribeDetail(id);
 		for (const id of optional) this.subscribeDetail(id);
+		this.trimRetained();
 	}
 	private subscribeDetail(id: string) {
-		if (this.details.has(id)) return;
-		const entry: DetailSubscription = { awaiting: true, bytes: 0 };
+		let entry = this.details.get(id);
+		if (entry?.release) return;
+		entry ??= { awaiting: true, observed: false, bytes: 0 };
+		entry.awaiting = true;
+		entry.observed = false;
+		const token = (entry.token = {});
 		this.details.set(id, entry);
 		entry.release = this.options.client.onUpdate(
 			api.playbookItems.content,
@@ -872,7 +1054,7 @@ export class TemplateAuthoringSession {
 				audience: this.options.audience
 			},
 			(value) => {
-				if (this.disposed || this.details.get(id) !== entry) return;
+				if (this.disposed || this.details.get(id) !== entry || entry.token !== token) return;
 				const prior = entry.snapshot;
 				if (
 					prior?.status === 'present' &&
@@ -897,7 +1079,10 @@ export class TemplateAuthoringSession {
 							: 0;
 				entry.snapshot = sameBody ? prior : immutable(value);
 				this.failedPreloads.delete(id);
+				this.rejectedDetails.delete(id);
 				entry.awaiting = false;
+				entry.observed = true;
+				this.scheduleDetail(id);
 				entry.error = undefined;
 				if (this.pinnedIds().has(id)) {
 					this.detailVersion++;
@@ -907,8 +1092,16 @@ export class TemplateAuthoringSession {
 				this.syncSubscriptions();
 			},
 			() => {
-				if (this.disposed || this.details.get(id) !== entry) return;
+				if (this.disposed || this.details.get(id) !== entry || entry.token !== token) return;
 				entry.awaiting = false;
+				entry.observed = false;
+				this.rejectedDetails.add(id);
+				if (this.structure)
+					this.sourceRead.storage?.forgetTemplateDetail(
+						this.options.audience ?? 'rep',
+						this.structure,
+						id
+					);
 				entry.snapshot = undefined;
 				entry.bytes = 0;
 				if (this.pinnedIds().has(id)) {
@@ -923,6 +1116,151 @@ export class TemplateAuthoringSession {
 			}
 		);
 	}
+	presented() {
+		this.sourceRead.markPresented();
+	}
+	private hydrateView() {
+		const storage = this.sourceRead.storage;
+		if (!storage || this.hydrated || !this.available) return;
+		this.hydrated = true;
+		const epoch = this.storageEpoch;
+		void storage.readTemplateView(this.options.audience ?? 'rep').then((pair) => {
+			if (
+				!pair ||
+				this.disposed ||
+				epoch !== this.storageEpoch ||
+				this.structureObserved ||
+				!this.available
+			)
+				return;
+			this.sourceRead.acceptStored(pair.source);
+			this.structure = pair.structure;
+			this.memberIds = pair.structure.items.map((item) => item._id);
+			this.rankingDirty = true;
+		});
+	}
+	private hydrateDetail(id: string) {
+		const storage = this.sourceRead.storage,
+			base = this.structure;
+		if (!storage || !base?.ready || this.rejectedDetails.has(id) || this.readDetail(id)) return;
+		const epoch = this.storageEpoch;
+		const requested = this.requestedSelection,
+			retained = this.details.get(id),
+			token = retained?.token;
+		void storage.readTemplateDetail(this.options.audience ?? 'rep', base, id).then((snapshot) => {
+			if (
+				!snapshot ||
+				this.disposed ||
+				!this.available ||
+				epoch !== this.storageEpoch ||
+				this.selectedId !== id ||
+				!this.structure ||
+				!detailMatches(this.structure, snapshot)
+			)
+				return;
+			const entry = this.details.get(id);
+			if (
+				!entry ||
+				entry !== retained ||
+				entry.token !== token ||
+				this.requestedSelection !== requested ||
+				this.rejectedDetails.has(id) ||
+				entry.observed ||
+				entry.error
+			)
+				return;
+			entry.snapshot = snapshot;
+			entry.bytes = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+			this.detailVersion++;
+			this.scheduleDetail(id);
+		});
+	}
+	private scheduleView(
+		prose: import('$lib/auth/workspace-read-storage').TemplateProse,
+		structure: StructureSnapshot
+	) {
+		if (!this.available || !this.sourceRead.storage || this.writtenView === structure) return;
+		this.scheduledView?.();
+		const epoch = this.storageEpoch;
+		this.scheduledView = this.sourceRead.scheduleStorage(
+			'view:' + (this.options.audience ?? 'rep'),
+			() => {
+				this.scheduledView = undefined;
+				if (
+					this.disposed ||
+					epoch !== this.storageEpoch ||
+					!this.current ||
+					this.structure !== structure ||
+					this.templateSource.data !== prose
+				)
+					return;
+				this.writtenView = structure;
+				this.sourceRead.storage!.writeTemplateView(
+					this.options.audience ?? 'rep',
+					prose,
+					structure,
+					() =>
+						!this.disposed &&
+						this.available &&
+						epoch === this.storageEpoch &&
+						this.structure === structure
+				);
+				for (const id of this.recentIds) this.scheduleDetail(id);
+			}
+		);
+	}
+	private scheduleDetail(id: string) {
+		const storage = this.sourceRead.storage,
+			base = this.structure,
+			snapshot = this.details.get(id)?.snapshot;
+		if (
+			!this.available ||
+			!storage ||
+			!base?.ready ||
+			!snapshot ||
+			this.rejectedDetails.has(id) ||
+			!this.recentIds.includes(id) ||
+			!detailMatches(base, snapshot) ||
+			this.writtenDetails.get(id) === snapshot
+		)
+			return;
+		this.scheduledDetails.get(id)?.();
+		const epoch = this.storageEpoch;
+		this.scheduledDetails.set(
+			id,
+			this.sourceRead.scheduleStorage(
+				'detail:' + (this.options.audience ?? 'rep') + ':' + id,
+				() => {
+					this.scheduledDetails.delete(id);
+					if (
+						this.disposed ||
+						epoch !== this.storageEpoch ||
+						!this.available ||
+						this.structure !== base ||
+						this.details.get(id)?.snapshot !== snapshot ||
+						this.rejectedDetails.has(id) ||
+						!this.recentIds.includes(id)
+					)
+						return;
+					this.writtenDetails.set(id, snapshot);
+					storage.writeTemplateDetail(
+						this.options.audience ?? 'rep',
+						base,
+						snapshot,
+						this.openedAt.get(id) ?? Date.now(),
+						() =>
+							!this.disposed &&
+							this.available &&
+							epoch === this.storageEpoch &&
+							this.structure === base &&
+							this.details.get(id)?.snapshot === snapshot &&
+							!this.rejectedDetails.has(id)
+					);
+				}
+			)
+		);
+	}
+
 	/** Resolve both button readiness and execution against the same current authority. */
 	private recoveryContext(): {
 		slot: Submission;
@@ -1052,11 +1390,19 @@ export class TemplateAuthoringSession {
 		const release = this.structureRelease;
 		this.structureRelease = undefined;
 		this.structureLoading = true;
+		this.structureObserved = false;
+		this.structureReady = false;
 		release?.();
 		for (const id of this.details.keys()) this.releaseDetail(id);
+		this.trimRetained();
 	}
 	destroy() {
 		this.disposed = true;
+		this.storageEpoch++;
+		this.releaseEffects?.();
+		this.scheduledView?.();
+		for (const cancel of this.scheduledDetails.values()) cancel();
+		this.scheduledDetails.clear();
 		this.discard();
 		this.releaseSubscriptions();
 		this.unregister?.();

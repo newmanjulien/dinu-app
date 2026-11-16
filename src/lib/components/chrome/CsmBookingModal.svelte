@@ -6,7 +6,7 @@
 	import type { SupportContent } from './csm-support';
 
 	import type { CsmOwner } from './csm-preload.svelte';
-	import type { CalendarSelection } from './csm-availability';
+	import type { AvailabilitySelection } from './csm-availability';
 	let {
 		owner,
 		initial,
@@ -16,7 +16,7 @@
 		onClose
 	}: {
 		owner: CsmOwner;
-		initial: CalendarSelection;
+		initial: AvailabilitySelection;
 		content: SupportContent;
 		onBooked: () => void;
 		inProgress?: boolean;

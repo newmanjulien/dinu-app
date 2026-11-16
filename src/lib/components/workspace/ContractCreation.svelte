@@ -1,10 +1,8 @@
 <script lang="ts">
-	import { isRepItem } from '$lib/playbook/model';
-	import { useReadQuery } from '$lib/auth/read-query.svelte';
-	import { onDestroy, untrack } from 'svelte';
+	import { createOperationId } from '$lib/contract/operation-identity';
+	import { assertOperationRetryable, isOperationRecovery } from '$lib/contract/operation-recovery';
+	import { onDestroy } from 'svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
-	import { loadComponent } from '$lib/auth/component-loader.svelte';
-	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
 	import { useConvexClient } from 'convex-svelte';
 	import { ConvexError } from 'convex/values';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
@@ -18,18 +16,12 @@
 		saveError
 	} from '$lib/contract/saved';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
-	import type { TemplateContent } from '$lib/template/model';
-	import type { ContractCreationInput, ReadyContract } from '$lib/contract/saved';
-	import {
-		getDocumentResources,
-		type DocumentResource
-	} from '$lib/document/runtime/resources.svelte';
+	import type { ContractCreationInput } from '$lib/contract/saved';
 	let {
 		onOpen,
 		onCreate,
 		onPrepareSaved,
 		onDealConflict = () => {},
-		showPreview = true,
 		createdId = $bindable<Id<'savedContracts'> | null>(null),
 		busy = $bindable(false),
 		error = $bindable<string | null>(null),
@@ -38,9 +30,8 @@
 	}: {
 		onOpen: (id: Id<'savedContracts'>) => Promise<boolean>;
 		onCreate: () => void;
-		onPrepareSaved: (id: Id<'savedContracts'>) => () => void;
+		onPrepareSaved: (id: Id<'savedContracts'>) => void;
 		onDealConflict?: (dealId: string) => void;
-		showPreview?: boolean;
 		createdId?: Id<'savedContracts'> | null;
 		busy?: boolean;
 		error?: string | null;
@@ -53,49 +44,6 @@
 	const viewer = useViewer();
 	const membershipId = viewer().membership.id;
 	const cache = getContractSnapshotCache(client);
-	const resources = getDocumentResources();
-	const currentTemplate = useReadQuery(
-		api.templates.preview,
-		() => (createdId || runtime.paused ? 'skip' : { membershipId }),
-		() => session.transportGeneration
-	);
-	// Keep the accepted preview visible while its subscription pauses during handoff.
-	let template = $state.raw<TemplateContent>();
-	$effect(() => {
-		if (currentTemplate.data) template = currentTemplate.data;
-	});
-	const preview = $derived(currentTemplate.error ? undefined : template);
-	const previewModule = loadComponent(
-		() => import('./ContractPreview.svelte'),
-		() => !resources && runtime.hostReady && !runtime.paused && Boolean(preview),
-		() => session.transportGeneration
-	);
-	const ContractPreview = $derived(previewModule.component);
-	let draft = $state.raw<DocumentResource>();
-	let host = $state<HTMLDivElement>();
-	let confirmed: ReadyContract['contract'] | undefined;
-	$effect(() => {
-		const snapshot = preview;
-		if (!resources || !runtime.hostReady || runtime.paused || createdId || !snapshot) return;
-		untrack(() => {
-			const input = {
-				kind: 'records' as const,
-				blocks: { data: snapshot.blocks },
-				items: { data: snapshot.items.filter(isRepItem) }
-			};
-			if (draft) draft.workspace.accept(input);
-			else draft = resources.createDraft(input);
-		});
-	});
-	$effect(() => {
-		const entry = draft,
-			target = host;
-		if (!entry || !target) return;
-		entry.target = target;
-		return () => {
-			if (entry.target === target) entry.target = undefined;
-		};
-	});
 	let creationRequest:
 		| {
 				args: ContractCreationInput & { operationId: string };
@@ -103,35 +51,26 @@
 		  }
 		| undefined;
 	let active = true;
-	let releasePreparation: (() => void) | undefined;
-	function releasePrepared() {
-		const release = releasePreparation;
-		releasePreparation = undefined;
-		release?.();
-	}
 	onDestroy(() => {
 		active = false;
-		releasePrepared();
-		if (draft && resources) resources.releaseDraft(draft);
 	});
 	export async function submit(input?: ContractCreationInput) {
-		if (!active || session.blocked || runtime.paused || !runtime.hostReady || busy || deleted)
-			return;
+		if (!active || session.blocked || session.closing || runtime.paused || busy || deleted) return;
 		if (!createdId && !creationRequest && !input) return;
 		onCreate();
-		if (previewModule.failed) previewModule.retry();
 		const generation = session.transportGeneration;
-		beginCreation(Boolean(draft?.workspace.viewer.layoutPrepared));
+		beginCreation();
 		busy = true;
 		error = null;
 		try {
 			if (!createdId) {
 				creationRequest ??= {
-					args: { ...input!, operationId: crypto.randomUUID() },
+					args: { ...input!, operationId: createOperationId() },
 					uncertain: false
 				};
 				locked = true;
 				const frozen = creationRequest.args;
+				assertOperationRetryable(frozen.operationId);
 				const result =
 					frozen.kind === 'deal'
 						? await client.action(api.hubspotDeals.link, {
@@ -159,35 +98,13 @@
 					throw new Error('deleted');
 				}
 				createdId = result.id;
-				confirmed = result.contract;
 				creationPhase('confirmed');
 			}
+			// Establish route-owned editor and resource leases before any further await.
+			onPrepareSaved(createdId);
 			if (runtime.paused) throw new Error('Company activity paused');
-			// Keep the live editor attached while its reads overlap the frozen snapshot handoff.
-			releasePreparation = onPrepareSaved(createdId);
-			const contract = confirmed!;
-			const versionId = contract.templateVersionId;
-			if (!versionId) throw new Error('Missing template version');
-			const snapshot = await cache.loadFrozenVersion(versionId, contract.companyId);
-			if (!active) return;
-			if (session.transportGeneration !== generation) throw new ConnectionInterruptedError();
-			if (runtime.paused) throw new Error('Company activity paused');
-			const data: ReadyContract = { id: createdId, status: 'ready', contract, snapshot };
-			if (resources) {
-				if (!draft)
-					draft = resources.createDraft({
-						kind: 'records',
-						blocks: { data: snapshot.blocks },
-						items: { data: snapshot.items.filter(isRepItem) }
-					});
-				resources.adopt(draft, data);
-				creationPhase('adopted');
-			}
-			if (!cache.seedConfirmed(data)) throw new Error('Contract unavailable');
-			creationPhase('snapshot-ready');
 			creationPhase('navigation-start');
-			if (!(await onOpen(contract._id))) throw new Error('navigation');
-			if (active) creationPhase('displayed');
+			if (!(await onOpen(createdId))) throw new Error('navigation');
 		} catch (cause) {
 			if (!active) return;
 			if (!createdId && creationRequest) {
@@ -202,6 +119,7 @@
 				} else if (
 					creationRequest.args.kind === 'manual' &&
 					cause instanceof ConvexError &&
+					!isOperationRecovery(cause) &&
 					!creationRequest.uncertain
 				) {
 					// A later generic rejection cannot resolve an earlier uncertain attempt.
@@ -218,34 +136,7 @@
 						? 'Your contract was created, but we couldn’t open it. Try again.'
 						: saveError(cause, 'We couldn’t create this contract. Try again.');
 		} finally {
-			releasePrepared();
 			if (active) busy = false;
 		}
 	}
 </script>
-
-{#if showPreview}
-	<main inert aria-hidden="true" class="pointer-events-none pt-6 pb-12 blur-sm">
-		{#if resources}
-			<div bind:this={host}></div>
-			{#if !draft}
-				<DocumentSkeleton embedded announce={false} />
-			{/if}
-		{:else if preview && ContractPreview}
-			<ContractPreview snapshot={preview} />
-		{:else}
-			<DocumentSkeleton embedded announce={false} />
-		{/if}
-	</main>{/if}
-
-{#if showPreview && (currentTemplate.error || previewModule.failed)}
-	<p role="alert" class="p-4 text-center text-sm">
-		Preview unavailable. <button
-			class="underline"
-			onclick={() => {
-				currentTemplate.retry();
-				previewModule.retry();
-			}}>Retry preview</button
-		>
-	</p>
-{/if}

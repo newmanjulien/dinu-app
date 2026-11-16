@@ -1,3 +1,4 @@
+import { expireOperation } from './operationExpiry';
 import { ConvexError, v } from 'convex/values';
 import { internalMutation } from './_generated/server';
 import type { PlaybookCommand } from '../lib/contract/changes';
@@ -22,6 +23,7 @@ export const execute = internalMutation({
 	handler: async (ctx, { receiptId }) => {
 		const stored = await ctx.db.get('operationReceipts', receiptId);
 		if (!stored || stored.state !== 'preparing') return null;
+		if (await expireOperation(ctx, stored)) return null;
 		const { contract, access } = await authorizePreparedOperation(ctx, stored);
 		const row = await receiptPayload(ctx, stored);
 		if (row.kind === 'playbook-save') {

@@ -282,11 +282,7 @@ export const expire = internalMutation({
 	handler: async (ctx) => {
 		const now = Date.now();
 		const budget = cleanupBudget(ctx);
-		for (const table of [
-			'buyerActivityReceipts',
-			'buyerActivityClauses',
-			'buyerActivityOpenings'
-		] as const) {
+		for (const table of ['buyerActivityReceipts', 'buyerActivityOpenings'] as const) {
 			if (
 				!(await budget.drain(
 					table,
@@ -298,37 +294,5 @@ export const expire = internalMutation({
 			}
 		}
 		return null;
-	}
-});
-
-/** Explicit retirement of older raw activity history. */
-export const retireLegacy = internalMutation({
-	args: { companyId: v.id('company'), writerStoppedAt: v.number() },
-	returns: v.object({ done: v.boolean(), removed: v.number() }),
-	handler: async (ctx, { companyId, writerStoppedAt }) => {
-		if (!Number.isFinite(writerStoppedAt) || writerStoppedAt > Date.now())
-			throw new ConvexError('Confirm the legacy writer has stopped.');
-		const budget = cleanupBudget(ctx);
-		let removed = 0;
-		for (const table of [
-			'buyerLinkOpens',
-			'buyerVisits',
-			'buyerLinkStats',
-			'buyerLinkBrowsers'
-		] as const) {
-			if (
-				!(await budget.drain(
-					table,
-					ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-					{
-						afterDelete: async () => {
-							removed++;
-						}
-					}
-				))
-			)
-				return { done: false, removed };
-		}
-		return { done: true, removed };
 	}
 });

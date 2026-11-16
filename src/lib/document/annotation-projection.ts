@@ -14,12 +14,26 @@ import type {
 } from './annotation-registry';
 import type { DocumentHighlightController } from './highlights/controller';
 import type { ResolvedRun } from './model';
-import type { RenderSnapshot } from './runtime/types';
+import type { PaginatedPage } from './pagination/types';
+import type { AnnotationProjectionDocument } from './runtime/types';
+import type { SelectionDocument } from './selection/selection-model';
 
-type Token = { element: HTMLElement; from: number; to: number; visual?: SourceTarget };
+export type AnnotationDomRevision = {
+	id: number;
+	pages: readonly PaginatedPage[];
+	selectionDocument?: SelectionDocument;
+};
+type Token = { element: HTMLElement; page: number; from: number; to: number; visual?: SourceTarget };
+type PageTokens = {
+	page: PaginatedPage;
+	element: HTMLElement;
+	tokens: Map<string, Token[]>;
+	generated: Token[];
+};
 type Owner = {
 	element: HTMLElement;
 	anchor: Element;
+	page: number;
 	release: () => void;
 	group: string;
 	annotation: AnnotationMembership;
@@ -28,24 +42,35 @@ type Owner = {
 /** Annotation membership is projected onto already prepared source/provenance. It never
  * splits text, changes a token, or asks the layout worker to compose/profile/paginate. */
 export class DocumentAnnotationProjection {
-	private snapshot: RenderSnapshot | null = null;
+	private snapshot: AnnotationProjectionDocument | null = null;
+	private domRevision: AnnotationDomRevision | null = null;
+	private pageTokens = new Map<number, PageTokens>();
 	private tokens = new Map<string, Token[]>();
 	private generated: Token[] = [];
 	private owners = new Map<string, Owner>();
 	private projected = new Map<
 		string,
-		{ annotation: DocumentAnnotation; applied: boolean; owners: string[] }
+		{ annotation: DocumentAnnotation; owners: string[] }
 	>();
 	private containers = new WeakMap<Element, number>();
 	private nextContainer = 0;
 	private layers = new Map<HTMLElement, HTMLElement>();
 	private releaseGeometry: () => void;
+	private releaseRebind: () => void;
+	private current: {
+		snapshot: AnnotationProjectionDocument;
+		items: readonly DocumentAnnotationItem[];
+		selected: string | null;
+		capable: boolean;
+		enabled: boolean;
+		domRevision: AnnotationDomRevision;
+	} | null = null;
 	private listeners = new AbortController();
 	private intentVersion = 0;
 	private pendingPreparation: {
 		owner: Owner;
 		occurrence: ProjectedOccurrence;
-		snapshot: RenderSnapshot | null;
+		snapshot: AnnotationProjectionDocument | null;
 		reveal: boolean;
 		intent: number;
 	} | null = null;
@@ -70,16 +95,31 @@ export class DocumentAnnotationProjection {
 			if (change === 'measure' || change === 'invalidate') this.positionOwners();
 			if (change === 'measure') this.completePreparation();
 		});
+		this.releaseRebind = highlights.subscribeAnnotationRebind((pages) => {
+			const current = this.current;
+			if (current) this.update({ ...current, rebindPages: pages });
+		});
 	}
-	update(
-		snapshot: RenderSnapshot,
-		items: readonly DocumentAnnotationItem[],
-		selected: string | null,
-		capable: boolean,
-		enabled: boolean
-	) {
-		const reindex = this.snapshot !== snapshot;
-		if (reindex) this.index(snapshot);
+	update({
+		snapshot,
+		items,
+		selected,
+		capable,
+		enabled,
+		domRevision,
+		rebindPages = new Set<number>()
+	}: {
+		snapshot: AnnotationProjectionDocument;
+		items: readonly DocumentAnnotationItem[];
+		selected: string | null;
+		capable: boolean;
+		enabled: boolean;
+		domRevision: AnnotationDomRevision;
+		rebindPages?: ReadonlySet<number>;
+	}) {
+		this.current = { snapshot, items, selected, capable, enabled, domRevision };
+		const dirtyPages = this.index(snapshot, domRevision, rebindPages);
+		const includedPages = new Set(snapshot.pages.map((page) => page.number));
 		const next = new Set<string>();
 		const seen = new Set<string>();
 		const changed = new Set<string>();
@@ -95,25 +135,38 @@ export class DocumentAnnotationProjection {
 						snapshot.concessions[item.itemId] === annotation.concessionId
 				};
 				const cached = this.projected.get(annotation.id);
-				if (
-					!reindex &&
-					cached?.annotation === annotation &&
-					cached.applied === Boolean(membership.applied)
-				) {
+				const reusable =
+					cached &&
+					cached.annotation.highlightKind === annotation.highlightKind &&
+					sameSourceTarget(cached.annotation.target, annotation.target);
+				const ownerKeys: string[] = [];
+				if (reusable) {
 					for (const key of cached.owners) {
-						const owner = this.owners.get(key)!;
+						const owner = this.owners.get(key);
+						if (!owner || dirtyPages.has(owner.page) || !includedPages.has(owner.page)) continue;
 						next.add(key);
+						ownerKeys.push(key);
+						owner.annotation = membership;
 						const state = this.updateState(owner, selected, capable, enabled);
+						if (
+							cached.annotation.pending !== annotation.pending ||
+							cached.annotation.passive !== annotation.passive
+						)
+							this.updateOwnerLabel(
+								owner.element,
+								annotation,
+								this.registry.occurrence(owner.element)?.ranges ?? []
+							);
 						if (state.changed) changed.add(owner.group);
 						reordered ||= state.orderChanged;
 					}
-					continue;
 				}
-				const ownerKeys: string[] = [];
+				const pagesToProject = reusable ? dirtyPages : includedPages;
 				const byContainer = new Map<Element, { token: HTMLElement; range: Range }[]>();
 				for (const { token, range } of this.ranges(
 					annotation.target,
-					snapshot.source.sourceIndex
+					snapshot.source.sourceIndex,
+					pagesToProject
 				)) {
 					const container = token.closest('p, h1, h2, h3, td, th');
 					if (!container) continue;
@@ -132,6 +185,7 @@ export class DocumentAnnotationProjection {
 					const ranges = coverage.map(({ range }) => range);
 					const page = container.closest<HTMLElement>('.document-page');
 					if (!page) continue;
+					const pageNumber = Number(page.dataset.pageNumber);
 					let containerId = this.containers.get(container);
 					if (!containerId) this.containers.set(container, (containerId = ++this.nextContainer));
 					const key = JSON.stringify([annotation.id, containerId]);
@@ -167,6 +221,7 @@ export class DocumentAnnotationProjection {
 						owner = {
 							element,
 							anchor: container,
+							page: pageNumber,
 							release: this.registry.register(element, [annotation.id]),
 							group: `annotation:${key}`,
 							annotation: membership
@@ -174,25 +229,12 @@ export class DocumentAnnotationProjection {
 						this.owners.set(key, owner);
 					}
 					owner.annotation = membership;
+					owner.page = pageNumber;
 					const element = owner.element;
 					const state = this.updateState(owner, selected, capable, enabled);
 					if (state.changed) changed.add(owner.group);
 					reordered ||= state.orderChanged;
-					const text = ranges
-						.map((range) => range.toString())
-						.join(' ')
-						.replace(/\s+/g, ' ')
-						.trim()
-						.slice(0, 140);
-					element.setAttribute(
-						'aria-label',
-						annotation.pending
-							? 'Saving changes'
-							: text
-								? `Open ${this.label}: ${text}`
-								: `Open ${this.label}`
-					);
-					if (annotation.passive) element.removeAttribute('aria-label');
+					this.updateOwnerLabel(element, annotation, ranges);
 					const anchor = coverage[0].token;
 					if (owner.anchor !== anchor) reordered = true;
 					owner.anchor = anchor;
@@ -207,13 +249,13 @@ export class DocumentAnnotationProjection {
 						annotation.highlightKind,
 						ranges,
 						undefined,
-						annotation.passive ? undefined : element
+						annotation.passive ? undefined : element,
+						{ rebindFromSource: true }
 					);
 					positioned.add(owner);
 				}
 				this.projected.set(annotation.id, {
 					annotation,
-					applied: Boolean(membership.applied),
 					owners: ownerKeys
 				});
 			}
@@ -229,6 +271,30 @@ export class DocumentAnnotationProjection {
 		if (reordered) this.orderOwners();
 		this.highlights.annotationsChanged(changed);
 		this.positionOwners(positioned);
+	}
+	private updateOwnerLabel(
+		element: HTMLElement,
+		annotation: DocumentAnnotation,
+		ranges: readonly Range[]
+	) {
+		if (annotation.passive) {
+			element.removeAttribute('aria-label');
+			return;
+		}
+		const text = ranges
+			.map((range) => range.toString())
+			.join(' ')
+			.replace(/\s+/g, ' ')
+			.trim()
+			.slice(0, 140);
+		element.setAttribute(
+			'aria-label',
+			annotation.pending
+				? 'Saving changes'
+				: text
+					? `Open ${this.label}: ${text}`
+					: `Open ${this.label}`
+		);
 	}
 	private updateState(owner: Owner, selected: string | null, capable: boolean, enabled: boolean) {
 		const { element, annotation } = owner;
@@ -298,57 +364,123 @@ export class DocumentAnnotationProjection {
 		}
 		if (focused?.isConnected && document.activeElement !== focused) this.registry.focus(focused);
 	}
-	private index(snapshot: RenderSnapshot) {
+	private index(
+		snapshot: AnnotationProjectionDocument,
+		revision: AnnotationDomRevision,
+		rebindPages: ReadonlySet<number>
+	) {
+		if (this.snapshot === snapshot && this.domRevision?.id === revision.id && !rebindPages.size)
+			return new Set<number>();
+		const previous = this.snapshot;
+		const oldRevision = this.domRevision;
+		const rebuildAll =
+			previous?.source.sourceIndex !== snapshot.source.sourceIndex ||
+			previous?.view !== snapshot.view ||
+			oldRevision?.selectionDocument !== revision.selectionDocument;
 		this.snapshot = snapshot;
-		this.tokens.clear();
-		this.generated = [];
+		this.domRevision = revision;
 		for (const [page, layer] of this.layers)
 			if (!page.isConnected) {
 				layer.remove();
 				this.layers.delete(page);
 			}
 		const index = snapshot.source.sourceIndex;
-		for (const element of this.stage.querySelectorAll<HTMLElement>('[data-document-token]')) {
+		const includedPages = new Set(snapshot.pages.map((page) => page.number));
+		const mounted = new Map(
+			Array.from(this.stage.querySelectorAll<HTMLElement>('.document-page'), (element) => [
+				Number(element.dataset.pageNumber),
+				element
+			] as const)
+		);
+		const dirtyPages = new Set<number>();
+		if (rebuildAll) {
+			for (const number of this.pageTokens.keys()) dirtyPages.add(number);
+			this.pageTokens.clear();
+			this.tokens.clear();
+			this.generated = [];
+		}
+		for (const number of this.pageTokens.keys())
+			if (!includedPages.has(number) || !mounted.has(number)) {
+				this.dropPageTokens(number);
+				dirtyPages.add(number);
+			}
+		for (const page of snapshot.pages) {
+			const element = mounted.get(page.number);
+			if (!element) continue;
+			const cached = this.pageTokens.get(page.number);
 			if (
-				element.closest('[data-annotation-layer]') ||
-				element.dataset.generated === 'separator' ||
-				(snapshot.view === 'effective' && element.dataset.generated === 'empty-hit-target')
+				!rebuildAll &&
+				!rebindPages.has(page.number) &&
+				cached?.page === page &&
+				cached.element === element &&
+				oldRevision?.pages.includes(page)
 			)
 				continue;
-			let visual: SourceTarget | undefined;
-			try {
-				if (element.dataset.visualSource) visual = JSON.parse(element.dataset.visualSource);
-			} catch {
-				continue;
-			}
-			if (visual) {
+			dirtyPages.add(page.number);
+			this.dropPageTokens(page.number);
+			const tokens = new Map<string, Token[]>();
+			const generated: Token[] = [];
+			for (const token of element.querySelectorAll<HTMLElement>('[data-document-token]')) {
+				if (
+					token.closest('[data-annotation-layer]') ||
+					token.dataset.generated === 'separator' ||
+					(snapshot.view === 'effective' && token.dataset.generated === 'empty-hit-target')
+				)
+					continue;
+				let visual: SourceTarget | undefined;
 				try {
-					this.generated.push({
-						element,
-						visual,
-						from: visual.kind === 'text' ? pointPosition(index, visual.range.start) : 0,
-						to: visual.kind === 'text' ? pointPosition(index, visual.range.end) : 0
-					});
+					if (token.dataset.visualSource) visual = JSON.parse(token.dataset.visualSource);
 				} catch {
-					/* Stale provenance cannot authorize annotation membership. */
+					continue;
 				}
-				continue;
+				if (visual) {
+					try {
+						generated.push({
+							element: token,
+							page: page.number,
+							visual,
+							from: visual.kind === 'text' ? pointPosition(index, visual.range.start) : 0,
+							to: visual.kind === 'text' ? pointPosition(index, visual.range.end) : 0
+						});
+					} catch {
+						/* Stale provenance cannot authorize annotation membership. */
+					}
+					continue;
+				}
+				const unit = index.byKey.get(token.dataset.sourceStartKey!);
+				if (!unit || token.dataset.sourceEndKey !== unit.sourceKey) continue;
+				const entries = tokens.get(unit.sourceKey) ?? [];
+				entries.push({
+					element: token,
+					page: page.number,
+					from: unit.position + Number(token.dataset.sourceStartOffset),
+					to: unit.position + Number(token.dataset.sourceEndOffset)
+				});
+				tokens.set(unit.sourceKey, entries);
 			}
-			const unit = index.byKey.get(element.dataset.sourceStartKey!);
-			if (!unit || element.dataset.sourceEndKey !== unit.sourceKey) continue;
-			const tokens = this.tokens.get(unit.sourceKey) ?? [];
-			tokens.push({
-				element,
-				from: unit.position + Number(element.dataset.sourceStartOffset),
-				to: unit.position + Number(element.dataset.sourceEndOffset)
-			});
-			this.tokens.set(unit.sourceKey, tokens);
+			this.pageTokens.set(page.number, { page, element, tokens, generated });
+			for (const [key, entries] of tokens)
+				this.tokens.set(key, [...(this.tokens.get(key) ?? []), ...entries]);
+			this.generated.push(...generated);
 		}
+		return dirtyPages;
 	}
-	private *ranges(target: SourceTarget, index: SourceIndex) {
+	private dropPageTokens(number: number) {
+		const previous = this.pageTokens.get(number);
+		if (!previous) return;
+		this.pageTokens.delete(number);
+		for (const key of previous.tokens.keys()) {
+			const remaining = this.tokens.get(key)?.filter((token) => token.page !== number) ?? [];
+			if (remaining.length) this.tokens.set(key, remaining);
+			else this.tokens.delete(key);
+		}
+		if (previous.generated.length)
+			this.generated = this.generated.filter((token) => token.page !== number);
+	}
+	private *ranges(target: SourceTarget, index: SourceIndex, pages: ReadonlySet<number>) {
 		if (target.kind === 'boundary') {
 			for (const token of this.generated)
-				if (token.visual && sameSourceTarget(target, token.visual)) {
+				if (pages.has(token.page) && token.visual && sameSourceTarget(target, token.visual)) {
 					const text = token.element.firstChild;
 					if (!text?.textContent?.length) continue;
 					const range = document.createRange();
@@ -371,6 +503,7 @@ export class DocumentAnnotationProjection {
 		const candidates = units.flatMap((unit) => this.tokens.get(unit.sourceKey) ?? []);
 		for (const token of this.generated)
 			if (
+				pages.has(token.page) &&
 				token.visual?.kind === 'text' &&
 				(start === end
 					? sameSourceTarget(target, token.visual)
@@ -378,6 +511,7 @@ export class DocumentAnnotationProjection {
 			)
 				candidates.push(token);
 		for (const token of candidates) {
+			if (!pages.has(token.page)) continue;
 			if (!token.element.isConnected) continue;
 			const text = token.element.firstChild;
 			if (text?.nodeType !== Node.TEXT_NODE || !text.textContent?.length) continue;
@@ -486,8 +620,10 @@ export class DocumentAnnotationProjection {
 	}
 	destroy() {
 		this.releaseGeometry();
+		this.releaseRebind();
 		this.listeners.abort();
 		this.pendingPreparation = null;
+		this.current = null;
 		for (const owner of this.owners.values()) {
 			owner.release();
 			this.highlights.clearGroup(owner.group);
@@ -497,6 +633,7 @@ export class DocumentAnnotationProjection {
 		this.owners.clear();
 		this.projected.clear();
 		this.layers.clear();
+		this.pageTokens.clear();
 		this.tokens.clear();
 		this.generated = [];
 	}

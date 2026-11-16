@@ -174,19 +174,16 @@ transaction metrics. Assigned ID lengths, adversarial parent/access metadata and
 native platform enforcement still require an authorized deployment rehearsal; local
 checks are not a native-boundary certification.
 
-## Conversion and operational sequence
+## Repair, recertification and release sequence
 
-The schema accepts original full heads only for conversion. Canonical writers always
-write normalized heads. Uncertified/migrating companies return `ready:false` and cannot
+The strict schema accepts compact canonical heads only. Legacy full rep heads and their conversion branch are removed locally; G19 requires a separate all-company population/capture/writer proof under the preserved old bundle before release. Active source repair/recount/recertification remains. Uncertified/migrating companies return `ready:false` and cannot
 submit ordinary authoring writes. There is no ordinary-save full-audit fallback.
 
 The internal `authoringMigration` API is resumable:
 
 1. `begin` captures template source fingerprint/version/generation, audits source and all
    manifest bodies, certifies source facts and raises the company authoring barrier.
-2. `step` converts at most eight head/body pairs per transaction, checks original head
-   business equality and all identity/revision links, preserves replay metadata, removes
-   duplicate head bodies and accumulates exact compact/read/result totals.
+2. `step` repairs/recounts at most eight canonical head/revision pairs per transaction, checks exact company/item/revision/business identity, preserves replay metadata and immutable revision content, and accumulates exact compact/read/result totals. It cannot convert a legacy full head.
 3. Further `step` calls recount one historical version per transaction, because adding
    compatibility metadata to a shared revision wrapper changes its native read size.
    Historical business JSON, item IDs/timestamps, manifests and captured versions persist.
@@ -194,7 +191,7 @@ The internal `authoringMigration` API is resumable:
    and all read envelopes, advances generations, certifies the current version and
    releases the barrier atomically. Repeated completed calls acknowledge completion.
 
-A development/local rehearsal runner is available after deploying the additive schema:
+The existing development-only runner drives canonical repair after its target and indexes have been separately verified:
 
 ```sh
 node scripts/migrate-authoring.mjs --company-id COMPANY_ID --deployment EXACT_NAME
@@ -202,7 +199,7 @@ node scripts/migrate-authoring.mjs --company-id COMPANY_ID --deployment EXACT_NA
 
 The runner validates the exact configured target, refuses production, does not deploy
 or seed, stops on a failed transaction and resumes durable progress on explicit rerun.
-Production conversion requires the separately authorized release procedure and backup.
+Target operations require their own authorization and coherent recovery record. The [preservation kit](backend-preservation-cutover.md) covers the incompatible release; this repair runner is not that converter.
 
 DOCX activation and operator bootstrap fully audit canonical heads/bodies, atomically
 commit the template source/manifest and schedule source certification. The format-0 pending
@@ -212,17 +209,17 @@ separate migration transaction and recount/recertify before reopening authoring.
 company deletion drain certificates, fact chunks and migration state. Company-final
 cleanup also catches deletion workers that had already passed newly added phases.
 
-The legacy full-head schema branch and migration entry points must remain until every
-company has completed conversion and old releases have drained; tightening that schema
-before conversion would make deployment fail. Normalized companies retain no duplicate
-business body in heads. No live conversion or schema tightening has been performed here.
+The local legacy full-head branch has been removed in advance; this is **not deployable to an unverified populated target**. G19 must be cleared under preserved old code. G20 separately adds explicit rep audience to original captured revision bodies and recounts every referencing frozen/mutable version without recapture. Normalized heads contain no duplicate wording. All G01–G25 remain UNVERIFIED and no live conversion/schema tightening occurred.
 
 ## Rep instructions and buyer explanations
 
 The Rep (`/template`) and Buyers (`/template/buyers`) editors share one source and
-one version manifest. Rep business bodies are unchanged. Buyer bodies contain only
-`audience: 'buyer'`, a text trigger and `explanation`. Compact geometry uses codec 1
-for reps and codec 2 for buyers; the audience is immutable for an existing item ID.
+one version manifest. Every business body and transported structure has an explicit
+`audience: 'rep' | 'buyer'` discriminator. Rep bodies hold `instructions`,
+`approvalPolicy` and concessions; buyer bodies contain only `audience: 'buyer'`, a
+text trigger and `explanation`. Compact geometry retains tag 1 for reps and tag 2 for
+buyers; decoding returns the explicit audience. The packed bytes contain no wording,
+and the audience is immutable for an existing item ID.
 All overlap/ownership audits partition by audience, so buyer ranges can overlap rep
 ranges without changing concession ownership. Snapshot byte/read accounting and
 cleanup cover both audiences through the existing revision and manifest machinery.
@@ -231,8 +228,14 @@ Each audience has its own instance of the shared membership-scoped authoring ses
 including drafts, selection, preloads, retries and retained recovery. The shared editor
 keeps `RepInstruction` and `BuyerExplanation` as a `TemplateItem` union throughout
 drafts, dirty checking, save payloads/results, conflicts and retained recovery. Buyer
-drafts use `explanation` directly; only rep drafts have `instructions`, approval guidance
-and concessions. Shared lifecycle code uses `TemplateAudience` and neutral item names.
+drafts use `explanation` directly; rep drafts use the same canonical `instructions`,
+`approvalPolicy` and concessions as saved bodies. The four ordinary instruction fields
+preserve exact strings, including empty strings versus absent fields. Approval guidance
+is rendered separately after those fields, under **Changes need to be approved**.
+Nonblank guidance sets `{ kind: 'required', instructions: exactText }`; clearing or
+whitespace-only guidance sets `{ kind: 'none' }`. Dirty checks, saved/remote adoption,
+retained recovery and read-only panels all read the canonical policy directly.
+Shared lifecycle code uses `TemplateAudience` and neutral item names.
 The shared save transport emits the matching business body without an audience adapter. Buyer queries require template
 management permission and reject IDs from the other audience.
 
@@ -243,6 +246,15 @@ the full Summary enters an editable buyer draft and is saved normally. It create
 no ongoing link between rep instructions and buyer explanations. Existing snapshots receive no fallback,
 backfill or retroactive edits.
 
+The explicit rep literal changes decoded response and revision-body sizes without
+changing packed geometry bytes, item IDs, revision IDs, content revisions or captured
+template/version membership. A populated release must convert original immutable bodies
+in place, recount each frozen version from its own captured source and revision references,
+and recertify authoring structure accounting before enabling reads or writes. Never build
+old contract captures from the current template. Normal writers count actual canonical
+revision wrappers, historical snapshot JSON and decoded structures; wording-only saves
+continue to leave structural generations independent from content revisions.
+
 The terminology change preserves stored field names, table names, IDs, revision bodies,
 frozen versions and both binary codecs. It needs no backfill. New saves/deletes use
 `playbookItems.saveTemplateItem` and `deleteTemplateItem`; the previous exports remain
@@ -250,3 +262,56 @@ as temporary aliases for open clients. `repExplanation` likewise aliases `repSum
 User copy, including recovery/error/loading/accessibility text, calls rep content
 instructions and buyer content explanations. Rep coaching such as
 `howToExplainToBuyers` remains part of rep instructions.
+
+## Disposable frontend read storage
+
+The existing scoped workspace-read database remains
+`dinu:workspace-read:v1:<deployment>:<profile>:<membership>:<company>`. IndexedDB schema 2
+preserves its `projections` store and adds `templateSources`, `templateViews`,
+`templateDetails` and small `templateMetadata` budget/reference records. No backend schema,
+source codec, journal or mutation transport changes are involved.
+
+`templateSources` stores prose once per fingerprint. A `templateViews` entry is the latest
+complete ready structure for one audience, including the **actual** source ID (valid null
+for an empty source), fingerprint, authoring/structural generations, timestamp and payload
+reference. A source-only response has no source ID and never invents one. Only a matching
+accepted source plus complete current structure is persisted. At most two envelopes and
+their referenced prose payloads occupy 16 MiB encoded; preview age is seven days. Source-only
+creation demand reads only prose; audience demand hydrates only its coherent pair. Live
+requests start first and never await storage. Disk restoration supplies reading, never a
+current observation or authoring certification.
+
+Pair replacement, aggregate accounting, removal of an evicted audience's bodies and pruning
+of unreferenced prose happen in one transaction. Oversized candidates are skipped before
+other useful pairs are evicted. Runtime guards check payload shape, audience/company,
+readiness, actual ID/fingerprint, generations, bounded item counts, sizes and timestamps.
+The metadata store carries sizes/references; writes do not read or serialize all retained
+source/detail payloads just to total a budget. Requested disk payloads are validated on read.
+Optional storage open/read/transaction deadlines are 250 ms; failure leaves network,
+rendering and save/leave handling independent.
+
+Only bodies that were actually selected/opened enter `templateDetails`. Its exact key is
+`[audience, sourceId, fingerprint, itemId, companyId, creationTime, contentRevision, renderKey]`.
+There are at most **eight bodies and 4 MiB across both audiences together**, with a seven-day
+age and LRU ordering by actual open time. A body must match a coherent ready envelope and
+every head field; the current complete structure takes precedence over retained/disk state.
+Changed source identity, newer head revision, absent membership, role loss or explicit
+rejection invalidates/withholds the corresponding body. No draft, pending operation,
+observation epoch, page, DOM node or geometry is persisted.
+
+The membership source owns a small keyed deferred-work queue. After useful prose is
+presented, it coalesces accepted view/opened body changes, waits two paint frames, respects
+the existing 250 ms input/scroll cooldown, and admits one changed record per task. Equal
+accepted payloads and lease churn do not serialize bodies; source sizes are reused by
+object identity. Transactions use stored byte/reference metadata for eviction. This bounds
+retained encoded capacity, rather than promising a heap or frame-time ceiling for a large
+individual record. Scope teardown cancels callbacks; scope/accepted-version fences are
+checked again before queued work and transaction writes. Permission loss removes audience
+views/details; the existing account/workspace lifecycle purges the entire scoped database.
+
+The bounded session pool remains the only memory detail cache. Releasing/recreating a
+listener invalidates its observation even if a body remains readable. Selected/save pins,
+last-eight opens, nearby semantic order, remaining structure order, the eight-first-response
+pump and foreground bypass retain their priorities. Only successful current content
+observations can enter editable/recovery/acknowledgement paths. Source-ID equality is
+mandatory there: equal fingerprints under different IDs permit prose reuse only.

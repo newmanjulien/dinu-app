@@ -8,11 +8,11 @@ import { EXPORT_HOUR, EXPORT_READ_GRACE, retainedUntil } from './exportRetention
 import type { Infer } from 'convex/values';
 import type { hubspotExportDelivery } from './hubspotExportDeliveryValidators';
 
-type Attempt = Doc<'hubspotExports'>;
+type Attempt = import('./outputLifecycle').FullExportAttempt;
 type Delivery = Infer<typeof hubspotExportDelivery>;
 
-/** Indexed operational delivery state; immutable destination also lives on its receipt. */
-export async function exportDelivery(ctx: QueryCtx, attempt: Attempt) {
+/** Indexed operational delivery state; immutable destination also lives on its output. */
+export async function exportDelivery(ctx: QueryCtx, attempt: Doc<'hubspotExports'>) {
 	const row = await ctx.db
 		.query('hubspotExportDeliveries')
 		.withIndex('by_attemptId', (q) => q.eq('attemptId', attempt._id))
@@ -79,7 +79,7 @@ export async function acknowledgeExportDelivery(
 		attempt.key,
 		'downloaded',
 		JSON.stringify({
-			reservationReceiptId: attempt.reservationReceiptId,
+			outputId: attempt.outputId,
 			documentId: attempt.documentId ?? null,
 			filename: attempt.filename,
 			sha256: attempt.sha256 ?? null,
@@ -96,7 +96,7 @@ export async function acknowledgeExportDelivery(
 
 export async function confirmUpload(ctx: MutationCtx, id: Attempt['_id'], remoteFileId: string) {
 	const attempt = await ctx.db.get('hubspotExports', id);
-	if (!attempt) return;
+	if (!attempt || attempt.format !== 'full') return;
 	const delivery = await exportDelivery(ctx, attempt);
 	if (!delivery) return;
 	await ctx.db.patch('hubspotExportDeliveries', delivery._id, {
@@ -116,7 +116,7 @@ export async function retireExportDelivery(
 	if (delivery.attachmentUntil === undefined) return;
 	await ctx.db.patch('hubspotExportDeliveries', delivery._id, { attachmentUntil: undefined });
 	const attempt = await ctx.db.get('hubspotExports', delivery.attemptId);
-	if (attempt)
+	if (attempt?.format === 'full')
 		await ctx.db.patch('hubspotExports', attempt._id, {
 			expiresAt: Math.max(attempt.createdAt + EXPORT_HOUR, Date.now()) + EXPORT_READ_GRACE
 		});

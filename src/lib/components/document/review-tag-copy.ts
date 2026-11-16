@@ -1,7 +1,7 @@
 import type { ReviewTag } from '$lib/contract/approval';
 
 export function reviewTagExplanation(tag: ReviewTag, ready: boolean): string {
-	const subject = tag.kind === 'buyer-proposal' ? 'buyer proposal' : 'Playbook change';
+	const subject = tag.kind === 'buyer-link' ? 'buyer proposal' : 'Playbook change';
 	const meaning =
 		tag.status === 'approved'
 			? `This ${subject} is applied to the current contract.`

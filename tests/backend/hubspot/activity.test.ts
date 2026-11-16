@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -67,7 +68,7 @@ describe('HubSpot activity from contract operations', () => {
 			membershipId: f.rep.membershipId,
 			id: f.id,
 			...(await reviewExpectation(f)),
-			operationId: 'request'
+			operationId: fixtureOperationId('request')
 		};
 		const first = await f.repClient.mutation(api.contractApprovals.request, request);
 		expect(await f.repClient.mutation(api.contractApprovals.request, request)).toEqual(first);
@@ -91,7 +92,7 @@ describe('HubSpot activity from contract operations', () => {
 			args = application(f);
 		const bad = {
 			...args.commands[0],
-			id: 'invalid-second',
+			id: fixtureOperationId('invalid-second'),
 			action: { kind: 'set' as const, optionId: 'absent' }
 		};
 		await expect(
@@ -128,7 +129,7 @@ describe('HubSpot activity from contract operations', () => {
 				membershipId: f.owner.membershipId,
 				id: f.id,
 				...(await reviewExpectation(f)),
-				operationId: 'empty-request'
+				operationId: fixtureOperationId('empty-request')
 			})
 		).rejects.toThrow('no changes waiting for approval');
 		expect((await events(f)).map((e) => e.kind)).toEqual(['created']);
@@ -146,8 +147,8 @@ describe('HubSpot activity from contract operations', () => {
 				membershipId: f.owner.membershipId,
 				id: f.id,
 				context: 'playbook',
-				expectedIdentity: current.playbookReviewIdentity,
-				operationId: 'complete-review',
+				expectedIdentity: current.reviews.playbook.identity,
+				operationId: fixtureOperationId('complete-review'),
 				notify: true
 			})
 		).toMatchObject({ status: 'complete', outcome: 'queued' });
@@ -155,10 +156,10 @@ describe('HubSpot activity from contract operations', () => {
 		const removed = await f.t.mutation(api.contracts.saveChanges, {
 			membershipId: f.owner.membershipId,
 			id: f.id,
-			operationId: 'remove',
+			operationId: fixtureOperationId('remove'),
 			commands: [
 				{
-					id: 'remove-command',
+					id: fixtureOperationId('remove-command'),
 					itemId: f.itemId,
 					expectedCurrentChangeId: current.playbook[0].currentChangeId,
 					action: { kind: 'set', optionId: null },

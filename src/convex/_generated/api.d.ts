@@ -9,13 +9,13 @@
  */
 
 import type * as accountDeletion from "../accountDeletion.js";
+import type * as accountOperationCleanup from "../accountOperationCleanup.js";
 import type * as accountViews from "../accountViews.js";
 import type * as accounts from "../accounts.js";
 import type * as auth from "../auth.js";
 import type * as authoringMigration from "../authoringMigration.js";
 import type * as authoringValidation from "../authoringValidation.js";
 import type * as avatars from "../avatars.js";
-import type * as baselineUploads from "../baselineUploads.js";
 import type * as buyerActivity from "../buyerActivity.js";
 import type * as buyerActivityQuota from "../buyerActivityQuota.js";
 import type * as buyerActivityValidators from "../buyerActivityValidators.js";
@@ -25,7 +25,6 @@ import type * as buyerLinks from "../buyerLinks.js";
 import type * as buyerProjection from "../buyerProjection.js";
 import type * as buyerSupportEligibility from "../buyerSupportEligibility.js";
 import type * as buyerValidators from "../buyerValidators.js";
-import type * as buyerVisits from "../buyerVisits.js";
 import type * as chunks from "../chunks.js";
 import type * as cleanup from "../cleanup.js";
 import type * as clerk from "../clerk.js";
@@ -36,6 +35,7 @@ import type * as contractAnnotations from "../contractAnnotations.js";
 import type * as contractApprovals from "../contractApprovals.js";
 import type * as contractAuthority from "../contractAuthority.js";
 import type * as contractBuyer from "../contractBuyer.js";
+import type * as contractChangeHeads from "../contractChangeHeads.js";
 import type * as contractChangeValidators from "../contractChangeValidators.js";
 import type * as contractChanges from "../contractChanges.js";
 import type * as contractCleanup from "../contractCleanup.js";
@@ -44,6 +44,7 @@ import type * as contractCompletion from "../contractCompletion.js";
 import type * as contractDefinitions from "../contractDefinitions.js";
 import type * as contractDirectory from "../contractDirectory.js";
 import type * as contractDisplay from "../contractDisplay.js";
+import type * as contractDocumentLifetime from "../contractDocumentLifetime.js";
 import type * as contractDocuments from "../contractDocuments.js";
 import type * as contractEmail from "../contractEmail.js";
 import type * as contractExports from "../contractExports.js";
@@ -112,7 +113,6 @@ import type * as emailNotifications from "../emailNotifications.js";
 import type * as emailSelectionChunks from "../emailSelectionChunks.js";
 import type * as emailSender from "../emailSender.js";
 import type * as emailValidators from "../emailValidators.js";
-import type * as exportActions from "../exportActions.js";
 import type * as exportRetention from "../exportRetention.js";
 import type * as exportValidators from "../exportValidators.js";
 import type * as http from "../http.js";
@@ -159,12 +159,13 @@ import type * as nativePlanPreparation from "../nativePlanPreparation.js";
 import type * as nativePlanPreparationAction from "../nativePlanPreparationAction.js";
 import type * as nativeStage from "../nativeStage.js";
 import type * as nativeStageValidators from "../nativeStageValidators.js";
+import type * as operationExpiry from "../operationExpiry.js";
 import type * as operationReceiptValidators from "../operationReceiptValidators.js";
 import type * as operationReceipts from "../operationReceipts.js";
 import type * as operator from "../operator.js";
+import type * as outputLifecycle from "../outputLifecycle.js";
 import type * as outputProof from "../outputProof.js";
 import type * as outputProofCleanup from "../outputProofCleanup.js";
-import type * as outputReferences from "../outputReferences.js";
 import type * as outputReservations from "../outputReservations.js";
 import type * as outputValidators from "../outputValidators.js";
 import type * as permissions from "../permissions.js";
@@ -174,6 +175,8 @@ import type * as playbookValidators from "../playbookValidators.js";
 import type * as profiles from "../profiles.js";
 import type * as proposalSource from "../proposalSource.js";
 import type * as recovery from "../recovery.js";
+import type * as retentionMaintenance from "../retentionMaintenance.js";
+import type * as retentionValidators from "../retentionValidators.js";
 import type * as reviewDetails from "../reviewDetails.js";
 import type * as reviews from "../reviews.js";
 import type * as savedContractValidators from "../savedContractValidators.js";
@@ -190,10 +193,9 @@ import type * as templateUploadValidators from "../templateUploadValidators.js";
 import type * as templateUploads from "../templateUploads.js";
 import type * as templateValidators from "../templateValidators.js";
 import type * as templates from "../templates.js";
-import type * as terminologyMaintenance from "../terminologyMaintenance.js";
-import type * as terminologyMigration from "../terminologyMigration.js";
 import type * as uploadHttp from "../uploadHttp.js";
 import type * as wordExport from "../wordExport.js";
+import type * as wordExportGeneration from "../wordExportGeneration.js";
 
 import type {
   ApiFromModules,
@@ -203,13 +205,13 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   accountDeletion: typeof accountDeletion;
+  accountOperationCleanup: typeof accountOperationCleanup;
   accountViews: typeof accountViews;
   accounts: typeof accounts;
   auth: typeof auth;
   authoringMigration: typeof authoringMigration;
   authoringValidation: typeof authoringValidation;
   avatars: typeof avatars;
-  baselineUploads: typeof baselineUploads;
   buyerActivity: typeof buyerActivity;
   buyerActivityQuota: typeof buyerActivityQuota;
   buyerActivityValidators: typeof buyerActivityValidators;
@@ -219,7 +221,6 @@ declare const fullApi: ApiFromModules<{
   buyerProjection: typeof buyerProjection;
   buyerSupportEligibility: typeof buyerSupportEligibility;
   buyerValidators: typeof buyerValidators;
-  buyerVisits: typeof buyerVisits;
   chunks: typeof chunks;
   cleanup: typeof cleanup;
   clerk: typeof clerk;
@@ -230,6 +231,7 @@ declare const fullApi: ApiFromModules<{
   contractApprovals: typeof contractApprovals;
   contractAuthority: typeof contractAuthority;
   contractBuyer: typeof contractBuyer;
+  contractChangeHeads: typeof contractChangeHeads;
   contractChangeValidators: typeof contractChangeValidators;
   contractChanges: typeof contractChanges;
   contractCleanup: typeof contractCleanup;
@@ -238,6 +240,7 @@ declare const fullApi: ApiFromModules<{
   contractDefinitions: typeof contractDefinitions;
   contractDirectory: typeof contractDirectory;
   contractDisplay: typeof contractDisplay;
+  contractDocumentLifetime: typeof contractDocumentLifetime;
   contractDocuments: typeof contractDocuments;
   contractEmail: typeof contractEmail;
   contractExports: typeof contractExports;
@@ -306,7 +309,6 @@ declare const fullApi: ApiFromModules<{
   emailSelectionChunks: typeof emailSelectionChunks;
   emailSender: typeof emailSender;
   emailValidators: typeof emailValidators;
-  exportActions: typeof exportActions;
   exportRetention: typeof exportRetention;
   exportValidators: typeof exportValidators;
   http: typeof http;
@@ -353,12 +355,13 @@ declare const fullApi: ApiFromModules<{
   nativePlanPreparationAction: typeof nativePlanPreparationAction;
   nativeStage: typeof nativeStage;
   nativeStageValidators: typeof nativeStageValidators;
+  operationExpiry: typeof operationExpiry;
   operationReceiptValidators: typeof operationReceiptValidators;
   operationReceipts: typeof operationReceipts;
   operator: typeof operator;
+  outputLifecycle: typeof outputLifecycle;
   outputProof: typeof outputProof;
   outputProofCleanup: typeof outputProofCleanup;
-  outputReferences: typeof outputReferences;
   outputReservations: typeof outputReservations;
   outputValidators: typeof outputValidators;
   permissions: typeof permissions;
@@ -368,6 +371,8 @@ declare const fullApi: ApiFromModules<{
   profiles: typeof profiles;
   proposalSource: typeof proposalSource;
   recovery: typeof recovery;
+  retentionMaintenance: typeof retentionMaintenance;
+  retentionValidators: typeof retentionValidators;
   reviewDetails: typeof reviewDetails;
   reviews: typeof reviews;
   savedContractValidators: typeof savedContractValidators;
@@ -384,10 +389,9 @@ declare const fullApi: ApiFromModules<{
   templateUploads: typeof templateUploads;
   templateValidators: typeof templateValidators;
   templates: typeof templates;
-  terminologyMaintenance: typeof terminologyMaintenance;
-  terminologyMigration: typeof terminologyMigration;
   uploadHttp: typeof uploadHttp;
   wordExport: typeof wordExport;
+  wordExportGeneration: typeof wordExportGeneration;
 }>;
 
 /**

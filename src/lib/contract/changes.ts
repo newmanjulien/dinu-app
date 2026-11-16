@@ -3,8 +3,7 @@ import { discussionAnchor } from '../discussions/validators';
 import { sourceTarget } from '../document/source-validators';
 
 /** Native contract changes are independent of template authoring origins. */
-export const changeKind = v.union(v.literal('playbook'), v.literal('buyer-proposal'));
-export const approvalContext = v.union(v.literal('playbook'), v.literal('buyer-link'));
+export const changeKind = v.union(v.literal('playbook'), v.literal('buyer-link'));
 export const changeStatus = v.union(
 	v.literal('pending'),
 	v.literal('approved'),
@@ -88,15 +87,16 @@ export const playbookState = v.object({
 	decisionId: v.union(v.id('contractChangeDecisions'), v.null())
 });
 export type ChangeKind = Infer<typeof changeKind>;
-export type ApprovalContext = Infer<typeof approvalContext>;
+/** Maps a domain context to its legal fixed field in persisted review state. */
+export function reviewGroupKey(context: ChangeKind): 'playbook' | 'buyerLink' {
+	return context === 'playbook' ? 'playbook' : 'buyerLink';
+}
 export type ChangeStatus = Infer<typeof changeStatus>;
 export type ChangeActor = Infer<typeof changeActor>;
 export type PlaybookCommand = Infer<typeof playbookCommand>;
 export type DecisionCommand = Infer<typeof decisionCommand>;
 export type ChangeReview = Infer<typeof changeReview>;
 export type PlaybookState = Infer<typeof playbookState>;
-export const contextForChange = (kind: ChangeKind): ApprovalContext =>
-	kind === 'playbook' ? 'playbook' : 'buyer-link';
 
 export const MAX_SAVE_COMMANDS = 25;
 
@@ -109,7 +109,7 @@ export const nativePageMetadata = v.object({
 	)
 });
 export const reviewSummary = v.object({
-	context: approvalContext,
+	context: changeKind,
 	identity: v.string(),
 	count: v.number(),
 	pendingCount: v.number(),

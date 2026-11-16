@@ -25,10 +25,18 @@ export interface CompositionRequest {
 		value: ResolvedBlock,
 		dependencies?: readonly CompositionArtifact<object>[]
 	): CompositionArtifact<ResolvedBlock>;
+	getBlocks(key: string): CompositionArtifact<ResolvedBlock[]> | undefined;
+	putBlocks(
+		key: string,
+		value: ResolvedBlock[],
+		dependencies?: readonly CompositionArtifact<object>[]
+	): CompositionArtifact<ResolvedBlock[]>;
+	/** Reference the registered owner of a block or completed derived group. */
+	reference(value: object): CompositionArtifact<object> | undefined;
 	release(): void;
 }
 
-type ArtifactValues = { runs: ResolvedRun[]; block: ResolvedBlock };
+type ArtifactValues = { runs: ResolvedRun[]; block: ResolvedBlock; blocks: ResolvedBlock[] };
 const familyKey = (family: keyof ArtifactValues, key: string) => JSON.stringify([family, key]);
 
 /** Source-owned completed artifacts. The index owns only current, optional, or working
@@ -42,14 +50,20 @@ export class CompositionArtifactStore {
 	#entries = new Map<string, Entry>();
 	#values = new WeakMap<object, Entry>();
 	#source?: readonly SourceBlock[];
+	#baseline?: readonly SourceBlock[];
 	#nextId = 0;
 	#destroyed = false;
 
-	useSource(blocks: readonly SourceBlock[]) {
+	useSource(blocks: readonly SourceBlock[], baseline?: readonly SourceBlock[]) {
 		this.#check();
 		if (this.#source && this.#source !== blocks)
 			throw new Error('Rendering artifacts belong to a different source.');
 		this.#source = blocks;
+		if (baseline) {
+			if (this.#baseline && this.#baseline !== baseline)
+				throw new Error('Rendering artifacts belong to a different baseline.');
+			this.#baseline = baseline;
+		}
 	}
 	#check() {
 		if (this.#destroyed) throw new Error('Composition source released.');
@@ -149,6 +163,8 @@ export class CompositionArtifactStore {
 					})
 				);
 			pin(entry);
+			if (family === 'blocks')
+				for (const block of entry.value as ResolvedBlock[]) this.#values.set(block, entry);
 			this.#optionalize(entry);
 			this.#trim();
 			return entry as CompositionArtifact<ArtifactValues[Family]>;
@@ -159,6 +175,13 @@ export class CompositionArtifactStore {
 			putRuns: (key, value, dependencies) => put('runs', key, value, dependencies),
 			getBlock: (key) => get('block', key),
 			putBlock: (key, value, dependencies) => put('block', key, value, dependencies),
+			getBlocks: (key) => get('blocks', key),
+			putBlocks: (key, value, dependencies) => put('blocks', key, value, dependencies),
+			reference: (value) => {
+				const entry = this.#values.get(value);
+				if (entry) pin(entry);
+				return entry;
+			},
 			release: () => {
 				if (released) return;
 				released = true;
@@ -213,6 +236,7 @@ export class CompositionArtifactStore {
 export function createCompositionRequest(store?: CompositionArtifactStore): CompositionRequest {
 	if (store) return store.createRequest();
 	const entries = new Map<string, CompositionArtifact<object>>();
+	const values = new WeakMap<object, CompositionArtifact<object>>();
 	let nextId = 0;
 	// Family-qualified keys enforce the same invariant as the source-owned store.
 	const get = <Family extends keyof ArtifactValues>(family: Family, key: string) =>
@@ -225,6 +249,9 @@ export function createCompositionRequest(store?: CompositionArtifactStore): Comp
 		const storedKey = familyKey(family, key);
 		const entry = entries.get(storedKey) ?? { id: ++nextId, value };
 		entries.set(storedKey, entry);
+		values.set(entry.value, entry);
+		if (family === 'blocks')
+			for (const block of entry.value as ResolvedBlock[]) values.set(block, entry);
 		return entry as CompositionArtifact<ArtifactValues[Family]>;
 	};
 	return {
@@ -233,6 +260,9 @@ export function createCompositionRequest(store?: CompositionArtifactStore): Comp
 		putRuns: (key, value) => put('runs', key, value),
 		getBlock: (key) => get('block', key),
 		putBlock: (key, value) => put('block', key, value),
+		getBlocks: (key) => get('blocks', key),
+		putBlocks: (key, value) => put('blocks', key, value),
+		reference: (value) => values.get(value),
 		release: () => entries.clear()
 	};
 }

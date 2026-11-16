@@ -3,9 +3,14 @@
 	import Button from '$lib/ui/Button.svelte';
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
+	import Avatar from '$lib/components/ui/Avatar.svelte';
 	let {
-		card
+		card,
+		value,
+		profile
 	}: {
+		value?: string;
+		profile?: { name: string; avatarUrl: string | null };
 		card: {
 			title: string;
 			description: string;
@@ -20,7 +25,13 @@
 <div aria-busy="true" class="contents">
 	{#snippet avatar()}
 		<div class="inline-flex size-[68px] shrink-0 items-center justify-center rounded-full">
-			<SkeletonBlock class="size-17 rounded-full" />
+			{#if profile}<Avatar
+					name={profile.name}
+					avatarUrl={profile.avatarUrl}
+					fallbackUrl={null}
+					class="size-17"
+				/>
+			{:else}<SkeletonBlock class="size-17 rounded-full" />{/if}
 		</div>
 	{/snippet}
 
@@ -33,10 +44,14 @@
 	<SettingsCard
 		title={card.title}
 		description={card.description}
-		action={card.kind === 'readonly' || card.kind === 'avatar' ? undefined : action}
+		action={value !== undefined || profile || card.kind === 'readonly' || card.kind === 'avatar'
+			? undefined
+			: action}
 		media={card.kind === 'avatar' ? avatar : undefined}
 	>
-		{#if card.warning}
+		{#if value !== undefined}
+			<p class="mt-4 min-h-9 max-w-sm break-words text-sm text-ink">{value || 'Not set'}</p>
+		{:else if card.warning}
 			<div
 				class="mt-4 flex min-h-9 items-center gap-2 rounded-button-lg bg-canvas px-3 text-[0.74rem] leading-5 text-ink-muted"
 			>

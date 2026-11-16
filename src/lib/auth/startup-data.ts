@@ -17,3 +17,12 @@ export type StartupHome = FunctionReturnType<typeof api.accounts.startupHome> & 
 const homeKey = Symbol('startup-home');
 export const setStartupHome = (read: () => StartupHome | null) => setContext(homeKey, read);
 export const useStartupHome = () => getContext<() => StartupHome | null>(homeKey) ?? (() => null);
+
+export type StartupSetup = FunctionReturnType<typeof api.accounts.setupStartup> & {
+	sessionId: string;
+	userId: string;
+};
+const setupKey = Symbol('startup-setup');
+export const setStartupSetup = (read: () => StartupSetup | null) => setContext(setupKey, read);
+export const useStartupSetup = () =>
+	getContext<() => StartupSetup | null>(setupKey) ?? (() => null);

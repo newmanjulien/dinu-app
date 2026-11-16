@@ -32,6 +32,7 @@ export function documentFixture(count = 12) {
 		]
 	}));
 	const records: RepInstructionDetailRecord[] = blocks.map((_, i) => ({
+		audience: 'rep',
 		_id: `item-${i}` as Id<'playbookItems'>,
 		_creationTime: 1,
 		companyId,
@@ -87,10 +88,7 @@ export function createdContract(
 			title: 'Synthetic Buyer',
 			savedAt: 1,
 			playbook: [],
-			playbookReviewIdentity: 'playbook:0',
-			buyerLinkReviewIdentity: 'buyer-link:0',
-			playbookCompletion: null,
-			buyerLinkCompletion: null,
+			reviews: { playbook: { identity: 'playbook:0' }, buyerLink: { identity: 'buyer-link:0' } },
 			lastOperationId: null
 		},
 		snapshot: {

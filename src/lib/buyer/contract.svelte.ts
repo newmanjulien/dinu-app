@@ -45,6 +45,7 @@ export class BuyerContract {
 	Host = $state.raw<Host>();
 	target = $state.raw<HTMLElement>();
 	allowed = $state(false);
+	headerPresented = $state(false);
 	connected = $state(false);
 	mountReady = $state(false);
 	error = $state<string | null>(null);

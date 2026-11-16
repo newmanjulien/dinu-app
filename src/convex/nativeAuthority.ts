@@ -1,3 +1,4 @@
+import { expireOperation } from './operationExpiry';
 import { prepareBuyerCurrentView } from './buyerCurrent';
 import { ConvexError, getConvexSize, v } from 'convex/values';
 import { makeFunctionReference } from 'convex/server';
@@ -58,9 +59,18 @@ import { canonicalJson } from '../lib/document/canonical-json';
 import { MAX_SELECTED_CONCESSIONS } from '../lib/document/selection-limits';
 import { activeJob } from './emailDeliveries';
 import { documentBytes } from './storageCapacity';
-import { requireNativeReachability } from './nativeStage';
+import { nativeAdoptionOwner, requireNativeReachability } from './nativeStage';
 
-type HeadRow = Omit<Doc<'contractChangeHeads'>, '_id' | '_creationTime'>;
+import {
+	type ChangeHead,
+	createChangeHead,
+	currentDecisionId,
+	restoreAppliedHead,
+	assertChangeHead,
+	assertHeadChange
+} from './contractChangeHeads';
+
+type HeadRow = ChangeHead;
 export type AuthorityHead = {
 	before: Doc<'contractChangeHeads'> | null;
 	row: HeadRow | null;
@@ -88,24 +98,24 @@ const authorityAction = makeFunctionReference<'action', NativeOwner, null>(
 );
 const hash = (value: unknown) => receiptChunkFingerprint(canonicalJson(value));
 function rowOf(row: Doc<'contractChangeHeads'>): HeadRow {
-	const { _id, _creationTime, ...fields } = row;
-	return fields;
+	const { companyId, contractId, key } = row;
+	return row.kind === 'playbook'
+		? {
+				companyId,
+				contractId,
+				key,
+				kind: row.kind,
+				current: row.current,
+				applied: row.applied,
+				activePlaybook: row.activePlaybook
+			}
+		: { companyId, contractId, key, kind: row.kind, current: row.current, applied: row.applied };
 }
+
 function headOf(head: Awaited<ReturnType<typeof authorityTarget>>['head']): AuthorityHead {
 	return {
 		before: head?.storedHead ?? null,
-		row: head
-			? rowOf(
-					head.storedHead.currentChangeId === head.head.currentChangeId
-						? head.storedHead
-						: {
-								...head.storedHead,
-								currentChangeId: head.head.currentChangeId,
-								currentDecisionId: head.head.currentDecisionId,
-								pendingAdmissionRevision: head.head.pendingAdmissionRevision
-							}
-				)
-			: null,
+		row: head?.current || head?.applied ? rowOf(head.head) : null,
 		oldCurrentId: head?.current?._id ?? null,
 		oldDecisionId: head?.decision?._id ?? null,
 		oldRequired: head?.current?.policy === 'required',
@@ -133,7 +143,10 @@ async function record(ctx: QueryCtx, row: Doc<'operationReceipts'>, order: numbe
 		receiptChunkFingerprint(chunk.data) !== chunk.fingerprint
 	)
 		throw new Error('Native authority head checkpoint integrity failed.');
-	return { chunk, head: JSON.parse(chunk.data) as AuthorityHead };
+	const head = JSON.parse(chunk.data) as AuthorityHead;
+	if (head.row) assertChangeHead(head.row);
+	if (head.before) assertChangeHead(head.before);
+	return { chunk, head };
 }
 async function put(
 	ctx: MutationCtx,
@@ -165,18 +178,9 @@ function mark(head: AuthorityHead) {
 function restore(head: AuthorityHead) {
 	const row = head.row;
 	if (!row) return;
-	if (!row.appliedChangeId) head.row = null;
-	else
-		head.row = {
-			...row,
-			currentChangeId: row.appliedChangeId,
-			currentDecisionId: row.appliedDecisionId,
-			pendingAdmissionRevision: undefined,
-			...(row.playbook ? { playbook: { ...row.playbook, current: row.playbook.applied } } : {})
-		};
+	head.row = restoreAppliedHead(row);
 	head.nextRequired = Boolean(
-		head.row &&
-		(head.row.kind === 'buyer-proposal' || head.row.playbook?.current?.policy === 'required')
+		head.row?.current && (head.row.kind === 'buyer-link' || head.row.current.policy === 'required')
 	);
 	head.nextStatus = 'approved';
 	mark(head);
@@ -252,11 +256,11 @@ export async function advanceAuthority(
 						const value: AuthorityHead = {
 							before: stored,
 							row: rowOf(stored),
-							oldCurrentId: stored.currentChangeId ?? null,
-							oldDecisionId: stored.currentDecisionId ?? null,
-							oldRequired: stored.playbook?.current?.policy === 'required',
+							oldCurrentId: stored.current?.changeId ?? null,
+							oldDecisionId: currentDecisionId(stored.current),
+							oldRequired: stored.kind === 'playbook' && stored.current?.policy === 'required',
 							oldStatus: state.status,
-							nextRequired: stored.playbook?.current?.policy === 'required',
+							nextRequired: stored.kind === 'playbook' && stored.current?.policy === 'required',
 							nextStatus: state.status,
 							dirty: false
 						};
@@ -283,8 +287,8 @@ export async function advanceAuthority(
 					const kind = head.row?.kind ?? head.before?.kind;
 					if (kind === 'playbook') {
 						b.playbookSelectionCount +=
-							Number(head.row?.activePlaybook ?? false) -
-							Number(head.before?.activePlaybook ?? false);
+							Number(head.row?.kind === 'playbook' && head.row.activePlaybook) -
+							Number(head.before?.kind === 'playbook' && head.before.activePlaybook);
 						b.playbookReviewCount += Number(head.nextRequired) - Number(head.oldRequired);
 						b.playbookPendingCount +=
 							Number(head.nextRequired && head.nextStatus === 'pending') -
@@ -296,7 +300,7 @@ export async function advanceAuthority(
 							hash(head.oldRequired ? [head.oldCurrentId, head.oldDecisionId] : null) !==
 							hash(
 								head.nextRequired
-									? [head.row?.currentChangeId, head.row?.currentDecisionId ?? null]
+									? [head.row?.current?.changeId, currentDecisionId(head.row?.current ?? null)]
 									: null
 							)
 						)
@@ -436,6 +440,7 @@ export const checkpoint = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await constructionOwned(ctx, args);
 		if (!state?.access || !state.native.build) return null;
+		if (await expireOperation(ctx, state.row)) return null;
 		const { row, contract, access } = state,
 			native = structuredClone(state.native),
 			b = native.build!;
@@ -489,7 +494,7 @@ export const checkpoint = internalMutation({
 			else if (input.kind === 'proposal-support' && value.changeId) {
 				const change = await staged(ctx, state, 'contractChanges', value.changeId);
 				if (
-					change.kind !== 'buyer-proposal' ||
+					change.kind !== 'buyer-link' ||
 					change.key !== input.args.threadId ||
 					change.patchKey !== row.key ||
 					change.operationId !== row.key ||
@@ -504,18 +509,27 @@ export const checkpoint = internalMutation({
 				b.changeIds.push(change._id);
 				const approve = access.membership.role === 'admin';
 				const decisionId = approve ? await decision(change._id, 'approve') : undefined;
-				head.row = {
+				head.row = createChangeHead({
 					companyId: row.companyId,
 					contractId: contract.root._id,
-					kind: 'buyer-proposal',
+					kind: 'buyer-link',
 					key: input.args.threadId,
-					activePlaybook: false,
-					currentChangeId: change._id,
-					currentDecisionId: decisionId,
-					appliedChangeId: approve ? change._id : target.head?.applied?._id,
-					appliedDecisionId: approve ? decisionId : target.head?.appliedDecision?._id,
-					pendingAdmissionRevision: approve ? undefined : contract.root.stateRevision + 1
-				};
+					current: {
+						changeId: change._id,
+						change,
+						decisionId,
+						admissionRevision: contract.root.stateRevision + 1
+					},
+					applied: approve
+						? { changeId: change._id, change, decisionId }
+						: target.head?.applied
+							? {
+									changeId: target.head.applied._id,
+									change: target.head.applied,
+									decisionId: target.head.appliedDecision?._id
+								}
+							: null
+				});
 				head.nextRequired = true;
 				head.nextStatus = approve ? 'approved' : 'pending';
 				mark(head);
@@ -527,7 +541,11 @@ export const checkpoint = internalMutation({
 					(command.action === 'approve' && head.oldStatus === 'approved') ||
 					(command.action === 'decline' && head.oldStatus === 'rejected');
 				if (!noOp) {
-					const id = await decision(change._id, command.action, head.row.currentDecisionId);
+					const id = await decision(
+						change._id,
+						command.action,
+						currentDecisionId(head.row.current) ?? undefined
+					);
 					if (command.action === 'undo') {
 						const previous = change.predecessorId
 							? await readChangeRow(ctx, change.predecessorId, contract)
@@ -543,32 +561,39 @@ export const checkpoint = internalMutation({
 								throw new ConvexError('Previous wording needs renewed authorization.');
 							await effectiveDecision(ctx, contract, previous._id, priorDecision._id);
 						}
-						head.row = previous
-							? {
-									...head.row,
-									currentChangeId: previous._id,
-									appliedChangeId: previous._id,
-									currentDecisionId: priorDecision?._id,
-									appliedDecisionId: priorDecision?._id,
-									pendingAdmissionRevision: undefined
-								}
+						const activation = previous
+							? { changeId: previous._id, change: previous, decisionId: priorDecision?._id }
 							: null;
+						head.row = createChangeHead({
+							companyId: row.companyId,
+							contractId: contract.root._id,
+							kind: change.kind,
+							key: change.key,
+							current: activation,
+							applied: activation
+						});
 						head.nextRequired = previous?.policy === 'required';
 						head.nextStatus = 'approved';
 					} else {
-						head.row.currentDecisionId = id;
-						head.row.pendingAdmissionRevision = undefined;
+						const activation = { changeId: change._id, change, decisionId: id };
+						head.row = createChangeHead({
+							companyId: row.companyId,
+							contractId: contract.root._id,
+							kind: change.kind,
+							key: change.key,
+							current: activation,
+							applied:
+								command.action === 'approve'
+									? activation
+									: target.head?.applied
+										? {
+												changeId: target.head.applied._id,
+												change: target.head.applied,
+												decisionId: target.head.appliedDecision?._id
+											}
+										: null
+						});
 						head.nextStatus = command.action === 'approve' ? 'approved' : 'rejected';
-						if (command.action === 'approve') {
-							head.row.appliedChangeId = head.row.currentChangeId;
-							head.row.appliedDecisionId = id;
-							if (head.row.playbook) head.row.playbook.applied = head.row.playbook.current;
-							head.row.activePlaybook =
-								head.row.kind === 'playbook' &&
-								Boolean(
-									head.row.playbook?.current?.optionId !== null && head.row.playbook?.current
-								);
-						}
 					}
 					mark(head);
 				}
@@ -604,6 +629,10 @@ export const checkpoint = internalMutation({
 /** The final transaction reads only compact sealed heads and direct source metadata,
  * prepares its exact tree edits, and publishes business state and original result. */
 export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceipts'>) {
+	const liveOwner = await nativeAdoptionOwner(ctx, row);
+	if (!liveOwner) return true;
+	row = liveOwner;
+	if (await expireOperation(ctx, row)) return true;
 	const { contract, access } = await authorizePreparedOperation(ctx, row);
 	if (!access || !(await nativeValidationCurrent(ctx, row, contract))) return false;
 	await requireContractWork(ctx, contract);
@@ -656,6 +685,8 @@ export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceip
 		)
 			throw new Error('Authority head seal order/integrity failed.');
 		const head = JSON.parse(chunk.data) as AuthorityHead;
+		if (head.row) assertChangeHead(head.row);
+		if (head.before) assertChangeHead(head.before);
 		digest = receiptSectionHash(digest, i, chunk.fingerprint, 1);
 		bytes += new TextEncoder().encode(chunk.data).length;
 		return head;
@@ -690,13 +721,13 @@ export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceip
 		);
 	if (live && index.events.length >= 8) return false;
 	const head = heads[0];
-	const nextCurrent = head.row?.currentChangeId
-		? await ctx.db.get('contractChanges', head.row.currentChangeId)
+	const nextCurrent = head.row?.current?.changeId
+		? await ctx.db.get('contractChanges', head.row.current.changeId)
 		: null;
-	const nextApplied = head.row?.appliedChangeId
-		? head.row.appliedChangeId === nextCurrent?._id
+	const nextApplied = head.row?.applied?.changeId
+		? head.row.applied.changeId === nextCurrent?._id
 			? nextCurrent
-			: await ctx.db.get('contractChanges', head.row.appliedChangeId)
+			: await ctx.db.get('contractChanges', head.row.applied.changeId)
 		: null;
 	for (const change of [nextCurrent, nextApplied])
 		if (
@@ -709,6 +740,8 @@ export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceip
 						!change.stage.sealed)))
 		)
 			throw new Error('Authority immutable target seal changed.');
+	if (head.row && nextCurrent) assertHeadChange(head.row, 'current', nextCurrent);
+	if (head.row && nextApplied) assertHeadChange(head.row, 'applied', nextApplied);
 	const lostSupports =
 		live && p.supportCursor.counts.supportCount < index.supportSummary.supportCount;
 	if (live) index.installSupportCounts(p.supportCursor.counts);
@@ -721,14 +754,14 @@ export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceip
 	} else if (
 		head.dirty &&
 		input.kind === 'change-decision' &&
-		target.change?.kind === 'buyer-proposal' &&
+		target.change?.kind === 'buyer-link' &&
 		target.head?.applied?._id !== target.change._id
 	) {
 		const thread = await effectiveBuyerSource(ctx, index, target.change);
 		if (!thread) throw new ConvexError('This proposal changed. Review its current wording.');
 		claim = await prepareProposalClaim(ctx, index, thread, null, b.tapeLength!);
 	}
-	const buyer = (head.row?.kind ?? head.before?.kind) === 'buyer-proposal';
+	const buyer = (head.row?.kind ?? head.before?.kind) === 'buyer-link';
 	if (buyer && head.dirty)
 		await prepareBuyerHeadEffects(
 			ctx,
@@ -741,7 +774,7 @@ export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceip
 					floating: Boolean(nextCurrent && nextCurrent._id !== nextApplied?._id),
 					decisionStatus: head.nextStatus === 'pending' ? null : head.nextStatus,
 					currentId: () => nextCurrent?._id ?? null,
-					decisionId: () => head.row?.currentDecisionId ?? null
+					decisionId: () => currentDecisionId(head.row?.current ?? null)
 				}
 			],
 			b.tapeLength!,
@@ -754,7 +787,7 @@ export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceip
 			hash(head.oldRequired ? [head.oldCurrentId, head.oldDecisionId] : null) !==
 				hash(
 					head.nextRequired
-						? [head.row?.currentChangeId, head.row?.currentDecisionId ?? null]
+						? [head.row?.current?.changeId, currentDecisionId(head.row?.current ?? null)]
 						: null
 				));
 	const rootFields = {
@@ -769,43 +802,45 @@ export async function adoptAuthority(ctx: MutationCtx, row: Doc<'operationReceip
 		...(b.dirtyCount
 			? { lastOperation: { id: row.operationId!, callerId: access.profile._id } }
 			: {}),
-		...(b.contextChanged
-			? (() => {
-					const identity = contextIdentity([
-						contract.root.playbookReviewIdentity,
-						row.key,
-						b.identity
-					]);
-					return {
-						playbookReviewIdentity: identity,
-						playbookCompletion: changedContextCompletion(
+		reviews: {
+			playbook: b.contextChanged
+				? (() => {
+						const identity = contextIdentity([
+							contract.root.reviews.playbook.identity,
+							row.key,
+							b.identity
+						]);
+						return {
 							identity,
-							b.playbookReviewCount,
-							b.playbookPendingCount,
-							access
-						)
-					};
-				})()
-			: {}),
-		...(buyerChanged
-			? (() => {
-					const identity = contextIdentity([
-						contract.root.buyerLinkReviewIdentity,
-						row.key,
-						b.identity,
-						index.supportSummary.supportCount
-					]);
-					return {
-						buyerLinkReviewIdentity: identity,
-						buyerLinkCompletion: changedContextCompletion(
+							completion: changedContextCompletion(
+								identity,
+								b.playbookReviewCount,
+								b.playbookPendingCount,
+								access
+							)
+						};
+					})()
+				: contract.root.reviews.playbook,
+			buyerLink: buyerChanged
+				? (() => {
+						const identity = contextIdentity([
+							contract.root.reviews.buyerLink.identity,
+							row.key,
+							b.identity,
+							index.supportSummary.supportCount
+						]);
+						return {
 							identity,
-							index.supportSummary.reviewCount,
-							index.supportSummary.pendingCount,
-							access
-						)
-					};
-				})()
-			: {})
+							completion: changedContextCompletion(
+								identity,
+								index.supportSummary.reviewCount,
+								index.supportSummary.pendingCount,
+								access
+							)
+						};
+					})()
+				: contract.root.reviews.buyerLink
+		}
 	};
 	const buyerCurrent = await prepareBuyerCurrentView(
 		ctx,

@@ -1,4 +1,4 @@
-import { makeFunctionReference } from 'convex/server';
+import { internal } from './_generated/api';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { Doc, Id } from './_generated/dataModel';
@@ -6,27 +6,22 @@ import type { MutationCtx, QueryCtx } from './_generated/server';
 import { assertContractDocumentManifest } from './contractDocuments';
 import { outputReservation, initialProofCursor, foldOutputProofPage } from './outputProof';
 import { receiptPayload, sealReceipt } from './operationReceipts';
-import { queueOutputProofCleanup } from './outputProofCleanup';
+import { retireOutputPreparation } from './outputReservations';
 import { cancelJob } from './emailDeliveries';
 import { retireSnapshotDelivery } from './emailDisposal';
 import { documentBytes } from './storageCapacity';
-const nativeCleanup = makeFunctionReference<
-	'mutation',
-	{ receiptId: Id<'operationReceipts'> },
-	null
->('nativeConstructionCleanup:run');
 const hash = (bytes: Uint8Array) => bytesToHex(sha256(bytes));
 const encoder = new TextEncoder();
 
 export async function retainedProvider(ctx: QueryCtx, id: Id<'hubspotQuotePushes'>) {
 	return Boolean(
 		await ctx.db
-			.query('operationReceipts')
+			.query('contractOutputs')
 			.withIndex('by_providerOperationId', (q) => q.eq('providerOperationId', id))
 			.first()
 	);
 }
-/** Current views, immutable output receipts and active native stages own document reachability. */
+/** Current views, immutable outputs and active native stages own document reachability. */
 export async function retainedDocument(ctx: QueryCtx, id: Id<'contractDocuments'>) {
 	const document = await ctx.db.get('contractDocuments', id);
 	if (!document) return false;
@@ -43,11 +38,7 @@ export async function retainedDocument(ctx: QueryCtx, id: Id<'contractDocuments'
 			.withIndex('by_documentId', (q) => q.eq('documentId', id))
 			.first()) ||
 		(await ctx.db
-			.query('hubspotExports')
-			.withIndex('by_documentId', (q) => q.eq('documentId', id))
-			.first()) ||
-		(await ctx.db
-			.query('hubspotQuotePushes')
+			.query('contractOutputs')
 			.withIndex('by_documentId', (q) => q.eq('documentId', id))
 			.first())
 	)
@@ -65,11 +56,22 @@ export async function retainedDocument(ctx: QueryCtx, id: Id<'contractDocuments'
 	return false;
 }
 /** Invalidate the exact original pending owner before source retirement. Its replay fence survives. */
-export async function retirePendingOperation(ctx: MutationCtx, row: Doc<'operationReceipts'>) {
-	await cancelJob(ctx, row.outputPreparation?.jobId);
+export async function retirePendingOperation(
+	ctx: MutationCtx,
+	row: Doc<'operationReceipts'>,
+	reason = 'This contract was deleted.'
+) {
+	if (row.outputId) {
+		const output = await ctx.db.get('contractOutputs', row.outputId);
+		if (output && (output.companyId !== row.companyId || output.contractId !== row.contractId))
+			throw new Error('Pending output owner changed.');
+		if (output?.format === 'full' && (output.outputPreparation || output.state === 'preparing')) {
+			await retireOutputPreparation(ctx, output, reason);
+			if (row.state === 'preparing') return;
+		}
+	}
 	await cancelJob(ctx, row.preparation?.native?.jobId);
 	await cancelJob(ctx, row.preparation?.passageJobId);
-	const generation = row.outputPreparation?.generation;
 	if (row.emailPreparation) {
 		const delivery = await ctx.db.get('emailDeliveries', row.emailPreparation.deliveryId);
 		if (delivery) {
@@ -88,54 +90,48 @@ export async function retirePendingOperation(ctx: MutationCtx, row: Doc<'operati
 		const payload = await receiptPayload(ctx, row);
 		await sealReceipt(ctx, row, payload.inputs, {
 			state: 'failed',
-			error: 'This contract was deleted.'
+			error: reason
 		});
 	}
-	if (
-		row.outputPreparation ||
-		row.emailPreparation ||
-		(row.state === 'preparing' && row.documentId && !row.reservationManifest)
-	)
+	if (row.emailPreparation || (row.state === 'preparing' && row.documentId))
 		await ctx.db.patch('operationReceipts', row._id, {
-			outputPreparation: undefined,
 			emailPreparation: undefined,
-			...(!row.reservationManifest && row.state === 'preparing' ? { documentId: undefined } : {})
+			...(row.state === 'preparing' ? { documentId: undefined } : {})
 		});
-	if (generation !== undefined) await queueOutputProofCleanup(ctx, row._id, generation);
 }
 async function ownerManifest(
 	ctx: QueryCtx,
 	marker: Doc<'contractCleanups'>,
-	receiptId: Id<'operationReceipts'>,
+	outputId: Id<'contractOutputs'>,
 	documentId?: Id<'contractDocuments'>
 ) {
-	const row = await ctx.db.get('operationReceipts', receiptId);
-	if (!row?.documentId || (documentId && row.documentId !== documentId))
+	const row = await ctx.db.get('contractOutputs', outputId);
+	if (row?.format !== 'full' || !row.documentId || (documentId && row.documentId !== documentId))
 		throw new Error('Retained output owner has no document.');
 	return outputReservation(ctx, {
 		companyId: marker.companyId,
 		contractId: marker.contractId,
-		reservationReceiptId: receiptId,
+		outputId,
 		documentId: row.documentId
 	});
 }
 async function beginProof(
 	ctx: MutationCtx,
 	marker: Doc<'contractCleanups'>,
-	receiptId: Id<'operationReceipts'>,
+	outputId: Id<'contractOutputs'>,
 	documentId?: Id<'contractDocuments'>
 ) {
-	const { reservationManifest } = await ownerManifest(ctx, marker, receiptId, documentId);
+	const { reservationManifest } = await ownerManifest(ctx, marker, outputId, documentId);
 	await ctx.db.patch('contractCleanups', marker._id, {
 		retentionProof: {
-			receiptId,
+			outputId,
 			section: reservationManifest.proof.section,
 			generation: reservationManifest.proof.generation,
 			cursor: initialProofCursor(reservationManifest.proof)
 		}
 	});
 }
-/** Complete all receipt proof and document/chunk integrity folds before any original source drain. */
+/** Complete all output proof and document/chunk integrity folds before any original source drain. */
 export async function prepareRetention(ctx: MutationCtx, marker: Doc<'contractCleanups'>) {
 	if (marker.retentionComplete) return true;
 	if (marker.retentionDocumentId) {
@@ -158,8 +154,7 @@ export async function prepareRetention(ctx: MutationCtx, marker: Doc<'contractCl
 			)
 				throw new Error('Retained output document chunks are incomplete or corrupt.');
 			bytes += chunk.data.byteLength;
-			const { retainedAfterDeletion: _retained, ...immutable } = chunk;
-			readBytes += documentBytes(immutable);
+			readBytes += documentBytes(chunk);
 		}
 		const complete = offset === document.chunkIds.length;
 		if (
@@ -179,7 +174,7 @@ export async function prepareRetention(ctx: MutationCtx, marker: Doc<'contractCl
 	}
 	if (marker.retentionProof) {
 		const proof = marker.retentionProof,
-			{ reservationManifest } = await ownerManifest(ctx, marker, proof.receiptId);
+			{ reservationManifest } = await ownerManifest(ctx, marker, proof.outputId);
 		if (
 			proof.section !== reservationManifest.proof.section ||
 			proof.generation !== reservationManifest.proof.generation
@@ -226,23 +221,31 @@ export async function prepareRetention(ctx: MutationCtx, marker: Doc<'contractCl
 			.paginate(pagination);
 		for (const row of page.page) {
 			if (row.companyId !== marker.companyId) throw new Error('Retained receipt company changed.');
-			if (row.state === 'preparing' || row.outputPreparation || row.emailPreparation) {
+			if (row.state === 'preparing' || row.emailPreparation) {
 				await retirePendingOperation(ctx, row);
 				return false;
 			}
-			if (row.nativeCleanup) {
-				await ctx.runMutation(nativeCleanup, { receiptId: row._id });
+			if ((await ctx.runMutation(internal.nativeConstructionCleanup.dispose, { receiptId: row._id })) !== 'ready') return false;
+		}
+		({ continueCursor: cursor, isDone: done } = page);
+		next = 'outputs';
+	} else if (phase === 'outputs') {
+		const page = await ctx.db
+			.query('contractOutputs')
+			.withIndex('by_contractId', (q) => q.eq('contractId', marker.contractId))
+			.paginate(pagination);
+		for (const row of page.page) {
+			if (row.companyId !== marker.companyId) throw new Error('Retained output company changed.');
+			if (row.format !== 'full' || row.compaction || row.disposal) continue;
+			if (row.outputPreparation || row.state === 'preparing') {
+				await retireOutputPreparation(ctx, row, 'This contract was deleted.');
 				return false;
 			}
 			if (row.reservationManifest) await beginProof(ctx, marker, row._id);
 			if (row.providerOperationId) {
-				const provider = await ctx.db.get('hubspotQuotePushes', row.providerOperationId);
-				if (
-					!provider ||
-					provider.companyId !== marker.companyId ||
-					provider.contractId !== marker.contractId
-				)
-					throw new Error('Retained provider receipt has no valid operation owner.');
+				const push = await ctx.db.get('hubspotQuotePushes', row.providerOperationId);
+				if (!push || push.companyId !== marker.companyId || push.contractId !== marker.contractId)
+					throw new Error('Retained output has no valid provider observation.');
 			}
 		}
 		({ continueCursor: cursor, isDone: done } = page);
@@ -254,7 +257,17 @@ export async function prepareRetention(ctx: MutationCtx, marker: Doc<'contractCl
 			.paginate(pagination);
 		for (const row of page.page) {
 			if (row.companyId !== marker.companyId) throw new Error('Retained attempt company changed.');
-			await beginProof(ctx, marker, row.reservationReceiptId, row.documentId);
+			if (row.format === 'full') {
+				const output = await ctx.db.get('contractOutputs', row.outputId);
+				if (
+					output?.format !== 'full' ||
+					output.companyId !== row.companyId ||
+					output.contractId !== row.contractId
+				)
+					throw new Error('Full retained attempt has no full output owner.');
+				if (output?.format === 'full' && !output.compaction && !output.disposal)
+					await beginProof(ctx, marker, row.outputId, row.documentId);
+			}
 		}
 		({ continueCursor: cursor, isDone: done } = page);
 		next = 'providers';
@@ -265,7 +278,17 @@ export async function prepareRetention(ctx: MutationCtx, marker: Doc<'contractCl
 			.paginate(pagination);
 		for (const row of page.page) {
 			if (row.companyId !== marker.companyId) throw new Error('Retained push company changed.');
-			await beginProof(ctx, marker, row.reservationReceiptId, row.documentId);
+			if (row.format === 'full') {
+				const output = await ctx.db.get('contractOutputs', row.outputId);
+				if (
+					output?.format !== 'full' ||
+					output.companyId !== row.companyId ||
+					output.contractId !== row.contractId
+				)
+					throw new Error('Full retained provider has no full output owner.');
+				if (output?.format === 'full' && !output.compaction && !output.disposal)
+					await beginProof(ctx, marker, row.outputId, row.documentId);
+			}
 		}
 		({ continueCursor: cursor, isDone: done } = page);
 	}

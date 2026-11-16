@@ -18,7 +18,11 @@ export function setDocumentWorkspace(workspace: DocumentWorkspace) {
 }
 
 export function getDocumentWorkspace(): DocumentWorkspace {
-	const workspace = getContext<DocumentWorkspace>(WORKSPACE);
+	const workspace = getOptionalDocumentWorkspace();
 	if (!workspace) throw new Error('Document workspace context is required.');
 	return workspace;
+}
+
+export function getOptionalDocumentWorkspace(): DocumentWorkspace | undefined {
+	return getContext<DocumentWorkspace>(WORKSPACE);
 }

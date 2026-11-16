@@ -26,6 +26,22 @@ export const initialize = mutation({
 		return null;
 	}
 });
+
+/** Avatar imagery is optional chrome and does not gate seller-link classification. */
+export const currentAvatar = query({
+	args: {},
+	returns: v.object({
+		id: v.id('profiles'),
+		avatarUrl: v.union(v.string(), v.null())
+	}),
+	handler: async (ctx) => {
+		const profile = await requireProfile(ctx);
+		return {
+			id: profile._id,
+			avatarUrl: profile.avatarId ? await ctx.storage.getUrl(profile.avatarId) : null
+		};
+	}
+});
 export const colleagues = query({
 	args: { membershipId: v.id('memberships'), paginationOpts: paginationOptsValidator },
 	returns: paginationResultValidator(memberView),

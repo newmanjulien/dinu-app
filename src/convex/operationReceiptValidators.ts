@@ -2,22 +2,16 @@ import { v } from 'convex/values';
 import { discussionPreparation, preparationActor } from './discussionPreparationValidators';
 import { nativeResult, nativeCleanup } from './nativeStageValidators';
 import { emailPreparation } from './nativeEmailValidators';
-import {
-	outputPreparation,
-	reservationManifest,
-	outputCleanup,
-	outputProofCursor
-} from './outputValidators';
-
-/** Company-lifetime operation identity and its exact original input/result bytes. */
+/** Immutable retry deadline; physical disposal waits for independent owners and cleanup. */
 export const operationReceipt = v.object({
-	outputPreparation: v.optional(outputPreparation),
-	outputGeneration: v.optional(v.number()),
-	reservationManifest: v.optional(reservationManifest),
-	outputCleanup: v.optional(outputCleanup),
-	outputVerification: v.optional(
-		v.object({ generation: v.number(), cursor: outputProofCursor, complete: v.boolean() })
-	),
+	retryUntil: v.number(),
+	// Immutable minimum of the outer deadline and independently replayable commands.
+	executionUntil: v.number(),
+	gcAfter: v.number(),
+	// Set only after every dependency has released the original owner/seal.
+	collecting: v.optional(v.literal(true)),
+	errorCode: v.optional(v.literal('OPERATION_EXPIRED')),
+	outputId: v.optional(v.id('contractOutputs')),
 	documentId: v.optional(v.id('contractDocuments')),
 	emailPreparation: v.optional(emailPreparation),
 	nativeResult: v.optional(nativeResult),
@@ -42,7 +36,6 @@ export const operationReceipt = v.object({
 		)
 	),
 	requestedAt: v.optional(v.number()),
-	providerOperationId: v.optional(v.id('hubspotQuotePushes')),
 	companyId: v.id('company'),
 	contractId: v.optional(v.id('savedContracts')),
 	key: v.string(),

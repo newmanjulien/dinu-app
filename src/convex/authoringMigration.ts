@@ -1,4 +1,4 @@
-/** Source-only migration entry points. Operators run these after deploying the additive schema. */
+/** Bounded authoring repair and recertification under the captured source/version fences. */
 import { ConvexError, v, getConvexSize } from 'convex/values';
 import { validatePlaybook } from '../lib/playbook/audit';
 import { itemStructure } from '../lib/playbook/structure';
@@ -11,9 +11,8 @@ import {
 	validationCertified,
 	readValidationCertificate
 } from './authoringValidation';
-import { canonicalFingerprint, readTemplateSource } from './templateSourceStorage';
+import { readTemplateSource } from './templateSourceStorage';
 import {
-	businessItem,
 	compactHead,
 	headStructure,
 	historicalRevision,
@@ -221,13 +220,7 @@ export const step = internalMutation({
 				revision.contentRevision !== head.contentRevision
 			)
 				throw unavailable();
-			if (
-				!('format' in head) &&
-				canonicalFingerprint(businessItem(head)) !==
-					canonicalFingerprint(businessItem(revision.body))
-			)
-				throw unavailable();
-			const renderKey = 'format' in head ? head.renderKey : head._id;
+			const renderKey = head.renderKey;
 			const saved = {
 				...liveRevision(revision),
 				renderKey,
@@ -239,8 +232,8 @@ export const step = internalMutation({
 				renderKey,
 				...(head.lastOperation ? { lastOperation: head.lastOperation } : {})
 			};
-			// Historical business identities and bodies are immutable. Metadata records the live
-			// compatibility/replay projection and is included in every native read aggregate.
+			// Historical business identities and bodies are immutable. The live replay metadata
+			// is included in every native read aggregate.
 			contentReadBytes += documentBytes(nextRevision) - documentBytes(revision);
 			headReadBytes += documentBytes(nextHead);
 			structureResultBytes += getConvexSize(itemStructure(saved));
@@ -300,7 +293,7 @@ export const finish = internalMutation({
 						_creationTime: head._creationTime,
 						companyId: head.companyId,
 						contentRevision: head.contentRevision,
-						renderKey: 'format' in head ? head.renderKey : head._id,
+						renderKey: head.renderKey,
 						...headStructure(head)
 					}),
 				0

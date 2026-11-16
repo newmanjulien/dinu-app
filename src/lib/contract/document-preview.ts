@@ -8,6 +8,9 @@ import type { FunctionReturnType } from 'convex/server';
 import type { api } from '../../convex/_generated/api';
 import type { ResolvedContractItem } from './items';
 import type { PlaybookCommand } from './changes';
+import type { TemplateContent } from '../template/model';
+import { isRepItem } from '../playbook/model';
+import { resolveTemplateItem } from './items';
 
 export type ApprovedContractDocument = FunctionReturnType<typeof api.contractDefinitions.current>;
 export type PreviewBasis = FunctionReturnType<typeof api.contractDefinitions.previewBasis>;
@@ -43,6 +46,45 @@ export function prepareApprovedDocument(
 					: item;
 			})
 	};
+}
+
+type ApprovedInput = {
+	kind: 'records';
+	contract: true;
+	materialized: {
+		data: {
+			document: ReturnType<typeof prepareApprovedDocument>['document'];
+			baseline: TemplateContent['blocks'];
+		};
+	};
+	items: { data: ReturnType<typeof prepareApprovedDocument>['items'] };
+};
+const approvedInputs = new WeakMap<
+	ApprovedContractDocument,
+	{
+		snapshot: TemplateContent;
+		input: ApprovedInput;
+	}
+>();
+/** Canonical cache objects share this projection across warming, opening and current controls. */
+export function approvedDocumentInput(
+	snapshot: TemplateContent,
+	approved: ApprovedContractDocument
+) {
+	const cached = approvedInputs.get(approved);
+	if (cached?.snapshot === snapshot) return cached.input;
+	const rendered = prepareApprovedDocument(
+		approved,
+		snapshot.items.filter(isRepItem).map(resolveTemplateItem)
+	);
+	const input = {
+		kind: 'records' as const,
+		contract: true as const,
+		materialized: { data: { document: rendered.document, baseline: snapshot.blocks } },
+		items: { data: rendered.items }
+	};
+	approvedInputs.set(approved, { snapshot, input });
+	return input;
 }
 
 /** One active comparison uses the shared pure engine; it never supplies main-viewer input. */

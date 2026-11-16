@@ -5,7 +5,7 @@
 	import type { DeepReadonly } from '$lib/immutable';
 
 	import type { ResolvedContractItem } from '$lib/contract/items';
-	import { instructionsFields } from '$lib/playbook/instructions-fields';
+	import { approvalGuidanceField, instructionsFields } from '$lib/playbook/instructions-fields';
 	import InlineAction from './InlineAction.svelte';
 	import ConcessionRow from './ConcessionRow.svelte';
 	import PlaybookCard from './PlaybookCard.svelte';
@@ -66,13 +66,11 @@
 	const instructions = $derived(
 		item.origin.kind === 'template' ? item.origin.instructions : undefined
 	);
-	const displayedInstructions = $derived({
-		...instructions,
-		changesNeedApproval:
-			item.origin.kind === 'template' && item.review.kind === 'required'
-				? (item.review.instructions ?? '')
-				: ''
-	});
+	const approvalGuidance = $derived(
+		item.origin.kind === 'template' && item.review.kind === 'required'
+			? (item.review.instructions ?? '')
+			: ''
+	);
 	const approvalHint = $derived<HintId | null>(
 		appliedConcession && selected === appliedConcession
 			? isAdmin
@@ -85,7 +83,8 @@
 	const hasSections = $derived(
 		Boolean(
 			item.choices.length ||
-			instructionsFields.slice(1).some((field) => displayedInstructions[field.key]?.trim())
+			instructionsFields.slice(1).some((field) => instructions?.[field.key]?.trim()) ||
+			approvalGuidance.trim()
 		)
 	);
 	$effect(() => {
@@ -129,12 +128,21 @@
 				>
 					{#if item.origin.kind === 'template' && (instructions || item.review.kind === 'required')}
 						{#each instructionsFields.slice(1) as field}
-							{#if displayedInstructions[field.key]?.trim()}
+							{#if instructions?.[field.key]?.trim()}
 								<PlaybookSection value={field.key} label={field.label} bind:open>
-									<PlaybookText text={displayedInstructions[field.key] ?? ''} />
+									<PlaybookText text={instructions?.[field.key] ?? ''} />
 								</PlaybookSection>
 							{/if}
 						{/each}
+						{#if approvalGuidance.trim()}
+							<PlaybookSection
+								value="approval-policy"
+								label={approvalGuidanceField.label}
+								bind:open
+							>
+								<PlaybookText text={approvalGuidance} />
+							</PlaybookSection>
+						{/if}
 					{/if}
 					{#each ['preferred', 'rare'] as tier}
 						{@const concessions = item.choices.filter(

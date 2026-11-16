@@ -91,6 +91,19 @@ export class DocumentDomain {
 		};
 		return () => Object.assign(this, previous);
 	}
+	/** Replace every projection of the accepted prose as one checkpointable operation. */
+	clearProjection() {
+		if (!this.document) throw new Error('Document blocks are required.');
+		const geometry = new PlaybookGeometryIndex(this.document);
+		this.structures = [];
+		this.structureInput = null;
+		this.structural = new Map();
+		this.records = [];
+		this.accepted = new Map();
+		this.overlays = [];
+		this.contentOverlays = [];
+		this.geometry = geometry;
+	}
 	acceptBlocks(
 		blocks: readonly SourceBlock[],
 		initialGeometry: 'empty' | 'defer-to-overlays' = 'empty',

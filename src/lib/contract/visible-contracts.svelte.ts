@@ -19,6 +19,7 @@ export function createVisibleContractWarming() {
 	let busy = $state(false);
 	let hidden = $state(false);
 	let downloads = $state.raw<readonly string[]>([]);
+	let urgentDownloads = $state.raw<readonly string[]>([]);
 	const device =
 		typeof navigator === 'undefined'
 			? undefined
@@ -40,13 +41,17 @@ export function createVisibleContractWarming() {
 	$effect(() => {
 		const allowed = enabled && !pending && !busy && !hidden;
 		const ids = resources?.preparationCandidates ?? [];
-		// The eligible preparation target must still download when earlier candidates failed.
-		const fetchIds = [...new Set([...ids, ...downloads])].slice(0, downloadLimit);
+		const urgentIds = urgentDownloads;
+		// Give promoted cards first claim, then include the next preparation target.
+		const fetchIds = [...new Set([...urgentIds, ...ids, ...downloads])].slice(0, downloadLimit);
 		untrack(() => {
 			if (destroyed) return;
 			if (resources) resources.backgroundEnabled = allowed;
-			if (!allowed) cache?.pauseBackground();
-			cache?.backgroundCandidates(fetchIds);
+			if (!allowed) {
+				if (busy && enabled && !pending && !hidden) cache?.suspendBackground();
+				else cache?.pauseBackground();
+			}
+			cache?.backgroundCandidates(fetchIds, urgentIds);
 			if (!allowed) return;
 			cache?.allowBackground();
 			for (const id of ids) {
@@ -128,6 +133,12 @@ export function createVisibleContractWarming() {
 			downloads.some((id, index) => id !== selected[index])
 		)
 			downloads = selected;
+		const urgent = selected.filter((id) => promoted.has(id));
+		if (
+			urgentDownloads.length !== urgent.length ||
+			urgentDownloads.some((id, index) => id !== urgent[index])
+		)
+			urgentDownloads = urgent;
 		// Filter failures before spending the single document preparation slot.
 		resources?.candidates(constrained ? ids.filter((id) => promoted.has(id)) : ids, 1);
 	}

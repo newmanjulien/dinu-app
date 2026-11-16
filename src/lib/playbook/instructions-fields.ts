@@ -18,10 +18,10 @@ export const instructionsFields = [
 		key: 'negotiation',
 		label: 'How to negotiate',
 		placeholder: 'Describe how reps should approach negotiations and where to hold firm'
-	},
-	{
-		key: 'changesNeedApproval',
-		label: 'Changes need to be approved',
-		placeholder: 'Specify which changes need approval and who reps should ask'
 	}
 ] as const;
+
+export const approvalGuidanceField = {
+	label: 'Changes need to be approved',
+	placeholder: 'Specify which changes need approval and who reps should ask'
+} as const;

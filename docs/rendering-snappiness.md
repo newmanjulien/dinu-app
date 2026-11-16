@@ -2,7 +2,8 @@
 
 The renderer composes provenance-preserving blocks, prepares stable tokens, resolves
 browser geometry, and runs one resumable paginator with internal page-boundary checkpoints. Initial openings
-publish exact closed pages before remaining pagination finishes; the complete
+admit three exact closed pages together, or the entire shorter document as soon as pagination
+finishes and its pages flush, before full custom metadata is required; the complete
 `RenderSnapshot` adopts those frozen page objects. Warm updates retain the displayed
 complete document until their complete replacement commits. A cache-only render never
 touches the profiling DOM. See [verification and limits](#verification-and-limits) for automated checks and
@@ -207,37 +208,44 @@ page numbers. Page records, placement records and their arrays are frozen at pub
 prepared content follows the immutable input contract.
 
 Initial openings include reactivating retained pages that disagree with confirmed intent.
-They show the first eligible exact page, append one available page per paced slice, and
-show “Preparing remaining pages…” at the tail. Document height comes from mounted pages;
-completion does not bulk-mount a backlog. Fully mounted matching retained contracts display
-immediately. Every append validates generation, source identity, selections, preview, epoch
-and preparation eligibility. Invalidation, cancellation and eviction clear partial work;
-partial pages count toward inactive retention budgets.
+They admit the three-page or completed-short exact batch, then append one actual available
+page per paced slice and show “Preparing remaining pages…” at the tail. Document height
+comes from mounted pages; completion does not bulk-mount a backlog. Fully mounted matching
+retained contracts display immediately. Every append validates generation, source identity,
+selections, preview, epoch and preparation eligibility. Invalidation, cancellation and eviction
+clear partial work; partial pages count toward inactive retention budgets.
 
-Before first display, pagination retains four-millisecond preparation slices and stops at
-its first closed-page publication. The viewer mounts that page alone, awaits its Svelte tick
-and a frame followed by a task, then acknowledges the matching generation and layout epoch
-outside serialized work. Visible preparation and individual page appends subsequently share
-an eight-millisecond deadline starting in a task after a frame. Queued appends take precedence
-within paced work, and their awaited DOM flushes count toward the same window. More work can
-run while time remains; an indivisible measurement or mount can overrun. Explicit warm updates
-dispatch immediately and remain atomic; speculative preparation uses idle dispatch.
+Before initial-batch display, pagination retains four-millisecond preparation slices and
+continues past the first closed page. A flushed displayable batch acknowledges only its
+matching generation/layout epoch after a visible opportunity, outside serialized work.
+Visible preparation and individual page appends share an eight-millisecond deadline starting
+in a task after a frame. Queued appends take precedence within paced work, and their awaited
+DOM flushes count toward the same window. More work can run while time remains; an indivisible
+measurement or mount can overrun. Explicit warm updates dispatch immediately and remain
+atomic; speculative preparation uses idle dispatch.
 
-Scrolling and native selection work during partial display. The highlight controller attaches
-after the first paint opportunity, receives appended DOM changes and survives completion.
-Clause activation, authoring and search require the complete current document to be mounted.
-Snapshot consumers use `displayedSnapshot`, which is empty during partial opening; search
-continues against the displayed complete snapshot during warm updates. Warm requests and
-failures retain that complete document and its existing reconciliation and viewport anchoring.
+Scrolling and native selection work during partial display. Initial pages mount one per
+scheduled append task behind a quiet loading frame; they become visible together once the
+three-page or completed-short batch is flushed. Remaining real pages append below without
+replacing the admitted prefix. There are no invented future paper placeholders. Current,
+prepared and matching retained pages bypass buffering. Hidden initial DOM in a visible tab
+can prepare the batch without waiting for a first-page paint acknowledgement; parked work
+needs no physical paint acknowledgement. Hidden-tab background suspension, foreground
+priority, cancellation and host/profiler readiness still govern dispatch.
 
-The first exact display closes creation once; full readiness records opening history
-separately once. The viewer publishes `exactDisplay` only after an eligible generation's
-first page has flushed to mounted DOM, with its source, selection, preview and layout epoch.
-The creation `displayed` timing marks that DOM milestone, not complete readiness or measured
-physical paint. Current matching retained pages reuse their existing DOM flush immediately.
-Failure before first display reports an opening failure. Failure afterward
-retains eligible finished pages and shows an explicit incomplete-document error with Retry.
-Retry renders current valid source and intent; failed partial work never counts as complete.
+Custom highlight discovery, gestures, clause activation, concessions, authoring and full-document
+search require the complete snapshot and mounted DOM. Native early reading requires neither
+custom metadata nor a partial-page interaction controller. The complete snapshot adopts the
+published page objects, and metadata/controllers initialize once on complete readiness.
+Before-threshold failure shows local retry; after-threshold failure preserves actual pages
+with a tail retry. Empty pagination is an explicit failure. Source/generation/layout fences
+prevent obsolete append or paint acknowledgements from releasing a replacement opening.
+
+Creation closes its name/deal dialog on confirmed saved-route admission after frozen seeding
+and owner/navigation handoff, independently of host or pages. `exactDisplay` and the creation
+`displayed` timing report the later threshold DOM milestone; neither certifies physical
+paint. Full readiness remains a separate milestone. Saved module, data, host and renderer
+retries retain the same route opening, editor and resource lease without another create.
 
 Page-number keys preserve unchanged DOM. Highlights refresh changed page geometry and retain
 unchanged range contributions; hover and pressed-state updates affect paint separately.
@@ -313,6 +321,45 @@ completion timestamps are only recorded when a phase succeeds.
 `window.__documentPageMountPerf` separately records generation, timestamp, page count,
 append/atomic status and assignment-to-DOM-tick duration. It excludes pacing waits and retains
 no DOM or text references.
+
+### Highlight and automatic Help opening trace
+
+`window.__documentLoadingPerf` is a bounded, identifier-free timeline for the loading gap. It is
+available in development and with `PUBLIC_DOCUMENT_PERF=1` in production. Each entry has a
+browser `performance.now()` timestamp, a route class (`saved`, `template`, `buyer`, or `other`),
+and a milestone name. Viewer entries also include a local viewer number and render generation;
+the first visible highlight entry includes the number of attachment rectangles on the first
+three pages. Complete-page entries identify whether that viewer was active. No
+contract identifier, content, or annotation identifier is retained.
+
+For a cold opening, compare `first-pages-dom-ready` with `complete-pages-dom-ready`,
+`annotation-projection-ready`, `first-highlights-dom-ready`, and
+`highlight-actions-enabled` for the same viewer and generation. The first mark follows the initial
+page DOM flush. The first three exact mounted pages can now project and paint their annotations
+while later pages paginate; that early projection stays fixed until the complete snapshot takes
+over the same highlight controller. The complete-pages mark follows the final page DOM flush.
+The highlight mark follows a Svelte flush containing at least one attachment rectangle on the
+first three pages. The actions mark requires an enabled projected annotation control there and
+still waits for the complete snapshot. A document with no
+attachment highlights legitimately has neither of the last two marks; a document with
+non-actionable highlights can have the highlight mark without the actions mark. Geometry work
+can still delay the highlight mark after the first pages. These marks do not claim a physical
+paint or a successful click, and no browser latency improvement has been measured.
+
+For proactive Help, compare entries with the same numeric `opening` value:
+`help-opening-start`, `help-policy-resolved`,
+`help-automatic-open`, `help-modal-open`, and `help-document-admitted`. The modal-open mark
+comes from the actual dialog `showModal()` path. Admission is the point at which the route
+allows document construction after giving the modal a paint opportunity. A hidden preference
+has no automatic-open mark. Template Help is manual and has no automatic-open mark. The buyer
+trace starts before link access resolves; the saved trace starts when its route opening is
+owned. These are separate from rendering and can settle in either order.
+
+Use the entries for one opening together with `__documentRenderPerf`,
+`__documentPageMountPerf`, and a browser Performance trace when checking actual latency.
+The instrumentation records state and DOM flushes only. It intentionally adds no reveal
+timer and does not delay ready content. Physical paint, perceived smoothness, and native
+click behavior still need a browser check.
 
 Additional numeric diagnostics include `schedulerWaitMs` / `maxSchedulerWaitMs`,
 `containerArtifactsReused`, `resolvedArtifactsReused`, `preparedArtifactsReused`,
@@ -404,3 +451,69 @@ viewer Retry and the saved opening's reset. Final view detachment replaces the e
 materialized template-item, combined-item and atomic-input caches with empty values even
 when pending or failed saving retains the editor. This does not evict caller-owned data
 or the document resource cache, and no heap or latency improvement has been measured.
+
+## Template prose and canonical saved creation
+
+The membership's `TemplateSource` retains accepted blocks and their fingerprint after the
+last live lease releases. Both audience editors and New contract share that prerequisite
+owner; prose is membership-authorized, while compact structures and authoring remain
+admin-only. Creation shows the real template wording behind the naming dialog and starts
+that preview while the user types. Submission freezes the displayed prose until the saved
+contract's first pages are ready. The preview has no highlights or creation skeleton, and
+it is not adopted as saved authority. Confirmed creation acquires the existing saved editor
+and keyed resource opening lease immediately, then loads exact frozen metadata. Saved wording
+and its single canonical preparation require that editor's validated approved payload;
+metadata or a newer live template never supplies authority. The lease protects existing or
+future resources through lazy module/host/data/render retry and transfers into the actual
+saved attachment without a protection gap. Disabling shared preparation retains one local
+canonical viewer after authority and host readiness. Operation IDs and uncertain retries
+remain frozen; post-admission failures never create a second contract.
+
+## Help and tool admission
+
+ContractRoute owns one HelpSession, policy decision and modal host per true destination/account
+opening above saved code, host, readable data, pagination and search. A→B→A creates three
+decisions; transport/module/render retries create none. Preference resolves before saved
+presentation admission, so enabled automatic help is the first complete working modal over
+the quiet loading frame. Creation's naming dialog tears down first. Module or document
+completion preserves the same modal/focus and dismissal. Preference writes are fenced by
+account, transport generation and opening ownership. Templates keep manual help; buyer
+preference/preview policy retains its existing owner and admission.
+
+Search code/controller/panel loads separately from lightweight Help. Tool resources and the
+shared HubSpot status observation prepare independently. Each rail shows an ordered
+applicable prefix: Search, Download when Quotes policy requires it, Settings when applicable,
+Help. Unknown applicability blocks lower controls; absence skips its slot. Ready controls
+may display disabled while execution waits for full readiness. Search module failure or
+the actual shared integration timeout/error resolves to a local retry control, allowing
+lower controls to display. Retry uses that same shared owner. Consecutive ready slots appear
+in one update, with no stagger timer or extra status query.
+
+`DocumentSourceController.renderReady` means a coherent render source has been accepted.
+It is independent of `itemsCurrent`. Both retained and resource-off viewers can prepare
+prose while the compact structure is outstanding. Prose acceptance checkpoints the domain,
+accepts blocks, and runs `DocumentDomain.clearProjection` before publication. That single
+operation replaces structures, structure-input/index, records/index, annotation/content
+projections and geometry with empty values for the accepted compiled source; the controller
+also clears the old selection. Failure rolls back to the prior coherent display. The same
+clearing applies to a complete structure's changed source ID or fingerprint, even when its
+prose fingerprint permits reusing the compiled blocks.
+
+A matching complete structure adds certified geometry and annotations to those same blocks.
+With an empty concession selection, the render-source object and its artifact store stay the
+same: structure arrival alone requests no composition, profiling or pagination. Current
+matching structure and source remain prerequisites for authoring and normal workspace
+presentation admission. First useful prose presentation admits only deferred cache work;
+it does not certify editing or start speculative body warming. Old-source panel targets,
+highlights and wording previews are withheld. Dirty intent stays in its original controller;
+a retained old-source draft cannot submit or bind to the replacement source.
+
+Released detail listeners keep bounded accepted bodies but lose successful-observation
+status. A selected exact-source/exact-head retained or disk body can fill a read-only panel
+immediately. The same `PlaybookCard` and semantic selection remain while a fresh current
+response enables the editor. Cached text never initializes the editable controller, recovery,
+or save acknowledgement. A genuinely cold selection shows its known heading, selected/busy
+state and Close action in that rail, without placeholder paragraphs. Newer heads, missing
+membership, source-ID changes and explicit rejections withhold stale bodies. Existing 64-ID,
+4 MiB optional memory and eight-first-response limits, pin priorities and foreground bypass
+still apply; ordinary release/freeze/detach stops optional subscriptions.

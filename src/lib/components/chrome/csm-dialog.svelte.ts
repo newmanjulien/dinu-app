@@ -1,14 +1,14 @@
 import { getContext, setContext, tick } from 'svelte';
 import { page } from '$app/state';
-import { initialCalendar, useCsmPreload, type CsmOwner } from './csm-preload.svelte';
+import { initialAvailability, useCsmPreload, type CsmOwner } from './csm-preload.svelte';
 import { supportContent, type SupportContent, type SupportContext } from './csm-support';
-import type { CalendarSelection } from './csm-availability';
+import type { AvailabilitySelection } from './csm-availability';
 import type { CsmBookingMode, CsmReplacement } from './csm-booking';
 
 export type CsmRequest = {
 	path: string;
 	owner: CsmOwner;
-	initial: CalendarSelection;
+	initial: AvailabilitySelection;
 	context: SupportContext;
 	content: SupportContent;
 	trigger?: HTMLButtonElement;
@@ -32,7 +32,7 @@ export function setCsmDialog(canStart: () => boolean, support: () => SupportCont
 		return (
 			request === value &&
 			preload.owner === value.owner &&
-			value.owner.calendar.current() &&
+			value.owner.availability.current() &&
 			value.path === page.url.pathname &&
 			context?.section === value.context.section
 		);
@@ -49,7 +49,7 @@ export function setCsmDialog(canStart: () => boolean, support: () => SupportCont
 		if (!owner?.canRead(mode, replacement)) return false;
 		// Target identity is frozen synchronously, before any import/read can finish.
 		const initial = {
-			...initialCalendar(mode),
+			...initialAvailability(mode),
 			...(replacement ? { replacement: { ...replacement } } : {})
 		};
 		request = {

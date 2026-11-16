@@ -4,6 +4,7 @@ import { readDraft, type ContractDraft } from './draft-values';
 export type { ContractDraft } from './draft-values';
 
 const memory = new Map<string, ContractDraft | null>();
+const blockedOriginals = new Map<string, string>();
 const volatileKeys = new Set<string>();
 const deletedUsers = new Set<string>();
 const removedMemberships = new Set<string>();
@@ -42,19 +43,27 @@ export class DraftJournal {
 		if (!browser || deletedUsers.has(this.userId) || removedMemberships.has(this.namespace))
 			return null;
 		this.memoryOnly = volatileKeys.has(this.key);
+		if (blockedOriginals.has(this.key)) {
+			this.recoveryError =
+				'Your stored selections need review. The original data is still stored in this browser.';
+			return null;
+		}
 		if (memory.has(this.key)) return structuredClone(memory.get(this.key)!);
+		let stored: string | null = null;
 		try {
-			const stored = sessionStorage.getItem(this.key);
+			stored = sessionStorage.getItem(this.key);
 			const value = readDraft(JSON.parse(stored ?? 'null'), this.contractId);
 			this.recoveryError =
 				stored && !value
 					? 'Your saved draft could not be read. Your changes are still stored in this browser.'
 					: null;
+			if (stored && !value) blockedOriginals.set(this.key, stored);
 			if (value) {
 				memory.set(this.key, value);
 				return structuredClone(value);
 			}
 		} catch (error) {
+			if (stored) blockedOriginals.set(this.key, stored);
 			if (error instanceof SyntaxError)
 				this.recoveryError =
 					'Your saved draft could not be read. Your changes are still stored in this browser.';
@@ -63,7 +72,27 @@ export class DraftJournal {
 		}
 		return null;
 	}
+	downloadRecovery() {
+		if (!browser) return;
+		let raw: string | null = blockedOriginals.get(this.key) ?? null;
+		if (!raw && memory.has(this.key)) raw = JSON.stringify(memory.get(this.key));
+		else if (!raw) {
+			try {
+				raw = sessionStorage.getItem(this.key);
+			} catch {
+				/* Storage unavailable. */
+			}
+		}
+		if (!raw) return;
+		const url = URL.createObjectURL(new Blob([raw], { type: 'application/json' }));
+		const anchor = document.createElement('a');
+		anchor.href = url;
+		anchor.download = 'contract-selections-recovery.json';
+		anchor.click();
+		setTimeout(() => URL.revokeObjectURL(url), 0);
+	}
 	discard() {
+		blockedOriginals.delete(this.key);
 		this.recoveryError = null;
 		this.write(null);
 	}
@@ -75,7 +104,8 @@ export class DraftJournal {
 			!browser ||
 			deletedUsers.has(this.userId) ||
 			removedMemberships.has(this.namespace) ||
-			(draft && this.recoveryError)
+			this.recoveryError ||
+			blockedOriginals.has(this.key)
 		)
 			return;
 		memory.set(this.key, draft ? structuredClone(draft) : null);
@@ -115,6 +145,7 @@ export function discoverContractDrafts(userId: string, membershipId: string): Dr
 		}
 	};
 	for (const key of memory.keys()) collect(key);
+	for (const key of blockedOriginals.keys()) collect(key);
 	try {
 		for (let i = 0; i < sessionStorage.length; i++) collect(sessionStorage.key(i));
 	} catch {
@@ -139,6 +170,8 @@ export function discardMembershipDrafts(userId: string, membershipId: string) {
 }
 function discardNamespace(namespace: string) {
 	for (const key of memory.keys()) if (key.startsWith(namespace)) memory.delete(key);
+	for (const key of blockedOriginals.keys())
+		if (key.startsWith(namespace)) blockedOriginals.delete(key);
 	for (const key of volatileKeys) if (key.startsWith(namespace)) volatileKeys.delete(key);
 	if (!browser) return;
 	try {

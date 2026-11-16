@@ -36,10 +36,11 @@ async function currentMutableVersion(
 
 /** Project the business fields without persistence metadata. */
 export function businessItem(item: TemplateItem): TemplateItem {
-	if ('audience' in item)
+	if (item.audience === 'buyer')
 		return { audience: item.audience, trigger: item.trigger, explanation: item.explanation };
 	const { trigger, instructions, concessions, approvalPolicy } = item;
 	return {
+		audience: 'rep',
 		approvalPolicy,
 		trigger,
 		...(instructions === undefined ? {} : { instructions }),
@@ -155,7 +156,7 @@ export function compactHead(saved: TemplateDetailRecord) {
 	};
 }
 export function headStructure(head: Doc<'playbookItems'>) {
-	return 'format' in head ? decodeStructure(head.structure) : playbookStructure(head);
+	return decodeStructure(head.structure);
 }
 export function liveRevision(revision: Doc<'playbookItemRevisions'>): TemplateDetailRecord {
 	return {
@@ -187,7 +188,7 @@ export async function hydrateHead(
 	return {
 		...liveRevision(revision),
 		...(head.lastOperation ? { lastOperation: head.lastOperation } : {}),
-		renderKey: 'format' in head ? head.renderKey : head._id
+		renderKey: head.renderKey
 	};
 }
 /** Allocate identity cheaply; publish the complete packed head once in the same transaction. */

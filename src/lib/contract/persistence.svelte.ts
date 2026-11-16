@@ -1,3 +1,9 @@
+import { createOperationId } from './operation-identity';
+import {
+	assertOperationRetryable,
+	isOperationRecovery,
+	OPERATION_RECOVERY_MESSAGE
+} from './operation-recovery';
 import type { ContractItemId } from './item-identity';
 import type { Id } from '../../convex/_generated/dataModel';
 import {
@@ -39,6 +45,7 @@ export class ContractPersistence {
 	intent = $derived(projectCommands(this.commands));
 	choices = $derived.by(() => selectedOptions(this.confirmed.playbook, this.intent));
 	request = $state.raw<ContractSaveRequest | null>(null);
+	recoveryBlocked = $state(false);
 	private policy = $state<ContractWorkBlock | null>(null);
 	private policyRefused = false;
 	private resolution = $state.raw<Resolution>({ kind: 'current' });
@@ -72,12 +79,17 @@ export class ContractPersistence {
 	}
 	get pending() {
 		return (
-			this.recoveryPending || this.conflict || Boolean(this.request) || this.commands.length > 0
+			this.recoveryBlocked ||
+			this.recoveryPending ||
+			this.conflict ||
+			Boolean(this.request) ||
+			this.commands.length > 0
 		);
 	}
 	get editable() {
 		return (
 			this.canSave &&
+			!this.recoveryBlocked &&
 			!this.policy &&
 			!this.conflict &&
 			!this.frozen &&
@@ -87,6 +99,7 @@ export class ContractPersistence {
 	private get canSave() {
 		return (
 			this.active &&
+			!this.recoveryBlocked &&
 			!this.paused &&
 			!this.adoptingConfirmed &&
 			(!this.conflict || Boolean(this.request)) &&
@@ -129,11 +142,12 @@ export class ContractPersistence {
 			this.deleted || !this.pending
 				? null
 				: {
-						version: 10,
+						version: 12,
 						commands: this.commands,
 						base: this.confirmed,
 						request: this.request,
-						conflict: this.conflict
+						conflict: this.conflict,
+						blocked: this.recoveryBlocked
 					}
 		);
 	}
@@ -154,7 +168,7 @@ export class ContractPersistence {
 		this.commands = [
 			...this.commands,
 			{
-				id: crypto.randomUUID(),
+				id: createOperationId(),
 				itemId,
 				expectedCurrentChangeId: currentHead(this.confirmed.playbook, itemId),
 				action,
@@ -186,6 +200,11 @@ export class ContractPersistence {
 			this.restore(next);
 			return;
 		}
+		if (this.recoveryBlocked) {
+			this.confirmed = { ...next, workBlock: this.policy };
+			this.record();
+			return;
+		}
 		const own =
 			this.request && next.lastOperationId === this.request.operationId ? this.request : null;
 		this.confirmed = { ...next, workBlock: this.policy };
@@ -205,6 +224,12 @@ export class ContractPersistence {
 		this.commands = structuredClone(draft.commands);
 		this.request = draft.request ? structuredClone(draft.request) : null;
 		this.resolution = draft.conflict ? { kind: 'conflict' } : { kind: 'current' };
+		if (draft.blocked) {
+			this.blockStoredRecovery();
+			this.record();
+			return;
+		}
+		if (!this.retryable()) return;
 		if (this.request && next.lastOperationId === this.request.operationId) {
 			this.acknowledgeCommands(this.request, next);
 			this.request = null;
@@ -223,24 +248,42 @@ export class ContractPersistence {
 			!this.active ||
 			this.policy ||
 			this.frozen ||
-			!this.conflict ||
-			this.request ||
+			(!this.conflict && !this.recoveryBlocked) ||
+			(this.request && !this.recoveryBlocked) ||
 			this.deleted ||
 			this.running ||
 			this.recoveryPending ||
 			this.adoptingConfirmed
 		)
 			return;
-		// Explicit reapply gets new command identities. Original submitted bytes are never rewritten.
+		// Explicit review and reapply gets new command identities. Original submitted bytes are never rewritten.
+		this.request = null;
+		this.recoveryBlocked = false;
 		this.commands = this.commands.map((command) => ({
 			...command,
-			id: crypto.randomUUID(),
+			id: createOperationId(),
 			expectedCurrentChangeId: currentHead(this.confirmed.playbook, command.itemId),
 			occurredAt: Date.now()
 		}));
 		this.resolution = { kind: 'current' };
 		this.record();
 		this.start();
+	}
+	blockStoredRecovery() {
+		this.recoveryBlocked = true;
+		this.fail(OPERATION_RECOVERY_MESSAGE);
+	}
+	private retryable() {
+		try {
+			for (const command of this.commands) assertOperationRetryable(command.id);
+			if (this.request) assertOperationRetryable(this.request.operationId);
+			return true;
+		} catch {
+			this.recoveryBlocked = true;
+			this.fail(OPERATION_RECOVERY_MESSAGE);
+			this.record();
+			return false;
+		}
 	}
 	private start() {
 		if (
@@ -251,12 +294,13 @@ export class ContractPersistence {
 			(this.policy && !this.request)
 		)
 			return;
+		if (!this.retryable()) return;
 		if (!this.request) {
 			if (!this.commands.length) return;
 			this.request = structuredClone({
 				id: this.id,
 				commands: this.commands.slice(0, MAX_SAVE_COMMANDS),
-				operationId: crypto.randomUUID()
+				operationId: createOperationId()
 			});
 		}
 		const request = this.request;
@@ -270,6 +314,7 @@ export class ContractPersistence {
 			return;
 		}
 		try {
+			if (!this.retryable()) return;
 			const result = await this.save(request, signal);
 			if (
 				!this.active ||
@@ -295,7 +340,10 @@ export class ContractPersistence {
 				this.request?.operationId !== request.operationId
 			)
 				return;
-			if (this.confirmed.lastOperationId === request.operationId) {
+			if (isOperationRecovery(cause)) {
+				this.recoveryBlocked = true;
+				this.fail(OPERATION_RECOVERY_MESSAGE);
+			} else if (this.confirmed.lastOperationId === request.operationId) {
 				this.acknowledgeCommands(request, this.confirmed);
 				this.request = null;
 			} else if (workBlockFromError(cause)) {
@@ -349,9 +397,11 @@ export class ContractPersistence {
 				this.deleted ||
 				generation !== this.transportGeneration ||
 				this.recoveryPending ||
-				this.request
+				(this.request && !this.recoveryBlocked)
 			)
 				return false;
+			this.request = null;
+			this.recoveryBlocked = false;
 			this.commands = [];
 			this.resolution = { kind: 'current' };
 			this.selectionLimitError = null;
@@ -377,16 +427,18 @@ export class ContractPersistence {
 		this.clearError();
 		if (this.pending && !this.recoveryPending)
 			this.recovery = {
-				version: 10,
+				version: 12,
 				commands: this.commands,
 				base: this.confirmed,
 				request: this.request,
-				conflict: this.conflict
+				conflict: this.conflict,
+				blocked: this.recoveryBlocked
 			};
 	}
 	discard() {
 		this.replaceTransport();
 		this.recovery = null;
+		this.recoveryBlocked = false;
 		this.request = null;
 		if (!this.deleted) this.resolution = { kind: 'current' };
 		this.commands = [];

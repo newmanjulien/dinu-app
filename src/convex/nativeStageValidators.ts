@@ -20,7 +20,7 @@ export const nativeResult = v.object({
 	decisionIds: v.array(v.id('contractChangeDecisions'))
 });
 export const nativeCleanup = v.object({
-	generation: v.number(),
+	version: v.number(),
 	through: v.number(),
 	phase: v.union(
 		v.literal('documents'),
@@ -28,11 +28,9 @@ export const nativeCleanup = v.object({
 		v.literal('decisions'),
 		v.literal('chunks')
 	),
-	cursor: v.union(v.string(), v.null()),
 	documentId: v.optional(v.id('contractDocuments')),
 	changeId: v.optional(v.id('contractChanges')),
 	offset: v.number(),
-	phaseDone: v.optional(v.boolean()),
 	dueAt: v.number(),
 	jobId: v.optional(v.id('_scheduled_functions'))
 });

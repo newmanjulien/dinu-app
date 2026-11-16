@@ -1,4 +1,3 @@
-import { requireTerminologyReady } from './terminologyMaintenance';
 import { v } from 'convex/values';
 import { internalMutation, type QueryCtx, type MutationCtx } from './_generated/server';
 import { internal } from './_generated/api';
@@ -36,7 +35,6 @@ export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
 
 /** Release the owner's reference first, then check all owners in this transaction. */
 export async function deleteUnownedFile(ctx: MutationCtx, fileId: Id<'_storage'>) {
-	requireTerminologyReady();
 	if (!(await fileOwned(ctx, fileId))) await ctx.storage.delete(fileId);
 }
 
@@ -56,7 +54,6 @@ export const cleanOrphanFiles = internalMutation({
 	args: { cursor: v.optional(v.union(v.string(), v.null())), cutoff: v.optional(v.number()) },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		requireTerminologyReady();
 		const sweep = await ctx.db
 			.query('fileSweeps')
 			.withIndex('by_kind', (q) => q.eq('kind', 'storage-orphans'))

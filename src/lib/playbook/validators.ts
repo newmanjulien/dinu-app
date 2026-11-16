@@ -25,6 +25,7 @@ export const approvalPolicy = v.union(
 	v.object({ kind: v.literal('required'), instructions: v.string() })
 );
 export const repInstruction = v.object({
+	audience: v.literal('rep'),
 	approvalPolicy,
 	trigger,
 	instructions: v.optional(instructions),

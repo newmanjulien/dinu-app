@@ -10,9 +10,9 @@ import { discussionActor } from './discussionService';
 import { discussionResult, discussionSeenResult } from './discussionCommands';
 
 import { mutation, query, type MutationCtx } from './_generated/server';
-import { requireMembership, scopedOperation, type CompanyAccess } from './auth';
+import { accessibleContract, requireMembership, scopedOperation, type CompanyAccess } from './auth';
 import { ensureContractCleanup } from './contractCleanup';
-import { readDirectory, removeDirectoryEntry, writeDirectory } from './contractDirectory';
+import { readDirectory, writeDirectory } from './contractDirectory';
 import {
 	contractCard,
 	contractMetadata,
@@ -28,7 +28,7 @@ import { playbookStates, contractReadiness } from './reviews';
 import { saveCommands } from './contractSaving';
 import { nativePreparationKind } from './discussionPreparationValidators';
 import { nativeOperationKey } from './discussionPreparation';
-import { receiptPayload } from './operationReceipts';
+import { receiptPayload, admitOperation } from './operationReceipts';
 import { contractWorkBlock, installation, requireContractWork } from './contractPolicy';
 import { currentPointer, versionReader } from './templates';
 import { createContractDocument } from '../lib/document/contract-document';
@@ -61,12 +61,9 @@ export async function stateOf(
 		documentId: contract.root.documentId,
 		documentRevision: contract.root.documentRevision,
 		stateRevision: contract.root.stateRevision,
-		playbookReviewIdentity: contract.root.playbookReviewIdentity,
-		buyerLinkReviewIdentity: contract.root.buyerLinkReviewIdentity,
+		reviews: contract.root.reviews,
 		playbook: playbook ?? (await playbookStates(ctx, contract)),
 		hubspot: contract.hubspot,
-		playbookCompletion: contract.root.playbookCompletion ?? null,
-		buyerLinkCompletion: contract.root.buyerLinkCompletion ?? null,
 		lastOperationId: contract.root.lastOperation?.id ?? null
 	};
 }
@@ -82,11 +79,6 @@ export async function metadataOf(ctx: import('./_generated/server').QueryCtx, co
 	};
 }
 
-function validateOperationId(operationId: string) {
-	if (!operationId.trim() || operationId.length > 200)
-		throw new ConvexError('Invalid save operation.');
-}
-
 export const browse = query({
 	args: {
 		membershipId: v.id('memberships'),
@@ -97,6 +89,25 @@ export const browse = query({
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		return readDirectory(ctx, access.companyId, args.search, args.paginationOpts);
+	}
+});
+
+/** Small authorized read for the browser title before a contract page is rendered. */
+export const routeTitle = query({
+	args: { id: v.string() },
+	returns: v.union(
+		v.object({ kind: v.literal('current'), buyerName: v.union(v.string(), v.null()) }),
+		v.object({ kind: v.literal('unavailable') })
+	),
+	handler: async (ctx, { id }) => {
+		const access = await requireMembership(ctx);
+		const contractId = ctx.db.normalizeId('savedContracts', id);
+		const contract = contractId
+			? accessibleContract(await ctx.db.get('savedContracts', contractId), access)
+			: null;
+		return contract
+			? { kind: 'current' as const, buyerName: buyerName(contract) }
+			: { kind: 'unavailable' as const };
 	}
 });
 
@@ -155,7 +166,8 @@ export const create = mutation({
 	),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		validateOperationId(args.operationId);
+		const { retryUntil, gcAfter } = admitOperation(args.operationId),
+			inputs = JSON.stringify([args.title]);
 		const receipt = await ctx.db
 			.query('contractCreationReceipts')
 			.withIndex('by_operationId', (q) =>
@@ -163,6 +175,8 @@ export const create = mutation({
 			)
 			.unique();
 		if (receipt) {
+			if (receipt.inputs !== inputs)
+				throw new ConvexError('This operation was already used with different inputs.');
 			const contract = await accessibleContractState(ctx, receipt.contractId, access);
 			if (!contract) return { status: 'deleted' as const };
 			return {
@@ -177,6 +191,9 @@ export const create = mutation({
 		const name = contractTitle(args.title);
 		const contract = await createContract(ctx, access, name);
 		await ctx.db.insert('contractCreationReceipts', {
+			retryUntil,
+			gcAfter,
+			inputs,
 			companyId: access.companyId,
 			operationId: scopedOperation(access, args.operationId),
 			contractId: contract.root._id
@@ -199,7 +216,8 @@ export const saveChanges = mutation({
 	returns: saveResult,
 	handler: async (ctx, { id, membershipId, commands, operationId }) => {
 		const access = await requireMembership(ctx, membershipId);
-		validateOperationId(operationId);
+		admitOperation(operationId);
+		for (const command of commands) admitOperation(command.id);
 		const contract = await accessibleContractState(ctx, id, access);
 		if (!contract) return { status: 'deleted' as const };
 		return saveCommands(ctx, access, contract, {
@@ -220,9 +238,20 @@ export const operationResult = query({
 	},
 	returns: v.union(
 		v.null(),
-		v.object({ status: v.literal('preparing'), operationId: v.string() }),
-		v.object({ status: v.literal('complete'), operationId: v.string(), result: v.string() }),
-		v.object({ status: v.literal('failed'), operationId: v.string(), error: v.string() })
+		v.object({ status: v.literal('preparing'), operationId: v.string(), retryUntil: v.number() }),
+		v.object({
+			status: v.literal('complete'),
+			operationId: v.string(),
+			retryUntil: v.number(),
+			result: v.string()
+		}),
+		v.object({
+			status: v.literal('failed'),
+			operationId: v.string(),
+			retryUntil: v.number(),
+			error: v.string(),
+			errorCode: v.optional(v.literal('OPERATION_EXPIRED'))
+		})
 	),
 	handler: async (ctx, { membershipId, id, kind, operationId, inputs }) => {
 		const access = await requireMembership(ctx, membershipId);
@@ -297,14 +326,22 @@ export const operationResult = query({
 					throw new ConvexError('This link is unavailable.');
 			}
 		}
-		if (row.state === 'preparing') return { status: 'preparing' as const, operationId };
+		if (row.state === 'preparing')
+			return { status: 'preparing' as const, operationId, retryUntil: row.retryUntil };
 		if (row.state === 'failed')
 			return {
 				status: 'failed' as const,
 				operationId,
+				retryUntil: row.retryUntil,
+				errorCode: row.errorCode,
 				error: row.error ?? 'This operation could not complete.'
 			};
-		return { status: 'complete' as const, operationId, result: payload.result };
+		return {
+			status: 'complete' as const,
+			operationId,
+			retryUntil: row.retryUntil,
+			result: payload.result
+		};
 	}
 });
 
@@ -348,7 +385,6 @@ export const remove = mutation({
 			.withIndex('by_contractId', (q) => q.eq('contractId', id))
 			.take(2);
 		for (const row of request) await ctx.db.delete('approvalRequests', row._id);
-		await removeDirectoryEntry(ctx, id);
 		await clearBuyerRefresh(ctx, access.companyId, id);
 		if (contract.hubspotAssociationId)
 			await ctx.db.delete('contractHubspotAssociations', contract.hubspotAssociationId);
@@ -384,8 +420,7 @@ export async function createContract(
 		playbookReviewCount: 0,
 		playbookPendingCount: 0,
 		playbookDeclinedCount: 0,
-		playbookReviewIdentity: '',
-		buyerLinkReviewIdentity: '',
+		reviews: { playbook: { identity: '' }, buyerLink: { identity: '' } },
 		savedAt: Date.now()
 	});
 	const document = createContractDocument(
@@ -399,8 +434,10 @@ export async function createContract(
 	// The only second root write completes cyclic ownership before any receipt or return.
 	await ctx.db.patch('savedContracts', id, {
 		documentId,
-		playbookReviewIdentity: initialContextIdentity(id, 'playbook'),
-		buyerLinkReviewIdentity: initialContextIdentity(id, 'buyer-link')
+		reviews: {
+			playbook: { identity: initialContextIdentity(id, 'playbook') },
+			buyerLink: { identity: initialContextIdentity(id, 'buyer-link') }
+		}
 	});
 	if (hubspot) {
 		await assertHubspotAssociationAvailable(ctx, access.companyId, id, hubspot);

@@ -4,52 +4,59 @@
 	import { api } from '../../../convex/_generated/api';
 	import { HelpSession, type HelpPolicy } from '$lib/components/ui/modal/help-session.svelte';
 	import DocumentTools from '$lib/components/document/DocumentTools.svelte';
-	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
-	import { getDocumentWorkspace } from '$lib/document/runtime/workspace-context';
+	import type { DocumentWorkspace } from '$lib/document/runtime/workspace-context';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
-	import type { OperationStatus } from '$lib/components/chrome/operation-status';
+	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
+	import type { ToolState } from '$lib/components/document/document-tools';
 	let {
-		feedback = null,
 		helpVariant,
 		helpReady,
 		help = new HelpSession(),
+		helpHosted = false,
 		onDownload,
 		downloadReason = null,
-		settingsHref
+		settingsHref,
+		workspace,
+		interactionOwner
 	}: {
-		feedback?: OperationStatus | null;
 		helpVariant: Exclude<HelpVariant, 'buyer'>;
 		helpReady: boolean;
 		help?: HelpSession;
+		helpHosted?: boolean;
 		onDownload?: () => void;
 		downloadReason?: string | null;
 		settingsHref?: string;
+		workspace?: DocumentWorkspace;
+		interactionOwner?: symbol;
 	} = $props();
-	const { source, renderer, viewer } = getDocumentWorkspace();
-	onDestroy(
-		getWorkspaceFeedback().registerDocument({
-			get feedback() {
-				return feedback;
-			},
-			get renderPending() {
-				return Boolean(viewer.displayedSnapshot && renderer.pending);
-			},
-			get renderError() {
-				return viewer.displayedSnapshot ? renderer.error : null;
-			},
-			get sourceStale() {
-				return Boolean(viewer.displayedSnapshot && source.issue);
-			},
-			get onRetryRender() {
-				return viewer.retry;
-			}
-		})
-	);
 	const accountViewer = useViewer();
 	const session = useViewerSession();
 	const client = useConvexClient();
+	const connection = useHubSpotDeals()?.connection;
+	const downloadState = $derived<ToolState | undefined>(
+		helpVariant !== 'rep'
+			? undefined
+			: connection?.error
+				? {
+						applicability: 'present',
+						display: 'failed',
+						enabled: false,
+						retry: () => connection.retry?.()
+					}
+				: !connection?.data || connection.isLoading
+					? { applicability: 'pending', display: 'pending' }
+					: {
+							applicability: connection.data.quotes?.installed ? 'present' : 'absent',
+							display: 'ready',
+							enabled: Boolean(onDownload) && !downloadReason
+						}
+	);
+	onDestroy(() => {
+		if (!helpHosted) help.destroy();
+	});
 	$effect(() => {
+		if (helpHosted) return;
 		let policy: HelpPolicy = { kind: 'manual' };
 		if (helpVariant === 'rep') {
 			const account = accountViewer();
@@ -75,8 +82,12 @@
 	{helpVariant}
 	{helpReady}
 	{help}
+	{helpHosted}
+	{downloadState}
 	{onDownload}
 	{downloadReason}
 	{settingsHref}
+	{workspace}
+	{interactionOwner}
 	isAdmin={helpVariant === 'rep' && accountViewer().membership.role === 'admin'}
 />

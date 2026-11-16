@@ -14,6 +14,10 @@
 	import { DocumentAnnotationProjection } from '$lib/document/annotation-projection';
 	import { restoreDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	import {
+		matchesMountedSnapshot,
+		type MountedDocumentRevision
+	} from '$lib/document/runtime/viewer.svelte';
+	import {
 		annotationOccurrence,
 		resolveAnnotationAnchor,
 		type AnnotationActivation,
@@ -35,6 +39,7 @@
 	import { PlaybookValidationError } from '$lib/playbook/validation-error';
 	import {
 		EMPTY_PREVIEW_CHANGES,
+		type AnnotationProjectionDocument,
 		type ConcessionSelection,
 		type RenderFailure
 	} from '$lib/document/runtime/types';
@@ -44,8 +49,11 @@
 		type ViewerBindings
 	} from '$lib/document/runtime/resources.svelte';
 	import {
+		createDocumentLoadingViewerId,
 		createPanelOpenSample,
+		documentLoadingPerfEnabled,
 		recordColdStart,
+		recordDocumentLoadingMilestone,
 		recordDocumentReady,
 		recordPageMount,
 		recordPanelReadiness,
@@ -90,6 +98,7 @@
 		layout = 'standard',
 		active = true,
 		interactive = true,
+		annotationsVisible = true,
 		retained = false,
 		prepare = true,
 		itemPreload,
@@ -129,6 +138,7 @@
 		annotationItems?: readonly import('$lib/playbook/document-overlay').DocumentAnnotationItem[];
 		active?: boolean;
 		interactive?: boolean;
+		annotationsVisible?: boolean;
 		retained?: boolean;
 		prepare?: boolean;
 		itemPreload?: ViewerBindings['itemPreload'];
@@ -167,12 +177,17 @@
 		failure?: RenderFailure;
 	} = $props();
 	const { source, renderer, viewer } = getDocumentWorkspace();
+	const loadingViewer = createDocumentLoadingViewerId();
 	restoreDocumentNavigation(viewer);
 	const interacting = $derived(active && interactive);
 	const snapshot = $derived(renderer.snapshot);
 	const annotationLabel = getAnnotationLabel();
 	const displayedAnnotations = $derived(
-		annotationItems ? readableAnnotations(annotationItems, snapshot) : source.annotations
+		!annotationsVisible
+			? []
+			: annotationItems
+				? readableAnnotations(annotationItems, snapshot)
+				: source.annotations
 	);
 	const effectiveSummary = $derived(renderer.view === 'effective' && Boolean(annotationItems));
 	const positioningTarget = $derived.by(() => {
@@ -192,6 +207,9 @@
 	let activationComplete = $state(false);
 	let mountedPages = $state.raw<readonly PaginatedPage[]>([]);
 	let pageElementsSnapshot = $state.raw<typeof snapshot>();
+	let nextMountedDomRevision = 0;
+	let earlyHighlightDocument = $state.raw<AnnotationProjectionDocument | null>(null);
+	let completePagesGeneration = 0;
 	const structuralBoundaryAnnotations = $derived.by(() => {
 		const byKey = new Map<string, AnnotationMembership[]>();
 		const index = pageElementsSnapshot?.source.sourceIndex;
@@ -257,6 +275,9 @@
 	let discussionLayer = $state<DiscussionLayer>();
 	let highlightRects = $state.raw<PageHighlights>(new Map());
 	let annotationProjection = $state.raw<DocumentAnnotationProjection>();
+	let projectedGeneration = 0;
+	let firstHighlightGeneration = 0;
+	let actionsEnabledGeneration = 0;
 	$effect(() => {
 		const stage = viewer.documentStageElement,
 			controller = highlights;
@@ -276,26 +297,130 @@
 	});
 	$effect(() => {
 		const projection = annotationProjection,
-			commit = pageElementsSnapshot;
-		if (!projection || !commit) return;
-		projection.update(
-			commit,
-			displayedAnnotations,
-			selectedAnnotationId,
-			navigationCapable,
-			canOpenPlaybookItems
-		);
+			commit = highlightDocument,
+			revision = viewer.mountedDomRevision;
+		if (
+			!projection ||
+			!commit ||
+			!revision ||
+			revision.generation !== commit.id ||
+			revision.layoutEpoch !== commit.layoutEpoch ||
+			commit.pages.some((page, i) => revision.pages[i] !== page)
+		)
+			return;
+		projection.update({
+			snapshot: commit,
+			items: highlightAnnotations,
+			selected: selectedAnnotationId,
+			capable: navigationCapable,
+			enabled: canOpenPlaybookItems,
+			domRevision: revision
+		});
+		if (projectedGeneration !== commit.id) {
+			projectedGeneration = commit.id;
+			recordDocumentLoadingMilestone('annotation-projection-ready', {
+				viewer: loadingViewer,
+				generation: commit.id
+			});
+		}
+	});
+	$effect(() => {
+		const commit = pageElementsSnapshot,
+			projection = annotationProjection,
+			ready = canOpenPlaybookItems,
+			rects = highlightRects;
+		if (
+			!documentLoadingPerfEnabled() ||
+			!commit ||
+			!projection ||
+			!ready ||
+			!mountedPages
+				.slice(0, 3)
+				.some((page) =>
+					rects
+						.get(page.number)
+						?.some((rect) => rect.kind === 'rep-attachment' || rect.kind === 'buyer-attachment')
+				) ||
+			actionsEnabledGeneration === commit.id
+		)
+			return;
+		let cancelled = false;
+		void tick().then(() => {
+			if (cancelled || pageElementsSnapshot !== commit || !canOpenPlaybookItems) return;
+			const firstPages = new Set(mountedPages.slice(0, 3).map((page) => page.number));
+			const actionable = viewer.documentStageElement?.querySelectorAll<HTMLElement>(
+				'[data-annotation-projected][role="button"][aria-disabled="false"]'
+			);
+			if (
+				!actionable ||
+				![...actionable].some((owner) =>
+					firstPages.has(Number(owner.closest<HTMLElement>('.document-page')?.dataset.pageNumber))
+				)
+			)
+				return;
+			actionsEnabledGeneration = commit.id;
+			recordDocumentLoadingMilestone('highlight-actions-enabled', {
+				viewer: loadingViewer,
+				generation: commit.id
+			});
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
+	$effect(() => {
+		const rects = highlightRects,
+			commit = highlightDocument,
+			mounted = mountedPages;
+		if (
+			!documentLoadingPerfEnabled() ||
+			!active ||
+			!viewer.pagesVisible ||
+			!commit ||
+			commit.id !== targetGeneration ||
+			firstHighlightGeneration === commit.id
+		)
+			return;
+		const count = mounted
+			.slice(0, 3)
+			.reduce(
+				(total, page) =>
+					total +
+					(rects
+						.get(page.number)
+						?.filter((rect) => rect.kind === 'rep-attachment' || rect.kind === 'buyer-attachment')
+						.length ?? 0),
+				0
+			);
+		if (!count) return;
+		let cancelled = false;
+		void tick().then(() => {
+			if (cancelled || highlightDocument !== commit || highlightRects !== rects) return;
+			firstHighlightGeneration = commit.id;
+			recordDocumentLoadingMilestone('first-highlights-dom-ready', {
+				viewer: loadingViewer,
+				generation: commit.id,
+				pages: Math.min(3, mounted.length),
+				highlights: count
+			});
+		});
+		return () => {
+			cancelled = true;
+		};
 	});
 	$effect(() => {
 		const stage = viewer.documentStageElement;
-		if (!active || !stage || !viewer.pagesVisible) return;
+		if (!active || !annotationsVisible || !stage || !viewer.pagesVisible || !hasHighlightDocument)
+			return;
 		const abort = new AbortController();
 		let controller: DocumentHighlightController | undefined;
 		let unsubscribe: (() => void) | undefined;
 		void afterPaint(abort.signal)
 			.then(() => {
 				if (abort.signal.aborted) return;
-				controller = new DocumentHighlightController(stage);
+				controller = new DocumentHighlightController(stage, {
+					measurementBatchSize: pageElementsSnapshot?.id === targetGeneration ? Infinity : 1
+				});
 				highlights = controller;
 				unsubscribe = controller.subscribe((rects) => {
 					highlightRects = rects;
@@ -312,9 +437,15 @@
 		};
 	});
 	$effect(() => {
+		const controller = highlights;
+		if (!controller) return;
+		// Completion gives the existing controller more throughput without a large frame of work.
+		controller.setSnapshotComplete(pageElementsSnapshot?.id === targetGeneration);
+	});
+	$effect(() => {
 		const stage = viewer.documentStageElement,
 			controller = highlights;
-		if (!active || !stage || !controller) return;
+		if (!active || !stage || !controller || !pageElementsSnapshot) return;
 		const interactions = new DocumentGestureInteractions(
 			stage,
 			controller,
@@ -354,25 +485,27 @@
 		};
 	});
 	let notifiedController: DocumentHighlightController | undefined;
-	let notifiedPages: readonly PaginatedPage[] = [];
+	let notifiedRevision: MountedDocumentRevision | null = null;
+	function notifyMountedContent(
+		controller: DocumentHighlightController,
+		revision: MountedDocumentRevision
+	) {
+		const previous = notifiedController === controller ? notifiedRevision : null;
+		if (previous === revision) return;
+		const changed =
+			previous && previous.selectionDocument === revision.selectionDocument
+				? revision.pages.filter((page, i) => page !== previous.pages[i]).map((page) => page.number)
+				: revision.pages.map((page) => page.number);
+		for (const page of previous?.pages.slice(revision.pages.length) ?? [])
+			changed.push(page.number);
+		notifiedController = controller;
+		notifiedRevision = revision;
+		controller.contentCommitted(revision.layoutEpoch, changed);
+	}
 	$effect(() => {
 		const controller = highlights,
-			mounted = mountedPages;
-		const epoch = pageElementsSnapshot?.layoutEpoch ?? renderer.pending?.layoutEpoch;
-		if (!controller || !epoch) return;
-		const previous = notifiedController === controller ? notifiedPages : [];
-		const changed = mounted.filter((page, i) => page !== previous[i]).map((page) => page.number);
-		for (const page of previous.slice(mounted.length)) changed.push(page.number);
-		let cancelled = false;
-		void tick().then(() => {
-			if (cancelled) return;
-			notifiedController = controller;
-			notifiedPages = mounted;
-			controller.contentCommitted(epoch, changed);
-		});
-		return () => {
-			cancelled = true;
-		};
+			revision = viewer.mountedDomRevision;
+		if (controller && revision) notifyMountedContent(controller, revision);
 	});
 	$effect(() => {
 		void pageScale;
@@ -477,14 +610,29 @@
 		{
 			sourceIndex: NonNullable<typeof snapshot>['source']['sourceIndex'];
 			ranges: Range[];
+			endpoints: {
+				startContainer: Node;
+				startOffset: number;
+				endContainer: Node;
+				endOffset: number;
+			}[];
 			pages: readonly NonNullable<typeof snapshot>['pages'][number][];
+			selectionDocument: NonNullable<typeof snapshot>['selectionDocument'];
 		}
 	>();
 	$effect(() => {
 		const root = viewer.documentStageElement,
 			commit = pageElementsSnapshot,
+			revision = viewer.mountedDomRevision,
 			controller = highlights;
-		if (!root || !commit || !controller || !viewer.pagesVisible) return;
+		if (
+			!root ||
+			!commit ||
+			!controller ||
+			!viewer.pagesVisible ||
+			!matchesMountedSnapshot(revision, commit)
+		)
+			return;
 		const selected = new Set(selectedRanges);
 		for (const range of authoringRanges.keys())
 			if (!selected.has(range)) authoringRanges.delete(range);
@@ -515,29 +663,45 @@
 			const pages = commit.pages.filter((page) =>
 				page.placements.some(({ fragment }) => keys.has(fragment.blockKey))
 			);
-			let cached = authoringRanges.get(target);
+			const candidate = authoringRanges.get(target);
+			let resolvedRanges: Range[];
 			if (
-				!cached ||
-				cached.sourceIndex !== index ||
-				cached.ranges.some(
-					(range) => !root.contains(range.startContainer) || !root.contains(range.endContainer)
+				!candidate ||
+				candidate.sourceIndex !== index ||
+				candidate.selectionDocument !== commit.selectionDocument ||
+				candidate.ranges.some(
+					(range, i) =>
+						range.collapsed ||
+						!root.contains(range.startContainer) ||
+						!root.contains(range.endContainer) ||
+						range.startContainer !== candidate.endpoints[i].startContainer ||
+						range.startOffset !== candidate.endpoints[i].startOffset ||
+						range.endContainer !== candidate.endpoints[i].endContainer ||
+						range.endOffset !== candidate.endpoints[i].endOffset
 				) ||
-				cached.pages.length !== pages.length ||
-				cached.pages.some((page, i) => page !== pages[i])
+				candidate.pages.length !== pages.length ||
+				candidate.pages.some((page, i) => page !== pages[i])
 			) {
-				cached = {
+				resolvedRanges = sourceRangeToDomRanges(root, sourceRange, index);
+				authoringRanges.set(target, {
 					sourceIndex: index,
-					ranges: sourceRangeToDomRanges(root, sourceRange, index),
-					pages
-				};
-				authoringRanges.set(target, cached);
-			}
+					ranges: resolvedRanges,
+					endpoints: resolvedRanges.map((range) => ({
+						startContainer: range.startContainer,
+						startOffset: range.startOffset,
+						endContainer: range.endContainer,
+						endOffset: range.endOffset
+					})),
+					pages,
+					selectionDocument: commit.selectionDocument
+				});
+			} else resolvedRanges = candidate.ranges;
 			legacyNavigation.push(
 				...legacyTextNavigationGroups(commit.selectionDocument, target).flatMap((group) =>
 					breakGroupKeys(group).map((key) => ({ key }))
 				)
 			);
-			return cached.ranges;
+			return resolvedRanges;
 		});
 		controller.setGroup('authoring', 'authoring-selection', ranges);
 		controller.setStructuralBoundaryGroup(
@@ -752,11 +916,39 @@
 				? renderer.pending!.generation
 				: 0
 	);
+	const visibleHighlightEpoch = $derived(
+		current ? snapshot?.layoutEpoch : (renderer.pending?.layoutEpoch ?? snapshot?.layoutEpoch)
+	);
+	const completeHighlightDocument = $derived.by(() => {
+		const commit = pageElementsSnapshot,
+			revision = viewer.mountedDomRevision;
+		return commit && commit.id === targetGeneration && matchesMountedSnapshot(revision, commit)
+			? commit
+			: null;
+	});
+	const highlightDocument = $derived(
+		completeHighlightDocument
+			? completeHighlightDocument
+			: earlyHighlightDocument?.id === targetGeneration &&
+				  earlyHighlightDocument.layoutEpoch === visibleHighlightEpoch
+				? earlyHighlightDocument
+				: null
+	);
+	const hasHighlightDocument = $derived(Boolean(highlightDocument));
+	const highlightAnnotations = $derived(
+		!annotationsVisible
+			? []
+			: annotationItems
+				? readableAnnotations(annotationItems, highlightDocument)
+				: source.annotations
+	);
 	const incomplete = $derived(
 		!activationComplete &&
 			(!pageElementsSnapshot || pageElementsSnapshot.id !== targetGeneration || !current)
 	);
-	const navigationCapable = $derived(active && allowPlaybookNavigation && !picking);
+	const navigationCapable = $derived(
+		active && viewer.layoutPrepared && allowPlaybookNavigation && !picking
+	);
 	const canOpenPlaybookItems = $derived(
 		interacting && viewer.layoutPrepared && current && navigationCapable && playbookNavigationReady
 	);
@@ -819,10 +1011,11 @@
 		if (active) onPresentation?.(presentationOutcome);
 	});
 	const pageScale = $derived(displayWidth / PAGE_FORMAT.width);
+	const placeholderPages = $derived(Math.max(1, Math.min(3, pages.length)));
 	const displayHeight = $derived(
 		(mountedPages.length * PAGE_FORMAT.height +
 			Math.max(0, mountedPages.length - 1) * PAGE_FORMAT.gap +
-			(incomplete ? 64 : 0)) *
+			(incomplete && renderer.error ? 64 : 0)) *
 			pageScale
 	);
 	function annotationAnchor(
@@ -1310,14 +1503,36 @@
 			)
 		);
 	});
+	function publishMountedDomRevision(generation: number, layoutEpoch: string | undefined) {
+		if (!layoutEpoch) return;
+		const previous = viewer.mountedDomRevision;
+		const selectionDocument = pageElementsSnapshot?.selectionDocument;
+		if (
+			previous?.generation === generation &&
+			previous.layoutEpoch === layoutEpoch &&
+			previous.pages === mountedPages &&
+			previous.selectionDocument === selectionDocument
+		)
+			return;
+		const revision = {
+			id: ++nextMountedDomRevision,
+			generation,
+			layoutEpoch,
+			pages: mountedPages,
+			selectionDocument
+		};
+		// Notify geometry consumers before the new DOM revision can select a highlight snapshot.
+		if (highlights) notifyMountedContent(highlights, revision);
+		viewer.mountedDomRevision = revision;
+	}
 	$effect(() => {
 		const available = pages,
 			generation = targetGeneration,
-			epoch = current || activationComplete ? snapshot?.layoutEpoch : renderer.pending?.layoutEpoch,
 			commit = current || activationComplete ? snapshot : null,
+			epoch = commit?.layoutEpoch ?? renderer.pending?.layoutEpoch,
 			enabled = prepare,
 			layoutProfiler = profiler,
-			warm = activationComplete,
+			warm = activationComplete || (current && untrack(() => mountedGeneration !== generation)),
 			failed = failure || renderer.error;
 		// Keep already mounted pages while cancelling append/paint work for a failed attempt.
 		if (failed) return;
@@ -1330,6 +1545,7 @@
 					mountedGeneration = 0;
 					flushedGeneration = 0;
 					pageElementsSnapshot = null;
+					viewer.mountedDomRevision = null;
 				});
 			return;
 		}
@@ -1346,19 +1562,19 @@
 					mountedGeneration = generation;
 					await tick();
 					if (!abort.signal.aborted) flushedGeneration = generation;
+					if (!abort.signal.aborted) publishMountedDomRevision(generation, epoch);
 					if (!abort.signal.aborted)
 						recordPageMount(generation, startedAt, mountedPages.length, true);
 				}
 			} else {
-				if (
-					mountedGeneration !== generation ||
-					mountedPages.some((page, i) => page !== available[i])
-				) {
+				if (mountedPages.some((page, i) => page !== available[i])) {
 					mountedPages = [];
 					pageElementsSnapshot = null;
+					viewer.mountedDomRevision = null;
 					mountedGeneration = generation;
 					flushedGeneration = 0;
 				}
+				mountedGeneration = generation;
 				while (mountedPages.length < available.length) {
 					await layoutProfiler.scheduler.run(
 						priority,
@@ -1369,21 +1585,33 @@
 							mountedPages = available.slice(0, pageCount);
 							await tick();
 							if (!abort.signal.aborted) flushedGeneration = generation;
+							if (!abort.signal.aborted) publishMountedDomRevision(generation, epoch);
 							if (!abort.signal.aborted) recordPageMount(generation, startedAt, pageCount);
 						},
 						abort.signal,
 						() => active || !retained,
 						'append'
 					);
-					if (mountedPages.length === 1 && epoch) {
-						await afterPaint(abort.signal);
-						renderer.acknowledgeFirstPagePaint(generation, epoch);
-					}
 				}
 			}
 			await tick();
+			if (!abort.signal.aborted) flushedGeneration = generation;
+			if (!abort.signal.aborted) publishMountedDomRevision(generation, epoch);
 			if (!abort.signal.aborted && commit && mountedPages.length === commit.pages.length) {
 				pageElementsSnapshot = commit;
+				// Selection metadata can update mounted page content. Publish its revision after that DOM settles.
+				await tick();
+				if (abort.signal.aborted) return;
+				publishMountedDomRevision(generation, commit.layoutEpoch);
+				if (completePagesGeneration !== commit.id) {
+					completePagesGeneration = commit.id;
+					recordDocumentLoadingMilestone('complete-pages-dom-ready', {
+						viewer: loadingViewer,
+						generation: commit.id,
+						pages: mountedPages.length,
+						active: active ? 1 : 0
+					});
+				}
 				recordColdStart(active ? 'active-page-elements-ready' : 'background-page-elements-ready');
 			}
 		}).catch((cause) => {
@@ -1394,12 +1622,114 @@
 		});
 		return () => abort.abort();
 	});
+	const initialBatchMounted = $derived(
+		Boolean(mountedPages.length) &&
+			mountedGeneration === targetGeneration &&
+			flushedGeneration === targetGeneration &&
+			mountedPages.length >= Math.min(3, pages.length) &&
+			(current || Boolean(partialEligible && renderer.pending?.initialBatchReady))
+	);
+	const firstPagesCandidate = $derived.by(() => {
+		const display = current ? snapshot : partialEligible ? renderer.pending : null;
+		const generation = targetGeneration;
+		const firstPages = display?.pages.slice(0, 3);
+		if (
+			!active ||
+			!prepare ||
+			!viewer.pagesVisible ||
+			loading ||
+			!pageViewport ||
+			!initialBatchMounted ||
+			!display?.layoutEpoch ||
+			!generation ||
+			!firstPages?.length ||
+			mountedGeneration !== generation ||
+			flushedGeneration !== generation ||
+			firstPages.some((page, index) => mountedPages[index] !== page)
+		)
+			return null;
+		return {
+			generation,
+			layoutEpoch: display.layoutEpoch,
+			source: display.source,
+			pages: firstPages
+		};
+	});
 	$effect(() => {
-		viewer.pagesVisible =
-			active &&
-			Boolean(mountedPages.length) &&
-			(activationComplete ||
-				(mountedGeneration === targetGeneration && (partialEligible || current)));
+		const generation = targetGeneration;
+		if (
+			earlyHighlightDocument &&
+			(earlyHighlightDocument.id !== generation || Boolean(completeHighlightDocument))
+		)
+			earlyHighlightDocument = null;
+		if (completeHighlightDocument) return;
+		const display = current ? snapshot : partialEligible ? renderer.pending : null;
+		const epoch = display?.layoutEpoch;
+		if (
+			!active ||
+			!viewer.pagesVisible ||
+			!initialBatchMounted ||
+			!display ||
+			!epoch ||
+			!generation ||
+			mountedGeneration !== generation ||
+			flushedGeneration !== generation
+		)
+			return;
+		const firstPages = mountedPages.slice(0, Math.min(3, display.pages.length));
+		if (
+			!firstPages.length ||
+			firstPages.some((page, index) => page !== display.pages[index]) ||
+			(earlyHighlightDocument?.id === generation &&
+				earlyHighlightDocument.layoutEpoch === epoch &&
+				earlyHighlightDocument.source === display.source)
+		)
+			return;
+		earlyHighlightDocument = {
+			id: generation,
+			layoutEpoch: epoch,
+			view: 'view' in display ? display.view : renderer.view,
+			source: display.source,
+			concessions: display.concessions,
+			pages: firstPages
+		};
+	});
+	let firstPagesGeneration = 0;
+	$effect(() => {
+		const candidate = firstPagesCandidate;
+		const published = viewer.firstPagesReady;
+		if (!candidate) {
+			if (published) viewer.firstPagesReady = null;
+			return;
+		}
+		if (
+			published?.generation === candidate.generation &&
+			published.layoutEpoch === candidate.layoutEpoch &&
+			published.source === candidate.source &&
+			published.pages.length === candidate.pages.length &&
+			published.pages.every((page, index) => page === candidate.pages[index])
+		)
+			return;
+		viewer.firstPagesReady = null;
+		let cancelled = false;
+		void tick().then(() => {
+			if (cancelled || firstPagesCandidate !== candidate) return;
+			viewer.firstPagesReady = candidate;
+			if (documentLoadingPerfEnabled() && firstPagesGeneration !== candidate.generation) {
+				firstPagesGeneration = candidate.generation;
+				recordDocumentLoadingMilestone('first-pages-dom-ready', {
+					viewer: loadingViewer,
+					generation: candidate.generation,
+					pages: candidate.pages.length
+				});
+			}
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
+	$effect(() => {
+		viewer.pagesVisible = active && (activationComplete || initialBatchMounted);
 		viewer.displayedSnapshot =
 			viewer.pagesVisible &&
 			pageElementsSnapshot &&
@@ -1418,7 +1748,7 @@
 				!renderer.error &&
 				pageViewport &&
 				display?.layoutEpoch &&
-				mountedPages.length &&
+				viewer.pagesVisible &&
 				mountedPages[0] === display.pages[0] &&
 				mountedGeneration === generation &&
 				flushedGeneration === generation
@@ -1433,10 +1763,21 @@
 		);
 	});
 	$effect(() => {
-		if (!viewer.pagesVisible) return;
+		renderer.setDisplayActive(active);
+		profiler?.scheduler.wake();
+		return () => renderer.setDisplayActive(false);
+	});
+	$effect(() => {
+		const generation = targetGeneration;
+		const epoch = current ? snapshot?.layoutEpoch : renderer.pending?.layoutEpoch;
+		if (!viewer.pagesVisible || !epoch) return;
 		const abort = new AbortController();
 		void afterPaint(abort.signal)
-			.then(() => recordColdStart('first-exact-display'))
+			.then(() => {
+				if (document.hidden) return;
+				recordColdStart('first-exact-display');
+				renderer.acknowledgeInitialBatchPaint(generation, epoch);
+			})
 			.catch(() => {});
 		return () => abort.abort();
 	});
@@ -1481,7 +1822,9 @@
 		pendingPanelSwitch = null;
 		viewer.interactionEnabled = false;
 		viewer.pagesVisible = false;
+		viewer.firstPagesReady = null;
 		viewer.displayedSnapshot = null;
+		viewer.mountedDomRevision = null;
 		viewer.publishExactDisplay(null);
 		viewer.documentStageElement = undefined;
 		viewer.retry = undefined;
@@ -1545,7 +1888,7 @@
 		style:--document-page-gap={`${PAGE_FORMAT.gap}px`}
 	>
 		{#snippet documentContent()}
-			{#if mountedPages.length}
+			{#if mountedPages.length && (viewer.pagesVisible || !renderer.error)}
 				<!-- Keep page siblings adjacent; native envelopes reject unowned whitespace. -->
 				<!-- prettier-ignore -->
 				<div
@@ -1572,7 +1915,7 @@
 							<DocumentPage
 								{page}
 								selectionDocument={pageElementsSnapshot?.selectionDocument}
-								interactive={active && (interactive || allowPlaybookNavigation)}
+								interactive={active && viewer.interactionEnabled && (interactive || allowPlaybookNavigation)}
 								highlights={highlightRects.get(page.number) ?? EMPTY_HIGHLIGHTS}
 								{selectedAnnotationId}
 								{navigationCapable}
@@ -1580,20 +1923,18 @@
 								{structuralBoundaryAnnotations}
 								onAnnotationSelect={selectAnnotation}
 							/>
-						{/each}{#if incomplete}
+						{/each}{#if incomplete && renderer.error}
 							<div
 								class="px-6 py-3 text-center text-sm text-ink-secondary"
 								data-document-chrome
-								role={renderer.error ? 'alert' : 'status'}
+								role="alert"
 							>
-								{#if renderer.error}
-									This document is incomplete. We couldn’t prepare the remaining pages.
-									<button
-										type="button"
-										class="ml-2 underline"
-										onclick={active && (interacting || onRetry) ? retryRender : undefined}>Retry</button
-									>
-								{:else}Preparing remaining pages…{/if}
+								This document is incomplete. We couldn’t prepare the remaining pages.
+								<button
+									type="button"
+									class="ml-2 underline"
+									onclick={active && (interacting || onRetry) ? retryRender : undefined}>Retry</button
+								>
 							</div>
 						{/if}
 					</div>
@@ -1612,9 +1953,15 @@
 		<DocumentWorkspaceLayout
 			{hasPanel}
 			{loading}
+			{placeholderPages}
+			placeholderGap={PAGE_FORMAT.gap * pageScale}
 			interactive={!loading && active && (interactive || allowPlaybookNavigation)}
 			{followScroll}
-			documentHeight={loading ? PAGE_FORMAT.height * pageScale : displayHeight}
+			documentHeight={loading
+				? (placeholderPages * PAGE_FORMAT.height +
+						Math.max(0, placeholderPages - 1) * PAGE_FORMAT.gap) *
+					pageScale
+				: displayHeight}
 			{panelTop}
 			{panelPositionChange}
 			bind:layoutElement
@@ -1629,7 +1976,7 @@
 				layoutElement,
 				highlights,
 				pageElementsSnapshot,
-				mountedPages,
+				viewer.mountedDomRevision,
 				active && interactive && !loading && viewer.interactionEnabled
 			)}
 		{/if}
@@ -1641,7 +1988,7 @@
 				documentRoot={viewer.documentStageElement}
 				layout={layoutElement}
 				renderRevision={pageElementsSnapshot}
-				domRevision={mountedPages}
+				domRevision={viewer.mountedDomRevision}
 				active={active && discussions.active && !loading}
 				obscured={hasPanel}
 				onActivate={() => onDocumentBackground?.()}

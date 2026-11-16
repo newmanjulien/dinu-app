@@ -1,3 +1,10 @@
+import { createOperationId } from '../contract/operation-identity';
+import {
+	assertOperationRetryable,
+	isOperationRecovery,
+	operationResultError,
+	OperationResultFailure
+} from '../contract/operation-recovery';
 import { subscribeNativePage } from '../native-pagination';
 import { ReplyDiscussion } from './reply-state.svelte';
 import { DiscussionReads } from './reads.svelte';
@@ -10,7 +17,7 @@ import {
 } from './recovery.svelte';
 export type { ReplyDraft, EditDraft } from './recovery.svelte';
 import { coordinateDiscussionViewer } from './viewer-bootstrap';
-import { LiveDiscussionPages } from './live-pages.svelte';
+import { DiscussionRetention, LiveDiscussionPages } from './live-pages.svelte';
 import type { ConvexClient } from 'convex/browser';
 import { ConvexError, type Infer } from 'convex/values';
 import { queryOnce } from '../query-once';
@@ -38,7 +45,8 @@ class DiscussionRequestError extends Error {
 		message: string,
 		readonly definitive: boolean,
 		readonly status?: number,
-		readonly authenticationRequired = false
+		readonly authenticationRequired = false,
+		readonly operationCode?: string
 	) {
 		super(message);
 	}
@@ -46,12 +54,15 @@ class DiscussionRequestError extends Error {
 export class DiscussionSession {
 	readonly reads = new DiscussionReads();
 	readonly feed: LiveDiscussionPages<DiscussionThread>;
+	private retention = new DiscussionRetention();
 	private recent = $state.raw<DiscussionThread[]>([]);
 	private created = new Map<Id<'discussionThreads'>, (() => void) | undefined>();
 	private recentGeneration = 0;
-	readonly threads = $derived.by(() => [
-		...new Map([...this.recent, ...this.feed.rows].map((row) => [row.id, row])).values()
-	]);
+	readonly threads = $derived.by(() =>
+		this.feed.authorized
+			? [...new Map([...this.recent, ...this.feed.rows].map((row) => [row.id, row])).values()]
+			: []
+	);
 	private acknowledgeCreated(id: Id<'discussionThreads'>) {
 		for (const [operationId, threadId] of this.drafts.created) {
 			if (threadId === id) this.drafts.created.delete(operationId);
@@ -60,7 +71,7 @@ export class DiscussionSession {
 	reconcileCreateOutcomes() {
 		if (!this.alive || !this.active || !this.feed.authorized || !this.feed.firstPageAccepted)
 			return;
-		const primary = new Set(this.feed.rows.map((row) => row.id));
+		const primary = new Set(this.feed.currentRows.map((row) => row.id));
 		const pending = new Set(this.drafts.created.values());
 		for (const id of pending) {
 			if (primary.has(id)) {
@@ -82,16 +93,39 @@ export class DiscussionSession {
 		this.reconcileCreated();
 	}
 	private reconcileCreated() {
-		const primary = new Set(this.feed.rows.map((row) => row.id));
-		if (!this.feed.authorized)
-			for (const replies of this.replies.values()) replies.setActive(false);
-		for (const [id, stop] of this.created) {
-			if (!this.active || !this.feed.authorized || primary.has(id)) {
+		if (!this.feed.authorized) {
+			this.activityGeneration++;
+			this.recentGeneration++;
+			this.reads.configure();
+			this.attempt?.abort();
+			this.attempt = undefined;
+			this.viewerIdentity = undefined;
+			this.viewerBootstrapped = false;
+			this.closeEditors();
+			for (const stop of this.created.values()) stop?.();
+			this.created.clear();
+			this.recent = [];
+			for (const replies of this.replies.values()) replies.destroy();
+			return;
+		}
+		if (!this.active || !this.feed.firstPageAccepted) {
+			if (this.recent.length) this.feed.retainDisplay(this.retainedThreads());
+			this.recent = [];
+			for (const [id, stop] of this.created) {
 				stop?.();
 				this.created.set(id, undefined);
+			}
+			for (const replies of this.replies.values()) replies.setActive(false);
+			return;
+		}
+		const primary = new Set(this.feed.currentRows.map((row) => row.id));
+		for (const [id, stop] of this.created) {
+			if (primary.has(id)) {
+				stop?.();
+				// Once native coverage owns this row, omissions belong to that coverage too.
+				this.created.delete(id);
 				this.recent = this.recent.filter((row) => row.id !== id);
-				if (this.alive && this.active && this.feed.authorized && primary.has(id))
-					this.acknowledgeCreated(id);
+				this.acknowledgeCreated(id);
 			} else if (!stop) {
 				const generation = this.recentGeneration;
 				let owned = true;
@@ -101,6 +135,7 @@ export class DiscussionSession {
 					this.alive &&
 					this.active &&
 					this.feed.authorized &&
+					this.feed.firstPageAccepted &&
 					generation === this.recentGeneration &&
 					this.created.has(id);
 				const stop = () => {
@@ -141,13 +176,46 @@ export class DiscussionSession {
 			}
 		}
 	}
+	private retainedThreads() {
+		return [...this.threads].sort(
+			(a, b) => a.root.createdAt - b.root.createdAt || a.id.localeCompare(b.id)
+		);
+	}
 	private replies = new Map<string, ReplyDiscussion>();
+	private replyReferences = new Map<string, number>();
+	acquireReplies(id: Id<'discussionThreads'>) {
+		const state = this.replyState(id);
+		this.replyReferences.set(id, (this.replyReferences.get(id) ?? 0) + 1);
+		return {
+			state,
+			release: () => {
+				const remaining = (this.replyReferences.get(id) ?? 1) - 1;
+				if (remaining) this.replyReferences.set(id, remaining);
+				else {
+					this.replyReferences.delete(id);
+					state.setActive(false);
+				}
+				this.trimReplies();
+			}
+		};
+	}
+	private trimReplies() {
+		const detached = [...this.replies.keys()].filter((id) => !this.replyReferences.has(id));
+		for (const id of detached.slice(0, Math.max(0, detached.length - 8))) {
+			this.replies.get(id)?.destroy();
+			this.replies.delete(id);
+		}
+	}
 	replyState(id: Id<'discussionThreads'>) {
 		let state = this.replies.get(id);
 		if (!state) {
-			state = new ReplyDiscussion(this.client, this.access, id);
+			state = new ReplyDiscussion(this.client, this.access, id, this.retention);
 			this.replies.set(id, state);
 		}
+		// LRU changes on actual use/release, never on scroll or a derived getter.
+		this.replies.delete(id);
+		this.replies.set(id, state);
+		this.trimReplies();
 		return state;
 	}
 
@@ -173,10 +241,13 @@ export class DiscussionSession {
 	captureWriteAccess() {
 		const { generation } = this.policy();
 		const epoch = this.viewerEpoch;
+		const activityGeneration = this.activityGeneration;
 		return () =>
 			this.alive &&
 			this.active &&
+			this.feed.authorized &&
 			!this.readOnly &&
+			activityGeneration === this.activityGeneration &&
 			generation === this.policy().generation &&
 			epoch === this.viewerEpoch;
 	}
@@ -230,6 +301,7 @@ export class DiscussionSession {
 	private sellerIdentity?: string;
 	private accountIdentity?: string;
 	private viewerEpoch = 0;
+	private activityGeneration = 0;
 	private sellerAccount = $state(false);
 	recognizeSeller(identity: string | undefined, accountIdentity = identity) {
 		if (identity === this.sellerIdentity && accountIdentity === this.accountIdentity) return;
@@ -298,7 +370,7 @@ export class DiscussionSession {
 				subscribeNativePage(client, api.discussions.threads, { access }, 20, receive, fail),
 			() => {
 				this.reconcileCreateOutcomes();
-				this.reconcileCreated();
+				if (!this.feed.authorized || !this.feed.firstPageAccepted) this.reconcileCreated();
 				this.reconcileOperations();
 				if (
 					this.active &&
@@ -310,12 +382,14 @@ export class DiscussionSession {
 					this.viewerBootstrapped = true;
 					void this.loadBuyerViewer();
 				}
-			}
+			},
+			{ retention: this.retention }
 		);
 	}
 	setActive(active: boolean) {
 		if (!this.alive || this.active === active) return;
 		this.active = active;
+		this.activityGeneration++;
 		this.recentGeneration++;
 		for (const stop of this.receipts.values()) stop();
 		for (const [id, stop] of this.created) {
@@ -330,7 +404,8 @@ export class DiscussionSession {
 			this.closeEditors();
 			this.selectionVersion++;
 			this.viewerBootstrapped = false;
-			this.feed.stop();
+			this.feed.stop(this.retainedThreads());
+			this.recent = [];
 			return;
 		}
 		this.feed.reset();
@@ -346,6 +421,7 @@ export class DiscussionSession {
 	) {
 		let unconfirmedDispatch = false;
 		let authenticationRequired = false;
+		let operationCode: string | undefined;
 		try {
 			this.requireWriteAccess(canDispatch);
 			const anonymous = forceBuyer || (this.anonymous && !account);
@@ -396,6 +472,13 @@ export class DiscussionSession {
 			// These are the trusted ingress’s pre-write refusals and transactional Convex errors.
 			if ([400, 401, 403, 409].includes(response.status)) unconfirmedDispatch = false;
 			const result: unknown = await response.json();
+			if (
+				result &&
+				typeof result === 'object' &&
+				'code' in result &&
+				typeof result.code === 'string'
+			)
+				operationCode = result.code;
 			if (!response.ok)
 				throw Object.assign(
 					new Error(
@@ -410,13 +493,15 @@ export class DiscussionSession {
 				);
 			return result;
 		} catch (error) {
+			if (isOperationRecovery(error)) throw error;
 			throw new DiscussionRequestError(
 				error instanceof Error ? error.message : 'We couldn’t save this message. Try again.',
 				!unconfirmedDispatch,
 				error instanceof Error && 'status' in error && typeof error.status === 'number'
 					? error.status
 					: undefined,
-				authenticationRequired
+				authenticationRequired,
+				operationCode
 			);
 		}
 	}
@@ -592,7 +677,7 @@ export class DiscussionSession {
 		let operation = this.drafts.operations.get(fingerprint);
 		if (!operation) {
 			const created = $state<DiscussionOperation>({
-				id: crypto.randomUUID(),
+				id: createOperationId(),
 				authorKey: this.viewer.key,
 				buyer: this.viewer.buyer,
 				account: this.viewerAccount,
@@ -611,6 +696,9 @@ export class DiscussionSession {
 			);
 		}
 		try {
+			assertOperationRetryable(operation.id);
+			if (operation.blocked)
+				throw operationResultError({ error: '', errorCode: 'OPERATION_EXPIRED' });
 			if (this.receiptPromises.has(operation))
 				return await waitForRead(this.receiptPromises.get(operation)!, AbortSignal.timeout(15_000));
 			const original = {
@@ -625,7 +713,10 @@ export class DiscussionSession {
 						operation.account,
 						!operation.account,
 						current,
-						current
+						() => {
+							assertOperationRetryable(operation.id);
+							return current();
+						}
 					)) as Infer<typeof writeResult>)
 				: await waitForRead(
 						this.client.mutation(api.discussions.write, { ...this.privateAccess, ...original }),
@@ -645,7 +736,15 @@ export class DiscussionSession {
 			const definitive =
 				(error instanceof DiscussionRequestError && error.definitive) ||
 				error instanceof ConvexError;
-			if (definitive && !operation.uncertain) this.settleOperation(fingerprint, operation);
+			if (
+				isOperationRecovery(error) ||
+				(error instanceof DiscussionRequestError &&
+					['OPERATION_EXPIRED', 'OPERATION_INVALID', 'OPERATION_FUTURE'].includes(
+						error.operationCode ?? ''
+					))
+			)
+				operation.blocked = true;
+			else if (definitive && !operation.uncertain) this.settleOperation(fingerprint, operation);
 			else if (owned) {
 				operation.uncertain = true;
 				this.reconcileOperations();
@@ -701,6 +800,7 @@ export class DiscussionSession {
 			command: operation.command
 		};
 		const result = async (): Promise<Infer<typeof completedWriteResult>> => {
+			assertOperationRetryable(operation.id);
 			if (this.privateAccess) {
 				const value = await awaitContractOperation<unknown>(
 					this.client,
@@ -717,6 +817,7 @@ export class DiscussionSession {
 				return value;
 			}
 			while (current() && !lifetime.signal.aborted) {
+				assertOperationRetryable(operation.id);
 				const value = (await this.buyerRequest(
 					{ kind: 'result', expectedAuthorKey: operation.authorKey, ...original },
 					AbortSignal.any([lifetime.signal, AbortSignal.timeout(15_000)]),
@@ -725,7 +826,8 @@ export class DiscussionSession {
 					current,
 					current
 				)) as Infer<typeof discussionOperationResult>;
-				if (value?.status === 'failed') throw new ConvexError(value.error);
+				assertOperationRetryable(operation.id, value?.retryUntil);
+				if (value?.status === 'failed') throw operationResultError(value);
 				if (value?.status === 'complete') {
 					const completed: unknown = JSON.parse(value.result);
 					if (!validate(completedResult, completed))
@@ -783,7 +885,16 @@ export class DiscussionSession {
 				return value;
 			})
 			.catch((error) => {
-				if (error instanceof ConvexError) this.settleOperation(fingerprint, operation);
+				if (
+					isOperationRecovery(error) ||
+					(error instanceof DiscussionRequestError &&
+						['OPERATION_EXPIRED', 'OPERATION_INVALID', 'OPERATION_FUTURE'].includes(
+							error.operationCode ?? ''
+						))
+				)
+					operation.blocked = true;
+				else if (error instanceof OperationResultFailure)
+					this.settleOperation(fingerprint, operation);
 				throw error;
 			})
 			.finally(stop);
@@ -810,7 +921,7 @@ export class DiscussionSession {
 		)
 			return;
 		for (const [fingerprint, operation] of this.drafts.operations) {
-			if (!operation.uncertain || this.receipts.has(operation)) continue;
+			if (operation.blocked || !operation.uncertain || this.receipts.has(operation)) continue;
 			void this.attachOperation(fingerprint, operation).catch((error) => {
 				if (this.alive && this.active && !this.readOnly && !this.receipts.has(operation))
 					this.viewerError = saveError(
@@ -864,7 +975,9 @@ export class DiscussionSession {
 		this.feed.destroy();
 		for (const state of this.replies.values()) state.destroy();
 		this.replies.clear();
+		this.replyReferences.clear();
 		this.created.clear();
 		this.recent = [];
+		this.retention.clear();
 	}
 }

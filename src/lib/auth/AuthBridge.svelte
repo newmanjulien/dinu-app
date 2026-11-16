@@ -17,7 +17,11 @@
 			await clerk.clerk.signOut(() => {});
 		},
 		cancelReads: () => resources.forEach((resource) => resource.cancelReads()),
-		clear: () => resources.forEach((resource) => resource.clear()),
+		clear: () =>
+			resources.forEach((resource) => {
+				resource.endSession?.();
+				resource.clear();
+			}),
 		login: async (recover) => {
 			await goto(loginDestination(page.url, recover), { invalidateAll: true });
 		}

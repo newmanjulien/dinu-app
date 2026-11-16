@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
 import { block } from '../../support/contract-data';
@@ -70,13 +71,14 @@ describe('download acknowledgments and file lifetime', () => {
 		const created = await f.t.mutation(api.contracts.create, {
 			membershipId: f.owner.membershipId,
 			title: 'Manual',
-			operationId: 'manual'
+			operationId: fixtureOperationId('manual')
 		});
 		if (created.status !== 'created') throw new Error('Manual creation failed');
 		f.id = created.id;
 		const attempt = await readyExport(f);
 		await acknowledge(f, attempt);
 		const stored = await f.t.run(({ db }) => db.get('hubspotExports', attempt._id));
+		if (stored?.format !== 'full') throw new Error('Expected full output evidence');
 		expect((await exportDelivery(f, attempt._id))?.attachmentUntil).toBeUndefined();
 		expect(stored?.expiresAt).toBe(NOW + HOUR + 15 * 60_000);
 		expect((await events(f)).map((e) => e.kind)).toEqual(['created']);
@@ -99,6 +101,7 @@ describe('download acknowledgments and file lifetime', () => {
 			fileId: '301'
 		});
 		const stored = (await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)))!;
+		if (stored?.format !== 'full') throw new Error('Expected full output evidence');
 		const delivery = await exportDelivery(f, attempt._id);
 		expect(delivery?.remoteFileId).toBe('301');
 		expect(delivery?.attachmentUntil).toBeUndefined();
@@ -116,16 +119,14 @@ describe('download acknowledgments and file lifetime', () => {
 			sha256: attempt.sha256
 		});
 		expect((await exportDelivery(f, attempt._id))?.remoteFileId).toBe('301');
-		expect(stored.reservationReceiptId).toBe(attempt.reservationReceiptId);
-		expect(
-			await f.t.run(({ db }) => db.get('operationReceipts', stored.reservationReceiptId))
-		).toMatchObject({
+		expect(stored.outputId).toBe(attempt.outputId);
+		expect(await f.t.run(({ db }) => db.get('contractOutputs', stored.outputId))).toMatchObject({
 			state: 'complete',
 			documentId: attempt.documentId,
 			reservationManifest: {
 				title: f.creation.name,
 				documentId: attempt.documentId,
-				proof: { receiptId: attempt.reservationReceiptId, section: 'output-proof' }
+				proof: { outputId: attempt.outputId, section: 'output-proof' }
 			}
 		});
 	});
@@ -138,6 +139,7 @@ describe('download acknowledgments and file lifetime', () => {
 		expect(download).toMatchObject({ occurredAt: NOW + 2000, kind: 'downloaded' });
 		expect(JSON.parse(download.detail).attachmentAvailable).toBe(false);
 		const retained = (await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)))!;
+		if (retained?.format !== 'full') throw new Error('Expected full output evidence');
 		expect(retained.fileId).toBeUndefined();
 		expect((await exportDelivery(f, attempt._id))?.attachmentUntil).toBeUndefined();
 		expect(await f.t.run(({ storage }) => storage.get(attempt.fileId!))).toBeNull();
@@ -148,7 +150,7 @@ describe('download acknowledgments and file lifetime', () => {
 			membershipId: f.owner.membershipId,
 			id: f.id,
 			expectedSource: await expectedSource(f),
-			operationId: 'unreleased',
+			operationId: fixtureOperationId('unreleased'),
 			claim: 'claim'
 		});
 		await expect(acknowledge(f, reserved)).rejects.toThrow('unavailable');
@@ -172,17 +174,17 @@ describe('download acknowledgments and file lifetime', () => {
 			membershipId: f.owner.membershipId,
 			id: f.id,
 			expectedSource: await expectedSource(f),
-			operationId: 'frozen',
+			operationId: fixtureOperationId('frozen'),
 			claim: 'claim'
 		});
 		const state = await playbookState(f);
 		await f.t.mutation(api.contracts.saveChanges, {
 			membershipId: f.owner.membershipId,
 			id: f.id,
-			operationId: 'remove',
+			operationId: fixtureOperationId('remove'),
 			commands: [
 				{
-					id: 'remove',
+					id: fixtureOperationId('remove'),
 					itemId: f.itemId,
 					expectedCurrentChangeId: state.playbook[0].currentChangeId,
 					action: { kind: 'set', optionId: null },
@@ -194,9 +196,8 @@ describe('download acknowledgments and file lifetime', () => {
 			id: attempt._id,
 			claim: 'claim'
 		});
-		const owner = await f.t.run(({ db }) =>
-			db.get('operationReceipts', attempt.reservationReceiptId)
-		);
+		const owner = await f.t.run(({ db }) => db.get('contractOutputs', attempt.outputId));
+		if (owner?.format !== 'full') throw new Error('Expected full output evidence');
 		expect(owner).toMatchObject({
 			state: 'complete',
 			companyId: f.owner.companyId,
@@ -206,15 +207,15 @@ describe('download acknowledgments and file lifetime', () => {
 				documentId: attempt.documentId,
 				membershipId: f.owner.membershipId,
 				actor: { profileId: f.owner.profileId },
-				proof: { receiptId: attempt.reservationReceiptId, section: 'output-proof' }
+				proof: { outputId: attempt.outputId, section: 'output-proof' }
 			}
 		});
 		const proof = await f.t.run(({ db }) =>
 			db
-				.query('operationReceiptChunks')
-				.withIndex('by_receiptId_and_section_and_generation_and_order', (q) =>
+				.query('contractOutputChunks')
+				.withIndex('by_outputId_and_section_and_generation_and_order', (q) =>
 					q
-						.eq('receiptId', attempt.reservationReceiptId)
+						.eq('outputId', attempt.outputId)
 						.eq('section', 'output-proof')
 						.eq('generation', owner!.reservationManifest!.proof.generation)
 				)

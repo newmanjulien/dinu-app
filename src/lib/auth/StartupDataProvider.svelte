@@ -6,8 +6,10 @@
 	import {
 		setStartupData,
 		setStartupHome,
+		setStartupSetup,
 		type StartupData,
-		type StartupHome
+		type StartupHome,
+		type StartupSetup
 	} from './startup-data';
 	let { children }: { children: Snippet } = $props();
 	const clerk = useClerkContext();
@@ -15,6 +17,7 @@
 	let data = $state.raw<StartupData | null>(null);
 	let generation = $state<number>();
 	let home = $state.raw<StartupHome | null>(null);
+	let setup = $state.raw<StartupSetup | null>(null);
 	$effect(() => {
 		if (session.preparedSessionId && generation === undefined)
 			generation = session.transportGeneration;
@@ -47,6 +50,29 @@
 			active = false;
 		};
 	});
+	$effect(() => {
+		const request = page.data.startupSetup;
+		let active = true;
+		untrack(() => (setup = null));
+		if (request)
+			void Promise.resolve(request)
+				.then((result) => {
+					if (active) setup = result;
+				})
+				.catch(() => {});
+		return () => {
+			active = false;
+		};
+	});
+	setStartupSetup(() =>
+		setup &&
+		generation === session.transportGeneration &&
+		!session.closing &&
+		setup.sessionId === clerk.session?.id &&
+		setup.userId === clerk.user?.id
+			? setup
+			: null
+	);
 	setStartupHome(() =>
 		home &&
 		generation === session.transportGeneration &&

@@ -1,3 +1,4 @@
+import { expireOperation } from './operationExpiry';
 import { ConvexError, v } from 'convex/values';
 import { validate } from 'convex-helpers/validators';
 import { internalQuery, internalMutation, type QueryCtx } from './_generated/server';
@@ -95,6 +96,7 @@ export const checkpoint = internalMutation({
 	handler: async (ctx, { receiptId, passage }) => {
 		const s = await source(ctx, receiptId);
 		if (!s) return null;
+		if (await expireOperation(ctx, s.row)) return null;
 		if (
 			s.inputHash !== passage.inputHash ||
 			s.context.root.documentId !== passage.documentId ||
@@ -124,6 +126,7 @@ export const fail = internalMutation({
 	handler: async (ctx, args) => {
 		const row = await ctx.db.get('operationReceipts', args.receiptId);
 		if (!row || row.state !== 'preparing' || row.kind !== 'discussion-write') return null;
+		if (await expireOperation(ctx, row)) return null;
 		const payload = await receiptPayload(ctx, row);
 		if (args.inputHash && fingerprint(payload.inputs) !== args.inputHash)
 			throw new Error('Passage failure original input changed.');

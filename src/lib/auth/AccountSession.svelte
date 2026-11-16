@@ -10,21 +10,51 @@
 	import { useStartupPreparation } from './startup-preparation';
 	import { useStartupData } from './startup-data';
 	import { WorkspaceHints, setWorkspaceHints } from './workspace-hints.svelte';
+	import {
+		csmPreviewScope,
+		setCsmOnboardingPreview
+	} from '$lib/components/chrome/csm-onboarding-preview.svelte';
 	import { onDestroy, untrack, type Snippet } from 'svelte';
 	let { children }: { children: Snippet } = $props();
 	const session = useViewerSession();
 	const clerk = useClerkContext();
 	const owner = setAccountContext();
+	const csmPreview = setCsmOnboardingPreview();
+	$effect(() => {
+		csmPreview.retain(
+			session.closing
+				? undefined
+				: csmPreviewScope(session.userId, session.preparedSessionId, session.transportGeneration)
+		);
+	});
 	setAccount(() => (owner.identity === identity ? (owner.account ?? undefined) : undefined));
-	const hints = new WorkspaceHints();
+	// Seed only this initial render. Later identities must establish their own hints.
+	const initialHints = untrack(() => page.data.workspaceHints ?? undefined);
+	const hints = new WorkspaceHints(initialHints);
+	let initialHintsRetired = $state(false);
 	const startup = useStartupData();
 	session.registerResources(hints);
 	setWorkspaceHints({
+		get presentation() {
+			if (session.closing) return undefined;
+			const value = workspaceViewer;
+			return value !== undefined
+				? value?.membership && value.company
+					? {
+							name: value.profile.name,
+							avatarUrl: value.profile.avatarUrl,
+							companyName: value.company.name,
+							companyAvatarUrl: value.company.avatarUrl,
+							instructionsReady: value.instructionsReady
+						}
+					: undefined
+				: hints.presentationFor(hintUserId, hintSessionId);
+		},
 		get role() {
 			if (session.closing) return undefined;
 			return workspaceViewer !== undefined
 				? workspaceViewer?.membership?.role
-				: hints.roleFor(userId, identity);
+				: hints.roleFor(hintUserId, hintSessionId);
 		},
 		get templateReady() {
 			if (session.closing) return undefined;
@@ -32,14 +62,14 @@
 				? workspaceViewer?.membership
 					? workspaceViewer.templateReady
 					: undefined
-				: hints.templateReadyFor(userId, identity);
+				: hints.templateReadyFor(hintUserId, hintSessionId);
 		},
 		get hasBuyerLinks() {
 			const membership = workspaceViewer?.membership;
 			if (session.closing || (workspaceViewer !== undefined && !membership)) return undefined;
 			return hints.buyerLinksFor(
-				userId,
-				identity,
+				hintUserId,
+				hintSessionId,
 				membership ? { membershipId: membership.id, companyId: membership.companyId } : undefined
 			);
 		},
@@ -66,6 +96,20 @@
 	const preparation = useStartupPreparation();
 	const identity = $derived(clerk.auth.sessionId ?? clerk.session?.id);
 	const userId = $derived(clerk.auth.userId ?? clerk.user?.id);
+	const initialHintsActive = $derived(
+		!initialHintsRetired &&
+			!clerk.isLoaded &&
+			!session.closing &&
+			(!identity || identity === initialHints?.sessionId) &&
+			(!userId || userId === initialHints?.userId)
+	);
+	const hintUserId = $derived(userId ?? (initialHintsActive ? initialHints?.userId : undefined));
+	const hintSessionId = $derived(
+		identity ?? (initialHintsActive ? initialHints?.sessionId : undefined)
+	);
+	$effect(() => {
+		if (clerk.isLoaded || session.closing) initialHintsRetired = true;
+	});
 	const workspaceViewer = $derived(
 		owner.identity === identity && owner.account !== undefined ? owner.account : startup()?.viewer
 	);
@@ -83,10 +127,13 @@
 		const closing = session.closing;
 		const generation = session.transportGeneration;
 		const value = workspaceViewer;
+		const preserveInitialHints = initialHintsActive;
 		if (!browser) return;
 		untrack(() => {
-			if (!active || active.id !== identity || !user || closing) hints.clear();
-			else if (value !== undefined)
+			if (!active || active.id !== identity || !user || closing) {
+				// Preserve the server-selected skeleton while Clerk initially connects.
+				if (!preserveInitialHints) hints.clear();
+			} else if (value !== undefined)
 				hints.confirm(
 					user,
 					active.id,
@@ -95,7 +142,12 @@
 								membershipId: value.membership.id,
 								companyId: value.membership.companyId,
 								role: value.membership.role,
-								templateReady: value.templateReady
+								templateReady: value.templateReady,
+								name: value.profile.name,
+								avatarUrl: value.profile.avatarUrl,
+								companyName: value.company?.name,
+								companyAvatarUrl: value.company?.avatarUrl,
+								instructionsReady: value.instructionsReady
 							}
 						: null
 				);
@@ -103,7 +155,10 @@
 				hints.prepare(user, active.id, generation, () => active.getToken({ template: 'convex' }));
 		});
 	});
-	onDestroy(() => hints.clear());
+	onDestroy(() => {
+		hints.clear();
+		csmPreview.retain();
+	});
 	$effect(() => {
 		if (!browser) return;
 		if (account.failed || (clerk.isLoaded && !identity)) preparation.cancel();

@@ -30,14 +30,14 @@ it.each([
 	}
 });
 
-it('server renders buyer /contract while validation is unresolved', () => {
-	page.url = new URL(`https://test.local/${'0'.repeat(39)}/contract`);
-	page.route.id = '/(buyer)/[token=buyerCode]/contract';
-	page.params = { token: '0'.repeat(39) };
+it('server renders the buyer root route while validation is unresolved', () => {
+	page.url = new URL('https://test.local/Ab3Cd4Ef5Gh6I');
+	page.route.id = '/(buyer)/[token=buyerCode]';
+	page.params = { token: 'Ab3Cd4Ef5Gh6I' };
 	page.data = {};
 	const result = render(BuyerHarness);
 	const header = result.body.match(/<header\b[^>]*>([\s\S]*?)<\/header>/)?.[1];
-	expect(header).toContain('Opening contract…');
+	expect(header?.replace(/<!--[\s\S]*?-->|<[^>]*>/g, '').trim()).toBe('');
 	expect(result.body).toContain('role="status"');
 	expect(result.body).not.toContain('data-private-buyer');
 });

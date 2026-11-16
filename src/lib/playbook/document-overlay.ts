@@ -1,5 +1,5 @@
 import type { DeepReadonly } from '../immutable';
-import type { ContractChange, SourceTarget, Trigger } from './model';
+import type { ContractChange, SourceTarget, TemplateAudience, Trigger } from './model';
 
 import type { DocumentItemRecord } from '../contract/items';
 import type { AttachmentHighlightKind } from '../document/highlights/theme';
@@ -23,7 +23,7 @@ export const triggerAnnotationId = (renderKey: string) => JSON.stringify(['trigg
 type AnnotationRecord = {
 	_id: string;
 	renderKey?: string;
-	audience?: 'buyer';
+	audience: TemplateAudience;
 	trigger: Trigger;
 	concessions?: readonly { id: string; changes: readonly { target: SourceTarget }[] }[];
 };
@@ -86,6 +86,7 @@ export type DocumentAnnotationItem = {
 };
 
 export type DocumentOverlayItem = DocumentAnnotationItem & {
+	audience: 'rep';
 	trigger: Trigger;
 	concessions: DeepReadonly<
 		{ id: string; changes: (ContractChange & { suppressed?: boolean })[] }[]
@@ -96,6 +97,7 @@ export type DocumentOverlayItem = DocumentAnnotationItem & {
 export function toDocumentOverlay(record: DeepReadonly<DocumentItemRecord>): DocumentOverlayItem {
 	return {
 		itemId: record._id,
+		audience: 'rep',
 		annotations: documentAnnotations(record),
 		trigger: 'primary' in record ? record.primary : record.trigger,
 		concessions: ('choices' in record ? record.choices : record.concessions).map(

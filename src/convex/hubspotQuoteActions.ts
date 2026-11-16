@@ -10,7 +10,6 @@ import { sha256 } from './operationReceipts';
 import { quoteSemanticIdentity } from '../lib/document/export/quote-identity';
 import { activeQuote, numericQuoteId, quotePath, quoteUrl } from './hubspotQuoteProvider';
 import { contractName } from '../lib/contract/filename';
-import { outputProgress, outputVerify } from './outputReferences';
 const pending = (message: string) => new ConvexError({ code: 'OUTPUT_PENDING', message });
 
 export const push = action({
@@ -20,15 +19,15 @@ export const push = action({
 		let admission = await ctx.runMutation(internal.hubspotQuotes.reserve, args);
 		if (admission.kind === 'preparing') {
 			for (let turn = 0; turn < 24; turn++)
-				if (await ctx.runMutation(outputProgress, { receiptId: admission.receiptId })) break;
+				if (await ctx.runMutation(internal.outputReservations.progress, { outputId: admission.outputId })) break;
 			admission = await ctx.runMutation(internal.hubspotQuotes.reserve, args);
 		}
 		if (admission.kind === 'preparing') throw pending('Preparing your HubSpot quote…');
 		if (admission.kind === 'committed') return admission.summary;
 		let verified = false;
 		for (let turn = 0; turn < 64 && !verified; turn++)
-			verified = await ctx.runMutation(outputVerify, {
-				receiptId: admission.reservation.proof.receiptId
+			verified = await ctx.runMutation(internal.outputReservations.verify, {
+				outputId: admission.reservation.proof.outputId
 			});
 		if (!verified) throw pending('Checking your HubSpot quote…');
 		const { source, document } = await ctx.runQuery(internal.hubspotQuotes.content, args);
@@ -65,7 +64,7 @@ export const push = action({
 		let release = await ctx.runMutation(internal.hubspotQuotes.prepareCommit, args);
 		if (!release.complete) {
 			for (let turn = 0; turn < 24; turn++)
-				if (await ctx.runMutation(outputProgress, { receiptId: release.receiptId })) break;
+				if (await ctx.runMutation(internal.outputReservations.progress, { outputId: release.outputId })) break;
 			release = await ctx.runMutation(internal.hubspotQuotes.prepareCommit, args);
 		}
 		if (!release.complete) throw pending('Checking your HubSpot quote…');
@@ -121,7 +120,7 @@ export const send = internalAction({
 				});
 				if (!preparation.complete) {
 					for (let turn = 0; turn < 24; turn++)
-						if (await ctx.runMutation(outputProgress, { receiptId: preparation.receiptId })) break;
+						if (await ctx.runMutation(internal.outputReservations.progress, { outputId: preparation.outputId })) break;
 					preparation = await ctx.runMutation(internal.hubspotQuotes.prepareDispatch, {
 						...args,
 						generation: connection.generation

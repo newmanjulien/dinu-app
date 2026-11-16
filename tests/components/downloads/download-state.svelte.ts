@@ -32,6 +32,9 @@ export function downloadState() {
 	});
 	const savePending = vi.fn(async () => true);
 	const editor = {
+		id: ready.id,
+		readable: ready,
+		currentReady: true,
 		metadata: ready.contract,
 		persistence: state.persistence,
 		items: [],

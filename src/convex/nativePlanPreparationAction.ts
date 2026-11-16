@@ -6,6 +6,7 @@ import { decodeContractDocumentChunks } from './contractDocuments';
 import type { DocumentChange } from '../lib/document/contract-document';
 import { canonicalJson } from '../lib/document/canonical-json';
 import { receiptChunkFingerprint } from './operationReceipts';
+import { withoutNativeStage } from './nativeStage';
 import type { NativeSourceProof, NativeSourceSnapshot } from './nativePlanPreparation';
 
 type Owner = { receiptId: Id<'operationReceipts'>; generation: number; unit: number };
@@ -106,7 +107,7 @@ export const validateSource = internalAction({
 				proof = {
 					kind: 'change',
 					changeId: row._id,
-					rowHash: receiptChunkFingerprint(canonicalJson(row)),
+					rowHash: receiptChunkFingerprint(canonicalJson(withoutNativeStage(row))),
 					fingerprint: receiptChunkFingerprint(data),
 					chunks: row.chunks,
 					bytes: row.dataBytes

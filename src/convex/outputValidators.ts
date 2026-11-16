@@ -2,9 +2,10 @@ import { v, type Infer } from 'convex/values';
 import { sourceExpectation } from './contractSourceValidators';
 import { changeActor } from '../lib/contract/changes';
 import { hubspotDestination } from './hubspotValidators';
+import { preparationActor } from './discussionPreparationValidators';
 
 export const outputProof = v.object({
-	receiptId: v.id('operationReceipts'),
+	outputId: v.id('contractOutputs'),
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
 	schema: v.literal(1),
@@ -46,7 +47,7 @@ export const outputFence = v.object({
 	storageGeneration: v.number(),
 	destination: outputDestination
 });
-/** Concrete original-receipt traversal. Cursors never contain a collection of heads. */
+/** Concrete output-owned traversal. Cursors never contain a collection of heads. */
 export const outputPreparation = v.object({
 	purpose: v.union(v.literal('reservation'), v.literal('release')),
 	generation: v.number(),
@@ -89,3 +90,75 @@ export const outputCleanup = v.object({
 	dueAt: v.number(),
 	jobId: v.optional(v.id('_scheduled_functions'))
 });
+
+/** Historical facts carry no source IDs, exact request bytes or release authority. */
+export const compactOutputFact = v.object({
+	title: v.string(),
+	profileId: v.id('profiles'),
+	membershipId: v.id('memberships'),
+	requestedAt: v.number(),
+	documentFingerprint: v.string(),
+	sourceFingerprint: v.string(),
+	proofIdentity: v.string(),
+	proofHash: v.string(),
+	proofBindingHash: v.string(),
+	destination: outputDestination,
+	attemptId: v.optional(v.id('hubspotExports')),
+	filename: v.optional(v.string()),
+	sha256: v.optional(v.string()),
+	size: v.optional(v.number()),
+	releasedAt: v.optional(v.number()),
+	acknowledgedAt: v.optional(v.number()),
+	acknowledgedOn: v.optional(v.number()),
+	delivery: v.optional(
+		v.object({
+			destination: hubspotDestination,
+			state: v.optional(v.union(v.literal('sent'), v.literal('retired'))),
+			remoteFileId: v.optional(v.string()),
+			noteId: v.optional(v.string())
+		})
+	)
+});
+const outputIdentity = {
+	companyId: v.id('company'),
+	contractId: v.id('savedContracts'),
+	kind: v.union(v.literal('output-reservation'), v.literal('quote-reservation')),
+	providerOperationId: v.optional(v.id('hubspotQuotePushes'))
+};
+/** Durable full owner; only this variant can authorize proof, bytes or continuation. */
+export const fullContractOutput = v.object({
+	...outputIdentity,
+	format: v.literal('full'),
+	settledAt: v.optional(v.number()),
+	committedAt: v.optional(v.number()),
+	evidenceUntil: v.optional(v.number()),
+	retentionDueAt: v.number(),
+	compaction: v.optional(compactOutputFact),
+	disposal: v.optional(v.literal(true)),
+	documentId: v.id('contractDocuments'),
+	state: v.union(v.literal('preparing'), v.literal('complete'), v.literal('failed')),
+	receiptId: v.optional(v.id('operationReceipts')),
+	key: v.string(),
+	operationId: v.string(),
+	actor: preparationActor,
+	executionUntil: v.number(),
+	error: v.optional(v.string()),
+	outputPreparation: v.optional(outputPreparation),
+	outputGeneration: v.number(),
+	reservationManifest: v.optional(reservationManifest),
+	manifestHash: v.optional(v.string()),
+	outputCleanup: v.optional(outputCleanup),
+	outputVerification: v.optional(
+		v.object({ generation: v.number(), cursor: outputProofCursor, complete: v.boolean() })
+	)
+});
+
+export const compactContractOutput = v.object({
+	...outputIdentity,
+	format: v.literal('compact'),
+	state: v.literal('complete'),
+	settledAt: v.number(),
+	evidenceUntil: v.number(),
+	fact: compactOutputFact
+});
+export const contractOutput = v.union(fullContractOutput, compactContractOutput);

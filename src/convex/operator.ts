@@ -374,8 +374,7 @@ export const bootstrap = internalMutation({
 				pointer: null,
 				templateSource: savedTemplateSource,
 				blocks,
-				items: liveItems,
-				normalized: true
+				items: liveItems
 			},
 			company
 		);

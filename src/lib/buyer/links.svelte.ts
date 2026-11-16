@@ -1,3 +1,5 @@
+import { createOperationId } from '$lib/contract/operation-identity';
+import { assertOperationRetryable, isOperationRecovery } from '$lib/contract/operation-recovery';
 import { ConvexError } from 'convex/values';
 import type { ConvexClient } from 'convex/browser';
 import type { FunctionArgs, FunctionReturnType } from 'convex/server';
@@ -13,6 +15,7 @@ type Capture = {
 	args: FunctionArgs<typeof api.buyerLinkActions.ensureLatest>;
 	link?: Link;
 	work?: Promise<Link>;
+	uncertain?: boolean;
 };
 
 /** Permanent-link preparation for copying buyer links. */
@@ -76,7 +79,7 @@ export class BuyerLinkController {
 						this.operation = {
 							args: {
 								...args,
-								preparation: { kind: 'prepared', expectedState, operationId: crypto.randomUUID() }
+								preparation: { kind: 'prepared', expectedState, operationId: createOperationId() }
 							}
 						};
 					}
@@ -100,6 +103,8 @@ export class BuyerLinkController {
 		const operation = this.operation;
 		if (!operation) throw new ConvexError('This contract is unavailable.');
 		if (operation.link) return operation.link;
+		if (operation.args.preparation.kind === 'prepared')
+			assertOperationRetryable(operation.args.preparation.operationId);
 		this.busy = 'Creating link…';
 		const work: Promise<Link> = this.client
 			.action(api.buyerLinkActions.ensureLatest, operation.args)
@@ -111,17 +116,25 @@ export class BuyerLinkController {
 				(error: unknown) => {
 					if (
 						error instanceof ConvexError &&
+						!isOperationRecovery(error) &&
+						!operation.uncertain &&
 						this.operation === operation &&
 						operation.work === work &&
 						!operation.link
 					)
 						this.operation = undefined;
+					if (!(error instanceof ConvexError)) operation.uncertain = true;
 					throw error;
 				}
 			);
 		operation.work = work;
 		// Each click retries the request; late successes stay cached without copying automatically.
-		return await waitForRead(work, signal);
+		try {
+			return await waitForRead(work, signal);
+		} catch (error) {
+			if (!(error instanceof ConvexError)) operation.uncertain = true;
+			throw error;
+		}
 	}
 	private async copyToClipboard(url: string) {
 		try {

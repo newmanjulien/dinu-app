@@ -22,6 +22,10 @@
 	import { useViewer, useViewerSession } from './viewer-session.svelte';
 	import { describeRoute } from './routes';
 	import { setCsmPreload } from '$lib/components/chrome/csm-preload.svelte';
+	import {
+		csmPreviewScope,
+		useCsmOnboardingPreview
+	} from '$lib/components/chrome/csm-onboarding-preview.svelte';
 	import { setCsmDialog } from '$lib/components/chrome/csm-dialog.svelte';
 	import CsmDialogHost from '$lib/components/chrome/CsmDialogHost.svelte';
 	import { supportSection, supportContent } from '$lib/components/chrome/csm-support';
@@ -44,6 +48,7 @@
 	});
 	const viewer = useViewer();
 	const session = useViewerSession();
+	const csmPreview = useCsmOnboardingPreview();
 	const section = $derived(supportSection(page.route.id, viewer().templateReady));
 	const supportAvailable = $derived(
 		viewer().membership.role === 'admin' &&
@@ -86,7 +91,7 @@
 			if (untrack(() => presentation.painted) === ticket) presentation.painted = undefined;
 		};
 	});
-	const setup = setCompanySetup(() => presentation.canStart());
+	const setup = setCompanySetup();
 	const support = $derived(eligible && section ? { section, complete: setup.complete } : undefined);
 	const preload = setCsmPreload(
 		() => eligible && presentation.canStart(),
@@ -104,7 +109,12 @@
 						membershipId: viewer().membership.id,
 						manageSetup: viewer().permissions.manageTemplate && !viewer().templateReady
 					}
-				: undefined
+				: undefined,
+		(timeZone) =>
+			csmPreview?.read(
+				csmPreviewScope(session.userId, session.preparedSessionId, session.transportGeneration),
+				timeZone
+			)
 	);
 	$effect(() => {
 		preload.align();
@@ -159,7 +169,6 @@
 			{/key}
 			<AppStatus
 				feedback={feedback.document?.feedback}
-				renderPending={feedback.document?.renderPending}
 				renderError={feedback.document?.renderError}
 				sourceStale={feedback.document?.sourceStale}
 				onRetryRender={feedback.document?.onRetryRender}

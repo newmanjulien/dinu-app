@@ -21,7 +21,11 @@ const heavy = [
 	'/src/lib/document/pagination/profiler.ts',
 	'/src/lib/components/document/DocumentViewer.svelte',
 	'/src/lib/playbook/authoring-controller.svelte.ts',
-	'/node_modules/docx/'
+	'/node_modules/docx/',
+	'/src/lib/document/search/search-session.svelte.ts',
+	'/src/lib/components/document/DocumentSearchTools.svelte',
+	'/src/lib/components/document/UtilityPanel.svelte',
+	'/src/lib/components/search/DocumentSearchPanel.svelte'
 ];
 for (const [name, roots] of /** @type {const} */ ([
 	[
@@ -29,6 +33,27 @@ for (const [name, roots] of /** @type {const} */ ([
 		['/src/routes/+layout.svelte', '/src/routes/(workspace)/+layout.svelte']
 	],
 	['Contracts', ['/src/lib/components/workspace/Contracts.svelte']],
+	[
+		'persistent Contracts frame',
+		[
+			'/src/lib/components/workspace/ContractsFrame.svelte',
+			'/src/routes/(workspace)/contracts/+page.svelte'
+		]
+	],
+	[
+		'creation admission',
+		[
+			'/src/lib/components/workspace/NewContract.svelte',
+			'/src/lib/components/workspace/ContractCreation.svelte'
+		]
+	],
+	[
+		'saved/help admission',
+		[
+			'/src/lib/components/workspace/ContractRoute.svelte',
+			'/src/lib/components/ui/modal/HelpModal.svelte'
+		]
+	],
 	['buyer contract entry', ['/src/routes/(buyer)/[token=buyerCode]/+page.svelte']]
 ])) {
 	const entries = chunks.filter((chunk) =>
@@ -50,4 +75,6 @@ for (const module of heavy.filter((module) => !module.includes('node_modules')))
 	if (!chunks.some((chunk) => chunk.modules.some((source) => source.endsWith(module))))
 		throw new Error(`Missing demanded document module ${module}`);
 }
-console.log('Loading dependency boundaries passed: public frame, Contracts, buyer contract entry.');
+console.log(
+	'Loading dependency boundaries passed: public frame, persistent Contracts, creation, saved/help admission, buyer contract entry.'
+);

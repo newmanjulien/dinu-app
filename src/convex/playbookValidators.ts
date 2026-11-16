@@ -36,17 +36,9 @@ export const itemHeadFields = {
 	currentRevisionId: v.optional(v.id('playbookItemRevisions')),
 	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') }))
 };
-export const storedTemplateItem = v.union(
-	v.object({
-		...itemHeadFields,
-		format: v.literal(1),
-		renderKey: v.string(),
-		structure: v.bytes()
-	}),
-	repInstruction.extend({
-		companyId: v.id('company'),
-		contentRevision: v.number(),
-		currentRevisionId: v.optional(v.id('playbookItemRevisions')),
-		lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') }))
-	})
-);
+export const storedTemplateItem = v.object({
+	...itemHeadFields,
+	format: v.literal(1),
+	renderKey: v.string(),
+	structure: v.bytes()
+});

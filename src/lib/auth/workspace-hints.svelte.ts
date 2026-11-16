@@ -4,12 +4,16 @@ import { ReadAttempt, waitForRead } from './attempt';
 import {
 	readWorkspaceHints,
 	rememberWorkspaceHints,
+	cancelWorkspaceHintWrites,
 	type WorkspaceMembership,
 	type WorkspaceHintState,
-	type WorkspaceScope
+	type WorkspaceScope,
+	type WorkspacePresentation
 } from './workspace-hints-storage';
 
-type ConfirmedMembership = WorkspaceMembership & { templateReady: boolean };
+import type { WorkspaceHintSeed } from './workspace-hint-cookie';
+
+type ConfirmedMembership = WorkspaceMembership & WorkspacePresentation & { templateReady: boolean };
 
 /** Presentation hints only. Account admission and permissions use the live viewer. */
 export class WorkspaceHints {
@@ -18,6 +22,14 @@ export class WorkspaceHints {
 	private confirmed = false;
 	private attemptedGeneration: number | undefined;
 	private request: ReadAttempt | undefined;
+	private storageRead = false;
+
+	constructor(seed?: WorkspaceHintSeed) {
+		if (seed) {
+			this.identity = { userId: seed.userId, sessionId: seed.sessionId };
+			this.membership = seed.hints;
+		}
+	}
 
 	roleFor(userId: string | undefined, sessionId: string | undefined): Role | undefined {
 		return this.identity?.userId === userId && this.identity?.sessionId === sessionId
@@ -28,6 +40,15 @@ export class WorkspaceHints {
 	templateReadyFor(userId: string | undefined, sessionId: string | undefined): boolean | undefined {
 		return this.identity?.userId === userId && this.identity?.sessionId === sessionId
 			? this.membership?.templateReady
+			: undefined;
+	}
+
+	presentationFor(
+		userId: string | undefined,
+		sessionId: string | undefined
+	): WorkspacePresentation | undefined {
+		return this.identity?.userId === userId && this.identity?.sessionId === sessionId
+			? (this.membership ?? undefined)
 			: undefined;
 	}
 
@@ -53,10 +74,14 @@ export class WorkspaceHints {
 	}
 
 	private activate(userId: string, sessionId: string) {
-		if (this.identity?.userId === userId && this.identity.sessionId === sessionId) return;
-		this.clear();
-		this.identity = { userId, sessionId };
-		this.membership = readWorkspaceHints(userId);
+		if (this.identity?.userId !== userId || this.identity.sessionId !== sessionId) {
+			this.clear();
+			this.identity = { userId, sessionId };
+		}
+		if (!this.storageRead) {
+			this.storageRead = true;
+			this.membership = readWorkspaceHints(userId, sessionId) ?? this.membership;
+		}
 	}
 
 	prepare(
@@ -80,7 +105,7 @@ export class WorkspaceHints {
 			const value = await waitForRead(fetchWorkspaceRole(token, request.signal), request.signal);
 			if (this.request !== request || request.signal.aborted || this.confirmed) return;
 			this.membership = value;
-			rememberWorkspaceHints(userId, value);
+			rememberWorkspaceHints(userId, sessionId, value);
 		})()
 			.catch(() => {
 				/* Full account startup and its recovery controls remain active. */
@@ -98,7 +123,12 @@ export class WorkspaceHints {
 			this.membership?.membershipId === membership?.membershipId &&
 			this.membership?.companyId === membership?.companyId &&
 			this.membership?.role === membership?.role &&
-			this.membership?.templateReady === membership?.templateReady
+			this.membership?.templateReady === membership?.templateReady &&
+			this.membership?.name === membership?.name &&
+			this.membership?.avatarUrl === membership?.avatarUrl &&
+			this.membership?.companyName === membership?.companyName &&
+			this.membership?.companyAvatarUrl === membership?.companyAvatarUrl &&
+			this.membership?.instructionsReady === membership?.instructionsReady
 		)
 			return;
 		this.cancelReads();
@@ -106,7 +136,7 @@ export class WorkspaceHints {
 		const hasBuyerLinks =
 			membership && this.matchesScope(membership) ? this.membership?.hasBuyerLinks : undefined;
 		this.membership = membership ? { ...membership, hasBuyerLinks } : null;
-		rememberWorkspaceHints(userId, this.membership);
+		rememberWorkspaceHints(userId, sessionId, this.membership);
 	}
 
 	rememberBuyerLinks(
@@ -115,10 +145,13 @@ export class WorkspaceHints {
 		membership: ConfirmedMembership,
 		present: boolean
 	) {
-		this.confirm(userId, sessionId, membership);
+		this.confirm(userId, sessionId, {
+			...(this.matchesScope(membership) ? this.membership : undefined),
+			...membership
+		});
 		if (!this.membership || this.membership.hasBuyerLinks === present) return;
 		this.membership = { ...this.membership, hasBuyerLinks: present };
-		rememberWorkspaceHints(userId, this.membership);
+		rememberWorkspaceHints(userId, sessionId, this.membership);
 	}
 
 	cancelReads() {
@@ -129,11 +162,12 @@ export class WorkspaceHints {
 
 	forgetMembership(userId: string) {
 		if (this.identity?.userId === userId) this.confirm(userId, this.identity.sessionId, null);
-		else rememberWorkspaceHints(userId, null);
 	}
 
 	clear() {
 		this.cancelReads();
+		if (this.identity) cancelWorkspaceHintWrites(this.identity.userId, this.identity.sessionId);
+		this.storageRead = false;
 		this.identity = undefined;
 		this.membership = undefined;
 		this.confirmed = false;
@@ -143,6 +177,7 @@ export class WorkspaceHints {
 
 export interface WorkspaceHintContext {
 	readonly role: Role | undefined;
+	readonly presentation?: WorkspacePresentation;
 	readonly templateReady: boolean | undefined;
 	readonly hasBuyerLinks: boolean | undefined;
 	rememberBuyerLinks: (scope: WorkspaceScope, present: boolean) => void;
@@ -154,6 +189,7 @@ export const setWorkspaceHints = (presentation: WorkspaceHintContext) =>
 export const useWorkspaceHints = () =>
 	getContext<WorkspaceHintContext | undefined>(key) ?? {
 		role: undefined,
+		presentation: undefined,
 		templateReady: undefined,
 		hasBuyerLinks: undefined,
 		rememberBuyerLinks: () => {}

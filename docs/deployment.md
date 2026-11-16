@@ -1,19 +1,10 @@
 # Production releases
 
-**Clean reset, 2026-11-06.** Dinu uses development `disciplined-squid-496`
-and production `befitting-lyrebird-846`, both in the `dinu-app` Convex project.
-Both deployments were cleared, including obsolete tables, component data and
-stored files, then deployed with the current schema and functions. Clerk accounts
-were cleared in both environments. No seed data was restored. Development uses
-Clerk's test instance; production uses its separate live instance below.
-See [reset evidence](production-data-reconciliation.md). Frontend changes remain
-local and need website publication before clients can use the current app code.
+**Strict local backend/client model prepared; NOT DEPLOYABLE TO AN UNVERIFIED POPULATED TARGET.** No target inventory, conversion, reset or deployment was performed by this implementation. All G01–G25 remain UNVERIFIED. Follow the [preservation cutover and concrete release kit](backend-preservation-cutover.md) before publishing this incompatible release.
 
-[Current architecture](data-model.md) describes the backend model.
+The [2026-11-06 reset record](production-data-reconciliation.md) describes an earlier point in time, not current target emptiness or authorization for another reset. Configured development is `disciplined-squid-496` and production is `befitting-lyrebird-846` in `dinu-app`; verify actual targets and all obligations afresh before an authorized release. [Current architecture](data-model.md) describes the strict model.
 
-The one-current-contract rewrite is a local, incompatible backend/client change. The intended release uses a separately controlled database reset and matching client reload; no retained-contract conversion is supported. Local checks do not perform or certify that reset, a deployment or provider outcomes. See [contract cutover](#backend-ownership-conversion). Keep old/offline clients fenced when releasing the clean schema and invalidate their obsolete intent/cache namespaces.
-
-Push to `main` to release Dinu. Vercel builds the website and deploys Convex from
+After the release gates are cleared, push to `main` to release Dinu. Vercel builds the website and deploys Convex from
 the same checkout. Automatic deployments from other branches are disabled by
 `vercel.json`. Vercel's project-level **Preview Deployments** setting is also
 disabled, covering branches that do not yet contain this configuration.
@@ -120,9 +111,7 @@ production deployments or deploying Convex separately.
 ## Failures and recovery
 
 The deployments are not atomic. Convex can update before Vercel publishes, and
-open browser tabs can still use older frontend code. For routine releases, keep
-backend changes compatible with those clients, even when the database is empty.
-The planned contract cutover in [Contract reset and client cutover](#backend-ownership-conversion) releases the matching clean schema/data/client pair and reloads supported clients together.
+open browser tabs can still use older frontend code. Release matching supported clients and fence old served/open/offline protocols before removing their backend surfaces. The [preservation cutover](#backend-ownership-conversion) releases the verified converted schema/data/client set together; routine build checks do not enforce its population or job gates.
 
 If preflight fails, fix the named production setting or retry after a transient
 service failure, then redeploy the same commit. Do not bypass the checker.
@@ -131,10 +120,7 @@ Vercel publication is blocked. The previous website is still serving against the
 updated backend. Repair the endpoint or configuration and rerun the complete
 release. The same recovery applies if Vercel fails to publish after smoke succeeds.
 
-To roll back application code, revert the affected changes while retaining this
-deployment configuration, then push to `main`. That releases both parts from the
-reverted source. A Vercel-only rollback does not roll back Convex. This ordinary release rollback does not migrate or restore data. Data recovery requires compatible code, data, storage and component restoration,
-with scheduler and external-outcome reconciliation.
+A source revert can roll back code only when the stored representation and supported clients still match it. After preservation conversion, source-only or Vercel-only rollback is insufficient. Follow the release kit: restore matching code/client, database, files and components with scheduler and external-outcome reconciliation, or complete forward under the original fences. Reverting source never reverses a provider effect.
 
 Local `npm run dev` and `npm run build` are unchanged. Local development continues
 to use its existing configuration rather than the production release checker.
@@ -143,13 +129,15 @@ Integration content ships with the website from `src/lib/integrations.ts`; no ca
 
 <a id="backend-ownership-conversion"></a>
 
-## Contract reset and client cutover
+## Preserved data and matching client cutover
 
-The current local model has one authoritative contract root and approved document, native changes/heads/decisions, a stable listing projection and permanent current-view links. Business contract publication/history and their converters/operator endpoints have been removed. Historical rollout artifacts describe superseded models and must not be applied to this source.
+The local model has one authoritative contract root and approved document, canonical `playbook | buyer-link` changes with exact current/applied heads, independent review groups, explicit template audiences, bounded operation replay and independent output evidence. Retired publication/terminology converters and old callbacks are absent from the application. Historical runbooks describe superseded models.
 
-The user controls the separate database reset. This implementation performs no reset, migration, deployment or live provider action. Before an authorized release, classify the exact target, preserve any required recoverable data/code and reconcile running provider/email/booking outcomes under their own procedures. Coordinate the reset, matching backend/client release and old-tab reload; do not run a removed converter or replay obsolete browser intent against the new schema. Browser namespaces are `dinu:v7`, `dinu:drafts:v6` with envelope 10, and `dinu:download-acks:v2`. Previous namespaces have no translation/recovery path.
+Use the [preservation-first release procedure](backend-preservation-cutover.md) and its exact outside-repository offline bundle/runbook. For a populated current-schema target, preserve and convert original owners/history without command replay or template recapture. Older/unknown schemas stop release for an actual-schema preservation/disposition plan. A mid-terminology target finishes with its preserved old bundle first. Empty targets still require verified emptiness, external obligations, component keys and old job/client fences. Reset requires its own explicit authorization and coherent recovery/disposition record.
 
-Manual acceptance includes the same approved document in all audiences, permitted immediate changes beside unrelated pending work, exact review/support/undo and context requests, logically removed discussions with immediate unread cancellation, output-owned evidence, current displayed-byte buyer downloads, concurrent command/retry/account boundaries, warm navigation and shared copy feedback. Local type/build/tests cannot certify visual/native provider behavior or old running jobs. Reset and deployment remain separately controlled release steps.
+All G01–G25 remain UNVERIFIED. Old callback signatures, current-activity catch-up for advanced company/account markers, real witness/refill deadlines, output/seal/native/cleanup mappings and exact provider/canonical/CSM obligations are mandatory release evidence. No target action occurred locally. Browser namespaces are disposable `dinu:v8` (IndexedDB 16), `dinu:drafts:v6` envelope 12 and independent `dinu:download-acks:v2`. Old envelope 10/11 and malformed originals stay blocked/recoverable for review/export; they are never retimestamped or replayed. Cache invalidation is not intent retirement. New deliberate requests receive `op1` IDs; retry preserves the original ID/input and its seven-day deadline.
+
+Manual acceptance includes the same approved document in all audiences, permitted immediate changes beside unrelated pending work, exact review/support/undo and context requests, logically removed discussions with immediate unread cancellation, output-owned evidence, current displayed-byte buyer downloads, concurrent command/retry/account boundaries, warm navigation and shared copy feedback. Local type/build/tests cannot certify visual/native provider behavior or old running jobs. Preservation conversion and deployment remain separately authorized release steps; reset requires its own explicit decision.
 
 Template authoring and external integration maintenance have independent live procedures:
 

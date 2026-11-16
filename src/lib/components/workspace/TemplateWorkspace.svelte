@@ -33,20 +33,21 @@
 	import PlaybookEditor from '$lib/components/playbook/PlaybookEditor.svelte';
 	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
 	import Button from '$lib/ui/Button.svelte';
-	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
-	import QuestionIcon from 'phosphor-svelte/lib/QuestionIcon';
-	import Tooltip from '$lib/components/ui/Tooltip.svelte';
-	import WorkspaceChrome from './WorkspaceChrome.svelte';
+	import PlaybookReadBody from '$lib/components/playbook/PlaybookReadBody.svelte';
+	import WorkspaceDocumentFeedback from './WorkspaceDocumentFeedback.svelte';
+	import type { TemplateRouteFrameState } from './template-route-frame';
 	import { setInteractionOwner } from '$lib/components/ui/interactions';
 	import InteractionInputScope from '$lib/components/ui/InteractionInputScope.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 
 	let {
 		active = true,
-		audience = 'rep'
+		audience = 'rep',
+		onFrame
 	}: {
 		active?: boolean;
 		audience?: TemplateAudience;
+		onFrame?: (frame: TemplateRouteFrameState) => () => void;
 	} = $props();
 	const buyerTemplate = untrack(() => audience === 'buyer');
 	const copy = untrack(() => templateCopy(audience));
@@ -54,8 +55,14 @@
 	const runtime = getWorkspaceRuntime();
 	const accountViewer = useViewer();
 	const isAdmin = $derived(accountViewer().membership.role === 'admin');
-	const available = $derived(active && !runtime.paused && isAdmin);
 	const authoringSession = untrack(() => getTemplateAuthoringSession(audience));
+	const available = $derived(
+		active &&
+			!runtime.paused &&
+			isAdmin &&
+			!authoringSession.templateSource.rejected &&
+			!authoringSession.structureRejected
+	);
 	const session = useViewerSession();
 	const membershipId = accountViewer().membership.id;
 	const templateSource = authoringSession.templateSource;
@@ -113,35 +120,25 @@
 	const sourceMatches = $derived(
 		Boolean(
 			templateSource.data &&
+			authoringSession.coherent &&
 			projected &&
 			templateSource.data.templateSourceFingerprint === projected.templateSourceFingerprint
 		)
 	);
-	const data: DocumentSourceInput = {
-		kind: 'structure',
-		blocks: {
-			get data() {
-				return sourceMatches ? templateSource.data?.blocks : undefined;
-			},
-			get error() {
-				return templateSource.error;
-			}
-		},
-		structure: {
-			get data() {
-				return sourceMatches ? (projected ?? undefined) : undefined;
-			},
-			get error() {
-				return authoringSession.structureError || undefined;
-			}
-		},
-		get details() {
-			return renderDetails;
-		},
-		get pendingRenderKey() {
-			return authoringSession.pendingRenderKey;
-		}
-	};
+	const data: DocumentSourceInput = $derived(
+		sourceMatches && projected?.ready
+			? {
+					kind: 'structure',
+					blocks: { data: templateSource.data?.blocks, error: templateSource.error },
+					structure: { data: projected, error: authoringSession.structureError || undefined },
+					details: renderDetails,
+					pendingRenderKey: authoringSession.pendingRenderKey
+				}
+			: {
+					kind: 'prose',
+					blocks: { data: templateSource.data?.blocks, error: templateSource.error }
+				}
+	);
 	onMount(recordTemplateQueryOwner);
 	const resources = getDocumentResources();
 	const resource = resources
@@ -164,6 +161,14 @@
 		resource?.workspace ?? untrack(() => createDocumentWorkspace(data))
 	);
 	const { source, viewer } = workspace;
+	$effect(() =>
+		onFrame?.({
+			audience,
+			workspace,
+			interactionOwner,
+			available
+		})
+	);
 	const editingUnavailableReason = $derived.by(() => {
 		if (!available) return copy.unavailable;
 		if (session.blocked) return 'Waiting for your account to be ready…';
@@ -180,21 +185,29 @@
 	let viewerPresentation =
 		$state<import('$lib/auth/workspace-presentation.svelte').PresentationOutcome>('pending');
 	const presentationOutcome = $derived(
-		(!source.renderSource && source.issue) ||
-			(viewerPresentation === 'error' && (workspace.renderer.error || viewer.preparationBlocked))
-			? 'error'
-			: viewerPresentation === 'success' &&
-				  source.renderSource &&
-				  !workspace.renderer.error &&
-				  !viewer.preparationBlocked &&
-				  viewer.layoutPrepared &&
-				  viewer.pagesVisible &&
-				  viewer.displayedSnapshot &&
-				  viewer.displayedSnapshot === workspace.renderer.snapshot &&
-				  viewer.displayedSnapshot.source === source.renderSource
-				? 'success'
-				: 'pending'
+		!authoringSession.current || !source.itemsCurrent || !sourceMatches
+			? 'pending'
+			: (!source.renderSource && source.issue) ||
+				  (viewerPresentation === 'error' &&
+						(workspace.renderer.error || viewer.preparationBlocked))
+				? 'error'
+				: viewerPresentation === 'success' &&
+					  source.renderSource &&
+					  !workspace.renderer.error &&
+					  !viewer.preparationBlocked &&
+					  viewer.layoutPrepared &&
+					  viewer.pagesVisible &&
+					  viewer.displayedSnapshot &&
+					  viewer.displayedSnapshot === workspace.renderer.snapshot &&
+					  viewer.displayedSnapshot.source === source.renderSource
+					? 'success'
+					: 'pending'
 	);
+	$effect(() => {
+		if (viewerPresentation === 'success' && source.renderReady)
+			untrack(() => authoringSession.presented());
+	});
+
 	authoringSession.installController(AuthoringController);
 	const authoring = authoringSession.controller;
 	onMount(() => {
@@ -254,8 +267,11 @@
 		workspace.accept(data);
 		recordTemplateSourceUpdate();
 	});
-	const entry = $derived(authoring.entry);
-	const pendingPanel = $derived(authoringSession.pendingPanel);
+	const projectionMatches = $derived(source.compactStructure && sourceMatches);
+	const entry = $derived(
+		projectionMatches && authoringSession.entryMatchesSource ? authoring.entry : null
+	);
+	const pendingPanel = $derived(projectionMatches ? authoringSession.pendingPanel : null);
 	let animateEditorContent = $state(false);
 	let previousEditorEntry: object | null = null;
 	$effect(() => {
@@ -400,6 +416,15 @@
 	</p>
 {/if}
 
+{#if active && isAdmin && (templateSource.rejected || authoringSession.structureRejected)}
+	<p role="alert" class="px-6 py-4 text-sm text-danger">
+		Unable to load this template. <button
+			class="underline"
+			onclick={() => authoringSession.retryReads()}>Try again</button
+		>
+	</p>
+{/if}
+
 <BoxDismissal
 	owner={interactionOwner}
 	active={available && Boolean(entry || pendingPanel)}
@@ -407,11 +432,23 @@
 />
 
 <div hidden={!available} inert={!available} aria-hidden={!available}>
+	{#if available}<WorkspaceDocumentFeedback {workspace} />{/if}
 	{#if available}
-		<WorkspaceChrome
-			helpVariant={buyerTemplate ? 'buyer-template' : 'template'}
-			helpReady={viewer.layoutPrepared}
-		/>
+		{#if !authoringSession.entryMatchesSource && authoring.hasUnsavedWork}
+			<div role="status" class="mx-auto max-w-3xl px-6 py-3 text-sm">
+				<p>The template source changed. Your previous draft is retained separately.</p>
+				<button
+					class="mt-2 underline"
+					onclick={() => {
+						if (window.confirm(copy.leaveConfirm)) {
+							authoring.discard();
+							authoringSession.acceptSource();
+						}
+					}}>Discard previous draft</button
+				>
+			</div>
+		{/if}
+
 		{#if authoringSession.phase === 'uncertain'}
 			<div class="mx-auto max-w-3xl px-6 py-3 text-sm" role="alert">
 				<p>{authoringSession.message}</p>
@@ -460,52 +497,39 @@
 			<main
 				oninputcapture={recordDocumentInput}
 				onclickcapture={recordDocumentInput}
-				class="template-selection-enabled pt-2 pb-12 [--workspace-loading-inset:calc(var(--spacing)*16+var(--mobile-utility-rail-height))] min-[1000px]:pt-5 min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*27)]"
+				class="template-selection-enabled pb-12 [--workspace-loading-inset:calc(var(--spacing)*16+var(--mobile-utility-rail-height))] min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*27)]"
 				aria-label="Template editor"
 			>
-				<h1
-					class="mb-2 grid min-h-(--mobile-utility-rail-height) place-items-center px-2 text-center text-[13.5px] leading-6 text-ink-muted min-[1000px]:mb-4 min-[1000px]:block min-[1000px]:min-h-0"
-				>
-					<span class="inline-flex items-center gap-1.5">
-						<span>{copy.editingTitle}</span>
-						<Tooltip label={copy.editingHelpLabel} text={copy.editingHelp}>
-							{#snippet children()}
-								<QuestionIcon class="size-3.5 text-ink-muted/60" aria-hidden="true" />
-							{/snippet}
-						</Tooltip>
-					</span>
-				</h1>
 				{#snippet panelContent()}
-					{#if source.renderSource && pendingPanel}
+					{#if source.renderSource && (pendingPanel || entry)}
 						<PlaybookCard label={copy.editorLabel}>
-							{#if pendingPanel.error}
-								<div class="py-1" role="status">
-									<h2 class="text-sm font-medium">{copy.loadFailureTitle}</h2>
-									<p class="mt-1.5 text-[13px] leading-relaxed text-ink-muted">
-										{copy.loadFailureHint}
-									</p>
+							{#if pendingPanel}
+								<div aria-busy={!pendingPanel.error} aria-label={copy.loading} class="grid gap-3">
+									<h2 class="text-sm font-medium">{copy.editingTitle}</h2>
+									{#if pendingPanel.body}<PlaybookReadBody item={pendingPanel.body} />{/if}
+									{#if pendingPanel.error}
+										<p role="status" class="text-[13px] leading-relaxed text-ink-muted">
+											{copy.loadFailureHint}
+										</p>
+									{/if}
 								</div>
-							{:else}
-								<div aria-busy="true" aria-label={copy.loading} class="grid gap-3">
-									<SkeletonBlock quiet class="h-24 rounded" />
-									<SkeletonBlock class="h-4 w-3/5" />
+								<div class="flex justify-end gap-2">
+									<Button variant="secondary" onclick={cancel}>Close</Button>
+									{#if pendingPanel.error}<Button onclick={() => authoringSession.retryReads()}
+											>Try again</Button
+										>{/if}
 								</div>
+							{:else if entry}
+								<PlaybookEditor
+									embedded
+									controller={authoring}
+									animateContent={animateEditorContent}
+									onCancel={cancel}
+									onPrimary={() => runEditorAction(() => authoring.primary())}
+									onDelete={remove}
+								/>
 							{/if}
-							<div class="flex justify-end gap-2">
-								<Button variant="secondary" onclick={cancel}>Close</Button>
-								{#if pendingPanel.error}<Button onclick={() => authoringSession.retryReads()}
-										>Try again</Button
-									>{/if}
-							</div>
 						</PlaybookCard>
-					{:else if source.renderSource && entry}
-						<PlaybookEditor
-							controller={authoring}
-							animateContent={animateEditorContent}
-							onCancel={cancel}
-							onPrimary={() => runEditorAction(() => authoring.primary())}
-							onDelete={remove}
-						/>
 					{/if}
 				{/snippet}
 				{#if !entry && authoring.feedback}<p
@@ -519,23 +543,37 @@
 					entry={resource}
 					active={available}
 					onPresentation={(outcome) => (viewerPresentation = outcome)}
-					prepare={!runtime.paused}
+					prepare={!runtime.paused && source.renderReady}
 					{itemPreload}
 					interactive={available}
-					hasPanel={authoringSession.hasPanel}
-					followScroll={authoring.locationPicking}
+					hasPanel={Boolean(entry || pendingPanel)}
+					followScroll={projectionMatches &&
+						authoringSession.entryMatchesSource &&
+						authoring.locationPicking}
 					{panelContent}
-					selectedAnnotationId={pendingPanel?.annotationId ?? authoring.selectedAnnotationId}
-					selectionRequest={authoringSession.selectionRequest}
-					selectedRanges={authoringHighlightRanges}
-					{previewChanges}
+					selectedAnnotationId={pendingPanel?.annotationId ??
+						(entry ? authoring.selectedAnnotationId : undefined)}
+					selectionRequest={projectionMatches ? authoringSession.selectionRequest : null}
+					selectedRanges={projectionMatches && authoringSession.entryMatchesSource
+						? authoringHighlightRanges
+						: []}
+					previewChanges={projectionMatches && authoringSession.entryMatchesSource
+						? previewChanges
+						: EMPTY_PREVIEW_CHANGES}
 					selectedConcessions={{}}
 					onRemoveConcession={() => authoring.clearPreview()}
-					panelTarget={pendingPanel?.target ?? draft?.trigger.target}
-					picking={authoring.locationPicking}
-					sourceSelectionEnabled={authoring.textSelectionEnabled && !pendingPanel}
+					panelTarget={projectionMatches && authoringSession.entryMatchesSource
+						? (pendingPanel?.target ?? draft?.trigger.target)
+						: undefined}
+					picking={projectionMatches &&
+						authoringSession.entryMatchesSource &&
+						authoring.locationPicking}
+					sourceSelectionEnabled={projectionMatches &&
+						authoringSession.entryMatchesSource &&
+						authoring.textSelectionEnabled &&
+						!pendingPanel}
 					allowPlaybookNavigation={true}
-					playbookNavigationReady={authoringSession.current && source.itemsCurrent && sourceMatches}
+					playbookNavigationReady={projectionMatches}
 					onSelect={selectItem}
 					onDocumentBackground={() => dismiss(false)}
 				/>
@@ -545,7 +583,10 @@
 				{audience}
 				container={viewer.documentStageElement ?? undefined}
 				snapshot={viewer.displayedSnapshot}
-				enabled={authoring.textSelectionEnabled && !pendingPanel}
+				enabled={projectionMatches &&
+					authoringSession.entryMatchesSource &&
+					authoring.textSelectionEnabled &&
+					!pendingPanel}
 				autoConfirm={authoring.textSelectionAutoConfirm}
 				onSelectionIssue={(issue) => authoring.reportIssue(issue)}
 				onActionBlocked={(reason) => authoring.reportBlocked(reason)}

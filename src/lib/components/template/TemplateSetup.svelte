@@ -15,7 +15,7 @@
 	import { DOCX_MAX_BYTES, type ImportIssue } from '$lib/document/import/limits';
 	import { saveError } from '$lib/contract/saved';
 	import Button from '$lib/ui/Button.svelte';
-	import { initialCalendar, useCsmPreload } from '$lib/components/chrome/csm-preload.svelte';
+	import { initialAvailability, useCsmPreload } from '$lib/components/chrome/csm-preload.svelte';
 	import CsmBooking from '$lib/components/chrome/CsmBooking.svelte';
 	import TemplateSetupLayout from './TemplateSetupLayout.svelte';
 	const preload = useCsmPreload();
@@ -311,7 +311,7 @@
 						{owner}
 						bind:inProgress={bookingInProgress}
 						initial={{
-							...initialCalendar('setup'),
+							...initialAvailability('setup'),
 							...(booking.kind === 'replacement'
 								? {
 										replacement: {
@@ -334,9 +334,7 @@
 		{/if}
 	{:else if canUpload}
 		{#if !ready}
-			<p class="mb-4 text-[13px] leading-6 text-ink-muted">
-				Upload a Word document (optional).
-			</p>
+			<p class="mb-4 text-[13px] leading-6 text-ink-muted">Upload a Word document (optional).</p>
 			{#if pending}<p class="mb-4 text-[13px] leading-6 text-ink-muted">
 					Your previous file, {pending.filename}, stays saved until a new upload succeeds.
 				</p>{/if}
@@ -447,10 +445,6 @@
 				>
 			{/if}
 		</section>
-	{:else if status?.kind === 'released'}
-		<p role="status" class="text-[13px] leading-6 text-ink-muted">
-			Opening your company’s template…
-		</p>
 	{/if}
 
 	{#if admin && canUpload}

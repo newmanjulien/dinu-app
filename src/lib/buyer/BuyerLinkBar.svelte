@@ -11,13 +11,12 @@
 	import { buyerPath } from './urls';
 	import Button from '$lib/ui/Button.svelte';
 	import LinkIcon from 'phosphor-svelte/lib/LinkIcon';
+	import CircleNotchIcon from 'phosphor-svelte/lib/CircleNotchIcon';
 	let {
 		id,
-		recipientName,
 		latest
 	}: {
 		id: Id<'savedContracts'>;
-		recipientName: string;
 		latest: ReturnType<typeof useReadQuery<typeof api.buyerLinks.latest>>;
 	} = $props();
 	const membershipId = useViewer()().membership.id;
@@ -30,17 +29,16 @@
 		getBuyerLinkCopyFeedback().show
 	);
 	let errorTimer: ReturnType<typeof setTimeout> | undefined;
-	let readError = $state<string | null>(null);
-	const error = $derived(links.error ?? readError);
+	let statusFailed = $state(false);
+	const error = $derived(
+		links.error ??
+			(latest.error || statusFailed ? 'We couldn’t check the buyer link. Please try again.' : null)
+	);
 	$effect(() => {
-		const cause = latest.error;
-		readError = cause ? 'We couldn’t check the buyer link. Please try again.' : null;
-		if (!cause) return;
-		const timer = setTimeout(() => (readError = null), 5000);
-		return () => clearTimeout(timer);
+		if (latest.error) statusFailed = true;
+		else if (!latest.isLoading && latest.data !== undefined) statusFailed = false;
 	});
 	function retryStatus() {
-		readError = null;
 		latest.retry();
 	}
 	async function runLink(action: () => Promise<void>) {
@@ -88,23 +86,30 @@
 					class="cursor-pointer text-accent underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 					>Open link</a
 				>
-				to leave comments for {recipientName}.
-			{:else if latest.data === null}Create a link and send it to {recipientName}.
-			{:else if latest.error}The buyer link status is unavailable.
-			{:else}Checking the buyer link…{/if}
+				to leave comments on this contract.
+			{:else if latest.data === null}Create a link to share this contract with the buyer.
+			{/if}
 		</p>
 		<Button
 			variant="secondary"
-			disabled={Boolean(links.busy) || (latest.data === undefined && !latest.error)}
-			onclick={() => (latest.error ? retryStatus() : void runLink(() => links.copy()))}
-			><LinkIcon class="size-[15px] shrink-0" aria-hidden="true" />{links.busy ??
-				(latest.error
-					? 'Retry link status'
-					: latest.data === undefined
-						? 'Checking link…'
+			disabled={Boolean(links.busy) || latest.isLoading}
+			onclick={() =>
+				latest.error || statusFailed ? retryStatus() : void runLink(() => links.copy())}
+			>{#if links.busy}<CircleNotchIcon
+					class="size-[15px] shrink-0 animate-spin"
+					aria-hidden="true"
+				/>{:else}<LinkIcon class="size-[15px] shrink-0" aria-hidden="true" />{/if}
+			<span class="inline-grid place-items-center">
+				<span aria-hidden="true" class="invisible col-start-1 row-start-1">Create link</span>
+				<span class="col-start-1 row-start-1"
+					>{latest.error || statusFailed
+						? 'Retry'
 						: latest.data
 							? 'Copy link'
-							: 'Create link')}</Button
+							: 'Create link'}</span
+				>
+			</span>
+			{#if links.busy}<span class="sr-only" role="status">{links.busy}</span>{/if}</Button
 		>
 	</div>
 </section>

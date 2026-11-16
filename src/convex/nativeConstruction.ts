@@ -1,3 +1,4 @@
+import { expireOperation } from './operationExpiry';
 import { prepareBuyerCurrentView } from './buyerCurrent';
 import { ConvexError, getConvexSize, v, type Infer, type Value } from 'convex/values';
 import { makeFunctionReference } from 'convex/server';
@@ -33,7 +34,7 @@ import { MAX_SAVE_COMMANDS } from '../lib/contract/changes';
 import { MAX_SELECTED_CONCESSIONS } from '../lib/document/selection-limits';
 import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/limits';
 import { changeActorOf, MAX_APPROVED_CHANGE_CHAIN, playbookStateOf } from './contractChanges';
-import { requireNativeReachability } from './nativeStage';
+import { nativeAdoptionOwner, requireNativeReachability } from './nativeStage';
 import { DiscussionIndex } from './discussionIndex';
 import {
 	admitDiscussionWork,
@@ -55,6 +56,14 @@ import { prepareActivity, boundActivityDetail } from './hubspotRecords';
 import { contextIdentity, changedContextCompletion } from './contractReviewIdentity';
 import { documentBytes } from './storageCapacity';
 import type { ContractChange } from '../lib/playbook/model';
+import {
+	type HeadChangeSource,
+	currentDecisionId,
+	appliedDecisionId,
+	assertChangeHead,
+	createChangeHead,
+	playbookProjection
+} from './contractChangeHeads';
 
 export type NativeOwner = { receiptId: Id<'operationReceipts'>; generation: number; unit: number };
 export const nativeOwnerArgs = {
@@ -63,16 +72,11 @@ export const nativeOwnerArgs = {
 	unit: v.number()
 };
 export type NativeBuild = Infer<typeof nativeConstruction>;
-type BuiltChange = {
-	_id: Id<'contractChanges'>;
-	kind: 'playbook';
-	policy: 'none' | 'required';
-	source: { itemId: Id<'playbookItems'>; optionId: string | null };
-};
+type BuiltChange = Extract<HeadChangeSource, { kind: 'playbook' }> & { _id: Id<'contractChanges'> };
 type BuiltDecision = Pick<Doc<'contractChangeDecisions'>, '_id' | 'status'>;
 export type BuiltHead = {
 	key: string;
-	stored: Pick<Doc<'contractChangeHeads'>, '_id' | 'activePlaybook'> | null;
+	stored: { _id: Id<'contractChangeHeads'>; activePlaybook: boolean } | null;
 	initialCurrent: BuiltChange | null;
 	initialDecision: BuiltDecision | null;
 	current: BuiltChange | null;
@@ -86,6 +90,9 @@ function compactChange(row: Doc<'contractChanges'> | null): BuiltChange | null {
 	if (row.kind !== 'playbook') throw new Error('Native Playbook cache has a different kind.');
 	return {
 		_id: row._id,
+		companyId: row.companyId,
+		contractId: row.contractId,
+		key: row.key,
 		kind: row.kind,
 		policy: row.policy,
 		source: { itemId: row.source.itemId, optionId: row.source.optionId }
@@ -168,12 +175,12 @@ type SealedHead = {
 	storedId: Id<'contractChangeHeads'> | null;
 	dirty: boolean;
 	row: ReturnType<typeof finalHead>;
-	state: PlaybookState | null;
 };
 function decodeSealedHead(row: Doc<'operationReceiptChunks'>): SealedHead {
 	if (row.recordCount !== 1 || receiptChunkFingerprint(row.data) !== row.fingerprint)
 		throw new Error('Native sealed head integrity failed.');
 	const value = JSON.parse(row.data) as SealedHead;
+	if (value.row) assertChangeHead(value.row);
 	if (value.key !== row.nativeKey) throw new Error('Native sealed head identity failed.');
 	return value;
 }
@@ -357,33 +364,46 @@ export async function advanceConstruction(
 				};
 				if (!(await resultRow(ctx, row, input.key))) {
 					const head = input.head;
+					if (head) {
+						assertChangeHead(head);
+						if (
+							head.kind !== 'playbook' ||
+							head.companyId !== row.companyId ||
+							head.contractId !== contract.root._id ||
+							head.key !== input.key
+						)
+							throw new Error('Native head snapshot has invalid ownership.');
+					}
 					const compact = (
-						id: Id<'contractChanges'> | undefined,
-						summary: NonNullable<Doc<'contractChangeHeads'>['playbook']>['current']
+						bundle: NonNullable<typeof head>['current'] | NonNullable<typeof head>['applied']
 					): BuiltChange | null => {
-						if (!id) return null;
-						if (!summary) throw new Error('Native head has no bounded Playbook projection.');
+						if (!bundle) return null;
+						if (!('policy' in bundle))
+							throw new Error('Native head has no bounded Playbook projection.');
 						return {
-							_id: id,
+							_id: bundle.changeId,
+							companyId: row.companyId,
+							contractId: contract.root._id,
+							key: input.key,
 							kind: 'playbook',
-							policy: summary.policy,
-							source: { itemId: input.key as Id<'playbookItems'>, optionId: summary.optionId }
+							policy: bundle.policy,
+							source: { itemId: input.key as Id<'playbookItems'>, optionId: bundle.optionId }
 						};
 					};
-					const current = compact(head?.currentChangeId, head?.playbook?.current ?? null),
-						applied = compact(head?.appliedChangeId, head?.playbook?.applied ?? null),
-						currentDecision = head?.currentDecisionId
+					const current = compact(head?.current ?? null),
+						applied = compact(head?.applied ?? null),
+						currentId = currentDecisionId(head?.current ?? null),
+						appliedId = appliedDecisionId(head?.applied ?? null),
+						currentDecision = currentId
 							? {
-									_id: head.currentDecisionId,
+									_id: currentId,
 									status:
-										playbookStateOf(head)!.status === 'rejected'
+										playbookStateOf(head!)!.status === 'rejected'
 											? ('rejected' as const)
 											: ('approved' as const)
 								}
 							: null,
-						appliedDecision = head?.appliedDecisionId
-							? { _id: head.appliedDecisionId, status: 'approved' as const }
-							: null;
+						appliedDecision = appliedId ? { _id: appliedId, status: 'approved' as const } : null;
 
 					await putHead(
 						ctx,
@@ -442,8 +462,7 @@ export async function advanceConstruction(
 					key: head.key,
 					storedId: head.stored?._id ?? null,
 					dirty: head.dirty,
-					row: finalHead(head, contract),
-					state: playbookStateFor(head)
+					row: finalHead(head, contract)
 				};
 				const chunk = await resultRow(ctx, row, head.key);
 				if (!chunk) throw new Error('Native head seal lost its record.');
@@ -503,8 +522,10 @@ export async function advanceConstruction(
 				await admitDiscussionWork(ctx, { reads: 5, queries: 5, writes: 1, bytes: 16 * 1024 });
 				const prepared = await resultRow(ctx, row, stored.key);
 				let value: PlaybookState | null;
-				if (prepared) value = decodeSealedHead(prepared).state;
-				else value = playbookStateOf(stored);
+				if (prepared) {
+					const head = decodeSealedHead(prepared).row;
+					value = head ? playbookProjection(head) : null;
+				} else value = playbookStateOf(stored);
 				if (value) {
 					const data = canonicalJson(value),
 						fingerprint = receiptChunkFingerprint(data);
@@ -653,8 +674,8 @@ async function artifactRow(
 			.unique();
 		if (!chunk || receiptChunkFingerprint(chunk.data) !== chunk.fingerprint)
 			throw new Error('Authority comparison cursor is incomplete.');
-		id = (JSON.parse(chunk.data) as { row: Doc<'contractChangeHeads'> | null }).row
-			?.currentChangeId;
+		id = (JSON.parse(chunk.data) as { row: Doc<'contractChangeHeads'> | null }).row?.current
+			?.changeId;
 	}
 	if (!id) throw new Error('Native artifact cursor has no source.');
 	const table = ['predecessor', 'patch', 'other'].includes(kind)
@@ -773,6 +794,7 @@ export const checkpoint = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await constructionOwned(ctx, args);
 		if (!state?.native.build || !state.access) return null;
+		if (await expireOperation(ctx, state.row)) return null;
 		const { row, contract, access } = state,
 			native = structuredClone(state.native),
 			b = native.build!,
@@ -971,6 +993,7 @@ export const geometry = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await constructionOwned(ctx, args);
 		if (!state?.native.build) return false;
+		if (await expireOperation(ctx, state.row)) return false;
 		const { row } = state,
 			native = structuredClone(state.native),
 			b = native.build!;
@@ -1174,53 +1197,34 @@ export async function advanceNativeProof(
 	return p.proofComplete && p.supportComplete;
 }
 function finalHead(head: BuiltHead, contract: Contract) {
-	if (!head.current && !head.applied) return null;
-	return {
+	return createChangeHead({
 		companyId: contract.root.companyId,
 		contractId: contract.root._id,
-		kind: 'playbook' as const,
+		kind: 'playbook',
 		key: head.key,
-		playbook: {
-			current: head.current
-				? { optionId: head.current.source.optionId, policy: head.current.policy }
-				: null,
-			applied: head.applied
-				? { optionId: head.applied.source.optionId, policy: head.applied.policy }
-				: null
-		},
-		activePlaybook: [head.current, head.applied].some(
-			(change) => change?.kind === 'playbook' && change.source.optionId !== null
-		),
-		currentChangeId: head.current?._id,
-		appliedChangeId: head.applied?._id,
-		currentDecisionId: head.currentDecision?._id,
-		appliedDecisionId: head.appliedDecision?._id,
-		pendingAdmissionRevision:
-			head.current?._id !== head.applied?._id &&
-			head.current?.policy === 'required' &&
-			!head.currentDecision
-				? contract.root.stateRevision + 1
-				: undefined
-	};
-}
-function playbookStateFor(head: BuiltHead): PlaybookState | null {
-	const change = head.current ?? head.applied;
-	if (!change || change.kind !== 'playbook') return null;
-	return {
-		itemId: change.source.itemId,
-		currentChangeId: head.current?._id ?? null,
-		appliedChangeId: head.applied?._id ?? null,
-		currentOptionId: head.current?.kind === 'playbook' ? head.current.source.optionId : null,
-		appliedOptionId: head.applied?.kind === 'playbook' ? head.applied.source.optionId : null,
-		status:
-			!head.current || head.current.policy === 'none'
-				? 'approved'
-				: (head.currentDecision?.status ?? 'pending'),
-		decisionId: head.currentDecision?._id ?? null
-	};
+		current: head.current
+			? {
+					changeId: head.current._id,
+					change: head.current,
+					decisionId: head.currentDecision?._id,
+					admissionRevision: contract.root.stateRevision + 1
+				}
+			: null,
+		applied: head.applied
+			? {
+					changeId: head.applied._id,
+					change: head.applied,
+					decisionId: head.appliedDecision?._id
+				}
+			: null
+	});
 }
 /** Only sealed immutable references and bounded native writes enter this transaction. */
 export async function adoptNativeSave(ctx: MutationCtx, row: Doc<'operationReceipts'>) {
+	const liveOwner = await nativeAdoptionOwner(ctx, row);
+	if (!liveOwner) return true;
+	row = liveOwner;
+	if (await expireOperation(ctx, row)) return true;
 	const { contract, access } = await authorizePreparedOperation(ctx, row);
 	if (!access || !(await nativeValidationCurrent(ctx, row, contract))) return false;
 	await requireContractWork(ctx, contract);
@@ -1321,7 +1325,8 @@ export async function adoptNativeSave(ctx: MutationCtx, row: Doc<'operationRecei
 	if (stateHash !== b.stateHash || stateBytes !== b.stateBytes)
 		throw new Error('Native replay state seal changed.');
 	for (const head of heads) {
-		if (head.state) states.set(head.state.itemId, head.state);
+		const state = head.row ? playbookProjection(head.row) : null;
+		if (state) states.set(state.itemId, state);
 		else states.delete(head.key);
 	}
 	const playbook = [...states.values()];
@@ -1379,47 +1384,49 @@ export async function adoptNativeSave(ctx: MutationCtx, row: Doc<'operationRecei
 		...(b.dirtyCount
 			? { lastOperation: { id: row.operationId!, callerId: access.profile._id } }
 			: {}),
-		...(b.contextChanged
-			? (() => {
-					const identity = contextIdentity([
-						contract.root.playbookReviewIdentity,
-						access.membershipId,
-						row.operationId,
-						b.identity
-					]);
-					return {
-						playbookReviewIdentity: identity,
-						playbookCompletion: changedContextCompletion(
+		reviews: {
+			playbook: b.contextChanged
+				? (() => {
+						const identity = contextIdentity([
+							contract.root.reviews.playbook.identity,
+							access.membershipId,
+							row.operationId,
+							b.identity
+						]);
+						return {
 							identity,
-							b.playbookReviewCount,
-							b.playbookPendingCount,
-							access
-						)
-					};
-				})()
-			: {}),
-		...(buyerChanged
-			? (() => {
-					const identity = contextIdentity([
-						contract.root.buyerLinkReviewIdentity,
-						access.membershipId,
-						row.operationId,
-						b.identity,
-						p.supportCursor.counts
-					]);
-					return {
-						buyerLinkReviewIdentity: identity,
-						buyerLinkCompletion: changedContextCompletion(
+							completion: changedContextCompletion(
+								identity,
+								b.playbookReviewCount,
+								b.playbookPendingCount,
+								access
+							)
+						};
+					})()
+				: contract.root.reviews.playbook,
+			buyerLink: buyerChanged
+				? (() => {
+						const identity = contextIdentity([
+							contract.root.reviews.buyerLink.identity,
+							access.membershipId,
+							row.operationId,
+							b.identity,
+							p.supportCursor.counts
+						]);
+						return {
 							identity,
-							index.supportSummary.appliedBuyerCount +
-								p.supportCursor.counts.supportCount -
-								p.supportCursor.counts.withAppliedCount,
-							p.supportCursor.counts.pendingCount,
-							access
-						)
-					};
-				})()
-			: {})
+							completion: changedContextCompletion(
+								identity,
+								index.supportSummary.appliedBuyerCount +
+									p.supportCursor.counts.supportCount -
+									p.supportCursor.counts.withAppliedCount,
+								p.supportCursor.counts.pendingCount,
+								access
+							)
+						};
+					})()
+				: contract.root.reviews.buyerLink
+		}
 	};
 	const directory = await ctx.db
 		.query('contractDirectory')
@@ -1445,12 +1452,9 @@ export async function adoptNativeSave(ctx: MutationCtx, row: Doc<'operationRecei
 			documentId: nextRoot.documentId,
 			documentRevision: nextRoot.documentRevision,
 			stateRevision: nextRoot.stateRevision,
-			playbookReviewIdentity: nextRoot.playbookReviewIdentity,
-			buyerLinkReviewIdentity: nextRoot.buyerLinkReviewIdentity,
+			reviews: nextRoot.reviews,
 			playbook,
 			hubspot: contract.hubspot,
-			playbookCompletion: nextRoot.playbookCompletion ?? null,
-			buyerLinkCompletion: nextRoot.buyerLinkCompletion ?? null,
 			lastOperationId: nextRoot.lastOperation?.id ?? null
 		}
 	};

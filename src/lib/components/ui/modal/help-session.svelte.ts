@@ -1,3 +1,8 @@
+import {
+	createDocumentLoadingOpeningId,
+	recordDocumentLoadingMilestone
+} from '$lib/document/runtime/render-perf';
+
 type Audience = { identity: string };
 export type HelpPolicy =
 	| { kind: 'pending' }
@@ -13,10 +18,14 @@ export type HelpPolicy =
 
 /** One document/link opening, retained through renderer and presentation changes. */
 export class HelpSession {
+	readonly loadingOpening = createDocumentLoadingOpeningId();
 	private policy = $state.raw<HelpPolicy>({ kind: 'pending' });
 	private handled = $state(false);
+	private admittedOnce = $state(false);
+	private active = $state(true);
 	private identity?: string;
 	private preview = false;
+	private destroyed = false;
 	private write?: { current: () => boolean };
 	open = $state(false);
 	hidden = $state(false);
@@ -24,9 +33,12 @@ export class HelpSession {
 	error = $state('');
 
 	configure(policy: HelpPolicy) {
+		if (this.destroyed) return;
+		const firstResolution = this.policy.kind === 'pending' && policy.kind !== 'pending';
 		if ('identity' in policy) {
 			if (this.identity !== undefined && this.identity !== policy.identity) {
 				this.handled = false;
+				this.admittedOnce = false;
 				this.open = false;
 				this.hidden = false;
 				this.preview = false;
@@ -42,21 +54,49 @@ export class HelpSession {
 		} else if (policy.kind !== 'pending') this.preview = false;
 		if (policy.kind === 'preference') this.hidden = policy.hidden;
 		this.policy = policy;
+		if (firstResolution)
+			recordDocumentLoadingMilestone('help-policy-resolved', {
+				opening: this.loadingOpening
+			});
+		if (this.handled && policy.kind !== 'pending') this.admittedOnce = true;
 	}
 
+	get resolved() {
+		return this.policy.kind !== 'pending';
+	}
+	get admitted() {
+		return this.admittedOnce;
+	}
+	/** Temporary holds retain the opening decision, but retire its local write state. */
+	setActive(active: boolean) {
+		if (this.destroyed || this.active === active) return;
+		this.active = active;
+		if (!active) {
+			this.close();
+			this.clearWrite();
+		}
+	}
 	get showCheckbox() {
 		return this.policy.kind === 'preference' || this.policy.kind === 'pending';
 	}
 	get checkboxDisabled() {
-		return this.policy.kind !== 'preference' || this.pending;
+		return !this.active || this.policy.kind !== 'preference' || this.pending;
 	}
 	considerAutomatic() {
-		if (this.handled || this.policy.kind === 'pending') return;
+		if (this.destroyed || !this.active || this.handled || this.policy.kind === 'pending') return;
 		this.handled = true;
-		if (this.policy.kind === 'preference' && !this.hidden) this.open = true;
+		this.admittedOnce = true;
+		if (this.policy.kind === 'preference' && !this.hidden) {
+			this.open = true;
+			recordDocumentLoadingMilestone('help-automatic-open', {
+				opening: this.loadingOpening
+			});
+		}
 	}
 	openManually() {
+		if (this.destroyed || !this.active) return;
 		this.handled = true;
+		if (this.resolved) this.admittedOnce = true;
 		this.open = true;
 	}
 	close() {
@@ -69,7 +109,14 @@ export class HelpSession {
 	}
 	async setHidden(hidden: boolean) {
 		const policy = this.policy;
-		if (policy.kind !== 'preference' || this.pending || !policy.current()) return;
+		if (
+			this.destroyed ||
+			!this.active ||
+			policy.kind !== 'preference' ||
+			this.pending ||
+			!policy.current()
+		)
+			return;
 		const identity = this.identity;
 		const write = (this.write = { current: policy.current });
 		this.pending = true;
@@ -88,6 +135,7 @@ export class HelpSession {
 		}
 	}
 	destroy() {
+		this.destroyed = true;
 		this.clearWrite();
 		this.close();
 	}

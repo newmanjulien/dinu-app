@@ -4,7 +4,7 @@ import { reservationManifest } from './outputValidators';
 import { exportRequest } from './savedContractValidators';
 
 export const quoteRequest = exportRequest.extend({ destination: hubspotDestination });
-/** The immutable source/actor/destination request lives in its existing operation receipt. */
+/** The immutable source/actor/destination request lives in its durable output. */
 export const quoteReservation = reservationManifest;
 
 export const quoteScopes = ['crm.objects.quotes.read', 'crm.objects.quotes.write'] as const;
@@ -47,20 +47,23 @@ export const quoteProviderFailure = v.object({
 	code: v.optional(v.string()),
 	correlationId: v.optional(v.string())
 });
-export const quotePush = v.object({
+export const fullQuotePush = v.object({
+	format: v.literal('full'),
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	reservationReceiptId: v.id('operationReceipts'),
+	outputId: v.id('contractOutputs'),
 	documentId: v.id('contractDocuments'),
-	// Indexed provider destination stays operational; immutable source/actor lives on the receipt.
+	// Indexed provider destination stays operational; immutable source/actor lives on the output.
 	destination: hubspotDestination,
 	canonicalKey: v.string(),
 	fingerprint: v.string(),
 	payloadHash: v.string(),
 	state: quoteState,
 	updatedAt: v.number(),
+	settledAt: v.optional(v.number()),
 	dispatchedAt: v.optional(v.number()),
 	fileId: v.optional(v.id('_storage')),
+	deletingFileId: v.optional(v.id('_storage')),
 	payloadExpiresAt: v.optional(v.number()),
 	dueAt: v.optional(v.number()),
 	claim: v.optional(v.string()),
@@ -74,6 +77,29 @@ export const quotePush = v.object({
 	providerFailure: v.optional(quoteProviderFailure),
 	recoveryEvidence: v.optional(v.string())
 });
+export const compactQuotePush = fullQuotePush
+	.pick(
+		'companyId',
+		'contractId',
+		'outputId',
+		'destination',
+		'canonicalKey',
+		'fingerprint',
+		'payloadHash',
+		'settledAt',
+		'updatedAt',
+		'dispatchedAt',
+		'quoteId',
+		'previousQuoteId',
+		'url',
+		'message'
+	)
+	.extend({
+		format: v.literal('compact'),
+		settledAt: v.number(),
+		state: v.union(v.literal('verified'), v.literal('rejected'), v.literal('retired'))
+	});
+export const quotePush = v.union(fullQuotePush, compactQuotePush);
 export const quoteSummary = v.object({
 	id: v.id('hubspotQuotePushes'),
 	state: quoteState,

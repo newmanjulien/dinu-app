@@ -16,6 +16,7 @@ import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { MAX_SNAPSHOT_BYTES } from './templateCapacity';
 import { DiscussionPreparationRequired } from './discussionMaps';
 import { requireNativeReachability } from './nativeStage';
+import { requireLiveDocumentOwner } from './contractDocumentLifetime';
 
 const CHUNK_BYTES = 128 * 1024;
 const MIN_CHUNK_BYTES = 16 * 1024;
@@ -23,8 +24,6 @@ const MAX_CHUNKS = 512;
 const RESERVE_BYTES = 65_536;
 const MAX_READ_BYTES = 16 * 1024 * 1024;
 const encoder = new TextEncoder();
-// Integrity excludes the mutable retention marker; admission reserves its full native size.
-const RETENTION_BYTES = documentBytes({ retainedAfterDeletion: true }) - documentBytes({});
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const fingerprint = (data: Uint8Array) => bytesToHex(sha256(data));
 type Scope = { companyId: Id<'company'>; contractId: Id<'savedContracts'> };
@@ -134,7 +133,7 @@ export function assertContractDocumentManifest(
 		!manifest.chunkIds.length ||
 		manifest.chunkIds.length > MAX_CHUNKS ||
 		manifest.chunkIds.length !== manifest.chunkHashes.length ||
-		manifest.readBytes + manifest.chunkIds.length * RETENTION_BYTES + RESERVE_BYTES > MAX_READ_BYTES
+		manifest.readBytes + RESERVE_BYTES > MAX_READ_BYTES
 	)
 		throw unavailable();
 }
@@ -164,9 +163,7 @@ export async function readContractDocument(
 	const metrics = await ctx.meta.getTransactionMetrics();
 	if (
 		metrics.bytesRead.remaining <
-			manifest.readBytes +
-				manifest.chunkIds.length * RETENTION_BYTES +
-				(options.deferOnCapacity ? 1_000_000 : RESERVE_BYTES) ||
+			manifest.readBytes + (options.deferOnCapacity ? 1_000_000 : RESERVE_BYTES) ||
 		metrics.databaseQueries.remaining <
 			manifest.chunkIds.length + (options.deferOnCapacity ? 48 : 0) ||
 		metrics.documentsRead.remaining < manifest.chunkIds.length + (options.deferOnCapacity ? 48 : 0)
@@ -206,8 +203,7 @@ export function decodeContractDocumentChunks(
 		const data = new Uint8Array(row.data);
 		if (fingerprint(data) !== row.fingerprint) throw unavailable();
 		dataBytes += data.byteLength;
-		const { retainedAfterDeletion: _retained, ...immutable } = row;
-		readBytes += documentBytes(immutable);
+		readBytes += documentBytes(row);
 		nativeBytes += documentBytes(row);
 		chunks.push(data);
 	}
@@ -257,6 +253,7 @@ export async function prepareContractDocument(
 	ctx: QueryCtx,
 	args: Scope & { document: ContractDocument; previousDocumentId?: Id<'contractDocuments'> }
 ): Promise<PreparedContractDocument> {
+	await requireLiveDocumentOwner(ctx, args);
 	const chunks = planContractDocumentChunks(args.document),
 		hashes = chunks.map((chunk) => chunk.fingerprint),
 		documentFingerprint = fingerprint(encoder.encode(JSON.stringify(hashes)));
@@ -283,7 +280,7 @@ export async function prepareContractDocument(
 		blockCount: args.document.blocks.length
 	};
 	const manifestBytes = documentBytes(manifest);
-	if (readBytes + chunks.length * RETENTION_BYTES + manifestBytes + RESERVE_BYTES > MAX_READ_BYTES)
+	if (readBytes + manifestBytes + RESERVE_BYTES > MAX_READ_BYTES)
 		throw new ConvexError('This contract exceeds supported document read capacity.');
 	const unique = new Map(
 		chunks

@@ -10,7 +10,7 @@ export async function reservedExport(
 	source: {
 		companyId: Id<'company'>;
 		contractId: Id<'savedContracts'>;
-		reservationReceiptId: Id<'operationReceipts'>;
+		outputId: Id<'contractOutputs'>;
 		documentId: Id<'contractDocuments'>;
 	}
 ) {

@@ -52,7 +52,12 @@ interface RenderRequest extends RenderCurrentInput {
 	perf?: RenderPerfSample;
 	abort: AbortController;
 	composition?: CompositionRequest;
-	firstPagePaint?: { epoch: string; promise: Promise<void>; acknowledge: () => void };
+	initialBatchPaint?: { epoch: string; promise: Promise<void>; release: () => void };
+	initialBatchHandled?: boolean;
+	previousPages?: {
+		layoutEpoch: string;
+		pages: readonly import('../pagination/types').PaginatedPage[];
+	};
 }
 
 /** Latest-request worker: compose, prepare, profile, paginate, reconcile, commit. */
@@ -133,25 +138,59 @@ export class DocumentRenderController {
 			samePreviewChanges(job.previewChanges, input.previewChanges ?? EMPTY_PREVIEW_CHANGES)
 		);
 	}
-	/** Only the viewer can establish that this generation's first exact page mounted. */
-	acknowledgeFirstPagePaint(generation: number, epoch: string) {
+	#displayActive = false;
+	/** Parked preparation cannot wait for a physical paint from an absent viewer. */
+	setDisplayActive(active: boolean) {
+		this.#displayActive = active;
+		if (!active) this.#inflight?.initialBatchPaint?.release();
+	}
+	/** Only a flushed, admitted batch from this exact request can acknowledge visibility. */
+	acknowledgeInitialBatchPaint(generation: number, epoch: string) {
 		const request = this.#inflight;
 		if (request?.generation !== generation || !this.#isCurrent(request, epoch)) return;
-		if (request.firstPagePaint?.epoch === epoch) request.firstPagePaint.acknowledge();
+		if (request.initialBatchPaint?.epoch !== epoch || !this.#displayActive || document.hidden)
+			return;
+		if (request.perf) {
+			request.perf.initialBatchVisibleAt = performance.now();
+			recordPerfSample(request.perf);
+		}
+		request.initialBatchPaint.release();
 	}
-	#waitForFirstPagePaint(request: RenderRequest, epoch: string) {
+	#publishInitialBatch(request: RenderRequest, epoch: string) {
+		if (request.initialBatchHandled) return;
+		request.initialBatchHandled = true;
+		if (request.perf) {
+			request.perf.initialBatchAt = performance.now();
+			recordPerfSample(request.perf);
+		}
+		if (!this.#displayActive || document.hidden) return;
 		const signal = request.abort.signal;
-		let acknowledge!: () => void;
+		let release!: () => void;
 		const promise = new Promise<void>((resolve, reject) => {
-			const cancel = () => reject(signal.reason);
-			acknowledge = () => {
+			const cleanup = () => {
 				signal.removeEventListener('abort', cancel);
+				document.removeEventListener('visibilitychange', visibility);
+			};
+			const cancel = () => {
+				cleanup();
+				reject(signal.reason);
+			};
+			release = () => {
+				cleanup();
 				resolve();
 			};
+			// This releases the visible wait, without dispatching suspended background work
+			// or claiming a paint. The scheduler still owns tab/priority admission.
+			const visibility = () => {
+				if (document.hidden) release();
+			};
 			if (signal.aborted) cancel();
-			else signal.addEventListener('abort', cancel, { once: true });
+			else {
+				signal.addEventListener('abort', cancel, { once: true });
+				document.addEventListener('visibilitychange', visibility);
+			}
 		});
-		request.firstPagePaint = { epoch, promise, acknowledge };
+		request.initialBatchPaint = { epoch, promise, release };
 	}
 	get retainedPageCount() {
 		return new Set([...(this.snapshot?.pages ?? []), ...(this.pending?.pages ?? [])]).size;
@@ -183,12 +222,19 @@ export class DocumentRenderController {
 		)
 			return;
 		if ((input.priority?.() ?? 'foreground') === 'foreground') input.profiler.beginPreparation();
+		const partial =
+			this.pending?.status === 'failed' && this.isPreparingCurrent(input)
+				? this.pending
+				: undefined;
 		this.#abort?.abort(OBSOLETE);
 		const abort = (this.#abort = new AbortController());
 		const generation = ++this.#generation;
 		this.#recordCancelled(this.#next);
 		this.#next = {
 			...input,
+			previousPages: partial?.layoutEpoch
+				? { layoutEpoch: partial.layoutEpoch, pages: partial.pages }
+				: undefined,
 			abort,
 			concessions: Object.freeze({ ...input.concessions }),
 			previewChanges: input.previewChanges ?? EMPTY_PREVIEW_CHANGES,
@@ -205,7 +251,9 @@ export class DocumentRenderController {
 			concessions: this.#next.concessions,
 			previewChanges: this.#next.previewChanges,
 			layoutEpoch: input.profiler.epoch,
-			pages: Object.freeze([]),
+			pages: partial?.pages ?? Object.freeze([]),
+			initialBatchReady: partial?.initialBatchReady ?? false,
+			paginationComplete: false,
 			progressive: Boolean(input.progressive),
 			status: 'running'
 		};
@@ -517,14 +565,22 @@ export class DocumentRenderController {
 										reconciliation = undefined;
 										checkCurrent();
 										if (request.progressive && this.pending) {
-											if (pages.length === 1) this.#waitForFirstPagePaint(request, epoch);
-											this.pending = { ...this.pending, pages: Object.freeze([...pages]) };
+											this.pending = {
+												...this.pending,
+												// A retry keeps its already admitted exact prefix while catching up.
+												pages:
+													pages.length < this.pending.pages.length
+														? this.pending.pages
+														: Object.freeze([...pages]),
+												initialBatchReady: this.pending.initialBatchReady || pages.length >= 3
+											};
+											if (pages.length >= 3) this.#publishInitialBatch(request, epoch);
 											if (pages.length === 1 && perf) {
 												perf.firstPageAt = performance.now();
 												recordPerfSample(perf);
 											}
 										}
-										if (request.firstPagePaint) return;
+										if (request.progressive) return;
 									}
 								} else {
 									const next = queued ?? advance();
@@ -556,7 +612,7 @@ export class DocumentRenderController {
 										reconciliation = iterateReconciledPages(
 											[next.value.page],
 											epoch,
-											this.snapshot ?? undefined,
+											request.previousPages ?? this.snapshot ?? undefined,
 											pages.length
 										);
 									}
@@ -577,10 +633,10 @@ export class DocumentRenderController {
 					'preparation',
 					perf
 				);
-				const firstPagePaint = request.firstPagePaint;
-				if (firstPagePaint) {
-					await firstPagePaint.promise;
-					request.firstPagePaint = undefined;
+				const initialBatchPaint = request.initialBatchPaint;
+				if (initialBatchPaint) {
+					await initialBatchPaint.promise;
+					request.initialBatchPaint = undefined;
 					checkCurrent();
 				}
 			}
@@ -589,9 +645,21 @@ export class DocumentRenderController {
 			reconciliation?.return({ pages: [], changedPages: [], pagesReused: 0 });
 		}
 		if (!pages.length) throw new Error('Pagination produced no pages.');
+		if (perf) {
+			perf.paginationCompleteAt = performance.now();
+			recordPerfSample(perf);
+		}
+		if (request.progressive && this.pending) {
+			this.pending = { ...this.pending, paginationComplete: true, initialBatchReady: true };
+			this.#publishInitialBatch(request, epoch);
+			if (request.initialBatchPaint) {
+				await request.initialBatchPaint.promise;
+				request.initialBatchPaint = undefined;
+				checkCurrent();
+			}
+		}
 		for (let i = pages.length; i < (this.snapshot?.pages.length ?? 0); i++)
 			changedPages.push(i + 1);
-		if (perf) perf.paginationCompleteAt = performance.now();
 		if (perf) {
 			perf.pageCount = pages.length;
 			perf.pagesChanged = changedPages.length;
@@ -632,7 +700,7 @@ export class DocumentRenderController {
 		} finally {
 			selection.return(undefined as never);
 		}
-		// Source-only panel facts follow pagination, preserving the first-page paint handshake.
+		// Source-only panel facts follow pagination and the initial readable batch.
 		// Compatible artifacts retain them across layout and concession snapshots.
 		let panelSourceFacts =
 			this.view === 'redline' && artifacts.compatible(request.source)

@@ -5,7 +5,8 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import type { DiscussionContext } from './discussionContext';
 import type { Doc } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
-import { liveCompanyMember, memberForCompany, requireMembership, type CompanyAccess } from './auth';
+import { liveProfile, memberForCompany, requireMembership, type CompanyAccess } from './auth';
+import { sellerAuthorName } from './authorPresentation';
 import type { publicAuthor } from '../lib/discussions/validators';
 import { sellerPreparationActor, type PreparationActor } from './discussionPreparation';
 
@@ -53,12 +54,12 @@ export async function authorView(
 	contract: Doc<'savedContracts'>,
 	actor: Pick<DiscussionActor, 'profileId' | 'key'>
 ): Promise<Infer<typeof publicAuthor>> {
-	const profile = actor.profileId
-		? await liveCompanyMember(ctx, contract.companyId, actor.profileId)
-		: null;
+	const profile = actor.profileId ? await liveProfile(ctx, actor.profileId) : null;
 	return {
 		key: actor.key,
-		name: actor.profileId ? profile?.name || 'Former colleague' : buyerName(contract) || 'Buyer',
+		name: actor.profileId
+			? await sellerAuthorName(ctx, contract.companyId, profile)
+			: buyerName(contract) || 'Buyer',
 		avatarUrl: profile?.avatarId ? await ctx.storage.getUrl(profile.avatarId) : null,
 		buyer: !actor.profileId
 	};

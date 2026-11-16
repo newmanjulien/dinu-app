@@ -8,12 +8,13 @@ import type {
 	RepInstructionRecord,
 	SourceTarget,
 	Trigger,
+	TemplateAudience,
 	TemplateItem
 } from './model';
 
 /** Wording never belongs to the reactive annotation/validation surface. */
 export type ItemStructure = {
-	audience?: 'buyer';
+	audience: TemplateAudience;
 	trigger: Trigger;
 	concessions: {
 		id: string;
@@ -84,14 +85,14 @@ export type TemplateContentSnapshot = DeepReadonly<
 >;
 export function playbookStructure(item: {
 	readonly trigger: Trigger;
-	readonly audience?: 'buyer';
+	readonly audience: TemplateAudience;
 	readonly concessions?: readonly {
 		readonly id: string;
 		readonly changes: readonly DeepReadonly<ContractChange>[];
 	}[];
 }): ItemStructure {
 	return {
-		...(item.audience ? { audience: item.audience } : {}),
+		audience: item.audience,
 		trigger: item.trigger,
 		concessions: (item.concessions ?? []).map(({ id, changes }) => ({
 			id,
@@ -105,7 +106,7 @@ export function itemStructure<ItemId extends ContractItemId>(
 				Pick<
 					RepInstructionRecord<ItemId>,
 					'_id' | '_creationTime' | 'contentRevision' | 'renderKey' | 'trigger'
-				> & { audience?: 'buyer'; concessions?: import('./model').Concession[] }
+				> & { audience: TemplateAudience; concessions?: import('./model').Concession[] }
 		  >
 		| DeepReadonly<ResolvedContractItem>,
 	renderKey = ('renderKey' in item ? item.renderKey : undefined) ?? item._id
@@ -118,6 +119,7 @@ export function itemStructure<ItemId extends ContractItemId>(
 		...playbookStructure(
 			'primary' in item
 				? {
+						audience: 'rep',
 						trigger: item.primary,
 						concessions: item.choices
 					}

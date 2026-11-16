@@ -37,6 +37,7 @@ function snapshots<Query extends FunctionReference<'query'>>(expectedQuery: Quer
 }
 const membershipId = 'member' as Id<'memberships'>;
 const contractId = 'contract' as Id<'savedContracts'>;
+const buyerCode = 'Ab3Cd4Ef5Gh6I';
 const buyerContent: FunctionReturnType<typeof api.buyerLinks.currentDocument> = {
 	contentIdentity: 'approved-document' as Id<'contractDocuments'>,
 	displayIdentity: 'approved:0',
@@ -106,7 +107,7 @@ it('bounds snapshot acquisition and ignores results after a buyer view is replac
 	const first = queryOnce(
 		client,
 		api.buyerLinks.currentDocument,
-		{ token: '0'.repeat(39) },
+		{ token: buyerCode },
 		replaced.signal
 	).then(accept);
 	const cancellation = expect(first).rejects.toThrow('replaced');
@@ -118,7 +119,7 @@ it('bounds snapshot acquisition and ignores results after a buyer view is replac
 	const second = queryOnce(
 		client,
 		api.buyerLinks.currentDocument,
-		{ token: '0'.repeat(39) },
+		{ token: buyerCode },
 		attempt.signal
 	).then(accept, fail);
 	await vi.advanceTimersByTimeAsync(15_001);
@@ -191,7 +192,7 @@ it('retains accepted discussions through a local page timeout but clears it on d
 });
 
 it('retains the accepted buyer resource through an opening retry and tears it down on access withdrawal', () => {
-	const owner = new BuyerContract('token', { onUpdate: unused });
+	const owner = new BuyerContract(buyerCode, { onUpdate: unused });
 	owner.allowed = true;
 	owner.content = buyerContent;
 	owner.Host = unused;
@@ -221,7 +222,7 @@ it('reports successful clipboard writes to one feedback owner and extends dismis
 	Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
 	const latest: NonNullable<FunctionReturnType<typeof api.buyerLinks.latest>> = {
 		id: 'link' as Id<'buyerLinks'>,
-		token: '0'.repeat(39),
+		token: buyerCode,
 		createdAt: 0
 	};
 	const links = new BuyerLinkController(

@@ -75,7 +75,18 @@ export const markSeenResult = v.union(
 );
 export const discussionOperationResult = v.union(
 	v.null(),
-	preparingDiscussionResult,
-	v.object({ status: v.literal('complete'), operationId: v.string(), result: v.string() }),
-	v.object({ status: v.literal('failed'), operationId: v.string(), error: v.string() })
+	preparingDiscussionResult.extend({ retryUntil: v.number() }),
+	v.object({
+		status: v.literal('complete'),
+		operationId: v.string(),
+		retryUntil: v.number(),
+		result: v.string()
+	}),
+	v.object({
+		status: v.literal('failed'),
+		operationId: v.string(),
+		retryUntil: v.number(),
+		error: v.string(),
+		errorCode: v.optional(v.literal('OPERATION_EXPIRED'))
+	})
 );

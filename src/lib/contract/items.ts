@@ -31,7 +31,7 @@ export type DocumentItemRecord = RepInstructionRecord | ResolvedContractItem;
 export function resolveTemplateItem(
 	item: DeepReadonly<RepInstructionRecord>
 ): ResolvedContractItem {
-	const { instructions } = semanticInstructions(item.instructions);
+	const instructions = semanticInstructions(item.instructions);
 	return {
 		_id: item._id,
 		_creationTime: item._creationTime,

@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 import { isRepItem, type TemplateItem } from '../../../src/lib/playbook/model';
 function repItem<T extends TemplateItem>(item: T) {
 	if (!isRepItem(item)) throw new Error('Expected rep instructions');
@@ -68,10 +69,10 @@ async function prepareApproval(
 	await t.mutation(api.contracts.saveChanges, {
 		membershipId,
 		id,
-		operationId: 'save',
+		operationId: fixtureOperationId('save'),
 		commands: [
 			{
-				id: 'save-command',
+				id: fixtureOperationId('save-command'),
 				itemId,
 				expectedCurrentChangeId: null,
 				action: { kind: 'set', optionId: 'preferred' },
@@ -86,8 +87,8 @@ async function prepareApproval(
 		id,
 		context: 'playbook',
 		expectedDocument: { documentId: state.documentId, documentRevision: state.documentRevision },
-		expectedIdentity: state.playbookReviewIdentity,
-		operationId: 'request-approval'
+		expectedIdentity: state.reviews.playbook.identity,
+		operationId: fixtureOperationId('request-approval')
 	});
 	if (result.status !== 'complete' || !result.request)
 		throw new Error('Request is still preparing');
@@ -135,7 +136,8 @@ async function prepareApproval(
 	return { event, selections: counts, selectionDetails };
 }
 
-const operationId = '11111111-1111-1111-1111-111111111111';
+const templateOperationId = '11111111-1111-1111-1111-111111111111';
+const operationId = fixtureOperationId('contract-creation');
 describe('immutable template creation', () => {
 	it('bootstraps atomically and concurrently without replacing the pointer', async () => {
 		const { t, companyId } = await emptyFixture();
@@ -163,7 +165,7 @@ describe('immutable template creation', () => {
 				approvalPolicy: { kind: 'required' as const, instructions: 'Different wording.' }
 			},
 			expectedContentRevision: 1,
-			operationId
+			operationId: templateOperationId
 		});
 		expect(saved.status).toBe('saved');
 		await t.mutation(api.playbookItems.saveTemplateItem, {
@@ -171,7 +173,7 @@ describe('immutable template creation', () => {
 			id: itemId,
 			item,
 			expectedContentRevision: 1,
-			operationId
+			operationId: templateOperationId
 		});
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(2);
 		const state = await t.query(api.contracts.state, { membershipId, id: created.id });
@@ -189,14 +191,14 @@ describe('immutable template creation', () => {
 		expect(created.contract.templateVersionId).toBe(first);
 		const retry = await t.mutation(api.contracts.create, {
 			membershipId,
-			title: 'Other',
+			title: 'Buyer',
 			operationId
 		});
 		expect(retry).toEqual(created);
 		const next = await t.mutation(api.contracts.create, {
 			membershipId,
 			title: 'Next',
-			operationId: 'next'
+			operationId: fixtureOperationId('next')
 		});
 		expect(next.status).toBe('created');
 		if (next.status !== 'created') throw new Error('creation failed');
@@ -313,10 +315,10 @@ describe('immutable template creation', () => {
 		const saved = await t.mutation(api.contracts.saveChanges, {
 			membershipId,
 			id: created.id,
-			operationId: 'newer-save',
+			operationId: fixtureOperationId('newer-save'),
 			commands: [
 				{
-					id: 'newer-save-command',
+					id: fixtureOperationId('newer-save-command'),
 					itemId,
 					expectedCurrentChangeId: null,
 					action: { kind: 'set', optionId: 'preferred' },
@@ -331,14 +333,14 @@ describe('immutable template creation', () => {
 				id: created.id,
 				preparation: {
 					kind: 'prepared',
-					operationId: 'first-link',
+					operationId: fixtureOperationId('first-link'),
 					expectedState: {
 						stateRevision: created.contract.stateRevision,
 						documentId: created.contract.documentId,
 						documentRevision: created.contract.documentRevision
 					}
 				},
-				token: '0'.repeat(39)
+				token: 'Ab3Cd4Ef5Gh6I'
 			})
 		).rejects.toThrow('The saved contract changed.');
 		expect(await t.query(api.buyerLinks.latest, { membershipId, id: created.id })).toBeNull();
@@ -388,7 +390,7 @@ describe('immutable template creation', () => {
 			t.mutation(api.contracts.create, {
 				membershipId,
 				title: 'Buyer',
-				operationId: 'blocked'
+				operationId: fixtureOperationId('blocked')
 			})
 		).rejects.toThrow('paused');
 		await expect(
@@ -470,7 +472,7 @@ describe('immutable template creation', () => {
 					}
 				},
 				expectedContentRevision: 1,
-				operationId
+				operationId: templateOperationId
 			})
 		).resolves.toMatchObject({ status: 'rejected' });
 		expect((await t.query(api.templates.current, { membershipId }))?.versionId).toBe(first);
@@ -491,7 +493,7 @@ describe('immutable template creation', () => {
 				id: itemId,
 				item: { ...item, approvalPolicy: { kind: 'required' as const, instructions: 'Newest' } },
 				expectedContentRevision: 1,
-				operationId
+				operationId: templateOperationId
 			})
 		]);
 		expect(authoring.status).toBe('fulfilled');

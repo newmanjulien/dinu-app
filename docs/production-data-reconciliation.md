@@ -1,5 +1,7 @@
 # Production data reconciliation
 
+**Historical evidence only.** The dated observations below do not establish current populations, schema, jobs or provider obligations. They do not authorize another reset. The current incompatible release uses the [preservation cutover](backend-preservation-cutover.md); all live G01–G25 remain UNVERIFIED.
+
 **Clean reset, 2026-11-06.** Dinu development `disciplined-squid-496` and
 production `befitting-lyrebird-846` were cleared and deployed with the current
 schema and functions. Both have 22 current application tables with no documents,

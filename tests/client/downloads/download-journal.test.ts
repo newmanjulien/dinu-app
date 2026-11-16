@@ -67,7 +67,7 @@ describe('durable download acknowledgments', () => {
 			'Invalid download acknowledgment.',
 			{ code: 'DOWNLOAD_ACK_TERMINAL', message: 'Invalid attempt' }
 		];
-		for (let i = 0; i <= errors.length; i++) journalDownload(member, attemptId(i), NOW);
+		for (let i = 0; i <= errors.length; i++) journalDownload(member, attemptId(i), NOW, NOW);
 		const { client, mutation } = clientWith(async (args) => {
 			const index = errors.findIndex((_, i) => args.id === attemptId(i));
 			if (index >= 0) throw new ConvexError(errors[index]);
@@ -79,8 +79,8 @@ describe('durable download acknowledgments', () => {
 	});
 	it('filters future timestamps before the batch limit so they cannot starve valid entries', async () => {
 		const { journalDownload, flushDownloadAcks } = await load();
-		for (let i = 0; i < 30; i++) journalDownload(member, attemptId(i), NOW + 120_000);
-		journalDownload(member, attemptId(31), NOW);
+		for (let i = 0; i < 30; i++) journalDownload(member, attemptId(i), NOW + 120_000, NOW);
+		journalDownload(member, attemptId(31), NOW, NOW);
 		const { client, mutation } = clientWith();
 		await flushDownloadAcks(client, member);
 		expect(mutation.mock.calls.map(([, args]) => args.id)).toEqual([attemptId(31)]);
@@ -88,7 +88,7 @@ describe('durable download acknowledgments', () => {
 	});
 	it('persists server clock deferral across reloads without rewriting download time or blocking later entries', async () => {
 		const first = await load();
-		for (let i = 0; i < 26; i++) first.journalDownload(member, attemptId(i), NOW);
+		for (let i = 0; i < 26; i++) first.journalDownload(member, attemptId(i), NOW, NOW);
 		const rejected = clientWith(async () => {
 			throw new ConvexError({ code: 'DOWNLOAD_ACK_FUTURE', retryAfter: 120_000 });
 		});
@@ -97,6 +97,7 @@ describe('durable download acknowledgments', () => {
 		expect(JSON.parse(localStorage.getItem(prefix + attemptId(0))!)).toEqual({
 			id: attemptId(0),
 			initiatedAt: NOW,
+			releasedAt: NOW,
 			retryAt: NOW + 120_000
 		});
 		vi.resetModules();
@@ -115,8 +116,8 @@ describe('durable download acknowledgments', () => {
 	});
 	it('preserves the queue through transport and session failures, then retries after reload', async () => {
 		const first = await load();
-		first.journalDownload(member, attemptId(1), NOW - 1000);
-		first.journalDownload(member, attemptId(2), NOW);
+		first.journalDownload(member, attemptId(1), NOW - 1000, NOW);
+		first.journalDownload(member, attemptId(2), NOW, NOW);
 		const queued = { ...localStorage };
 		for (const error of [
 			new Error('Offline'),
@@ -141,7 +142,7 @@ describe('durable download acknowledgments', () => {
 	});
 	it('isolates members and deployments and preserves another tab’s per-download key', async () => {
 		const { journalDownload, flushDownloadAcks } = await load();
-		journalDownload(member, attemptId(1), NOW);
+		journalDownload(member, attemptId(1), NOW, NOW);
 		localStorage.setItem(
 			prefix + attemptId(2),
 			JSON.stringify({ id: attemptId(2), initiatedAt: NOW - 1000 })
@@ -159,7 +160,7 @@ describe('durable download acknowledgments', () => {
 	});
 	it('prevents overlapping flushes and keeps new downloads queued during an in-flight acknowledgment', async () => {
 		const { journalDownload, flushDownloadAcks } = await load();
-		journalDownload(member, attemptId(1), NOW);
+		journalDownload(member, attemptId(1), NOW, NOW);
 		let release!: (value: null) => void;
 		const pending = new Promise<null>((resolve) => {
 			release = resolve;
@@ -167,7 +168,7 @@ describe('durable download acknowledgments', () => {
 		const { client, mutation } = clientWith(() => pending);
 		const first = flushDownloadAcks(client, member);
 		await flushDownloadAcks(client, member);
-		journalDownload(member, attemptId(2), NOW);
+		journalDownload(member, attemptId(2), NOW, NOW);
 		expect(mutation).toHaveBeenCalledTimes(1);
 		release(null);
 		await first;
@@ -180,7 +181,7 @@ describe('durable download acknowledgments', () => {
 		vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
 			throw new Error('Storage disabled');
 		});
-		journalDownload(member, attemptId(1), NOW);
+		journalDownload(member, attemptId(1), NOW, NOW);
 		const { client, mutation } = clientWith();
 		await flushDownloadAcks(client, member);
 		expect(mutation.mock.calls.map(([, args]) => args.id)).toEqual([attemptId(1)]);

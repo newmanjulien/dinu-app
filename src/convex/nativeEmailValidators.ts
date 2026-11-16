@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { approvalContext } from '../lib/contract/changes';
+import { changeKind } from '../lib/contract/changes';
 import { approvalRequest } from './contractValidators';
 
 /** Bounded cursor on the original receipt; immutable entries belong to its delivery. */
@@ -18,7 +18,7 @@ export const emailPreparation = v.object({
 export const approvalRequestArgs = v.object({
 	membershipId: v.id('memberships'),
 	id: v.id('savedContracts'),
-	context: approvalContext,
+	context: changeKind,
 	expectedDocument: v.object({
 		documentId: v.id('contractDocuments'),
 		documentRevision: v.number()
@@ -30,7 +30,7 @@ export const approvalRequestArgs = v.object({
 export const confirmCompletionArgs = v.object({
 	membershipId: v.id('memberships'),
 	id: v.id('savedContracts'),
-	context: approvalContext,
+	context: changeKind,
 	expectedIdentity: v.string(),
 	token: v.optional(v.string()),
 	operationId: v.string(),

@@ -24,6 +24,15 @@ type CommonSourceInput =
 export type DocumentSourceInput = CommonSourceInput &
 	(
 		| {
+				kind: 'prose';
+				contract?: false;
+				items?: never;
+				structure?: never;
+				details?: never;
+				pendingRenderKey?: never;
+				overlays?: never;
+		  }
+		| {
 				kind: 'records';
 				items: QueryValue<DeepReadonly<DocumentItemRecord[]>>;
 				structure?: never;
@@ -52,6 +61,8 @@ export type DocumentSourceInput = CommonSourceInput &
 /** Workspace-owned source semantics. Query failures retain accepted data. */
 export class DocumentSourceController {
 	itemsCurrent = $state(false);
+	renderReady = $state(false);
+	private projectionIdentity?: string;
 	compactStructure = $state(false);
 	items = $state.raw<DeepReadonly<ResolvedContractItem[]> | null>(null);
 	structuralItems = $state.raw<DeepReadonly<StructureItem<ContractItemId>[]> | null>(null);
@@ -142,7 +153,9 @@ export class DocumentSourceController {
 					: undefined;
 		const projectionReady =
 			input.kind === 'overlays' ||
-			(input.kind === 'records' ? Boolean(input.items.data) : input.structure.data?.ready);
+			(input.kind === 'records'
+				? Boolean(input.items.data)
+				: input.kind === 'structure' && input.structure.data?.ready);
 		// Refresh/error inputs retain accepted geometry, artifacts and pages.
 		if (input.contract && (!materialized || !projectionReady || blocks.error || itemError)) {
 			this.itemsCurrent = false;
@@ -152,8 +165,24 @@ export class DocumentSourceController {
 					: null;
 			return;
 		}
-		const rollback = input.contract ? this.domain.checkpoint() : undefined;
-		this.compactStructure = input.kind === 'structure';
+		// No partial prose/projection publication: errors leave the previous coherent display intact.
+		if (!blocks.data || blocks.error || itemError) {
+			this.itemsCurrent = false;
+			this.issue =
+				blocks.error || itemError
+					? { blocksFailed: Boolean(blocks.error), itemsFailed: Boolean(itemError) }
+					: null;
+			return;
+		}
+		const rollback = this.domain.checkpoint();
+		const projectionIdentity =
+			input.kind === 'structure' && input.structure.data?.ready
+				? JSON.stringify([
+						input.structure.data.templateSourceId,
+						input.structure.data.templateSourceFingerprint
+					])
+				: undefined;
+		const clear = input.kind === 'prose' || projectionIdentity !== this.projectionIdentity;
 		let blocksFailed = Boolean(blocks.error),
 			itemsFailed = Boolean(
 				input.kind === 'structure'
@@ -171,6 +200,13 @@ export class DocumentSourceController {
 				);
 			} catch {
 				blocksFailed = true;
+			}
+		}
+		if (!blocksFailed && clear) {
+			try {
+				this.domain.clearProjection();
+			} catch {
+				itemsFailed = true;
 			}
 		}
 		if (input.kind === 'overlays') {
@@ -194,7 +230,7 @@ export class DocumentSourceController {
 				itemsFailed = true;
 			}
 		}
-		if (rollback && (blocksFailed || itemsFailed)) {
+		if (blocksFailed || itemsFailed) {
 			rollback();
 			this.itemsCurrent = false;
 			this.issue = { blocksFailed, itemsFailed };
@@ -204,13 +240,18 @@ export class DocumentSourceController {
 			if (this.materialized?.document !== materialized?.document) this.contentKey = '';
 			this.materialized = materialized;
 		}
+		this.projectionIdentity = projectionIdentity;
+		this.compactStructure = input.kind === 'structure';
+		if (clear) this.selection = {};
 		this.itemsCurrent =
 			Boolean(
 				input.kind === 'overlays'
 					? true
 					: input.kind === 'structure'
 						? input.structure.data?.ready
-						: input.items.data
+						: input.kind === 'records'
+							? input.items.data
+							: false
 			) && !itemsFailed;
 		this.issue = blocksFailed || itemsFailed ? { blocksFailed, itemsFailed } : null;
 		this.compiled = this.domain.document;
@@ -221,5 +262,6 @@ export class DocumentSourceController {
 		this.annotations = this.domain.overlays;
 		this.contentOverlays = this.domain.contentOverlays;
 		this.refreshContent();
+		this.renderReady = Boolean(this.renderSource);
 	}
 }

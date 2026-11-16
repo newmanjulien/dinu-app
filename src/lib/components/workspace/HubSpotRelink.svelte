@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { createOperationId } from '$lib/contract/operation-identity';
+	import { assertOperationRetryable, isOperationRecovery } from '$lib/contract/operation-recovery';
 	import { untrack } from 'svelte';
 	import { useConvexClient } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
@@ -50,11 +52,12 @@
 		if (!request) {
 			const expectedConnectionId = connection.data?.connectionId;
 			if (!selected || !selectionEligible || !expectedConnectionId) return;
-			request = { operationId: crypto.randomUUID(), dealId: selected.id, expectedConnectionId };
+			request = { operationId: createOperationId(), dealId: selected.id, expectedConnectionId };
 		}
 		busy = true;
 		error = null;
 		try {
+			assertOperationRetryable(request.operationId);
 			const result = await client.action(api.hubspotDeals.link, {
 				membershipId: viewer().membership.id,
 				contractId,

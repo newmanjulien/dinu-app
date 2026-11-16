@@ -91,7 +91,7 @@
 						>
 					</p>
 				{:else}
-					<CsmBookingSkeleton description={content.scheduling} month={current.initial.month} />
+					<CsmBookingSkeleton description={content.scheduling} initial={current.initial} />
 				{/if}
 			{/key}
 		{/if}

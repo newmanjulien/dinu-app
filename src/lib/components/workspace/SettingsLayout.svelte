@@ -5,12 +5,30 @@
 		settingsFields as fields,
 		type SettingsField
 	} from '$lib/features/settings/settings-fields';
+	import type { WorkspacePresentation } from '$lib/auth/workspace-hints-storage';
 	import SettingsCardPlaceholder from '$lib/features/settings/SettingsCardPlaceholder.svelte';
 	let {
 		role,
 		editCompanyProfile = role === 'admin',
+		presentation,
+		email,
+		approvalEmail,
 		field
-	}: { role?: Role; editCompanyProfile?: boolean; field?: Snippet<[SettingsField]> } = $props();
+	}: {
+		role?: Role;
+		editCompanyProfile?: boolean;
+		presentation?: WorkspacePresentation;
+		email?: string;
+		approvalEmail?: string | null;
+		field?: Snippet<[SettingsField]>;
+	} = $props();
+	const values = $derived({
+		name: presentation?.name,
+		email,
+		companyName: presentation?.companyName,
+		approvalEmail: approvalEmail ?? undefined,
+		role: role === 'admin' ? 'Admin' : role === 'rep' ? 'Rep' : undefined
+	});
 	const cards = $derived([
 		fields.name,
 		fields.email,
@@ -33,7 +51,15 @@
 	<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 md:gap-7">
 		<h1 class="text-lg font-medium">Settings</h1>
 		{#each cards as card (card.id)}
-			{#if field}{@render field(card)}{:else}<SettingsCardPlaceholder {card} />{/if}
+			{#if field}{@render field(card)}{:else}<SettingsCardPlaceholder
+					{card}
+					value={card.id in values ? values[card.id as keyof typeof values] : undefined}
+					profile={card.id === 'avatar' && presentation?.name !== undefined
+						? { name: presentation.name, avatarUrl: presentation.avatarUrl ?? null }
+						: card.id === 'companyAvatar' && presentation?.companyName !== undefined
+							? { name: presentation.companyName, avatarUrl: presentation.companyAvatarUrl ?? null }
+							: undefined}
+				/>{/if}
 		{/each}
 	</div>
 </section>

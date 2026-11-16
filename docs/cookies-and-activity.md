@@ -72,9 +72,7 @@ Each visit and its page openings/children expire logically 30 days after the vis
 later clicks never extend that deadline. Trusted-clock seller reads and write
 admission enforce expiry. Indexed daily cleanup physically retires expired rows in
 bounded batches. Contract/company deletion removes all activity and limiter owners.
-Current account-linked openings, receipts and historical clause memberships, as well
-as legacy account-linked events/projections, are removed during account deletion even
-when the company survives. Discussion content follows its separate ownership policy.
+Current account-linked openings and receipt children are removed during account deletion even when the company survives. Retired raw/membership populations must be cleared under preserved old code before strict release; the final runtime contains no legacy drains. Discussion content follows its separate ownership policy.
 
 Delivery uses bounded memory only (50 queued events, four attempts, two-minute age),
 stable IDs, 429 Retry-After handling and a small keepalive departure flush. Switching
@@ -111,8 +109,7 @@ historical opening rows are preserved; the grouping applies to new openings.
 Inventory the
 explicitly selected deployment before release; confirm schema/HTTP contracts and
 [legacy retirement](link-activity-removal.md). Preserve anonymous discussion ownership
-before retiring old cookie compatibility. Keep scheduled-function/deletion-phase
-compatibility until all supported deployments have completed cleanup.
+before retiring old cookie compatibility. The strict source removes old callback/deletion-phase admission in advance. Require all G01–G25 clearance before deployment, including old scheduled-writer fences and actual current-activity erasure catch-up for already-advanced markers. No live emptiness or cleanup is inferred.
 
 Manually check:
 

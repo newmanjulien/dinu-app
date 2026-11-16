@@ -1,6 +1,10 @@
 import { DocumentCompositionEngine, type CompositionInput } from './compose';
 import { canonicalJson } from './canonical-json';
-import type { CompositionArtifactStore, CompositionRequest } from './composition-artifacts';
+import {
+	createCompositionRequest,
+	type CompositionArtifactStore,
+	type CompositionRequest
+} from './composition-artifacts';
 import type { ContractDocument, PieceLineage } from './contract-document';
 import type { ResolvedBlock, ResolvedRun, SourceBlock } from './model';
 import type { SourceIndex } from './source-index';
@@ -111,8 +115,6 @@ const referenceKeys = (blocks: readonly SourceBlock[]) =>
 /** Actual wording is the input. Selections mark annotations; they never reconstruct wording. */
 export class ContractDocumentCompositionEngine extends DocumentCompositionEngine {
 	private readonly pieces: ReadonlyMap<string, PieceLineage>;
-	private baselineResolved?: readonly ResolvedBlock[];
-	private readonly resolved = new WeakMap<ResolvedBlock, ResolvedBlock>();
 	private readonly suppressed = new WeakMap<CompositionInput['items'], CompositionInput['items']>();
 	constructor(
 		private readonly document: ContractDocument,
@@ -121,12 +123,19 @@ export class ContractDocumentCompositionEngine extends DocumentCompositionEngine
 		artifacts?: CompositionArtifactStore
 	) {
 		super(document.blocks, index, artifacts, new Map(document.aliases));
+		artifacts?.useSource(document.blocks, baseline);
 		this.pieces = new Map(document.pieces.map((piece) => [piece.sourceKey, piece]));
 	}
-	private provenance(block: ResolvedBlock): ResolvedBlock {
+	private provenance(block: ResolvedBlock, request: CompositionRequest): ResolvedBlock {
 		if (block.kind === 'table') return block;
-		const cached = this.resolved.get(block);
-		if (cached) return cached;
+		const dependency = request.reference(block);
+		const key = canonicalJson([
+			'contract-provenance',
+			dependency?.id ?? block,
+			block.content.map((run) => run.source && this.pieces.get(run.source.start.sourceKey)?.origin)
+		]);
+		const cached = request.getBlock(key);
+		if (cached) return cached.value;
 		const result: ResolvedBlock = {
 			...block,
 			content: block.content.map((run) => {
@@ -147,40 +156,48 @@ export class ContractDocumentCompositionEngine extends DocumentCompositionEngine
 				};
 			})
 		};
-		this.resolved.set(block, result);
-		return result;
+		return request.putBlock(key, result, dependency ? [dependency] : []).value;
 	}
 	*iterate(
 		input: CompositionInput,
 		working?: CompositionRequest
 	): Generator<ResolvedBlock | undefined, void> {
-		let items = this.suppressed.get(input.items);
-		if (!items) {
-			items = input.items.map((item) => ({
-				...item,
-				concessions: item.concessions.map((choice) => ({
-					...choice,
-					changes: choice.changes.map((change) => ({ ...change, suppressed: true }))
-				}))
-			}));
-			this.suppressed.set(input.items, items);
-		}
-		const current: ResolvedBlock[] = [];
-		for (const block of super.iterate({ ...input, items, view: 'effective' }, working)) {
-			if (!block) {
-				yield undefined;
-				continue;
+		const request = working ?? createCompositionRequest(this.artifacts);
+		try {
+			let items = this.suppressed.get(input.items);
+			if (!items) {
+				items = input.items.map((item) => ({
+					...item,
+					concessions: item.concessions.map((choice) => ({
+						...choice,
+						changes: choice.changes.map((change) => ({ ...change, suppressed: true }))
+					}))
+				}));
+				this.suppressed.set(input.items, items);
 			}
-			const resolved = this.provenance(block);
-			if (input.view === 'effective') yield resolved;
-			else current.push(resolved);
+			const current: ResolvedBlock[] = [];
+			for (const block of super.iterate({ ...input, items, view: 'effective' }, request)) {
+				if (!block) {
+					yield undefined;
+					continue;
+				}
+				const resolved = this.provenance(block, request);
+				if (input.view === 'effective') yield resolved;
+				else current.push(resolved);
+			}
+			if (input.view === 'effective') return;
+			const original = yield* this.original(request);
+			yield* this.redline(original, current, request);
+		} finally {
+			if (!working) request.release();
 		}
-		if (input.view === 'effective') return;
-		const original = yield* this.original();
-		yield* this.redline(original, current);
 	}
-	private *original(): Generator<undefined, readonly ResolvedBlock[]> {
-		if (this.baselineResolved) return this.baselineResolved;
+	private *original(request: CompositionRequest): Generator<undefined, readonly ResolvedBlock[]> {
+		// The source-owned store binds this immutable baseline, avoiding a full-document
+		// serialization on the cooperative rendering path. One-shot requests are local.
+		const key = 'contract-baseline';
+		const cached = request.getBlocks(key);
+		if (cached) return cached.value;
 		const original: ResolvedBlock[] = [];
 		for (const block of new DocumentCompositionEngine(this.baseline).iterate({
 			items: [],
@@ -189,16 +206,15 @@ export class ContractDocumentCompositionEngine extends DocumentCompositionEngine
 		})) {
 			if (block) original.push(block);
 			yield undefined;
-			// A concurrent iteration may have completed while this one yielded.
-			if (this.baselineResolved) return this.baselineResolved;
 		}
-		// Iterator-local work is discarded on cancellation; only completed output is retained.
-		this.baselineResolved = original;
-		return original;
+		// Publish only completed output; canceled iterations retain no partial group.
+		return request.putBlocks(key, original).value;
 	}
+
 	private *redline(
 		original: readonly ResolvedBlock[],
-		current: ResolvedBlock[]
+		current: ResolvedBlock[],
+		request: CompositionRequest
 	): Generator<ResolvedBlock | undefined> {
 		// Origins connect split/merged paragraphs. Matching is bounded within those groups,
 		// so repeated wording elsewhere cannot become an alignment anchor.
@@ -275,93 +291,130 @@ export class ContractDocumentCompositionEngine extends DocumentCompositionEngine
 			}
 		const originalAtoms = referenceKeys(this.baseline),
 			currentAtoms = referenceKeys(this.document.blocks);
+		const references = (blocks: readonly ResolvedBlock[], atoms: ReadonlyMap<string, string>) =>
+			blocks.flatMap((block) =>
+				block.kind === 'table'
+					? []
+					: block.content.flatMap((run) =>
+							run.sourceKind === 'reference' ? [atoms.get(run.source?.start.sourceKey ?? '')] : []
+						)
+			);
 		for (const key of sequence) {
 			const value = groups.get(key)!;
 			if (value.current[0]?.kind === 'table') {
 				yield value.current[0];
 				continue;
 			}
-			const before = value.original.filter(
-				(block): block is Paragraph => block.kind === 'paragraph'
-			);
-			const after = value.current.filter((block): block is Paragraph => block.kind === 'paragraph');
-			if (!before.length) {
-				for (const block of after)
-					yield { ...block, content: block.content.map((run) => ({ ...run, revision: 'added' })) };
-				continue;
-			}
-			if (!after.length) {
-				for (const block of before)
-					yield {
-						...block,
-						discussionRemoved: true,
-						content: block.content.map((run) => ({ ...run, revision: 'removed' }))
-					};
-				continue;
-			}
-			const a = yield* tokens(before, originalAtoms),
-				b = yield* tokens(after, currentAtoms);
-			const parts = (yield* iterateRedlineDiff(a, b)) ?? [
-				{
-					kind: 'delete' as const,
-					sourceStart: 0,
-					sourceEnd: a.length,
-					replacementStart: 0,
-					replacementEnd: 0
-				},
-				{
-					kind: 'insert' as const,
-					sourceStart: a.length,
-					sourceEnd: a.length,
-					replacementStart: 0,
-					replacementEnd: b.length
-				}
-			];
-			let paragraph = after[0],
-				content: ResolvedRun[] = [];
-			const emitted = new Set<string>();
-			const output = (): Paragraph => {
-				const blockKey = emitted.has(paragraph.blockKey)
-					? `redline:${paragraph.blockKey}:${emitted.size}`
-					: paragraph.blockKey;
-				emitted.add(blockKey);
-				return { ...paragraph, blockKey, content };
-			};
-			for (const part of parts) {
-				const deletion = part.kind === 'delete';
-				const selected = deletion
-					? a.slice(part.sourceStart, part.sourceEnd)
-					: b.slice(part.replacementStart, part.replacementEnd);
-				for (const token of selected) {
-					if (!token.runs) {
-						if (deletion) continue;
-						yield output();
-						content = [];
-						paragraph = after[after.indexOf(token.paragraph) + 1] ?? paragraph;
-					} else {
-						for (const run of token.runs) {
-							const previous = content.at(-1);
-							if (
-								previous?.revision === 'removed' &&
-								part.kind === 'insert' &&
-								/[\p{L}\p{N}\p{M}\p{S}]$/u.test(previous.text) &&
-								/^[\p{L}\p{N}\p{M}\p{S}]/u.test(run.text)
-							)
-								content.push({ text: ' ', generated: 'separator' });
-							content.push({
-								...run,
-								...(deletion
-									? { revision: 'removed' as const }
-									: part.kind === 'insert'
-										? { revision: 'added' as const }
-										: {})
-							});
-						}
-					}
-					yield undefined;
-				}
-			}
-			if (content.length) yield output();
+			const dependencies = [...value.original, ...value.current].flatMap((block) => {
+				const artifact = request.reference(block);
+				return artifact ? [artifact] : [];
+			});
+			const groupKey = canonicalJson([
+				'contract-redline',
+				value.original.map((block) => [request.reference(block)?.id, block.blockKey]),
+				value.current.map((block) => [request.reference(block)?.id, block.blockKey]),
+				references(value.original, originalAtoms),
+				references(value.current, currentAtoms)
+			]);
+			let artifact = request.getBlocks(groupKey);
+			if (!artifact)
+				artifact = request.putBlocks(
+					groupKey,
+					yield* this.redlineGroup(value.original, value.current, originalAtoms, currentAtoms),
+					dependencies
+				);
+			for (const block of artifact.value) yield block;
 		}
+	}
+	private *redlineGroup(
+		original: readonly ResolvedBlock[],
+		current: readonly ResolvedBlock[],
+		originalAtoms: ReadonlyMap<string, string>,
+		currentAtoms: ReadonlyMap<string, string>
+	): Generator<undefined, ResolvedBlock[]> {
+		const result: ResolvedBlock[] = [];
+		const before = original.filter((block): block is Paragraph => block.kind === 'paragraph');
+		const after = current.filter((block): block is Paragraph => block.kind === 'paragraph');
+		if (!before.length) {
+			for (const block of after)
+				result.push({
+					...block,
+					content: block.content.map((run) => ({ ...run, revision: 'added' }))
+				});
+			return result;
+		}
+		if (!after.length) {
+			for (const block of before)
+				result.push({
+					...block,
+					discussionRemoved: true,
+					content: block.content.map((run) => ({ ...run, revision: 'removed' }))
+				});
+			return result;
+		}
+		const a = yield* tokens(before, originalAtoms),
+			b = yield* tokens(after, currentAtoms);
+		const parts = (yield* iterateRedlineDiff(a, b)) ?? [
+			{
+				kind: 'delete' as const,
+				sourceStart: 0,
+				sourceEnd: a.length,
+				replacementStart: 0,
+				replacementEnd: 0
+			},
+			{
+				kind: 'insert' as const,
+				sourceStart: a.length,
+				sourceEnd: a.length,
+				replacementStart: 0,
+				replacementEnd: b.length
+			}
+		];
+		let paragraph = after[0],
+			content: ResolvedRun[] = [];
+		const emitted = new Set<string>();
+		const output = (): Paragraph => {
+			const blockKey = emitted.has(paragraph.blockKey)
+				? `redline:${paragraph.blockKey}:${emitted.size}`
+				: paragraph.blockKey;
+			emitted.add(blockKey);
+			return { ...paragraph, blockKey, content };
+		};
+		for (const part of parts) {
+			const deletion = part.kind === 'delete';
+			const selected = deletion
+				? a.slice(part.sourceStart, part.sourceEnd)
+				: b.slice(part.replacementStart, part.replacementEnd);
+			for (const token of selected) {
+				if (!token.runs) {
+					if (deletion) continue;
+					result.push(output());
+					content = [];
+					paragraph = after[after.indexOf(token.paragraph) + 1] ?? paragraph;
+				} else {
+					for (const run of token.runs) {
+						const previous = content.at(-1);
+						if (
+							previous?.revision === 'removed' &&
+							part.kind === 'insert' &&
+							/[\p{L}\p{N}\p{M}\p{S}]$/u.test(previous.text) &&
+							/^[\p{L}\p{N}\p{M}\p{S}]/u.test(run.text)
+						)
+							content.push({ text: ' ', generated: 'separator' });
+						content.push({
+							...run,
+							...(deletion
+								? { revision: 'removed' as const }
+								: part.kind === 'insert'
+									? { revision: 'added' as const }
+									: {})
+						});
+					}
+				}
+				yield undefined;
+			}
+		}
+		if (content.length) result.push(output());
+		return result;
 	}
 }

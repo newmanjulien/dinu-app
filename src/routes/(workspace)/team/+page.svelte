@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { useWorkspaceReadSnapshots } from '$lib/auth/workspace-read-snapshots.svelte';
+	import type { WorkspaceReadRows } from '$lib/auth/workspace-read-storage';
 	import TeamLayout from '$lib/components/workspace/TeamLayout.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { page } from '$app/state';
@@ -17,6 +19,7 @@
 	const client = useConvexClient();
 	const session = useViewerSession();
 	const viewer = useViewer();
+	const reads = useWorkspaceReadSnapshots();
 	const returnTo = $derived(page.url.searchParams.get('returnTo'));
 	const invitationReturn = $derived(
 		returnTo && new URL(localReturn(returnTo), page.url).pathname === '/invitation'
@@ -26,9 +29,12 @@
 	const membershipId = viewer().membership.id;
 	const canManage = $derived(viewer().permissions.manageMembers);
 	const isOwner = $derived(viewer().membership.isOwner);
-	let now = $state(Math.floor(Date.now() / 60_000) * 60_000);
+	let now = $state(Date.now());
 	onMount(() => {
-		const timer = setInterval(() => (now = Math.floor(Date.now() / 60_000) * 60_000), 60_000);
+		now = Date.now();
+		void reads?.hydrate('colleagues');
+		if (canManage) void reads?.hydrate('invitations');
+		const timer = setInterval(() => (now = Date.now()), 60_000);
 		return () => clearInterval(timer);
 	});
 	let colleaguesRetry = $state(0),
@@ -51,6 +57,64 @@
 		},
 		{ initialNumItems: 50 }
 	);
+	let colleaguePage = $state.raw<WorkspaceReadRows['colleagues']>();
+	let invitationPage = $state.raw<WorkspaceReadRows['invitations']>();
+	// Paging keeps the historical first page; merged results never replace that snapshot.
+	let colleaguesPaged = false;
+	let invitationsPaged = false;
+	$effect(() => {
+		if (colleagues.error) {
+			untrack(() => {
+				colleaguePage = undefined;
+				reads?.invalidate('colleagues');
+			});
+			return;
+		}
+		if (colleagues.status === 'LoadingFirstPage') return;
+		const rows = colleagues.results;
+		const hasMore = colleagues.status !== 'Exhausted';
+		untrack(() => {
+			colleaguePage = rows;
+			if (!colleaguesPaged) reads?.confirm('colleagues', rows, hasMore);
+		});
+	});
+	$effect(() => {
+		if (!canManage || invitations.error) {
+			untrack(() => {
+				invitationPage = undefined;
+				reads?.invalidate('invitations');
+			});
+			return;
+		}
+		untrack(() => void reads?.hydrate('invitations'));
+		if (invitations.status === 'LoadingFirstPage') return;
+		const rows = invitations.results;
+		const hasMore = invitations.status !== 'Exhausted';
+		untrack(() => {
+			invitationPage = rows;
+			if (!invitationsPaged) reads?.confirm('invitations', rows, hasMore);
+		});
+	});
+	const colleagueRows = $derived(
+		colleagues.error ? [] : (colleaguePage ?? reads?.get('colleagues')?.rows ?? [])
+	);
+	const invitationRows = $derived(
+		!canManage || invitations.error ? [] : (invitationPage ?? reads?.get('invitations')?.rows ?? [])
+	);
+	const colleaguesCurrent = $derived(!colleagues.error && colleagues.status !== 'LoadingFirstPage');
+	const invitationsCurrent = $derived(
+		canManage && !invitations.error && invitations.status !== 'LoadingFirstPage'
+	);
+	function loadMoreColleagues() {
+		if (!colleaguesCurrent || colleagues.status !== 'CanLoadMore') return;
+		colleaguesPaged = true;
+		colleagues.loadMore(50);
+	}
+	function loadMoreInvitations() {
+		if (!invitationsCurrent || invitations.status !== 'CanLoadMore') return;
+		invitationsPaged = true;
+		invitations.loadMore(50);
+	}
 	$effect(() => {
 		void colleaguesRetry;
 		void session.transportGeneration;
@@ -73,14 +137,14 @@
 	});
 	const colleaguesLoading = $derived(
 		colleagues.status === 'LoadingFirstPage' &&
-			!colleagues.results.length &&
+			!colleagueRows.length &&
 			!colleagues.error &&
 			!colleaguesTimedOut
 	);
 	const invitationsLoading = $derived(
 		canManage &&
 			invitations.status === 'LoadingFirstPage' &&
-			!invitations.results.length &&
+			!invitationRows.length &&
 			!invitations.error &&
 			!invitationsTimedOut
 	);
@@ -101,6 +165,7 @@
 		error = '';
 		try {
 			await action();
+			reads?.invalidate('colleagues', 'invitations');
 			if (alive) confirmAction = undefined;
 		} catch (e) {
 			if (alive) error = e instanceof Error ? e.message : 'Unable to update your company.';
@@ -150,6 +215,7 @@
 		emailInput = emails.join(', ');
 		try {
 			const result = await client.action(api.invitationEmail.invite, { membershipId, emails });
+			reads?.invalidate('invitations');
 			if (!alive) return;
 			if (session.blocked || !canManage || generation !== session.transportGeneration)
 				throw new Error('Your connection changed. Please try again.');
@@ -204,7 +270,7 @@
 			<TeamRowsSkeleton {canManage} />
 		{:else}
 			<TeamListLayout>
-				{#each colleagues.error ? [] : colleagues.results as person (person.membershipId)}
+				{#each colleagueRows as person (person.membershipId)}
 					<TeamRowLayout>
 						{#snippet avatar()}<Avatar
 								name={person.name || person.email}
@@ -225,7 +291,7 @@
 							{#if isOwner && !person.isOwner}
 								<Button
 									variant="ghost"
-									disabled={busy || session.blocked}
+									disabled={busy || session.blocked || !colleaguesCurrent}
 									onclick={() =>
 										(confirmAction = {
 											message: `Transfer company ownership to ${person.name || person.email}? They will manage company ownership.`,
@@ -240,7 +306,7 @@
 							{#if canManage && !person.isOwner && person.membershipId !== membershipId}
 								<Button
 									variant="ghost"
-									disabled={busy || session.blocked}
+									disabled={busy || session.blocked || !colleaguesCurrent}
 									onclick={() =>
 										(confirmAction = {
 											message: `Remove ${person.name || person.email} from your company? Their contracts will stay with the company.`,
@@ -262,9 +328,8 @@
 					>Try again</button
 				>
 			</p>{/if}
-		{#if colleagues.status === 'CanLoadMore'}<Button
-				variant="ghost"
-				onclick={() => colleagues.loadMore(50)}>Load more colleagues</Button
+		{#if colleagues.status === 'CanLoadMore'}<Button variant="ghost" onclick={loadMoreColleagues}
+				>Load more colleagues</Button
 			>{/if}
 	{/snippet}
 	{#snippet invitationsContent()}
@@ -272,7 +337,7 @@
 			<TeamRowsSkeleton invitations />
 		{:else}
 			<TeamListLayout>
-				{#each invitations.error ? [] : invitations.results as invitation (invitation.id)}
+				{#each invitationRows as invitation (invitation.id)}
 					<TeamRowLayout invitations>
 						{#snippet identity()}
 							<p class="text-sm">{invitation.email}</p>
@@ -289,7 +354,7 @@
 						{#snippet actions()}
 							<Button
 								variant="secondary"
-								disabled={busy || session.blocked}
+								disabled={busy || session.blocked || !invitationsCurrent}
 								onclick={() =>
 									run(async () => {
 										const [delivery] = await client.action(api.invitationEmail.invite, {
@@ -302,7 +367,7 @@
 							>
 							<Button
 								variant="ghost"
-								disabled={busy || session.blocked}
+								disabled={busy || session.blocked || !invitationsCurrent}
 								onclick={() =>
 									run(() =>
 										client.mutation(api.companyInvitations.revoke, {
@@ -325,9 +390,8 @@
 					>Try again</button
 				>
 			</p>{/if}
-		{#if invitations.status === 'CanLoadMore'}<Button
-				variant="ghost"
-				onclick={() => invitations.loadMore(50)}>Load more invitations</Button
+		{#if invitations.status === 'CanLoadMore'}<Button variant="ghost" onclick={loadMoreInvitations}
+				>Load more invitations</Button
 			>{/if}
 	{/snippet}
 	{#snippet afterLists()}

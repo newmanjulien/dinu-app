@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 import { contract, headsAfter, template, draft, controllers, settle, fixture } from './fixtures';
 import { getFunctionName } from 'convex/server';
 import { describe, expect, it, vi } from 'vitest';
@@ -58,7 +59,7 @@ describe('recovery and account exits', () => {
 	it('retains immutable journal operation and command IDs through failed initialization, logout and retry', async () => {
 		vi.useFakeTimers();
 		const recovery = draft();
-		recovery.commands[0].id = 'original-command-identity';
+		recovery.commands[0].id = fixtureOperationId('original-command-identity');
 		recovery.request!.commands = structuredClone(recovery.commands);
 		new DraftJournal('user', 'contract-a', 'membership').write(recovery);
 		const f = fixture({ approval: true, read: false });
@@ -72,14 +73,16 @@ describe('recovery and account exits', () => {
 		expect(f.feedback.statusFor('contract-a')).toBe('Save failed');
 		expect(f.active()).toBe(0);
 		expect(new DraftJournal('user', 'contract-a', 'membership').read()?.request?.operationId).toBe(
-			'original-operation'
+			fixtureOperationId('original-operation')
 		);
 		f.setRead(true);
 		f.aggregate.retry();
 		await settle();
 		expect(f.writes).toHaveLength(1);
-		expect(f.writes[0].request.operationId).toBe('original-operation');
-		expect(f.writes[0].request.commands[0].id).toBe('original-command-identity');
+		expect(f.writes[0].request.operationId).toBe(fixtureOperationId('original-operation'));
+		expect(f.writes[0].request.commands[0].id).toBe(
+			fixtureOperationId('original-command-identity')
+		);
 		expect(f.writes[0].request.commands[0]).toEqual(recovery.commands[0]);
 		expect(f.owner.entries[0].snapshot).toBeUndefined();
 		f.ack();

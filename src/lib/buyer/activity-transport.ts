@@ -1,7 +1,7 @@
 import { v, type Infer } from 'convex/values';
 import { parse } from 'convex-helpers/validators';
 import { readTextBody } from '../http-body';
-import { isBuyerToken } from './token';
+import { isBuyerCode } from './token';
 import { validTrackingId } from './tracking';
 
 export const activityRequest = v.union(
@@ -32,7 +32,7 @@ type BuyerActivityRequest = Infer<typeof activityRequest>;
 /** Shape validation is shared with Convex; access remains authoritative at intake. */
 export function validActivity(request: BuyerActivityRequest) {
 	return (
-		isBuyerToken(request.token) &&
+		isBuyerCode(request.token) &&
 		validTrackingId(request.browserId) &&
 		validTrackingId(request.openingId) &&
 		(request.kind !== 'clause' ||

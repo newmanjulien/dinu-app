@@ -27,7 +27,7 @@ export type PieceLineage = {
 	/** Frozen-original ranges for presentation grouping and deleted-text geometry only. */
 	originalRanges?: OriginInterval[];
 	createdBy?: string;
-	annotationKind?: 'playbook' | 'buyer-proposal';
+	annotationKind?: 'playbook' | 'buyer-link';
 };
 type AnnotationEffect = {
 	id: string;
@@ -134,7 +134,7 @@ type StructuralPatch = {
 /** Payload is immutable. Lifecycle, review decisions and current intent live outside it. */
 export type DocumentChange = {
 	id: string;
-	annotationKind?: 'playbook' | 'buyer-proposal';
+	annotationKind?: 'playbook' | 'buyer-link';
 	dependencies: string[];
 	parts: (TextPatch | StructuralPatch)[];
 	aliasesBefore: [string, string][];
@@ -592,6 +592,7 @@ function materialize(
 ): ContractDocument {
 	const source = documentIndex(document),
 		item: DocumentOverlayItem = {
+			audience: 'rep',
 			itemId: id,
 			trigger: { id, target: changes[0].target },
 			annotations: [],
@@ -887,7 +888,7 @@ function apply(
 		if (piece.createdBy === patch.id && patch.annotationKind)
 			piece.annotationKind = patch.annotationKind;
 	if (reverse) effects.delete(patch.id);
-	else if (patch.annotationKind === 'buyer-proposal' && structuralBlocks.size)
+	else if (patch.annotationKind === 'buyer-link' && structuralBlocks.size)
 		effects.set(patch.id, {
 			id: patch.id,
 			structuralBlocks: [...structuralBlocks],

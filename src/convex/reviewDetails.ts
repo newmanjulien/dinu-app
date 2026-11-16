@@ -7,7 +7,8 @@ import { seller } from './contractState';
 import { changeHead } from './contractChanges';
 import { requireNativeReachability } from './nativeStage';
 import { decodeContractDocumentChunks, assertContractDocumentManifest } from './contractDocuments';
-import { changeKind, changeReview } from '../lib/contract/changes';
+import { changeReview } from '../lib/contract/changes';
+import { storedContractChangeHead } from './contractChangeValidators';
 import type { DocumentChange } from '../lib/document/contract-document';
 import { canonicalJson } from '../lib/document/canonical-json';
 import { reviewOf } from './reviews';
@@ -18,30 +19,17 @@ const detailArgs = {
 	changeId: v.id('contractChanges'),
 	documentId: v.id('contractDocuments')
 };
-const fence = v.object({
-	kind: changeKind,
-	key: v.string(),
-	currentChangeId: v.union(v.id('contractChanges'), v.null()),
-	appliedChangeId: v.union(v.id('contractChanges'), v.null()),
-	currentDecisionId: v.union(v.id('contractChangeDecisions'), v.null()),
-	appliedDecisionId: v.union(v.id('contractChangeDecisions'), v.null()),
-	admin: v.boolean()
-});
+const fence = v.object({ head: storedContractChangeHead, admin: v.boolean() });
 type DetailArgs = {
 	membershipId: Id<'memberships'>;
 	id: Id<'savedContracts'>;
 	changeId: Id<'contractChanges'>;
 	documentId: Id<'contractDocuments'>;
 };
-const headFence = (row: Doc<'contractChangeHeads'>, admin: boolean) => ({
-	kind: row.kind,
-	key: row.key,
-	currentChangeId: row.currentChangeId ?? null,
-	appliedChangeId: row.appliedChangeId ?? null,
-	currentDecisionId: row.currentDecisionId ?? null,
-	appliedDecisionId: row.appliedDecisionId ?? null,
-	admin
-});
+const headFence = (row: Doc<'contractChangeHeads'>, admin: boolean) => {
+	const { _id, _creationTime, ...head } = row;
+	return { head, admin };
+};
 async function sourceState(ctx: QueryCtx, args: DetailArgs) {
 	const { access, contract } = await seller(ctx, args);
 	if (contract.root.documentId !== args.documentId) return null;
@@ -97,7 +85,7 @@ export const page = internalQuery({
 		const head = await ctx.db
 			.query('contractChangeHeads')
 			.withIndex('by_contractId_and_kind_and_key', (q) =>
-				q.eq('contractId', args.id).eq('kind', args.fence.kind).eq('key', args.fence.key)
+				q.eq('contractId', args.id).eq('kind', args.fence.head.kind).eq('key', args.fence.head.key)
 			)
 			.unique();
 		if (
@@ -127,7 +115,7 @@ export const page = internalQuery({
 				throw new Error('Review document page is incomplete.');
 			return rows as Doc<'contractDocumentChunks'>[];
 		}
-		if (![head.currentChangeId, head.appliedChangeId].includes(args.changeId)) return null;
+		if (![head.current?.changeId, head.applied?.changeId].includes(args.changeId)) return null;
 		const change = await ctx.db.get('contractChanges', args.changeId);
 		if (
 			!change ||
@@ -227,8 +215,7 @@ export const detail = action({
 			canonicalJson(final.fence) !== canonicalJson(state.fence) ||
 			final.current?._id !== state.current?._id ||
 			final.applied?._id !== state.applied?._id ||
-			final.head.currentDecisionId !== state.head.currentDecisionId ||
-			final.head.appliedDecisionId !== state.head.appliedDecisionId ||
+			canonicalJson(final.head) !== canonicalJson(state.head) ||
 			final.manifest.fingerprint !== state.manifest.fingerprint
 		)
 			return null;

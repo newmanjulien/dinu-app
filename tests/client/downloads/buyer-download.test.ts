@@ -14,6 +14,7 @@ const response = () =>
 	new Response(new Blob(['docx']), {
 		headers: { 'Content-Disposition': "attachment; filename*=UTF-8''Caf%C3%A9%20Contract.docx" }
 	});
+const buyerCode = 'Ab3Cd4Ef5Gh6I';
 function fixture() {
 	const state = {
 		allowed: true,
@@ -24,7 +25,7 @@ function fixture() {
 	const result = deferred<Response>();
 	const fetcher = vi.fn(() => result.promise);
 	vi.stubGlobal('fetch', fetcher);
-	return { state, result, fetcher, download: new BuyerDownload('0'.repeat(39), state) };
+	return { state, result, fetcher, download: new BuyerDownload(buyerCode, state) };
 }
 describe('buyer download ownership', () => {
 	it('posts the displayed identity and triggers one download with the decoded filename', async () => {
@@ -33,7 +34,7 @@ describe('buyer download ownership', () => {
 		await f.download.start();
 		expect(f.fetcher).toHaveBeenCalledTimes(1);
 		expect(f.fetcher).toHaveBeenCalledWith(
-			`/api/buyer/${'0'.repeat(39)}/download`,
+			`/api/buyer/${buyerCode}/download`,
 			expect.objectContaining({
 				method: 'POST',
 				cache: 'no-store',

@@ -32,6 +32,7 @@ export type SessionEditor = {
 export type SessionResources = {
 	cancelReads: () => void;
 	clear: () => void;
+	endSession?: () => void;
 	forgetMembership?: (userId: string) => void;
 };
 type Session = {

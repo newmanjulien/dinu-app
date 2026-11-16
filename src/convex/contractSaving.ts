@@ -11,7 +11,7 @@ import {
 	actorOf,
 	receipt,
 	remember,
-	operation,
+	admitOperation,
 	sealReceipt,
 	planReceiptWrite,
 	receiptSealWork
@@ -37,6 +37,8 @@ export async function saveCommands(
 	hooks?: TransitionHooks,
 	resuming?: Doc<'operationReceipts'>
 ): Promise<ContractSaveResult> {
+	admitOperation(args.operationId);
+	for (const command of args.commands) admitOperation(command.id);
 	const key = actionKey(access, 'save', args.operationId),
 		inputs = JSON.stringify([contract.root._id, args]);
 	const prior = await receipt(ctx, key, inputs);
@@ -80,7 +82,6 @@ export async function saveCommands(
 			expected = new Map<string, string | null>();
 		const session = await changeSession(ctx, contract);
 		for (const command of args.commands) {
-			operation(command.id);
 			if (ids.has(command.id) || !Number.isFinite(command.occurredAt))
 				throw new ConvexError('Invalid contract change.');
 			ids.add(command.id);

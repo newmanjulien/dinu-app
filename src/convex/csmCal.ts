@@ -86,20 +86,6 @@ export function validTimeZone(zone: string) {
 		return false;
 	}
 }
-export function dateInZone(timeZone: string) {
-	const formatter = new Intl.DateTimeFormat('en', {
-		timeZone,
-		year: 'numeric',
-		month: '2-digit',
-		day: '2-digit'
-	});
-	return (start: string) => {
-		const parts = formatter.formatToParts(new Date(start));
-		return ['year', 'month', 'day']
-			.map((type) => parts.find((p) => p.type === type)!.value)
-			.join('-');
-	};
-}
 function operationFor(path: string, method: string): CalOperation {
 	return method === 'PATCH'
 		? 'locationUpdate'
@@ -253,31 +239,9 @@ export async function configuration(ctx: ActionCtx, expectedScope?: ProviderScop
 		!['google-meet', 'zoom', 'cal-video', 'daily'].includes(String(location.integration))
 	)
 		return null;
-	// A bound is useful only for one recognized enabled window. Unknown/ambiguous windows
-	// retain the calendar's existing conservative navigation limit; Cal enforces availability.
-	const windows = Array.isArray(event.bookingWindow)
-		? event.bookingWindow
-		: event.bookingWindow
-			? [event.bookingWindow]
-			: [];
-	const enabled = windows.filter((window) => !object(window) || window.disabled !== true);
-	const window = enabled.length === 1 ? enabled[0] : undefined;
-	let lastDate: string | null = null;
-	if (
-		object(window) &&
-		window.disabled === false &&
-		window.type === 'calendarDays' &&
-		typeof window.value === 'number' &&
-		Number.isSafeInteger(window.value) &&
-		window.value >= 0
-	) {
-		const date = new Date(Date.now() + (window.value + 1) * 86_400_000);
-		if (Number.isFinite(date.getTime())) lastDate = date.toISOString().slice(0, 10);
-	}
 	return {
 		scope,
 		duration: event.lengthInMinutes,
-		lastDate,
 		location: split
 			? { type: 'attendeeDefined', location: MEETING_PLACEHOLDER }
 			: { type: 'integration', integration: String(location.integration) },

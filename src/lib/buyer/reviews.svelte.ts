@@ -54,7 +54,7 @@ export class BuyerChangeReview {
 			client,
 			membershipId: viewer.membershipId,
 			id: viewer.contractId,
-			kind: 'buyer-proposal',
+			kind: 'buyer-link',
 			documentId: () => content().contentIdentity,
 			enabled: () => current() && enabled(),
 			generation: () =>

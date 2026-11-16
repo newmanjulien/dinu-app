@@ -306,7 +306,9 @@ export class PlaybookGeometryIndex {
 			failure: { diagnostic: unknown } | undefined;
 		return (
 			exclude: string | undefined,
-			item: DeepReadonly<Pick<RepInstruction, 'trigger' | 'concessions'>>
+			item: DeepReadonly<
+				Pick<ItemStructure, 'audience'> & Pick<RepInstruction, 'trigger' | 'concessions'>
+			>
 		) => {
 			const facts = playbookStructure(item);
 			const key = JSON.stringify([this.version, exclude, playbookGeometryKey(facts)]);

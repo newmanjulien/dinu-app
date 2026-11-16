@@ -1,11 +1,13 @@
 <script lang="ts">
+	import { createOperationId } from '$lib/contract/operation-identity';
+	import { assertOperationRetryable, isOperationRecovery } from '$lib/contract/operation-recovery';
 	import { prepareContractAction } from '$lib/contract/prepare-action';
 	import type { FunctionArgs } from 'convex/server';
 	import { useReadQuery } from '$lib/auth/read-query.svelte';
 
 	import { useAccountContext } from '$lib/auth/account-context.svelte';
 	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
-	import BuyerLinkBar from '$lib/buyer/BuyerLinkBar.svelte';
+	import BuyerLinkBarAdmission from './BuyerLinkBarAdmission.svelte';
 	import { ConvexError } from 'convex/values';
 	import { errorCode, workBlockMessage } from '$lib/contract/work-policy';
 	import HubSpotRelink from './HubSpotRelink.svelte';
@@ -13,6 +15,7 @@
 	let repairHubSpot = $state(false);
 	let exportIdentity: {
 		args: FunctionArgs<typeof api.wordExport.generate>;
+		uncertain?: boolean;
 	} | null = null;
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { ContractReviewController } from '$lib/contract/review-controller.svelte';
@@ -22,30 +25,19 @@
 	import { useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
-	import type { TemplateContent } from '$lib/template/model';
 	import type { ContractEditor } from '$lib/contract/editors.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getContractOpenings } from '$lib/contract/snapshot-cache';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
-	import { createDocumentWorkspace } from '$lib/document/runtime/workspace-factory';
-	import { setDocumentWorkspace } from '$lib/document/runtime/workspace-context';
 	import { ContractReviewPages } from '$lib/contract/review-pages.svelte';
-	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
-	import DocumentViewerSlot from '$lib/components/document/DocumentViewerSlot.svelte';
 	import { REVIEW_GUTTER_WIDTH } from '$lib/components/document/workspace-layout';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
 	import RepPlaybookPanel from '$lib/components/playbook/RepPlaybookPanel.svelte';
 	import ReviewCompletedModal from '$lib/components/ui/modal/ReviewCompletedModal.svelte';
-	import WorkspaceChrome from './WorkspaceChrome.svelte';
-	import { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
-	const help = new HelpSession();
-	onDestroy(() => help.destroy());
 	import HeaderContent from '$lib/components/chrome/HeaderContent.svelte';
 	import NoticeBar from '$lib/components/chrome/NoticeBar.svelte';
-	import { recordDocumentInput } from '$lib/document/runtime/render-perf';
-	import { setInteractionOwner } from '$lib/components/ui/interactions';
-	import InteractionInputScope from '$lib/components/ui/InteractionInputScope.svelte';
+	import { getInteractionOwner } from '$lib/components/ui/interactions';
 	import { sameSelection } from '$lib/playbook/model';
 	import { downloadWord } from '$lib/document/export/download';
 	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
@@ -54,22 +46,32 @@
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import type { ReviewTag } from '$lib/contract/approval';
 	import { saveError } from '$lib/contract/saved';
+	import { getDocumentWorkspace } from '$lib/document/runtime/workspace-context';
+	import type { ViewerBindings } from '$lib/document/runtime/resources.svelte';
 	let {
-		snapshot,
 		editor: contractEditor,
+		latestBuyerLink,
 		interactionAdmitted = true,
 		onVisible,
 		onFailure,
 		onRetry,
-		openingRevision
+		openingRevision,
+		onBindings,
+		onChrome
 	}: {
-		snapshot: TemplateContent;
 		editor: ContractEditor;
+		latestBuyerLink: ReturnType<typeof useReadQuery<typeof api.buyerLinks.latest>>;
 		interactionAdmitted?: boolean;
 		onVisible?: () => void;
 		openingRevision?: unknown;
 		onFailure?: () => void;
 		onRetry: () => void;
+		onBindings: (bindings: ViewerBindings) => void;
+		onChrome: (chrome: {
+			feedback: OperationStatus | null;
+			onDownload?: () => void;
+			downloadReason: string | null;
+		}) => void;
 	} = $props();
 	const initialContract = untrack(() => contractEditor.metadata!);
 	const contractItems = $derived(
@@ -93,27 +95,8 @@
 	};
 	const openings = untrack(() => getContractOpenings());
 	const runtime = getWorkspaceRuntime();
-	const resources = getDocumentResources();
-	const resource = resources
-		? untrack(() =>
-				resources.acquireContract(
-					{
-						id: initialContract._id,
-						status: 'ready',
-						snapshot,
-						contract: initialContract
-					},
-					contractEditor.documentInput
-				)
-			)
-		: undefined;
-	const attachment =
-		resource && resources ? untrack(() => resources.activate(resource, renderChoices)) : undefined;
-	onDestroy(() => attachment?.release());
-	const interactionOwner = setInteractionOwner(resource?.owner ?? Symbol('rep-workspace'));
-	const workspace = setDocumentWorkspace(
-		resource?.workspace ?? untrack(() => createDocumentWorkspace(contractEditor.documentInput))
-	);
+	const interactionOwner = getInteractionOwner()!;
+	const workspace = getDocumentWorkspace();
 
 	const { source, viewer } = workspace;
 	const client = useConvexClient();
@@ -123,16 +106,12 @@
 	const membershipId = accountViewer().membership.id;
 	const contractId = untrack(() => initialContract._id);
 	const buyerLinkAvailable = $derived(
-		interactionAdmitted && !runtime.paused && !persistence.deleted && !persistence.workBlock
-	);
-	const latestBuyerLink = useReadQuery(api.buyerLinks.latest, () =>
-		buyerLinkAvailable ? { membershipId, id: contractId } : 'skip'
+		!runtime.paused && !persistence.deleted && !persistence.workBlock
 	);
 	const exportStatus = useReadQuery(api.contractExports.status, () =>
 		auth.authenticated && !runtime.paused ? { membershipId, id: contractId } : 'skip'
 	);
 
-	$effect(() => workspace.accept(contractEditor.documentInput));
 	const hubspot = useHubSpotDeals();
 	const hubspotConnection = hubspot.connection;
 	const quotesInstalled = $derived(Boolean(hubspotConnection.data?.quotes?.installed));
@@ -142,7 +121,10 @@
 	let quoteGeneration = 0;
 	let quoteDispatched = $state(false);
 	let quoteError = $state<string | null>(null);
-	let quoteIdentity: { args: FunctionArgs<typeof api.hubspotQuoteActions.push> } | null = null;
+	let quoteIdentity: {
+		args: FunctionArgs<typeof api.hubspotQuoteActions.push>;
+		uncertain?: boolean;
+	} | null = null;
 	const quoteQuery = useQuery(api.hubspotQuotes.latest, () =>
 		auth.authenticated && quotesInstalled && !runtime.paused
 			? { membershipId, id: contractId, ...(quoteId ? { pushId: quoteId } : {}) }
@@ -238,21 +220,25 @@
 						id: contractId,
 						expectedSource,
 						destination: capturedDestination,
-						operationId: crypto.randomUUID()
+						operationId: createOperationId()
 					}
 				};
 			}
 			const identity = quoteIdentity;
+			assertOperationRetryable(identity.args.operationId);
 			quoteDispatched = true;
 			// The enclosing owner remains cancelable; each bounded action owns its timeout.
 			attempt.complete();
 			const result = await continueOutputAction(
 				() =>
-					client.action(api.hubspotQuoteActions.push, identity.args).catch((error) => {
+					(assertOperationRetryable(identity.args.operationId),
+					client.action(api.hubspotQuoteActions.push, identity.args)).catch((error) => {
 						if (
 							quoteIdentity === identity &&
 							error instanceof ConvexError &&
-							errorCode(error) !== 'OUTPUT_PENDING'
+							errorCode(error) !== 'OUTPUT_PENDING' &&
+							!isOperationRecovery(error) &&
+							!identity.uncertain
 						)
 							quoteIdentity = null;
 						throw error;
@@ -269,6 +255,7 @@
 			quoteId = result.id;
 			if (quoteIdentity === identity) quoteIdentity = null;
 		} catch (error) {
+			if (quoteIdentity && !(error instanceof ConvexError)) quoteIdentity.uncertain = true;
 			if (active && quoteAttempt === attempt)
 				quoteError = saveError(
 					error,
@@ -290,7 +277,6 @@
 			: 'skip'
 	);
 	const latestApproval = $derived(approvalQuery.data?.request);
-	$effect(() => attachment?.update(renderChoices));
 	let notifiedVisible = $state(false);
 	let notifiedOpening: unknown;
 	let recordedOpening = false;
@@ -431,6 +417,7 @@
 	const stateReconciled = $derived(
 		Boolean(
 			auth.authenticated &&
+			contractEditor.currentReady &&
 			!runtime.paused &&
 			metadata.data &&
 			!metadata.error &&
@@ -716,9 +703,11 @@
 		return null;
 	});
 	const integrationStatusReason = $derived(
-		!hubspotConnection.data || hubspotConnection.error
-			? 'Checking HubSpot integration status.'
-			: null
+		hubspotConnection.error
+			? 'We couldn’t check HubSpot integration status. Retry the integration check.'
+			: !hubspotConnection.data || hubspotConnection.isLoading
+				? 'Checking HubSpot integration status.'
+				: null
 	);
 	const quoteDisabledReason = $derived.by(() => {
 		if (integrationStatusReason) return integrationStatusReason;
@@ -808,22 +797,26 @@
 						membershipId,
 						id: contractId,
 						expectedSource,
-						operationId: crypto.randomUUID(),
+						operationId: createOperationId(),
 						claim: crypto.randomUUID()
 					}
 				};
 			}
 			const identity = exportIdentity;
+			assertOperationRetryable(identity.args.operationId);
 			wordDispatched = true;
 			attempt.complete();
 			const generation = continueOutputAction(
 				() =>
-					client.action(api.wordExport.generate, identity.args).catch((error) => {
+					(assertOperationRetryable(identity.args.operationId),
+					client.action(api.wordExport.generate, identity.args)).catch((error) => {
 						// Observe authoritative retirement even after the foreground waiter is canceled.
 						if (
 							exportIdentity === identity &&
 							error instanceof ConvexError &&
-							errorCode(error) !== 'OUTPUT_PENDING'
+							errorCode(error) !== 'OUTPUT_PENDING' &&
+							!isOperationRecovery(error) &&
+							!identity.uncertain
 						)
 							exportIdentity = null;
 						throw error;
@@ -845,13 +838,14 @@
 				)
 					return;
 				downloadWord(blob, result.filename);
-				journalDownload(membershipId, result.attemptId, Date.now());
+				journalDownload(membershipId, result.attemptId, Date.now(), result.releasedAt);
 				void flushDownloadAcks(client, membershipId);
 				if (exportIdentity === identity) exportIdentity = null;
 			} finally {
 				delivery.abort();
 			}
 		} catch (error) {
+			if (exportIdentity && !(error instanceof ConvexError)) exportIdentity.uncertain = true;
 			if (active && wordAttempt === attempt)
 				exportError = saveError(error, 'We couldn’t prepare this download. Try again.');
 		} finally {
@@ -863,6 +857,51 @@
 	$effect(() => {
 		if (!session.blocked) void flushDownloadAcks(client, membershipId);
 	});
+	$effect(() =>
+		onChrome({
+			feedback,
+			onDownload: quotesInstalled
+				? () => {
+						void downloadSavedWord();
+					}
+				: undefined,
+			downloadReason: downloadDisabledReason
+		})
+	);
+	$effect(() =>
+		onBindings({
+			panelContent,
+			footerContent,
+			onPresentation: (outcome) => {
+				viewerPresentation = outcome;
+			},
+			failure: definitionsFailed
+				? {
+						message:
+							contractEditor.documentInput.items?.error instanceof Error
+								? contractEditor.documentInput.items.error.message
+								: 'The approved contract is unavailable.'
+					}
+				: undefined,
+			onRetry: definitionsFailed ? onRetry : undefined,
+			hasPanel: inspectorVisible,
+			selectedAnnotationId,
+			reviewTags,
+			reviewGutter,
+			reviewNavigation: reviews.navigation,
+			onReviewDecision: (tag, status) => void reviews.decide(tag, status),
+			selectedConcessions: renderChoices,
+			allowPlaybookNavigation: true,
+			playbookNavigationReady: displayedStateReconciled && viewer.interactionEnabled,
+			onRemoveConcession: (itemId) => {
+				if (editable) persistence.setOption(itemId as Id<'playbookItems'>, null);
+			},
+			panelTarget: item?.primary.target,
+			onSelect: selectClause,
+			onItemIntent: (itemId) => contractEditor.prefetchPreview(itemId),
+			onDocumentBackground: () => close(false)
+		})
+	);
 </script>
 
 {#if repairHubSpot}<HubSpotRelink
@@ -879,19 +918,6 @@
 />
 
 {#if interactionAdmitted && !runtime.paused}
-	<WorkspaceChrome
-		settingsHref={`/contracts/${contractId}/settings`}
-		{feedback}
-		helpVariant="rep"
-		{help}
-		helpReady={displayedStateReconciled}
-		onDownload={quotesInstalled
-			? () => {
-					void downloadSavedWord();
-				}
-			: undefined}
-		downloadReason={downloadDisabledReason}
-	/>
 	{#if !persistence.deleted && persistence.workBlock}
 		<HeaderContent placement="notice">
 			<NoticeBar
@@ -915,7 +941,7 @@
 				<button
 					type="button"
 					class="mt-2 underline disabled:text-ink-muted"
-					disabled={session.blocked}
+					disabled={session.blocked || persistence.recoveryBlocked}
 					onclick={() => contractEditor.retry()}>Retry</button
 				>
 			{:else if saveNotice.status === 'Paused' && !persistence.workBlock}
@@ -935,23 +961,35 @@
 	>
 		This contract was deleted. <a class="underline" href="/contracts">Back to Contracts</a>
 	</p>
-{:else if persistence.conflict}<div
+{:else if persistence.conflict || persistence.recoveryBlocked}<div
 		role="alert"
 		class="mx-auto mt-4 max-w-3xl rounded-md border-hairline border-edge bg-surface p-3 shadow-card text-sm"
 	>
-		This contract changed elsewhere. Choose which selections to keep.
-		<button
-			class="ml-2 underline disabled:text-ink-muted"
-			disabled={session.blocked || !stateReconciled}
-			onclick={() => void loadLatest()}>Use saved selections</button
-		>
+		{persistence.recoveryBlocked
+			? 'This request can no longer be retried. Review your selections against the current saved contract before applying them as a new request.'
+			: 'This contract changed elsewhere. Choose which selections to keep.'}
 		<button
 			class="ml-2 underline disabled:text-ink-muted"
 			disabled={session.blocked || !stateReconciled}
 			onclick={() => {
-				if (!session.blocked && stateReconciled) persistence.applyRecovered();
-			}}>Apply my selections</button
+				if (contractEditor.journal.recoveryError) contractEditor.discard();
+				else void loadLatest();
+			}}>Use saved selections</button
 		>
+		<button
+			class="ml-2 underline disabled:text-ink-muted"
+			disabled={session.blocked ||
+				!stateReconciled ||
+				Boolean(contractEditor.journal.recoveryError)}
+			onclick={() => {
+				if (!session.blocked && stateReconciled && !contractEditor.journal.recoveryError)
+					persistence.applyRecovered();
+			}}>{persistence.recoveryBlocked ? 'Apply as new selections' : 'Apply my selections'}</button
+		>
+		{#if persistence.recoveryBlocked}<button
+				class="ml-2 underline"
+				onclick={() => contractEditor.journal.downloadRecovery()}>Save stored selections</button
+			>{/if}
 	</div>{/if}
 
 {#if reviewLinkMessage}<p
@@ -967,206 +1005,145 @@
 		</button>
 	</p>
 {/if}
-{#if !persistence.deleted}
-	<InteractionInputScope
-		capture={(event) => {
-			if (event.type === 'click') recordDocumentInput(event);
-		}}
-	>
-		<main
-			class="pt-14 pb-[calc(64px+var(--buyer-link-bar-height,0px))] [--workspace-loading-inset:calc(var(--spacing)*30)] min-[1000px]:pt-6 min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*22)]"
-			onclickcapture={recordDocumentInput}
-			aria-label="Contract document"
-		>
-			{#snippet panelContent()}{#if item}<RepPlaybookPanel
-						{item}
-						animateContent={animateInspectorContent}
-						{isAdmin}
-						selected={persistence.choices[item._id]}
-						disabled={!editable}
-						entry={persistence.confirmed.playbook.find((state) => state.itemId === item._id)}
-						intent={persistence.intent[item._id]}
-						preview={contractEditor.focusedPreview}
-						previewBusy={contractEditor.previewBusy}
-						previewError={contractEditor.previewError?.message}
-						onPrefetch={() => contractEditor.prefetchPreview(item._id)}
-						onWithdraw={() => persistence.withdraw(item._id)}
-						onApprove={reviewTags.find(
+{#snippet panelContent()}{#if item}<RepPlaybookPanel
+			{item}
+			animateContent={animateInspectorContent}
+			{isAdmin}
+			selected={persistence.choices[item._id]}
+			disabled={!editable}
+			entry={persistence.confirmed.playbook.find((state) => state.itemId === item._id)}
+			intent={persistence.intent[item._id]}
+			preview={contractEditor.focusedPreview}
+			previewBusy={contractEditor.previewBusy}
+			previewError={contractEditor.previewError?.message}
+			onPrefetch={() => contractEditor.prefetchPreview(item._id)}
+			onWithdraw={() => persistence.withdraw(item._id)}
+			onApprove={reviewTags.find(
+				(tag) =>
+					tag.changeId ===
+					persistence.confirmed.playbook.find((state) => state.itemId === item._id)?.currentChangeId
+			)?.approve.allowed === true
+				? () => {
+						const tag = reviewTags.find(
 							(tag) =>
 								tag.changeId ===
 								persistence.confirmed.playbook.find((state) => state.itemId === item._id)
 									?.currentChangeId
-						)?.approve.allowed === true
-							? () => {
-									const tag = reviewTags.find(
-										(tag) =>
-											tag.changeId ===
-											persistence.confirmed.playbook.find((state) => state.itemId === item._id)
-												?.currentChangeId
-									);
-									if (tag) void reviews.decide(tag, 'approve');
-								}
-							: undefined}
-						onToggle={toggle}
-						onClose={() => close()}
-					/>{/if}{/snippet}
-			{#snippet footerContent()}
-				{#if reviewPages.error}<p class="mt-3 text-center text-sm text-danger" role="alert">
-						{reviewPages.error}
-						<button class="underline" onclick={() => reviewPages.reset()}>Retry reviews</button>
-					</p>{/if}
-				{#if reviewPages.detailError}<p class="mt-3 text-center text-sm text-danger" role="alert">
-						{reviewPages.detailError}
-						<button class="underline" onclick={() => reviewPages.retryDetails()}
-							>Retry review checks</button
+						);
+						if (tag) void reviews.decide(tag, 'approve');
+					}
+				: undefined}
+			onToggle={toggle}
+			onClose={() => close()}
+		/>{/if}{/snippet}
+{#snippet footerContent()}
+	{#if reviewPages.error}<p class="mt-3 text-center text-sm text-danger" role="alert">
+			{reviewPages.error}
+			<button class="underline" onclick={() => reviewPages.reset()}>Retry reviews</button>
+		</p>{/if}
+	{#if reviewPages.detailError}<p class="mt-3 text-center text-sm text-danger" role="alert">
+			{reviewPages.detailError}
+			<button class="underline" onclick={() => reviewPages.retryDetails()}
+				>Retry review checks</button
+			>
+		</p>{/if}
+	{#if !reviewPages.done}<p class="mt-3 text-center text-sm text-ink-muted">
+			<button
+				class="underline disabled:no-underline"
+				disabled={reviewPages.loading}
+				onclick={() => reviewPages.loadMore()}
+				>{reviewPages.loading ? 'Loading reviews…' : 'Load more review tags'}</button
+			>
+		</p>{/if}
+	<div
+		class="pt-6"
+		role="group"
+		aria-label="Contract actions"
+		aria-busy={preparingWord ||
+			approvalSending ||
+			(quotesInstalled && (pushingQuote || quotePending))}
+	>
+		<div class="flex flex-wrap items-center justify-center gap-3">
+			<Tooltip
+				text={approvalDisabledReason ?? ''}
+				trigger={approvalHintTrigger}
+				standalone={false}
+				enabled={!canRequestApproval}
+			>
+				{#snippet children(descriptionId)}
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
+					<span
+						bind:this={approvalHintTrigger}
+						class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+						role="group"
+						tabindex={!canRequestApproval ? 0 : undefined}
+						aria-label={approvalButtonLabel}
+						aria-describedby={!canRequestApproval ? descriptionId : undefined}
+					>
+						<Button
+							class="bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover h-11 px-5 text-sm disabled:pointer-events-none"
+							disabled={!canRequestApproval}
+							aria-describedby={!canRequestApproval ? descriptionId : undefined}
+							aria-live="polite"
+							onclick={() => void reviews.requestApproval()}
 						>
-					</p>{/if}
-				{#if !reviewPages.done}<p class="mt-3 text-center text-sm text-ink-muted">
-						<button
-							class="underline disabled:no-underline"
-							disabled={reviewPages.loading}
-							onclick={() => reviewPages.loadMore()}
-							>{reviewPages.loading ? 'Loading reviews…' : 'Load more review tags'}</button
+							{approvalButtonLabel}
+						</Button>
+					</span>
+				{/snippet}
+			</Tooltip>
+			<Tooltip
+				text={mainActionDisabledReason ?? ''}
+				trigger={mainActionHintTrigger}
+				standalone={false}
+				enabled={!canRunMainAction}
+			>
+				{#snippet children(descriptionId)}
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
+					<span
+						bind:this={mainActionHintTrigger}
+						class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+						role="group"
+						tabindex={!canRunMainAction ? 0 : undefined}
+						aria-label={mainActionLabel}
+						aria-describedby={!canRunMainAction ? descriptionId : undefined}
+					>
+						<Button
+							class="bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover h-11 px-5 text-sm disabled:pointer-events-none"
+							disabled={!canRunMainAction}
+							aria-describedby={!canRunMainAction ? descriptionId : undefined}
+							onclick={() => {
+								if (quotesInstalled) void pushQuote();
+								else void downloadSavedWord();
+							}}
 						>
-					</p>{/if}
-				<div
-					class="pt-6"
-					role="group"
-					aria-label="Contract actions"
-					aria-busy={preparingWord ||
-						approvalSending ||
-						(quotesInstalled && (pushingQuote || quotePending))}
-				>
-					<div class="flex flex-wrap items-center justify-center gap-3">
-						<Tooltip
-							text={approvalDisabledReason ?? ''}
-							trigger={approvalHintTrigger}
-							standalone={false}
-							enabled={!canRequestApproval}
-						>
-							{#snippet children(descriptionId)}
-								<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
-								<span
-									bind:this={approvalHintTrigger}
-									class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-									role="group"
-									tabindex={!canRequestApproval ? 0 : undefined}
-									aria-label={approvalButtonLabel}
-									aria-describedby={!canRequestApproval ? descriptionId : undefined}
-								>
-									<Button
-										class="bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover h-11 px-5 text-sm disabled:pointer-events-none"
-										disabled={!canRequestApproval}
-										aria-describedby={!canRequestApproval ? descriptionId : undefined}
-										aria-live="polite"
-										onclick={() => void reviews.requestApproval()}
-									>
-										{approvalButtonLabel}
-									</Button>
-								</span>
-							{/snippet}
-						</Tooltip>
-						<Tooltip
-							text={mainActionDisabledReason ?? ''}
-							trigger={mainActionHintTrigger}
-							standalone={false}
-							enabled={!canRunMainAction}
-						>
-							{#snippet children(descriptionId)}
-								<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the native disabled button is unavailable.) -->
-								<span
-									bind:this={mainActionHintTrigger}
-									class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-									role="group"
-									tabindex={!canRunMainAction ? 0 : undefined}
-									aria-label={mainActionLabel}
-									aria-describedby={!canRunMainAction ? descriptionId : undefined}
-								>
-									<Button
-										class="bg-accent text-white not-disabled:not-aria-disabled:hover:bg-accent-hover h-11 px-5 text-sm disabled:pointer-events-none"
-										disabled={!canRunMainAction}
-										aria-describedby={!canRunMainAction ? descriptionId : undefined}
-										onclick={() => {
-											if (quotesInstalled) void pushQuote();
-											else void downloadSavedWord();
-										}}
-									>
-										{mainActionLabel}
-									</Button>
-								</span>
-							{/snippet}
-						</Tooltip>
-					</div>
-					{#if approvalErrorMessage}
-						<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
-							{approvalErrorMessage}
-						</p>
-					{/if}
-					{#if approvalMessage}
-						<p class="mt-3 text-center text-sm text-ink-muted" role="status">
-							{approvalMessage}
-						</p>
-					{/if}
+							{mainActionLabel}
+						</Button>
+					</span>
+				{/snippet}
+			</Tooltip>
+		</div>
+		{#if approvalErrorMessage}
+			<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
+				{approvalErrorMessage}
+			</p>
+		{/if}
+		{#if approvalMessage}
+			<p class="mt-3 text-center text-sm text-ink-muted" role="status">
+				{approvalMessage}
+			</p>
+		{/if}
 
-					{#if reviews.decisionError}<p
-							class="mt-3 text-center text-sm text-ink-muted"
-							role="alert"
-						>
-							{reviews.decisionError.message}
-						</p>{/if}
-					{#if preparingWord}
-						<p class="mt-3 text-center text-sm text-ink-muted" role="status">
-							Preparing Word download…
-						</p>
-					{:else if exportError}
-						<p class="mt-3 text-center text-sm text-ink-muted" role="alert">{exportError}</p>
-					{/if}
-				</div>
-			{/snippet}
-			{#if source.issue && !source.renderSource && !definitionsFailed}<p role="alert">
-					We couldn’t load this contract. Please refresh to try again.
-				</p>{:else}<DocumentViewerSlot
-					{attachment}
-					entry={resource}
-					layout="contract"
-					active={!runtime.paused}
-					onPresentation={(outcome) => (viewerPresentation = outcome)}
-					prepare={!runtime.paused && definitionsReady}
-					failure={definitionsFailed
-						? {
-								message:
-									contractEditor.documentInput.items?.error instanceof Error
-										? contractEditor.documentInput.items.error.message
-										: 'The approved contract is unavailable.'
-							}
-						: undefined}
-					onRetry={definitionsFailed ? onRetry : undefined}
-					interactive={interactionAdmitted &&
-						stateReconciled &&
-						definitionsReady &&
-						(notifiedVisible || Boolean(workspace.renderer.error))}
-					hasPanel={inspectorVisible}
-					{panelContent}
-					{footerContent}
-					{selectedAnnotationId}
-					{reviewTags}
-					{reviewGutter}
-					reviewNavigation={reviews.navigation}
-					onReviewDecision={(tag, status) => void reviews.decide(tag, status)}
-					selectedConcessions={renderChoices}
-					allowPlaybookNavigation
-					playbookNavigationReady={viewer.interactionEnabled}
-					onRemoveConcession={(itemId) => {
-						if (editable) persistence.setOption(itemId as Id<'playbookItems'>, null);
-					}}
-					panelTarget={item?.primary.target}
-					onSelect={selectClause}
-					onItemIntent={(itemId) => contractEditor.prefetchPreview(itemId)}
-					onDocumentBackground={() => close(false)}
-				/>{/if}
-		</main>
-	</InteractionInputScope>
-{/if}
+		{#if reviews.decisionError}<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
+				{reviews.decisionError.message}
+			</p>{/if}
+		{#if preparingWord}
+			<p class="mt-3 text-center text-sm text-ink-muted" role="status">Preparing Word download…</p>
+		{:else if exportError}
+			<p class="mt-3 text-center text-sm text-ink-muted" role="alert">{exportError}</p>
+		{/if}
+	</div>
+{/snippet}
 
 {#if awaitingCompletion && completionGeneration !== dismissedCompletion && !runtime.paused && !session.blocked && !navigating.to && !persistence.deleted}
 	{#key completionGeneration}
@@ -1180,8 +1157,10 @@
 	{/key}
 {/if}
 
-{#if buyerLinkAvailable}<BuyerLinkBar
-		id={contractId}
-		latest={latestBuyerLink}
-		recipientName={contractEditor.buyerName ?? 'the customer'}
-	/>{/if}
+<BuyerLinkBarAdmission
+	id={contractId}
+	latest={latestBuyerLink}
+	{workspace}
+	available={buyerLinkAvailable}
+	{interactionAdmitted}
+/>

@@ -2,19 +2,19 @@ import { getContext, setContext } from 'svelte';
 import { useConvexClient } from 'convex-svelte';
 import type { Id } from '../../../convex/_generated/dataModel';
 import { api } from '../../../convex/_generated/api';
-import { CsmAvailability, type CalendarSelection } from './csm-availability';
-import { browserTimeZone, localDate } from './csm-calendar';
+import { CsmAvailability, type Availability, type AvailabilitySelection } from './csm-availability';
+import { browserTimeZone } from './csm-time';
 import type { CsmBookingMode, CsmReplacement } from './csm-booking';
 import { loadCsmModal } from './csm-modal';
 import type { SupportContent } from './csm-support';
 
-export const initialCalendar = (mode: CsmBookingMode): CalendarSelection => {
+export const initialAvailability = (mode: CsmBookingMode): AvailabilitySelection => {
 	const timeZone = browserTimeZone();
-	return { mode, timeZone, month: localDate(new Date(), timeZone).slice(0, 7) };
+	return { mode, timeZone };
 };
 export type CsmOwner = {
 	membershipId: Id<'memberships'>;
-	calendar: CsmAvailability;
+	availability: CsmAvailability;
 	readonly unresolved: boolean;
 	setUnresolved: (value: boolean) => void;
 	canRead: (mode: CsmBookingMode, replacement?: CsmReplacement) => boolean;
@@ -24,11 +24,13 @@ export type CsmAccess = {
 	membershipId: Id<'memberships'>;
 	manageSetup: boolean;
 };
+type SetupPreview = { pending: Promise<Availability>; expiresAt: () => number | undefined };
 const key = Symbol('csm-preload');
 export function setCsmPreload(
 	canStart: () => boolean,
 	setupBooked: () => boolean,
-	access: () => CsmAccess | undefined
+	access: () => CsmAccess | undefined,
+	readSetupPreview?: (timeZone: string) => SetupPreview | undefined
 ) {
 	const client = useConvexClient();
 	let owner = $state<CsmOwner>();
@@ -39,7 +41,7 @@ export function setCsmPreload(
 	function align() {
 		const next = liveIdentity();
 		if (next !== identity) {
-			owner?.calendar.dispose();
+			owner?.availability.dispose();
 			owner = undefined;
 			poster = undefined;
 			videoPrepared = false;
@@ -50,9 +52,22 @@ export function setCsmPreload(
 				const current = () => identity === next && liveIdentity() === next;
 				owner = {
 					membershipId,
-					calendar: new CsmAvailability((selection) => {
+					availability: new CsmAvailability(async (selection) => {
 						if (!owner?.canRead(selection.mode, selection.replacement))
 							throw new Error('Booking access changed.');
+						if (selection.mode === 'setup' && !selection.replacement) {
+							const preview = readSetupPreview?.(selection.timeZone);
+							if (preview) {
+								try {
+									const data = await preview.pending;
+									const expiresAt = preview.expiresAt();
+									if (data.status === 'ready' && expiresAt && expiresAt > Date.now())
+										return { data, expiresAt };
+								} catch {
+									// A failed preview uses the authorized company availability request.
+								}
+							}
+						}
 						return client.action(api.csmBookings.availability, { membershipId, ...selection });
 					}, current),
 					get unresolved() {
@@ -70,11 +85,11 @@ export function setCsmPreload(
 		return owner;
 	}
 	function warm(
-		target: CalendarSelection | CsmBookingMode,
+		target: AvailabilitySelection | CsmBookingMode,
 		{ video }: { video?: SupportContent['video'] } = {}
 	) {
 		try {
-			const selection = typeof target === 'string' ? initialCalendar(target) : target;
+			const selection = typeof target === 'string' ? initialAvailability(target) : target;
 			const active = align();
 			if (!active?.canRead(selection.mode, selection.replacement) || !canStart()) return;
 			if (video) {
@@ -84,7 +99,7 @@ export function setCsmPreload(
 			void loadCsmModal().catch(() => {});
 			// Replacement availability requires the picker's live appointment-status check.
 			if (!selection.replacement && !active.unresolved)
-				void active.calendar.read(selection).catch(() => {});
+				void active.availability.read(selection).catch(() => {});
 		} catch {
 			/* Optional work cannot interrupt focus or navigation. */
 		}
@@ -102,7 +117,7 @@ export function setCsmPreload(
 			return owner;
 		},
 		dispose() {
-			owner?.calendar.dispose();
+			owner?.availability.dispose();
 			owner = undefined;
 			poster = undefined;
 			videoPrepared = false;

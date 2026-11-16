@@ -1,4 +1,3 @@
-import { requireTerminologyReady } from './terminologyMaintenance';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { ConvexError, v, type Infer } from 'convex/values';
 import {
@@ -417,7 +416,6 @@ export const expirePending = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, { state, cursor }) => {
-		requireTerminologyReady();
 		if (!state) {
 			for (const state of ['pending', 'deleting'] as const) {
 				const expired = await ctx.db

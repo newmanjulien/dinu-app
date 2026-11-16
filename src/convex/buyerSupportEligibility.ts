@@ -9,7 +9,7 @@ export async function effectiveBuyerSource(
 	ctx: QueryCtx,
 	index: DiscussionIndex,
 	change: Pick<
-		Extract<Doc<'contractChanges'>, { kind: 'buyer-proposal' }>,
+		Extract<Doc<'contractChanges'>, { kind: 'buyer-link' }>,
 		'companyId' | 'contractId' | 'kind' | 'key' | 'source'
 	>,
 	additional?: TransitionManifest

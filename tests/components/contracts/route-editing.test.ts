@@ -41,7 +41,9 @@ describe('route and editing lifetimes', () => {
 		const f = fixture();
 		const target = show(f);
 		await settle();
-		(target.querySelectorAll('button')[1] as HTMLButtonElement).click();
+		[...target.querySelectorAll('button')]
+			.find((button) => button.textContent?.trim() === 'Select concession')!
+			.click();
 		await settle();
 		const original = f.owner.entries[0];
 		expect(f.writes).toHaveLength(1);
@@ -112,7 +114,7 @@ describe('route and editing lifetimes', () => {
 		expect(f.owner.entries).toHaveLength(0);
 	});
 	it.each(['opening failure', 'rendering timeout'])(
-		'retries creation after %s without creating another contract',
+		'retries the saved opening after %s without creating another contract',
 		async (failure) => {
 			const renderingTimeout = failure === 'rendering timeout';
 			if (renderingTimeout) {
@@ -124,17 +126,24 @@ describe('route and editing lifetimes', () => {
 			screen.destination = { kind: 'new' };
 			const target = show(f);
 			await settle();
-			(target.querySelectorAll('button')[1] as HTMLButtonElement).click();
+			const name = target.querySelector('input[autocomplete="organization"]') as HTMLInputElement;
+			name.value = 'Buyer';
+			name.dispatchEvent(new Event('input', { bubbles: true }));
+			await settle();
+			(target.querySelector('button[type="submit"]') as HTMLButtonElement).click();
 			await settle();
 			if (renderingTimeout) {
 				expect(f.active('contract-b')).toBe(1);
 				await vi.advanceTimersByTimeAsync(15_001);
 				await settle();
 			}
-			expect(target.textContent).toContain('Your contract was created, but we couldn’t open it');
+			expect(target.querySelector('dialog')).toBeNull();
+			expect(target.textContent).toContain(
+				renderingTimeout ? 'We couldn’t refresh this contract' : 'We couldn’t load this contract'
+			);
 			rendering.ready = true;
 			[...target.querySelectorAll('button')]
-				.find((button) => button.textContent === 'Open contract')!
+				.find((button) => button.textContent?.trim() === 'Try again')!
 				.click();
 			await settle();
 			expect(target.querySelector('[aria-label="Contract viewer"]')).not.toBeNull();
@@ -145,7 +154,7 @@ describe('route and editing lifetimes', () => {
 				f.client.mutation.mock.calls.filter(([ref]) => getFunctionName(ref) === 'contracts:create')
 			).toHaveLength(1);
 			expect(screen.destination).toEqual({ kind: 'saved', id: 'contract-b' });
-			expect(f.owner.entries[0].attachments).toBe(1);
+			expect(f.owner.entries[0].attachments).toBe(2);
 			expect(f.active('contract-b')).toBe(1);
 		}
 	);

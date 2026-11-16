@@ -46,7 +46,7 @@
 	};
 	const actions = (tag: ReviewTag): ReviewDecision[] =>
 		tag.status === 'approved'
-			? tag.kind === 'buyer-proposal'
+			? tag.kind === 'buyer-link'
 				? ['undo']
 				: []
 			: ['approve', 'decline'];
@@ -82,7 +82,7 @@
 										pageScale,
 										key
 									);
-									if (!tags.some((tag) => tag.kind === 'buyer-proposal')) return projected;
+									if (!tags.some((tag) => tag.kind === 'buyer-link')) return projected;
 									const packed = packAnnotationRail(
 										projected.map((anchor, order) => ({
 											id: anchor.key,
@@ -170,7 +170,7 @@
 		return tag.detailRequired && tag.admin
 			? 'Checking…'
 			: tag.status === 'pending'
-				? tag.kind === 'buyer-proposal'
+				? tag.kind === 'buyer-link'
 					? 'Pending'
 					: tag.admin
 						? 'Review'

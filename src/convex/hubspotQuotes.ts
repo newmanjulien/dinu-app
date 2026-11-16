@@ -1,3 +1,10 @@
+import {
+	settleOutput,
+	settleQuoteOutput,
+	conclusiveQuote,
+	finishOutputFileDeletion
+} from './outputLifecycle';
+import type { FullOutput } from './outputLifecycle';
 import { ConvexError, v, type Infer } from 'convex/values';
 import { internal } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
@@ -21,6 +28,8 @@ import { quoteInstallationFor } from './hubspotQuotesInstallation';
 import {
 	hasQuoteScopes,
 	quoteSummary,
+	quoteState,
+	fullQuotePush,
 	quoteProviderFailure,
 	quoteRunningUntil,
 	quoteRequest,
@@ -32,6 +41,8 @@ import {
 	receiptPayload,
 	remember,
 	actionKey,
+	admitOperation,
+	operationExpired,
 	sealReceipt,
 	receiptSealWork
 } from './operationReceipts';
@@ -43,9 +54,15 @@ import {
 	initialOutputPreparation,
 	requireOutputFence,
 	sealedManifest,
+	outputManifestHash,
 	outputReservation
 } from './outputProof';
-import { scheduleOutputPreparation } from './outputReservations';
+import {
+	createOutput,
+	outputReceipt,
+	retireOutputPreparation,
+	scheduleOutputPreparation
+} from './outputReservations';
 import { queueOutputProofCleanup } from './outputProofCleanup';
 import { authorizePreparedOperation, sellerPreparationActor } from './discussionPreparation';
 import { documentBytes, assertStorageCapacity } from './storageCapacity';
@@ -130,7 +147,7 @@ async function gated(ctx: QueryCtx, reservation: Reservation) {
 		return null;
 	}
 }
-async function requireQuoteFence(ctx: QueryCtx, row: Doc<'operationReceipts'>, contract: Contract) {
+async function requireQuoteFence(ctx: QueryCtx, row: FullOutput, contract: Contract) {
 	const preparation = row.outputPreparation;
 	if (!preparation) throw new Error('Missing Quote proof preparation.');
 	const access = await requireQuotes(ctx, contract),
@@ -149,17 +166,19 @@ async function requireQuoteFence(ctx: QueryCtx, row: Doc<'operationReceipts'>, c
 	return access.connection;
 }
 export const checkPrepared = internalMutation({
-	args: { receiptId: v.id('operationReceipts') },
+	args: { outputId: v.id('contractOutputs') },
 	returns: v.null(),
-	handler: async (ctx, { receiptId }) => {
-		const row = await ctx.db.get('operationReceipts', receiptId);
-		if (!row || row.kind !== 'quote-reservation') throw new Error('Invalid Quote receipt.');
+	handler: async (ctx, { outputId }) => {
+		const row = await ctx.db.get('contractOutputs', outputId);
+		if (!row || row.format !== 'full' || row.kind !== 'quote-reservation')
+			throw new Error('Invalid Quote output.');
 		const { contract } = await authorizePreparedOperation(ctx, row);
 		await requireQuoteFence(ctx, row, contract);
 		return null;
 	}
 });
-async function activate(ctx: MutationCtx, row: Doc<'operationReceipts'>) {
+async function activate(ctx: MutationCtx, row: FullOutput) {
+	admitOperation(row.operationId!);
 	const { contract, access } = await authorizePreparedOperation(ctx, row),
 		preparation = row.outputPreparation;
 	if (
@@ -171,7 +190,8 @@ async function activate(ctx: MutationCtx, row: Doc<'operationReceipts'>) {
 		preparation.phase !== 'sealed'
 	)
 		throw new Error('Invalid original Quote reservation owner.');
-	const payload = await receiptPayload(ctx, row),
+	const original = await outputReceipt(ctx, row),
+		payload = await receiptPayload(ctx, original),
 		input: unknown = JSON.parse(payload.inputs);
 	if (
 		!Array.isArray(input) ||
@@ -183,29 +203,48 @@ async function activate(ctx: MutationCtx, row: Doc<'operationReceipts'>) {
 		throw new Error('Original Quote reservation input changed.');
 	await requireQuoteFence(ctx, row, contract);
 	const reservationManifest = sealedManifest(row, preparation),
-		result = JSON.stringify(reservationManifest),
-		work = await receiptSealWork(ctx, row, payload.inputs, result);
+		result = JSON.stringify({ outputId: row._id }),
+		work = await receiptSealWork(ctx, original, payload.inputs, result);
 	await assertStorageCapacity(ctx, {
 		documents: work.writes + 1,
 		bytes:
 			work.bytes +
-			documentBytes({ ...row, reservationManifest, outputPreparation: undefined }) +
+			documentBytes({
+				...row,
+				reservationManifest,
+				manifestHash: outputManifestHash(reservationManifest),
+				outputPreparation: undefined,
+				state: 'complete',
+				receiptId: undefined
+			}) +
 			16_384,
 		queries: 8
 	});
-	await ctx.db.patch('operationReceipts', row._id, {
+	await ctx.db.patch('contractOutputs', row._id, {
 		reservationManifest,
-		outputPreparation: undefined
+		manifestHash: outputManifestHash(reservationManifest),
+		outputPreparation: undefined,
+		state: 'complete',
+		receiptId: undefined
 	});
-	await sealReceipt(ctx, row, payload.inputs, { state: 'complete', result });
+	await sealReceipt(ctx, original, payload.inputs, { state: 'complete', result });
 	return reservationManifest;
 }
 export const activatePrepared = internalMutation({
-	args: { receiptId: v.id('operationReceipts') },
+	args: { outputId: v.id('contractOutputs') },
 	returns: v.null(),
-	handler: async (ctx, { receiptId }) => {
-		const row = await ctx.db.get('operationReceipts', receiptId);
-		if (row?.state === 'preparing') await activate(ctx, row);
+	handler: async (ctx, { outputId }) => {
+		const row = await ctx.db.get('contractOutputs', outputId);
+		if (row?.format === 'full' && row.state === 'preparing') {
+			if (operationExpired(row))
+				await retireOutputPreparation(
+					ctx,
+					row,
+					'This operation expired. Review the preserved intent against the current contract.',
+					'OPERATION_EXPIRED'
+				);
+			else await activate(ctx, row);
+		}
 		return null;
 	}
 });
@@ -219,22 +258,21 @@ async function reserved(ctx: QueryCtx, args: Request) {
 		row.companyId !== access.companyId ||
 		row.contractId !== args.id ||
 		row.state !== 'complete' ||
-		!row.documentId
+		!row.outputId
 	)
 		throw new ConvexError('This push reservation is unavailable. Prepare a new push.');
-	const { reservationManifest: reservation } = await outputReservation(ctx, {
+	const { owner, reservationManifest: reservation } = await outputReservation(ctx, {
 		companyId: access.companyId,
 		contractId: args.id,
-		reservationReceiptId: row._id,
-		documentId: row.documentId
+		outputId: row.outputId
 	});
 	if (
 		reservation.membershipId !== access.membershipId ||
 		reservation.actor.profileId !== access.profile._id ||
-		canonicalJson(JSON.parse(row.result)) !== canonicalJson(reservation)
+		canonicalJson(JSON.parse(row.result)) !== canonicalJson({ outputId: owner._id })
 	)
 		throw new Error('Invalid push reservation ownership.');
-	return { access, key, reservation, owner: row };
+	return { access, key, reservation, owner };
 }
 async function committed(ctx: QueryCtx, args: Request, reservation: Reservation) {
 	const access = await requireMembership(ctx, args.membershipId),
@@ -247,7 +285,7 @@ async function committed(ctx: QueryCtx, args: Request, reservation: Reservation)
 		stored.kind !== 'quote-commit' ||
 		stored.companyId !== access.companyId ||
 		stored.contractId !== args.id ||
-		stored.documentId !== reservation.documentId
+		stored.outputId !== reservation.proof.outputId
 	)
 		throw new ConvexError('This push operation was already used.');
 	const payload = await receiptPayload(ctx, stored),
@@ -257,7 +295,7 @@ async function committed(ctx: QueryCtx, args: Request, reservation: Reservation)
 		!push ||
 		push.companyId !== access.companyId ||
 		push.contractId !== args.id ||
-		stored.providerOperationId !== push._id
+		payload.result !== push._id
 	)
 		throw new ConvexError('This push result is unavailable.');
 	return summary(push);
@@ -266,21 +304,24 @@ async function committed(ctx: QueryCtx, args: Request, reservation: Reservation)
 export const reserve = internalMutation({
 	args: requestArgs.fields,
 	returns: v.union(
-		v.object({ kind: v.literal('preparing'), receiptId: v.id('operationReceipts') }),
+		v.object({ kind: v.literal('preparing'), outputId: v.id('contractOutputs') }),
 		v.object({ kind: v.literal('reserved'), reservation: quoteReservation }),
 		v.object({ kind: v.literal('committed'), summary: quoteSummary })
 	),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		if (!/^[\w-]{1,100}$/u.test(args.operationId)) throw new ConvexError('Invalid push operation.');
+		admitOperation(args.operationId);
 		const key = actionKey(access, 'quote-reservation', args.operationId),
 			inputs = requestInputs(args),
 			prior = await receipt(ctx, key, inputs);
 		if (prior?.state === 'failed')
 			throw new ConvexError(prior.error ?? 'This push preparation failed. Prepare a new push.');
 		if (prior?.state === 'preparing') {
-			await scheduleOutputPreparation(ctx, prior);
-			return { kind: 'preparing' as const, receiptId: prior._id };
+			const output = prior.outputId ? await ctx.db.get('contractOutputs', prior.outputId) : null;
+			if (!output || output.format !== 'full')
+				throw new Error('Missing private Quote output owner.');
+			await scheduleOutputPreparation(ctx, output);
+			return { kind: 'preparing' as const, outputId: output._id };
 		}
 		if (prior) {
 			const { reservation } = await reserved(ctx, args),
@@ -294,20 +335,22 @@ export const reserve = internalMutation({
 		const { quotes, connection, destination } = await requireQuotes(ctx, contract);
 		if (!sameDestination(args.destination, destination))
 			throw new ConvexError('The linked HubSpot deal changed. Prepare a new push.');
-		const latest = await ctx.db
-			.query('operationReceipts')
-			.withIndex('by_contractId_and_kind_and_requestedAt', (q) =>
-				q.eq('contractId', args.id).eq('kind', 'quote-reservation')
-			)
-			.order('desc')
-			.first();
 		const preparation = await initialOutputPreparation(ctx, contract, access, 'reservation', 0, {
 			hubspot: args.destination,
 			connectionGeneration: connection.generation,
 			installationId: quotes._id,
 			epoch: quotes.epoch
 		});
-		preparation.base.requestedAt = Math.max(Date.now(), (latest?.requestedAt ?? 0) + 1);
+		preparation.base.requestedAt = Math.max(
+			Date.now(),
+			(contract.root.quoteRequests?.watermark ?? 0) + 1
+		);
+		await ctx.db.patch('savedContracts', contract.root._id, {
+			quoteRequests: {
+				...contract.root.quoteRequests,
+				watermark: preparation.base.requestedAt
+			}
+		});
 		const receiptId = await remember(
 			ctx,
 			access.companyId,
@@ -316,23 +359,20 @@ export const reserve = internalMutation({
 			'',
 			{
 				contractId: args.id,
-				documentId: contract.root.documentId,
-				kind: 'quote-reservation',
-				requestedAt: preparation.base.requestedAt
+				kind: 'quote-reservation'
 			},
 			{
 				actor: sellerPreparationActor(access),
-				operationId: args.operationId,
-				outputPreparation: preparation
+				operationId: args.operationId
 			}
 		);
-		const row = (await ctx.db.get('operationReceipts', receiptId))!,
+		const row = await createOutput(ctx, receiptId, preparation, 'quote-reservation'),
 			progress = await advanceOutputProof(ctx, row, contract, true),
-			live = (await ctx.db.get('operationReceipts', receiptId))!;
+			live = { ...row, outputPreparation: progress };
 		if (progress.phase === 'sealed')
 			return { kind: 'reserved' as const, reservation: await activate(ctx, live) };
 		await scheduleOutputPreparation(ctx, live);
-		return { kind: 'preparing' as const, receiptId };
+		return { kind: 'preparing' as const, outputId: row._id };
 	}
 });
 export const content = internalQuery({
@@ -343,14 +383,15 @@ export const content = internalQuery({
 			{ document } = await reservedExport(ctx, {
 				companyId: reservation.companyId,
 				contractId: reservation.contractId,
-				reservationReceiptId: owner._id,
+				outputId: owner._id,
 				documentId: reservation.documentId
 			});
 		return { source: reservation, document: contractDocumentToRenderTransport(document) };
 	}
 });
-/** Current-source proof is another generation on the same original operation owner. */
-async function prepareCurrent(ctx: MutationCtx, owner: Doc<'operationReceipts'>) {
+/** Current-source proof is another generation on the durable output owner. */
+async function prepareCurrent(ctx: MutationCtx, owner: FullOutput) {
+	admitOperation(owner.operationId!);
 	const { contract, access } = await authorizePreparedOperation(ctx, owner);
 	if (!access || !owner.reservationManifest || !(await gated(ctx, owner.reservationManifest)))
 		throw new ConvexError(
@@ -363,7 +404,7 @@ async function prepareCurrent(ctx: MutationCtx, owner: Doc<'operationReceipts'>)
 		try {
 			await requireQuoteFence(ctx, owner, contract);
 		} catch {
-			await ctx.db.patch('operationReceipts', owner._id, { outputPreparation: undefined });
+			await ctx.db.patch('contractOutputs', owner._id, { outputPreparation: undefined });
 			await queueOutputProofCleanup(ctx, owner._id, preparation.generation);
 			preparation = undefined;
 		}
@@ -377,7 +418,7 @@ async function prepareCurrent(ctx: MutationCtx, owner: Doc<'operationReceipts'>)
 			installationId: quotes._id,
 			epoch: quotes.epoch
 		});
-		await ctx.db.patch('operationReceipts', owner._id, {
+		await ctx.db.patch('contractOutputs', owner._id, {
 			outputPreparation: preparation,
 			outputGeneration: generation
 		});
@@ -390,15 +431,16 @@ async function prepareCurrent(ctx: MutationCtx, owner: Doc<'operationReceipts'>)
 			true
 		);
 	if (preparation.phase !== 'sealed')
-		await scheduleOutputPreparation(ctx, (await ctx.db.get('operationReceipts', owner._id))!);
+		await scheduleOutputPreparation(ctx, { ...owner, outputPreparation: preparation });
 	return preparation.phase === 'sealed';
 }
-async function authorized(ctx: QueryCtx, row: Push) {
+async function authorized(ctx: MutationCtx, row: Push) {
 	try {
 		const { owner, reservationManifest } = await outputReservation(ctx, row),
 			access = await gated(ctx, reservationManifest),
 			preparation = owner.outputPreparation;
 		if (
+			operationExpired(owner) ||
 			!access ||
 			!preparation ||
 			preparation.purpose !== 'release' ||
@@ -414,15 +456,16 @@ async function authorized(ctx: QueryCtx, row: Push) {
 }
 export const prepareCommit = internalMutation({
 	args: requestArgs.fields,
-	returns: v.object({ complete: v.boolean(), receiptId: v.id('operationReceipts') }),
+	returns: v.object({ complete: v.boolean(), outputId: v.id('contractOutputs') }),
 	handler: async (ctx, args) => {
+		admitOperation(args.operationId);
 		const { owner } = await reserved(ctx, args);
-		return { complete: await prepareCurrent(ctx, owner), receiptId: owner._id };
+		return { complete: await prepareCurrent(ctx, owner), outputId: owner._id };
 	}
 });
 export const prepareDispatch = internalMutation({
 	args: { id: v.id('hubspotQuotePushes'), claim: v.string(), generation: v.number() },
-	returns: v.object({ complete: v.boolean(), receiptId: v.id('operationReceipts') }),
+	returns: v.object({ complete: v.boolean(), outputId: v.id('contractOutputs') }),
 	handler: async (ctx, args) => {
 		const row = await ctx.db.get('hubspotQuotePushes', args.id);
 		if (
@@ -436,7 +479,7 @@ export const prepareDispatch = internalMutation({
 			access = await gated(ctx, reservationManifest);
 		if (!access || access.connection.generation !== args.generation)
 			throw new ConvexError('The HubSpot credentials changed.');
-		return { complete: await prepareCurrent(ctx, owner), receiptId: owner._id };
+		return { complete: await prepareCurrent(ctx, owner), outputId: owner._id };
 	}
 });
 /** Commit immutable bytes and provider identity; reused pushes retain their first owner. */
@@ -450,9 +493,10 @@ export const commit = internalMutation({
 	returns: v.union(
 		v.object({ kind: v.literal('reused'), summary: quoteSummary }),
 		v.object({ kind: v.literal('payload-required') }),
-		v.object({ kind: v.literal('preparing'), receiptId: v.id('operationReceipts') })
+		v.object({ kind: v.literal('preparing'), outputId: v.id('contractOutputs') })
 	),
 	handler: async (ctx, args) => {
+		admitOperation(args.operationId);
 		const { access, key: reservationKey, reservation, owner } = await reserved(ctx, args);
 		if (
 			![args.fingerprint, args.payloadHash, args.canonicalKey].every((value) =>
@@ -489,7 +533,7 @@ export const commit = internalMutation({
 				'The contract access or linked HubSpot deal changed. Prepare a new push.'
 			);
 		if (!fresh || fresh.purpose !== 'release' || fresh.phase !== 'sealed')
-			return { kind: 'preparing' as const, receiptId: owner._id };
+			return { kind: 'preparing' as const, outputId: owner._id };
 		await requireQuoteFence(ctx, owner, current.contract);
 		if (fresh.identity !== reservation.identity) throw staleSource();
 		let prior: Push | null = null;
@@ -517,14 +561,14 @@ export const commit = internalMutation({
 				candidate.destination.dealId !== reservation.destination.hubspot!.dealId
 			)
 				throw new Error('Invalid quote deduplication identity.');
-			if (state !== 'queued') {
+			if (candidate.state !== 'queued') {
 				prior = candidate;
 				break;
 			}
 			try {
 				const existing = await outputReservation(ctx, candidate);
 				if (!(await prepareCurrent(ctx, existing.owner)))
-					return { kind: 'preparing' as const, receiptId: existing.owner._id };
+					return { kind: 'preparing' as const, outputId: existing.owner._id };
 				if (await authorized(ctx, candidate)) {
 					prior = candidate;
 					break;
@@ -545,9 +589,10 @@ export const commit = internalMutation({
 			id =
 				prior?._id ??
 				(await ctx.db.insert('hubspotQuotePushes', {
+					format: 'full',
 					companyId: reservation.companyId,
 					contractId: reservation.contractId,
-					reservationReceiptId: owner._id,
+					outputId: owner._id,
 					documentId: reservation.documentId,
 					destination: reservation.destination.hubspot!,
 					canonicalKey: args.canonicalKey,
@@ -562,14 +607,29 @@ export const commit = internalMutation({
 				}));
 		await remember(ctx, access.companyId, key, inputs, id, {
 			contractId: args.id,
-			documentId: reservation.documentId,
-			kind: 'quote-commit',
-			providerOperationId: id,
-			requestedAt: reservation.requestedAt
+			outputId: owner._id,
+			kind: 'quote-commit'
 		});
+		await ctx.db.patch('contractOutputs', owner._id, { providerOperationId: id, committedAt: now });
+		const root = await ctx.db.get('savedContracts', args.id);
+		if (!root || root.companyId !== access.companyId)
+			throw new Error('Quote request root changed.');
+		if (!root.quoteRequests || root.quoteRequests.watermark < reservation.requestedAt)
+			throw new Error('Quote request watermark changed.');
+		if (
+			!root.quoteRequests.latest ||
+			root.quoteRequests.latest.requestedAt < reservation.requestedAt
+		)
+			await ctx.db.patch('savedContracts', root._id, {
+				quoteRequests: {
+					...root.quoteRequests,
+					latest: { requestedAt: reservation.requestedAt, pushId: id }
+				}
+			});
 		if (prior) {
-			await ctx.db.patch('operationReceipts', owner._id, { outputPreparation: undefined });
+			await ctx.db.patch('contractOutputs', owner._id, { outputPreparation: undefined });
 			await queueOutputProofCleanup(ctx, owner._id, fresh.generation);
+			await settleOutput(ctx, owner._id);
 		} else await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
 		return {
 			kind: 'reused' as const,
@@ -587,38 +647,30 @@ export const latest = query({
 	returns: v.union(quoteSummary, v.null()),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		if (!accessibleContract(await ctx.db.get('savedContracts', args.id), access)) return null;
-		let row = args.pushId ? await ctx.db.get('hubspotQuotePushes', args.pushId) : null;
-		if (!args.pushId) {
-			const latest = await ctx.db
-				.query('operationReceipts')
-				.withIndex('by_contractId_and_kind_and_requestedAt', (q) =>
-					q.eq('contractId', args.id).eq('kind', 'quote-commit')
-				)
-				.order('desc')
-				.first();
-			if (latest && latest.companyId === access.companyId) {
-				const value = await receiptPayload(ctx, latest);
-				const id = ctx.db.normalizeId('hubspotQuotePushes', value.result);
-				row = id ? await ctx.db.get('hubspotQuotePushes', id) : null;
-			}
-		}
+		const root = await ctx.db.get('savedContracts', args.id);
+		if (!root || !accessibleContract(root, access)) return null;
+		const pushId = args.pushId ?? root.quoteRequests?.latest?.pushId;
+		const row = pushId ? await ctx.db.get('hubspotQuotePushes', pushId) : null;
 		return row?.companyId === access.companyId && row.contractId === args.id ? summary(row) : null;
 	}
 });
 
 /** Retire only work proven unsent, or stop readback while preserving its known quote. */
 async function clearCurrent(ctx: MutationCtx, row: Push) {
-	const owner = await ctx.db.get('operationReceipts', row.reservationReceiptId);
-	const proof = owner?.outputPreparation;
+	const owner = await ctx.db.get('contractOutputs', row.outputId);
+	const proof = owner?.format === 'full' ? owner.outputPreparation : undefined;
 	if (owner && (owner.companyId !== row.companyId || owner.contractId !== row.contractId))
 		throw new Error('Quote proof cleanup ownership changed.');
-	if (owner && proof?.purpose === 'release') {
-		await ctx.db.patch('operationReceipts', owner._id, { outputPreparation: undefined });
+	if (owner?.format === 'full' && proof?.purpose === 'release') {
+		await ctx.db.patch('contractOutputs', owner._id, { outputPreparation: undefined });
 		await queueOutputProofCleanup(ctx, owner._id, proof.generation);
 	}
 }
-async function stop(ctx: MutationCtx, row: Push, message: string) {
+async function stop(
+	ctx: MutationCtx,
+	row: import('./outputLifecycle').FullQuotePush,
+	message: string
+) {
 	await clearCurrent(ctx, row);
 	if (row.workId) await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
 	await ctx.db.patch('hubspotQuotePushes', row._id, {
@@ -630,6 +682,7 @@ async function stop(ctx: MutationCtx, row: Push, message: string) {
 		dueAt: undefined,
 		updatedAt: Date.now()
 	});
+	await settleQuoteOutput(ctx, row._id);
 }
 
 export const pump = internalMutation({
@@ -643,6 +696,7 @@ export const pump = internalMutation({
 				.withIndex('by_state_and_dueAt', (q) => q.eq('state', state).lte('dueAt', now))
 				.take(20);
 			for (const row of rows) {
+				if (row.format !== 'full') continue;
 				const metrics = await ctx.meta.getTransactionMetrics();
 				if (
 					metrics.bytesRead.remaining < 3_000_000 ||
@@ -731,7 +785,7 @@ export const start = internalMutation({
 	args: { id: v.id('hubspotQuotePushes'), claim: v.string() },
 	returns: v.union(
 		v.object({
-			push: schema.doc('hubspotQuotePushes'),
+			push: fullQuotePush.extend({ _id: v.id('hubspotQuotePushes'), _creationTime: v.number() }),
 			connection: schema.doc('hubspotConnections'),
 			title: v.string()
 		}),
@@ -741,6 +795,7 @@ export const start = internalMutation({
 		const row = await ctx.db.get('hubspotQuotePushes', args.id);
 		if (
 			!row ||
+			row.format !== 'full' ||
 			row.claim !== args.claim ||
 			row.leaseUntil !== undefined ||
 			!['queued', 'verifying'].includes(row.state)
@@ -828,7 +883,7 @@ export const settle = internalMutation({
 	args: {
 		id: v.id('hubspotQuotePushes'),
 		claim: v.string(),
-		state: schema.doc('hubspotQuotePushes').fields.state,
+		state: quoteState,
 		quoteId: v.optional(v.string()),
 		url: v.optional(v.string()),
 		message: v.optional(v.string()),
@@ -838,7 +893,7 @@ export const settle = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const row = await ctx.db.get('hubspotQuotePushes', args.id);
-		if (!row || row.claim !== args.claim) return null;
+		if (!row || row.format !== 'full' || row.claim !== args.claim) return null;
 		if (!['queued', 'dispatched', 'verifying', 'unknown'].includes(row.state)) return null;
 		const attempts = row.readAttempts + (row.state === 'verifying' ? 1 : 0);
 		const state =
@@ -894,6 +949,7 @@ export const settle = internalMutation({
 			workId: undefined
 		});
 		if (state !== 'queued') await clearCurrent(ctx, row);
+		await settleQuoteOutput(ctx, row._id);
 		if (dueAt !== undefined)
 			await ctx.scheduler.runAfter(
 				Math.max(0, dueAt - Date.now()),
@@ -916,7 +972,7 @@ export const check = mutation({
 			!accessibleContract(await ctx.db.get('savedContracts', row.contractId), access)
 		)
 			throw new ConvexError('This quote is unavailable.');
-		if (row.state !== 'attention' || !row.quoteId) return null;
+		if (row.format !== 'full' || row.state !== 'attention' || !row.quoteId) return null;
 		if (!row.fileId || (row.payloadExpiresAt ?? 0) <= Date.now())
 			throw new ConvexError(
 				'The verification bytes expired. Review the existing quote in HubSpot; Dinu cannot recheck this transfer.'
@@ -963,7 +1019,10 @@ export const expire = internalMutation({
 					)
 		).paginate({ cursor: args.cursor ?? null, numItems: 25 });
 		for (const row of page.page) {
+			if (row.format !== 'full') continue;
 			if (kind === 'diagnostic') {
+				if (!conclusiveQuote(row) || row.workId || row.claim || row.leaseUntil !== undefined)
+					continue;
 				await ctx.db.patch('hubspotQuotePushes', row._id, {
 					providerFailure: undefined
 				});
@@ -978,6 +1037,7 @@ export const expire = internalMutation({
 			const active = ['queued', 'dispatched', 'verifying'].includes(row.state);
 			await ctx.db.patch('hubspotQuotePushes', row._id, {
 				fileId: undefined,
+				deletingFileId: row.fileId ?? row.deletingFileId,
 				payloadExpiresAt: undefined,
 				workId: undefined,
 				leaseUntil: undefined,
@@ -1001,7 +1061,12 @@ export const expire = internalMutation({
 					: {})
 			});
 			await clearCurrent(ctx, row);
-			if (row.fileId) await deleteUnownedFile(ctx, row.fileId);
+			await settleQuoteOutput(ctx, row._id);
+			await finishOutputFileDeletion(ctx, {
+				...row,
+				fileId: undefined,
+				deletingFileId: row.fileId ?? row.deletingFileId
+			});
 		}
 		if (!page.isDone)
 			await ctx.scheduler.runAfter(0, internal.hubspotQuotes.expire, {

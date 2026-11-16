@@ -1,5 +1,9 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
+	import {
+		TemplateSource,
+		setTemplateSource
+	} from '../../../src/lib/playbook/template-source.svelte';
 	import { useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../../src/convex/_generated/api';
 	import { HubSpotDeals, setHubSpotDeals } from '../../../src/lib/hubspot-deals.svelte';
@@ -25,7 +29,15 @@
 		closing: false,
 		transportGeneration: 0
 	} as ReturnType<typeof import('../../../src/lib/auth/viewer-session.svelte').useViewerSession>);
-	setViewer(() => ({ company: { id: 'company' }, membership: { id: 'membership' } }) as Viewer);
+	setViewer(
+		() =>
+			({
+				profile: { id: 'profile' },
+				helpPreferences: { rep: true, buyer: true },
+				company: { id: 'company' },
+				membership: { id: 'membership' }
+			}) as Viewer
+	);
 	const hubspot = setHubSpotDeals(
 		new HubSpotDeals({
 			client: useConvexClient(),
@@ -39,9 +51,17 @@
 		})
 	);
 	onDestroy(() => hubspot.destroy());
+	const source = setTemplateSource(
+		new TemplateSource(
+			useConvexClient(),
+			'membership' as import('../../../src/convex/_generated/dataModel').Id<'memberships'>
+		)
+	);
+	onDestroy(() => source.destroy());
 </script>
 
 <button onclick={() => goto('/contracts')}>Contracts</button>
 {#if screen.home}<main>Contracts content</main>{:else}<Layout
-		data={{ contractDestination: screen.destination }}>{#snippet children()}{/snippet}</Layout
+		data={{ workspaceHints: null, contractDestination: screen.destination }}
+		>{#snippet children()}{/snippet}</Layout
 	>{/if}

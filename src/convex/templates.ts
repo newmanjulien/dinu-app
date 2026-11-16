@@ -48,7 +48,6 @@ export type LiveSnapshot = {
 	templateSource: Doc<'templateSources'>;
 	blocks: SourceBlock[];
 	items: TemplateDetailRecord[];
-	normalized?: boolean;
 };
 export async function readLiveSnapshot(
 	ctx: QueryCtx,
@@ -78,13 +77,12 @@ export async function readLiveSnapshot(
 		version.templateSourceId !== source.templateSource._id
 	)
 		throw templateRejected('The template version is missing.');
-	const ordered = orderedHeads(version, items, false);
+	const ordered = orderedHeads(version, items);
 	return {
 		pointer,
 		templateSource: source.templateSource,
 		blocks: records,
-		items: await Promise.all(ordered.map((item) => hydrateHead(ctx, item))),
-		normalized: items.every((item) => 'format' in item)
+		items: await Promise.all(ordered.map((item) => hydrateHead(ctx, item)))
 	};
 }
 
@@ -154,8 +152,6 @@ export async function saveTemplateVersion(
 		(company.templateSourceId !== undefined && company.templateSourceId !== templateSourceId)
 	)
 		throw templateRejected('The template is not available.');
-	if (captured.items.length && !captured.normalized)
-		throw templateRejected('The template needs authoring migration.');
 	const capacity = await snapshotCapacity(ctx, captured);
 	try {
 		validatePlaybook(captured.blocks, captured.items.map(businessItem));
@@ -743,11 +739,7 @@ export function versionReferences(version: Doc<'templateVersions'>) {
 	return references;
 }
 /** Database creation-order ties never define the business manifest order. */
-export function orderedHeads(
-	version: Doc<'templateVersions'>,
-	heads: Doc<'playbookItems'>[],
-	normalized = true
-) {
+export function orderedHeads(version: Doc<'templateVersions'>, heads: Doc<'playbookItems'>[]) {
 	versionReferences(version);
 	const byId = new Map(heads.map((head) => [head._id, head]));
 	if (heads.length !== version.itemCount || byId.size !== heads.length)
@@ -757,8 +749,7 @@ export function orderedHeads(
 		if (
 			!head ||
 			head.companyId !== version.companyId ||
-			head.currentRevisionId !== reference.revisionId ||
-			(normalized && !('format' in head))
+			head.currentRevisionId !== reference.revisionId
 		)
 			throw templateRejected('The saved rule revision is missing.');
 		return head;

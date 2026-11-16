@@ -42,10 +42,15 @@ it('returns Contracts HTML data immediately and lets the account settle while ca
 	expect(result).not.toBeInstanceOf(Promise);
 	await Promise.resolve();
 	await Promise.resolve();
-	expect([...requests.pending.keys()]).toEqual(['accounts:viewer', 'accounts:startupHome']);
+	expect([...requests.pending.keys()]).toEqual([
+		'accounts:viewer',
+		'accounts:startupHome',
+		'accounts:setupStartup'
+	]);
 	requests.pending.get('accounts:viewer')!.resolve(null);
 	expect(await result.startup).toEqual({ viewer: null, userId: 'u', sessionId: 's' });
 	expect(requests.pending.get('accounts:startupHome')!.signal.aborted).toBe(false);
+	expect(requests.pending.get('accounts:setupStartup')!.signal.aborted).toBe(false);
 	await vi.advanceTimersByTimeAsync(5_001);
 	expect(await result.startupHome).toBeNull();
 });

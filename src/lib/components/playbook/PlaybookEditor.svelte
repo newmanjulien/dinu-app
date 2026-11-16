@@ -8,7 +8,7 @@
 	import Button from '$lib/ui/Button.svelte';
 	import type { DeepReadonly } from '../../immutable';
 	import { isRepItem, type Concession } from '$lib/playbook/model';
-	import { instructionsFields } from '$lib/playbook/instructions-fields';
+	import { approvalGuidanceField, instructionsFields } from '$lib/playbook/instructions-fields';
 	import type { AuthoringController } from '$lib/playbook/authoring-controller.svelte';
 	import ConcessionCreationEditor from './ConcessionCreationEditor.svelte';
 	import ReplacementEditor from './ReplacementEditor.svelte';
@@ -19,12 +19,14 @@
 	let {
 		controller,
 		animateContent = false,
+		embedded = false,
 		onCancel,
 		onPrimary,
 		onDelete
 	}: {
 		controller: AuthoringController;
 		animateContent?: boolean;
+		embedded?: boolean;
 		onCancel: () => void;
 		onPrimary: () => void;
 		onDelete: () => void;
@@ -86,7 +88,7 @@
 	});
 </script>
 
-<PlaybookCard label={copy.editorLabel}>
+{#snippet content()}
 	{#key entry}
 		{#if !creating && draft.persistedId}
 			<div
@@ -171,7 +173,7 @@
 					aria-label="Summary for this clause"
 					placeholder={instructionsFields[0].placeholder}
 					bind:value={
-						() => repDraft?.instructions.summary ?? '',
+						() => repDraft?.instructions?.summary ?? '',
 						(text) => controller.setInstruction('summary', text)
 					}
 				/>
@@ -214,12 +216,25 @@
 								aria-label={`${field.label} for this clause`}
 								placeholder={field.placeholder}
 								bind:value={
-									() => repDraft?.instructions[field.key] ?? '',
+									() => repDraft?.instructions?.[field.key] ?? '',
 									(text) => controller.setInstruction(field.key, text)
 								}
 							/>
 						</PlaybookSection>
 					{/each}
+					<PlaybookSection value="approval-policy" label={approvalGuidanceField.label} bind:open>
+						<TextArea
+							aria-label={`${approvalGuidanceField.label} for this clause`}
+							placeholder={approvalGuidanceField.placeholder}
+							bind:value={
+								() =>
+									repDraft?.approvalPolicy.kind === 'required'
+										? repDraft.approvalPolicy.instructions
+										: '',
+								(text) => controller.setApprovalGuidance(text)
+							}
+						/>
+					</PlaybookSection>
 					{#each tiers as tier}
 						{@const concessions = repDraft.concessions.filter(
 							(concession) => concession.tier === tier
@@ -298,4 +313,8 @@
 			</div>
 		</div>
 	{/key}
-</PlaybookCard>
+{/snippet}
+
+{#if embedded}{@render content()}{:else}<PlaybookCard label={copy.editorLabel}
+		>{@render content()}</PlaybookCard
+	>{/if}

@@ -5,11 +5,16 @@
 	import { onDestroy, untrack, type Snippet } from 'svelte';
 	import { HubSpotDeals, setHubSpotDeals } from '../../../src/lib/hubspot-deals.svelte';
 	import { setViewer, setViewerSession } from '../../../src/lib/auth/viewer-session.svelte';
-	import { setWorkspaceRuntime } from '../../../src/lib/auth/workspace-context.svelte';
+	import {
+		setWorkspaceRuntime,
+		type WorkspaceRuntime
+	} from '../../../src/lib/auth/workspace-context.svelte';
 	import {
 		setStartupData,
 		setStartupHome,
+		setStartupSetup,
 		type StartupHome,
+		type StartupSetup,
 		type StartupData
 	} from '../../../src/lib/auth/startup-data';
 	import {
@@ -41,7 +46,10 @@
 		workspace,
 		startup,
 		startupHome,
+		startupSetup,
 		deferCompanySetup = false,
+		runtime,
+		deals,
 		children
 	}: {
 		state: CsmState;
@@ -50,7 +58,10 @@
 		workspace?: DocumentWorkspace;
 		startup?: StartupData | null;
 		startupHome?: StartupHome | null;
+		startupSetup?: StartupSetup | null;
 		deferCompanySetup?: boolean;
+		runtime?: WorkspaceRuntime;
+		deals?: HubSpotDeals;
 		children: Snippet;
 	} = $props();
 	const copyFeedback = setBuyerLinkCopyFeedback();
@@ -60,51 +71,55 @@
 	accountContext.loading = false;
 	setViewer(() => state.viewer);
 	const hubspot = setHubSpotDeals(
-		new HubSpotDeals({
-			client: {
-				action: async () => {
-					throw new Error('HubSpot is not installed in this fixture.');
-				}
-			},
-			membershipId: untrack(() => state.viewer.membership.id),
-			connection: {
-				data: {
-					quotes: {
-						installationId: null,
-						epoch: 0,
-						installed: false,
-						connected: false,
-						enabled: false,
-						pushEnabled: false
-					},
-					status: 'uninstalled',
-					enabled: false,
-					configured: false,
-					accountId: null,
-					connectionId: null,
-					shared: false,
-					removal: null,
-					installedAt: null,
-					companyReadGranted: false
+		untrack(() => deals) ??
+			new HubSpotDeals({
+				client: {
+					action: async () => {
+						throw new Error('HubSpot is not installed in this fixture.');
+					}
 				},
-				error: undefined
-			},
-			identity: () => state.session.preparedSessionId ?? null
-		})
+				membershipId: untrack(() => state.viewer.membership.id),
+				connection: {
+					data: {
+						quotes: {
+							installationId: null,
+							epoch: 0,
+							installed: false,
+							connected: false,
+							enabled: false,
+							pushEnabled: false
+						},
+						status: 'uninstalled',
+						enabled: false,
+						configured: false,
+						accountId: null,
+						connectionId: null,
+						shared: false,
+						removal: null,
+						installedAt: null,
+						companyReadGranted: false
+					},
+					error: undefined
+				},
+				identity: () => state.session.preparedSessionId ?? null
+			})
 	);
 	onDestroy(() => hubspot.destroy());
 	untrack(() => setViewerSession(state.session));
+	setStartupSetup(() => startupSetup ?? null);
 	// Only Home needs this provider; other harness users may have no Convex client.
 	untrack(() => {
 		if (deferCompanySetup) setCompanySetup(() => false);
 	});
-	setWorkspaceRuntime({
-		hostReady: true,
-		paused: false,
-		error: '',
-		navigationIntent: 0,
-		retry() {}
-	});
+	setWorkspaceRuntime(
+		untrack(() => runtime) ?? {
+			hostReady: true,
+			paused: false,
+			error: '',
+			navigationIntent: 0,
+			retry() {}
+		}
+	);
 	setInteractionController(new InteractionController());
 	const feedback = setWorkspaceFeedback(new WorkspaceFeedback(() => []));
 	onDestroy(() => feedback.destroy());

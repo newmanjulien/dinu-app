@@ -57,16 +57,16 @@ export const supportState = query({
 		requireExpectedDocument(contract, args.expectedDocument);
 		const index = await DiscussionIndex.open(ctx, contract.root);
 		await proposalRoot(ctx, contract, index, args);
-		const state = await changeHead(ctx, contract, 'buyer-proposal', args.threadId, index);
+		const state = await changeHead(ctx, contract, 'buyer-link', args.threadId, index);
 		return {
 			currentChangeId: state?.current?._id ?? null,
 			appliedChangeId: state?.applied?._id ?? null,
 			decisionId: state?.decision?._id ?? null,
 			status: state?.head.status ?? 'approved',
 			currentRootMessageId:
-				state?.current?.kind === 'buyer-proposal' ? state.current.source.rootMessageId : null,
+				state?.current?.kind === 'buyer-link' ? state.current.source.rootMessageId : null,
 			currentRootRevision:
-				state?.current?.kind === 'buyer-proposal' ? state.current.source.rootRevision : null
+				state?.current?.kind === 'buyer-link' ? state.current.source.rootRevision : null
 		};
 	}
 });

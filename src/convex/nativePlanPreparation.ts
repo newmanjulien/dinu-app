@@ -1,3 +1,4 @@
+import { expireOperation } from './operationExpiry';
 import { ConvexError, getConvexSize, v, type Infer } from 'convex/values';
 import { makeFunctionReference } from 'convex/server';
 import type { Doc, Id } from './_generated/dataModel';
@@ -35,6 +36,8 @@ import { activeJob } from './emailDeliveries';
 import type { Contract } from './contractState';
 import { ensureDiscussionMaintenance } from './discussionMaintenance';
 import { advanceConstruction } from './nativeConstruction';
+import { assertChangeHead } from './contractChangeHeads';
+import { withoutNativeStage } from './nativeStage';
 
 type Validation = Infer<typeof nativeValidation>;
 type Owner = { receiptId: Id<'operationReceipts'>; generation: number; unit: number };
@@ -52,11 +55,6 @@ const hash = (value: unknown) => receiptChunkFingerprint(canonicalJson(value));
 type HeadRecord = {
 	key: string;
 	head: Doc<'contractChangeHeads'> | null;
-	current: Id<'contractChanges'> | null;
-	applied: Id<'contractChanges'> | null;
-	currentDecision: Id<'contractChangeDecisions'> | null;
-	appliedDecision: Id<'contractChangeDecisions'> | null;
-	roots: Id<'contractChanges'>[];
 	tupleHash: string;
 };
 
@@ -133,32 +131,27 @@ async function append(
 }
 
 function headRecord(key: string, item: Awaited<ReturnType<typeof hydrateHead>> | null): HeadRecord {
-	const roots = [
-		...new Set(
-			[item?.current?._id, item?.applied?._id].filter((id): id is Id<'contractChanges'> =>
-				Boolean(id)
-			)
-		)
-	];
-	const tuple = {
-		key,
-		head: item?.storedHead ?? null,
-		current: item?.current?._id ?? null,
-		applied: item?.applied?._id ?? null,
-		currentDecision: item?.decision?._id ?? null,
-		appliedDecision: item?.appliedDecision?._id ?? null,
-		roots
-	};
+	const tuple = { key, head: item?.storedHead ?? null };
 	return {
 		...tuple,
 		tupleHash: hash([
 			tuple,
-			item?.current ?? null,
-			item?.applied ?? null,
-			item?.decision ?? null,
-			item?.appliedDecision ?? null
+			item?.current ? withoutNativeStage(item.current) : null,
+			item?.applied ? withoutNativeStage(item.applied) : null,
+			item?.decision ? withoutNativeStage(item.decision) : null,
+			item?.appliedDecision ? withoutNativeStage(item.appliedDecision) : null
 		])
 	};
+}
+
+function sourceRoots(record: HeadRecord) {
+	return [
+		...new Set(
+			[record.head?.current?.changeId, record.head?.applied?.changeId].filter(
+				(id): id is Id<'contractChanges'> => Boolean(id)
+			)
+		)
+	];
 }
 
 function saveInput(inputs: string, contractId: Id<'savedContracts'>, operationId: string) {
@@ -329,16 +322,24 @@ async function planRecord(
 	if (
 		!record ||
 		typeof record !== 'object' ||
-		!('roots' in record) ||
-		!Array.isArray(record.roots) ||
-		record.roots.length > 2 ||
+		!('head' in record) ||
 		!('key' in record) ||
 		typeof record.key !== 'string'
 	)
 		throw new Error('Native validation record is invalid.');
-	for (const id of record.roots)
-		if (typeof id !== 'string' || !ctx.db.normalizeId('contractChanges', id))
-			throw new Error('Invalid native source ID.');
+	const head = (record as HeadRecord).head;
+	if (head) {
+		assertChangeHead(head);
+		if (
+			head.kind !== 'playbook' ||
+			head.companyId !== row.companyId ||
+			head.contractId !== row.contractId ||
+			head.key !== record.key
+		)
+			throw new Error('Native validation head ownership is invalid.');
+	}
+	for (const id of sourceRoots(record as HeadRecord))
+		if (!ctx.db.normalizeId('contractChanges', id)) throw new Error('Invalid native source ID.');
 	return record as HeadRecord;
 }
 
@@ -369,7 +370,7 @@ export const source = internalQuery({
 		}
 		const record = await planRecord(ctx, row, native);
 		if (!record) return { kind: 'complete' };
-		const id = native.ancestorId ?? record.roots[native.sourceRoot];
+		const id = native.ancestorId ?? sourceRoots(record)[native.sourceRoot];
 		if (!id) return { kind: 'next-record' };
 		if (native.ancestorIds.includes(id) || native.ancestorIds.length >= MAX_APPROVED_CHANGE_CHAIN)
 			throw new ConvexError('This widget has too many wording revisions.');
@@ -421,7 +422,7 @@ export const changePage = internalQuery({
 		const record = await planRecord(ctx, state.row, state.native);
 		if (
 			!record ||
-			(state.native.ancestorId ?? record.roots[state.native.sourceRoot]) !== args.changeId
+			(state.native.ancestorId ?? sourceRoots(record)[state.native.sourceRoot]) !== args.changeId
 		)
 			return null;
 		if (!Number.isSafeInteger(args.offset) || args.offset < 0)
@@ -469,6 +470,7 @@ export const checkpointSource = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await owned(ctx, args);
 		if (!state || state.native.phase !== 'sources') return null;
+		if (await expireOperation(ctx, state.row)) return null;
 		const { row, contract } = state,
 			native = structuredClone(state.native),
 			proof = args.proof;
@@ -496,17 +498,20 @@ export const checkpointSource = internalMutation({
 				if (record) throw new Error('Native source validation is incomplete.');
 				native.phase = 'validated';
 			} else if (proof.kind === 'next-record') {
-				if (!record || native.ancestorId || native.sourceRoot < record.roots.length)
+				if (!record || native.ancestorId || native.sourceRoot < sourceRoots(record).length)
 					throw new Error('Native predecessor validation is incomplete.');
 				native.sourceRecord++;
 				native.sourceRoot = 0;
 				native.ancestorIds = [];
 			} else {
-				if (!record || (native.ancestorId ?? record.roots[native.sourceRoot]) !== proof.changeId)
+				if (
+					!record ||
+					(native.ancestorId ?? sourceRoots(record)[native.sourceRoot]) !== proof.changeId
+				)
 					throw new Error('Native source cursor changed.');
 				const change = await readChangeRow(ctx, proof.changeId, contract);
 				if (
-					hash(change) !== proof.rowHash ||
+					hash(withoutNativeStage(change)) !== proof.rowHash ||
 					change.chunks !== proof.chunks ||
 					change.dataBytes !== proof.bytes
 				)
@@ -555,6 +560,7 @@ export const failSource = internalMutation({
 			native.unit !== args.unit
 		)
 			return null;
+		if (await expireOperation(ctx, row)) return null;
 		// The action only supplies a terminal diagnostic for this exact private unit.
 		// Revocation must still be allowed to fail the old operation without granting access.
 		await sealReceipt(ctx, row, (await receiptPayload(ctx, row)).inputs, {

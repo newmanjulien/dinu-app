@@ -1,11 +1,12 @@
 import { v } from 'convex/values';
 
 /** Physical attempt IDs remain the browser acknowledgment identity. Immutable request
- * evidence belongs solely to the original server-owned reservation receipt. */
+ * evidence belongs solely to the durable output. */
 export const exportAttempt = v.object({
+	format: v.literal('full'),
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	reservationReceiptId: v.id('operationReceipts'),
+	outputId: v.id('contractOutputs'),
 	documentId: v.id('contractDocuments'),
 	membershipId: v.id('memberships'),
 	profileId: v.id('profiles'),
@@ -16,6 +17,7 @@ export const exportAttempt = v.object({
 	state: v.union(v.literal('preparing'), v.literal('ready'), v.literal('expired')),
 	claim: v.string(),
 	fileId: v.optional(v.id('_storage')),
+	deletingFileId: v.optional(v.id('_storage')),
 	filename: v.string(),
 	sha256: v.optional(v.string()),
 	size: v.optional(v.number()),
@@ -23,4 +25,20 @@ export const exportAttempt = v.object({
 	acknowledgedAt: v.optional(v.number()),
 	acknowledgedOn: v.optional(v.number())
 });
-export const storedExportAttempt = exportAttempt;
+export const compactExportAttempt = exportAttempt
+	.pick(
+		'companyId',
+		'contractId',
+		'outputId',
+		'membershipId',
+		'profileId',
+		'createdAt',
+		'filename',
+		'sha256',
+		'size',
+		'releasedAt',
+		'acknowledgedAt',
+		'acknowledgedOn'
+	)
+	.extend({ format: v.literal('compact'), state: v.literal('expired') });
+export const storedExportAttempt = v.union(exportAttempt, compactExportAttempt);

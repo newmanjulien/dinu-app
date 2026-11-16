@@ -1,10 +1,11 @@
-import { reviewOperationInputs } from '../lib/contract/changes';
+import { expireOperation } from './operationExpiry';
+import { reviewOperationInputs, reviewGroupKey } from '../lib/contract/changes';
 import { ConvexError, type Infer } from 'convex/values';
 import type { Doc, Id } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import type { CompanyAccess } from './auth';
 import type { Contract } from './contractState';
-import type { ApprovalContext } from '../lib/contract/changes';
+import type { ChangeKind } from '../lib/contract/changes';
 import { MAX_SELECTED_CONCESSIONS } from '../lib/document/selection-limits';
 import { changeHead, hydrateHead } from './contractChanges';
 import { requireExpectedDocument } from './contractAuthority';
@@ -16,7 +17,7 @@ import { authorizePreparedOperation, sellerPreparationActor } from './discussion
 import {
 	actorOf,
 	actionKey,
-	operation,
+	admitOperation,
 	receipt,
 	remember,
 	receiptPayload,
@@ -33,6 +34,7 @@ import {
 } from './nativeEmailValidators';
 import { approvalRequest } from './contractValidators';
 import { completionContext } from './contractCompletion';
+import { assertChangeHead, pendingAdmissionRevision } from './contractChangeHeads';
 import { requireContractWork } from './contractPolicy';
 import { prepareActivity } from './hubspotRecords';
 import { documentBytes } from './storageCapacity';
@@ -56,7 +58,7 @@ const fakeId = <T extends 'emailDeliveries' | 'operationReceipts' | 'approvalReq
 export async function latestFor(
 	ctx: QueryCtx,
 	contractId: Id<'savedContracts'>,
-	context: ApprovalContext
+	context: ChangeKind
 ) {
 	return ctx.db
 		.query('approvalRequests')
@@ -68,7 +70,7 @@ export async function latestFor(
 export async function requestCoverage(
 	ctx: QueryCtx,
 	contract: Contract,
-	context: ApprovalContext,
+	context: ChangeKind,
 	request: Doc<'approvalRequests'> | null,
 	index?: DiscussionIndex
 ) {
@@ -103,11 +105,14 @@ export async function requestCoverage(
 	for (const head of heads) {
 		if (head.companyId !== contract.root.companyId)
 			throw new Error('Playbook head ownership failed.');
-		if (head.playbook?.current?.policy !== 'required' || head.currentDecisionId) continue;
-		if (!head.currentChangeId || head.pendingAdmissionRevision === undefined)
-			throw new Error('Pending Playbook admission is missing.');
+		assertChangeHead(head);
+		if (head.kind !== 'playbook') throw new Error('Playbook selection has a different kind.');
+		if (head.current?.policy !== 'required' || head.current.review.kind !== 'pending') continue;
+		const admission = pendingAdmissionRevision(head.current);
+		if (admission === null || admission > contract.root.stateRevision)
+			throw new Error('Pending Playbook admission is missing or invalid.');
 		pendingCount++;
-		if (head.pendingAdmissionRevision <= request.cutoff) coveredPendingCount++;
+		if (admission <= request.cutoff) coveredPendingCount++;
 	}
 	if (pendingCount !== contract.root.playbookPendingCount)
 		throw new Error('Playbook pending summary differs.');
@@ -165,7 +170,7 @@ export async function readRequest(
 export async function ownedReviewLink(
 	ctx: QueryCtx,
 	contract: Contract,
-	context: ApprovalContext,
+	context: ChangeKind,
 	token?: string
 ) {
 	if (context !== 'buyer-link') return null;
@@ -186,7 +191,7 @@ export async function ownedReviewLink(
 export async function nativeReviewPage(
 	ctx: QueryCtx,
 	contract: Contract,
-	context: ApprovalContext,
+	context: ChangeKind,
 	purpose: 'approval' | 'decision',
 	cursor: string | null,
 	index: DiscussionIndex
@@ -194,9 +199,7 @@ export async function nativeReviewPage(
 	const result = await ctx.db
 		.query('contractChangeHeads')
 		.withIndex('by_contractId_and_kind', (q) =>
-			q
-				.eq('contractId', contract.root._id)
-				.eq('kind', context === 'playbook' ? 'playbook' : 'buyer-proposal')
+			q.eq('contractId', contract.root._id).eq('kind', context)
 		)
 		.paginate({ cursor, numItems: 4, maximumRowsRead: 4, maximumBytesRead: 256 * 1024 });
 	const entries: NativeEmailEntry[] = [];
@@ -209,8 +212,12 @@ export async function nativeReviewPage(
 			(purpose === 'approval' ? item.head.status !== 'pending' : item.head.status === 'pending')
 		)
 			continue;
-		const admission = item.head.status === 'pending' ? item.head.pendingAdmissionRevision : null;
-		if (admission === undefined || (admission !== null && admission > contract.root.stateRevision))
+		const admission =
+			item.head.status === 'pending' ? pendingAdmissionRevision(item.head.current) : null;
+		if (
+			(item.head.status === 'pending' && admission === null) ||
+			(admission !== null && admission > contract.root.stateRevision)
+		)
 			throw new Error('Pending native admission is invalid.');
 		entries.push({
 			changeId: current._id,
@@ -222,7 +229,7 @@ export async function nativeReviewPage(
 			source:
 				current.kind === 'playbook'
 					? { kind: 'playbook', value: current.source }
-					: { kind: 'buyer-proposal', value: current.source },
+					: { kind: 'buyer-link', value: current.source },
 			decision: item.decision
 				? { actor: item.decision.actor, decidedAt: item.decision.decidedAt }
 				: null
@@ -250,7 +257,7 @@ export async function effectiveSnapshotEntry(
 			: entry.status === 'pending' &&
 				entry.pendingAdmissionRevision !== null &&
 				entry.pendingAdmissionRevision <= cutoff &&
-				item.head.pendingAdmissionRevision === entry.pendingAdmissionRevision)
+				pendingAdmissionRevision(item.head.current) === entry.pendingAdmissionRevision)
 	);
 }
 export async function authorizeReviewDelivery(ctx: QueryCtx, delivery: ReviewDelivery) {
@@ -278,10 +285,7 @@ export async function authorizeReviewDelivery(ctx: QueryCtx, delivery: ReviewDel
 	if (delivery.event.kind === 'decision') {
 		if (access.membership.role !== 'admin') return null;
 		const summary = await reviewSet(ctx, contract, delivery.event.context),
-			completion =
-				delivery.event.context === 'playbook'
-					? contract.root.playbookCompletion
-					: contract.root.buyerLinkCompletion;
+			completion = contract.root.reviews[reviewGroupKey(delivery.event.context)].completion;
 		if (
 			!summary.complete ||
 			summary.identity !== delivery.event.identity ||
@@ -309,9 +313,15 @@ const resultFor = (input: EmailInput, extra: Partial<Result> = {}): Result => ({
 	...extra
 });
 const completionPatch = (
-	context: ApprovalContext,
-	value: Doc<'savedContracts'>['playbookCompletion']
-) => (context === 'playbook' ? { playbookCompletion: value } : { buyerLinkCompletion: value });
+	contract: Contract,
+	context: ChangeKind,
+	value: Doc<'savedContracts'>['reviews']['playbook']['completion']
+) => ({
+	reviews: {
+		...contract.root.reviews,
+		[reviewGroupKey(context)]: { ...contract.root.reviews[reviewGroupKey(context)], completion: value }
+	}
+});
 
 async function reserve(ctx: MutationCtx, writes: number, bytes: number, scheduled = 0, extra = {}) {
 	await admitDiscussionWork(ctx, { writes, bytes, ...extra });
@@ -356,10 +366,7 @@ async function finishSnapshot(
 	if ((latest?.id ?? null) !== snapshot.latestRequestId)
 		throw new ConvexError('The approval request changed. Reload before submitting.');
 	if (input.kind === 'review-completion') {
-		const current =
-			input.args.context === 'playbook'
-				? contract.root.playbookCompletion
-				: contract.root.buyerLinkCompletion;
+		const current = contract.root.reviews[reviewGroupKey(input.args.context)].completion;
 		if (
 			access.membership.role !== 'admin' ||
 			current?.reviewIdentity !== input.args.expectedIdentity ||
@@ -419,6 +426,7 @@ async function finishSnapshot(
 		: null;
 	const complete = {
 		...snapshot,
+		receiptId: undefined,
 		state: 'complete' as const,
 		chunks: progress.order,
 		bytes: progress.bytes,
@@ -468,7 +476,7 @@ async function finishSnapshot(
 		await ctx.db.patch(
 			'savedContracts',
 			contract.root._id,
-			completionPatch(input.args.context, {
+			completionPatch(contract, input.args.context, {
 				reviewIdentity: input.args.expectedIdentity,
 				completion: { kind: 'queued', deliveryId: finalDelivery._id }
 			})
@@ -505,7 +513,7 @@ export async function runEmailOperation(
 	access: CompanyAccess,
 	input: EmailInput
 ): Promise<Result> {
-	operation(input.args.operationId);
+	admitOperation(input.args.operationId);
 	if (input.kind === 'review-completion' && access.membership.role !== 'admin')
 		throw new ConvexError('Only company admins can manage reviews.');
 	if (
@@ -554,7 +562,7 @@ export async function runEmailOperation(
 		if (!input.args.notify)
 			return finish(
 				resultFor(input, { outcome: 'dismissed' }),
-				completionPatch(input.args.context, undefined)
+				completionPatch(contract, input.args.context, undefined)
 			);
 	} else {
 		requireExpectedDocument(contract, input.args.expectedDocument);
@@ -761,6 +769,7 @@ export async function runEmailOperation(
 
 /** Every unit reauthorizes the real original actor, ownership, source and native fences. */
 export async function advanceEmailOperation(ctx: MutationCtx, original: Doc<'operationReceipts'>) {
+	if (await expireOperation(ctx, original)) return;
 	const { contract, access } = await authorizePreparedOperation(ctx, original);
 	if (!access) throw new Error('Review snapshot requires the original seller.');
 	const stored = await receiptPayload(ctx, original),

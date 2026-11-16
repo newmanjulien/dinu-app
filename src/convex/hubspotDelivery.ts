@@ -160,7 +160,7 @@ export const data = internalQuery({
 });
 /** Read authority is scoped to this claim and original account, even after link repair. */
 export const authorizeRead = internalQuery({
-	args: { id: v.id('hubspotEvents'), claim: v.string(), generation: v.number() },
+	args: { id: v.id('hubspotEvents'), claim: v.string(), generation: v.number(), now: v.number() },
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const row = await ctx.db.get('hubspotEvents', args.id);
@@ -168,7 +168,7 @@ export const authorizeRead = internalQuery({
 			!row ||
 			row.claim !== args.claim ||
 			row.status !== 'working' ||
-			(row.leaseUntil ?? 0) <= Date.now() ||
+			(row.leaseUntil ?? 0) <= args.now ||
 			!(await availableCompany(ctx, row.companyId)) ||
 			env.HUBSPOT_ENABLED !== 'true' ||
 			env.HUBSPOT_DELIVERY_ENABLED !== 'true'

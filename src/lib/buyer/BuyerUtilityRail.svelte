@@ -12,6 +12,18 @@
 </script>
 
 <UtilityRail
+	states={{
+		...(tools?.states ?? {
+			search: { applicability: 'present', display: 'ready', enabled: false },
+			settings: { applicability: 'absent', display: 'ready' },
+			help: {
+				applicability: 'present',
+				display: 'ready',
+				enabled: contract.help.resolved
+			}
+		}),
+		download: { applicability: 'present', display: 'ready', enabled: !download.reason }
+	}}
 	interactionOwner={owner}
 	bind:desktopElement={desktop}
 	bind:mobileElement={mobile}
@@ -21,9 +33,10 @@
 		tools?.onSearchToggle(button);
 	}}
 	helpLabel={helpContent.buyer.title}
-	helpEnabled={tools?.helpEnabled ?? false}
+	helpEnabled={tools?.helpEnabled ?? contract.help.resolved}
 	onOpenHelp={() => {
-		tools?.onOpenHelp();
+		if (tools) tools.onOpenHelp();
+		else if (contract.help.resolved) contract.help.openManually();
 	}}
 	onDownload={() => {
 		void download.start();

@@ -29,7 +29,14 @@ import {
 	preparedDiscussionProof,
 	type DiscussionPreparationPlan
 } from './discussionPreparation';
-import { operation, receipt, sealReceipt, receiptSealWork, actionKey } from './operationReceipts';
+import {
+	operation,
+	admitOperation,
+	receipt,
+	sealReceipt,
+	receiptSealWork,
+	actionKey
+} from './operationReceipts';
 import { prepareDiscussionQuota } from './buyerActivityQuota';
 import { documentBytes } from './storageCapacity';
 
@@ -213,6 +220,7 @@ export async function writeDiscussion(
 	input: WriteInput,
 	resuming?: Doc<'operationReceipts'>
 ): Promise<Infer<typeof writeResult>> {
+	const { retryUntil, gcAfter } = admitOperation(input.operationId);
 	context.index = await DiscussionIndex.open(ctx, context.root, () =>
 		admitDiscussionWork(ctx, { reads: 1, queries: 1 })
 	);
@@ -357,6 +365,8 @@ export async function writeDiscussion(
 		const inputs = JSON.stringify(input);
 		const receiptRow = {
 			...owner,
+			retryUntil,
+			gcAfter,
 			actorKey: actor.key,
 			operationId: input.operationId,
 			fingerprint: fingerprint(JSON.stringify(command)),
@@ -480,6 +490,7 @@ export async function markDiscussionSeen(
 	input: SeenInput,
 	resuming?: Doc<'operationReceipts'>
 ): Promise<Infer<typeof markSeenResult>> {
+	admitOperation(input.operationId);
 	context.index = await DiscussionIndex.open(ctx, context.root, () =>
 		admitDiscussionWork(ctx, { reads: 1, queries: 1 })
 	);
@@ -598,17 +609,24 @@ export async function discussionResult(
 		return {
 			status: 'complete' as const,
 			operationId: input.operationId,
+			retryUntil: operation(input.operationId).retryUntil,
 			result: JSON.stringify(replay)
 		};
 	if (!prior) return null;
 	if (prior.state === 'complete') throw new ConvexError('This discussion is unavailable.');
 	await requireWriteTarget(ctx, context, input);
 	return prior.state === 'preparing'
-		? { status: 'preparing' as const, operationId: input.operationId }
+		? {
+				status: 'preparing' as const,
+				operationId: input.operationId,
+				retryUntil: operation(input.operationId).retryUntil
+			}
 		: {
 				status: 'failed' as const,
 				operationId: input.operationId,
-				error: prior.error ?? 'This operation could not complete.'
+				retryUntil: operation(input.operationId).retryUntil,
+				error: prior.error ?? 'This operation could not complete.',
+				errorCode: prior.errorCode
 			};
 }
 
@@ -631,12 +649,23 @@ export async function discussionSeenResult(
 	if (!prior) return null;
 	await requireSeenTargets(ctx, context, input);
 	return prior.state === 'preparing'
-		? { status: 'preparing' as const, operationId: input.operationId }
+		? {
+				status: 'preparing' as const,
+				operationId: input.operationId,
+				retryUntil: operation(input.operationId).retryUntil
+			}
 		: prior.state === 'complete'
-			? { status: 'complete' as const, operationId: input.operationId, result: prior.result }
+			? {
+					status: 'complete' as const,
+					operationId: input.operationId,
+					retryUntil: operation(input.operationId).retryUntil,
+					result: prior.result
+				}
 			: {
 					status: 'failed' as const,
 					operationId: input.operationId,
-					error: prior.error ?? 'This operation could not complete.'
+					retryUntil: operation(input.operationId).retryUntil,
+					error: prior.error ?? 'This operation could not complete.',
+					errorCode: prior.errorCode
 				};
 }

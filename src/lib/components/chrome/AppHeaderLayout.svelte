@@ -4,6 +4,7 @@
 	import { describeRoute } from '$lib/auth/routes';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
+	import Avatar from '$lib/components/ui/Avatar.svelte';
 	let {
 		role,
 		templateReady = false,
@@ -15,6 +16,7 @@
 		onToggleAudience,
 		onWarmTemplate,
 		audience,
+		profile,
 		account,
 		notice,
 		children
@@ -29,6 +31,7 @@
 		onToggleAudience?: () => void;
 		onWarmTemplate?: () => void;
 		audience?: Snippet;
+		profile?: { name: string; avatarUrl: string | null };
 		account?: Snippet;
 		notice?: Snippet;
 		children?: Snippet;
@@ -97,7 +100,12 @@
 		</nav>
 		<div class="ml-auto flex min-w-0 items-stretch gap-1.5 sm:gap-3">
 			{#if account}{@render account()}{:else}<div class="flex items-center">
-					<SkeletonBlock class="size-[25px] rounded-full" />
+					{#if profile}<Avatar
+							name={profile.name}
+							avatarUrl={profile.avatarUrl}
+							class="size-[25px]"
+						/>
+					{:else}<SkeletonBlock class="size-[25px] rounded-full" />{/if}
 				</div>{/if}
 		</div>
 	</div>

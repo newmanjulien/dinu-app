@@ -2,7 +2,7 @@ import { ConvexError, v } from 'convex/values';
 import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { mutation, query } from './_generated/server';
 import { seller } from './contractState';
-import { approvalContext, reviewSummary, changeKind, changeReview } from '../lib/contract/changes';
+import { reviewSummary, changeKind, changeReview } from '../lib/contract/changes';
 import { approvalRequest } from './contractValidators';
 import { nativeEmailEntry } from './emailValidators';
 import { decideChangeArgs, authorityResult, runAuthority } from './contractAuthority';
@@ -38,7 +38,7 @@ export const changes = query({
 });
 
 export const overview = query({
-	args: { membershipId: v.id('memberships'), id: v.id('savedContracts'), context: approvalContext },
+	args: { membershipId: v.id('memberships'), id: v.id('savedContracts'), context: changeKind },
 	returns: v.object({
 		summary: reviewSummary,
 		request: v.union(approvalRequest, v.null()),
@@ -62,7 +62,7 @@ export const entries = query({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.id('savedContracts'),
-		context: approvalContext,
+		context: changeKind,
 		requestId: v.string(),
 		paginationOpts: paginationOptsValidator
 	},
@@ -85,8 +85,8 @@ export const entries = query({
 		const native = await snapshotPage(ctx, delivery, {
 				...args.paginationOpts,
 				numItems: Math.max(1, Math.min(2, args.paginationOpts.numItems)),
-				maximumRowsRead: 2,
-				maximumBytesRead: 256 * 1024
+				maximumRowsRead: Math.min(2, args.paginationOpts.maximumRowsRead ?? 2),
+				maximumBytesRead: Math.min(256 * 1024, args.paginationOpts.maximumBytesRead ?? 256 * 1024)
 			}),
 			index = await DiscussionIndex.open(ctx, contract.root),
 			page = [];

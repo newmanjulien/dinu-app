@@ -39,7 +39,6 @@ async function fixture() {
 	const args = {
 		membershipId: owner.membershipId,
 		mode: 'setup' as const,
-		month: '2026-11',
 		timeZone: 'UTC'
 	};
 	return { t, owner, args };

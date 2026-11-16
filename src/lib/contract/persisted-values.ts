@@ -28,12 +28,33 @@ function array(
 }
 function validCompletion(value: unknown) {
 	return (
-		value === null ||
+		value === undefined ||
 		(object(value) &&
+			Object.keys(value).length === 2 &&
 			text(value.reviewIdentity) &&
 			object(value.completion) &&
-			((value.completion.kind === 'awaitingConfirmation' && text(value.completion.reviewerId)) ||
-				(value.completion.kind === 'queued' && text(value.completion.deliveryId))))
+			((Object.keys(value.completion).length === 2 &&
+				value.completion.kind === 'awaitingConfirmation' &&
+				text(value.completion.reviewerId)) ||
+				(Object.keys(value.completion).length === 2 &&
+					value.completion.kind === 'queued' &&
+					text(value.completion.deliveryId))))
+	);
+}
+function validReviewGroup(value: unknown) {
+	return (
+		object(value) &&
+		text(value.identity) &&
+		Object.keys(value).every((key) => key === 'identity' || key === 'completion') &&
+		validCompletion(value.completion)
+	);
+}
+function validReviews(value: unknown) {
+	return (
+		object(value) &&
+		Object.keys(value).length === 2 &&
+		validReviewGroup(value.playbook) &&
+		validReviewGroup(value.buyerLink)
 	);
 }
 function validHubSpot(value: unknown) {
@@ -53,8 +74,7 @@ export function validContractState(value: unknown): value is ContractState {
 		object(value) &&
 		text(value.title) &&
 		text(value.documentId) &&
-		text(value.playbookReviewIdentity) &&
-		text(value.buyerLinkReviewIdentity) &&
+		validReviews(value.reviews) &&
 		natural(value.documentRevision) &&
 		natural(value.stateRevision) &&
 		validHubSpot(value.hubspot) &&
@@ -62,8 +82,6 @@ export function validContractState(value: unknown): value is ContractState {
 			value.workBlock === null ||
 			value.workBlock === 'association-required' ||
 			value.workBlock === 'deal-unavailable') &&
-		validCompletion(value.playbookCompletion) &&
-		validCompletion(value.buyerLinkCompletion) &&
 		(value.lastOperationId === null || text(value.lastOperationId)) &&
 		array(
 			value.playbook,
@@ -220,7 +238,7 @@ function item(value: unknown, companyId: string) {
 				value.trigger.target.kind === 'text' &&
 				text(value.explanation) &&
 				Boolean(value.explanation.trim())
-			: value.audience === undefined &&
+			: value.audience === 'rep' &&
 				object(value.approvalPolicy) &&
 				(value.approvalPolicy.kind === 'none' ||
 					(value.approvalPolicy.kind === 'required' &&

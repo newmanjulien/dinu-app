@@ -16,6 +16,7 @@ import { retireDelivery } from './emailDisposal';
 import { deleteUnownedFile } from './storageOwnership';
 import { resetQuota } from './buyerActivityQuota';
 import { cleanupCompanyOperations } from './operationReceipts';
+import { cleanupCompanyOutputs } from './outputProofCleanup';
 import { cleanupCompanyExports } from './contractExports';
 
 async function cleanupCompanyContractState(
@@ -24,7 +25,7 @@ async function cleanupCompanyContractState(
 	budget: ReturnType<typeof cleanupBudget>
 ) {
 	const { drain } = budget;
-	// Retained output operations own immutable document evidence until company erasure.
+	// Company erasure ends all local evidence ownership under the same transaction budget.
 	if (!(await cleanupCompanyExports(ctx, companyId, budget))) return false;
 	for (const table of [
 		'contractChangeHeads',
@@ -209,6 +210,9 @@ export const clean = internalMutation({
 					);
 					if (drained) drained = await cleanupCompanyOperations(ctx, companyId, budget);
 					break;
+				case 'outputs':
+					drained = await cleanupCompanyOutputs(ctx, companyId, budget);
+					break;
 				case 'exports':
 					drained = await cleanupCompanyExports(ctx, companyId, budget);
 					break;
@@ -252,12 +256,10 @@ export const clean = internalMutation({
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
 					break;
-				case 'buyerLinkOpens':
-					// Reuse this phase to drain current activity and retired history.
+				case 'buyerActivity':
 					drained = true;
 					for (const table of [
 						'buyerActivityReceipts',
-						'buyerActivityClauses',
 						'buyerActivityOpenings',
 						'buyerActivityCounters'
 					] as const) {
@@ -271,36 +273,6 @@ export const clean = internalMutation({
 							break;
 						}
 					}
-					drained =
-						drained &&
-						(await drain(
-							'buyerVisits',
-							ctx.db
-								.query('buyerVisits')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-						)) &&
-						(await drain(
-							'buyerLinkOpens',
-							ctx.db
-								.query('buyerLinkOpens')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-						));
-					break;
-				case 'buyerLinkStats':
-					drained = await drain(
-						'buyerLinkStats',
-						ctx.db
-							.query('buyerLinkStats')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'buyerLinkBrowsers':
-					drained = await drain(
-						'buyerLinkBrowsers',
-						ctx.db
-							.query('buyerLinkBrowsers')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
 					break;
 				case 'buyerActivityQuotaKeys':
 					drained = await drain(
@@ -567,7 +539,15 @@ export const clean = internalMutation({
 					}
 
 					if (
+						!(await drain(
+							'contractCleanups',
+							ctx.db
+								.query('contractCleanups')
+								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+							{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+						)) ||
 						!(await cleanupCompanyOperations(ctx, companyId, budget)) ||
+						!(await cleanupCompanyOutputs(ctx, companyId, budget)) ||
 						!(await cleanupCompanyExports(ctx, companyId, budget))
 					) {
 						drained = false;

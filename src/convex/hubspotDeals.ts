@@ -22,7 +22,7 @@ import {
 	HubSpotError
 } from './hubspotApi';
 import { activity, blockLink } from './hubspotRecords';
-import { actionKey, actorOf, receipt, remember } from './operationReceipts';
+import { actionKey, actorOf, receipt, remember, admitOperation } from './operationReceipts';
 import { createContract, metadataOf } from './contracts';
 import { contractMetadata } from './savedContractValidators';
 import { env } from './_generated/server';
@@ -106,6 +106,7 @@ async function operationOutcome(
 	access: CompanyAccess,
 	actualConnectionId?: Doc<'hubspotConnections'>['_id']
 ) {
+	admitOperation(args.operationId);
 	const key = actionKey(access, args.contractId ? 'relink' : 'create', args.operationId);
 	const inputs = input(args);
 	const prior = await receipt(ctx, key, inputs);

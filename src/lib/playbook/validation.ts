@@ -102,18 +102,18 @@ export function validateStructuralReplacementContent(
 export function validateTemplateItemContent(item: DeepReadonly<TemplateItem>): void {
 	validateStorageArrays(item);
 	if (
-		'approvalPolicy' in item &&
+		item.audience === 'rep' &&
 		item.approvalPolicy.kind === 'required' &&
 		!item.approvalPolicy.instructions.trim()
 	)
 		throw new PlaybookValidationError('Approval instructions cannot be blank');
 	if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_PLAYBOOK_ITEM_BYTES)
 		throw new PlaybookValidationError(
-			'audience' in item ? 'Explanation exceeds 500 KB' : 'Instructions exceed 500 KB'
+			item.audience === 'buyer' ? 'Explanation exceeds 500 KB' : 'Instructions exceed 500 KB'
 		);
 	for (const target of [
 		item.trigger.target,
-		...('concessions' in item ? item.concessions : []).flatMap((concession) =>
+		...(item.audience === 'rep' ? item.concessions : []).flatMap((concession) =>
 			concession.changes.map((change) => change.target)
 		)
 	]) {
@@ -125,7 +125,7 @@ export function validateTemplateItemContent(item: DeepReadonly<TemplateItem>): v
 				);
 	}
 	unique(new Set(), item.trigger.id, 'Trigger ID');
-	if ('audience' in item) {
+	if (item.audience === 'buyer') {
 		if (item.trigger.target.kind !== 'text')
 			throw new PlaybookValidationError('Buyer explanations require selected text');
 		if (!item.explanation.trim()) throw new PlaybookValidationError('Explanation cannot be blank');

@@ -1,11 +1,9 @@
-import { isRepItem } from '$lib/playbook/model';
 import type { DeepReadonly } from '$lib/immutable';
 import type {
 	AnnotationAdmission,
 	AuthoringSelectionRequest
 } from '$lib/playbook/authoring-selection';
-import { prepareApprovedDocument } from '$lib/contract/document-preview';
-import { resolveTemplateItem } from '$lib/contract/items';
+import { approvedDocumentInput } from '$lib/contract/document-preview';
 import type { ReviewDecision, ReviewNavigation, ReviewTag } from '$lib/contract/approval';
 import type { ReadyContract } from '$lib/contract/saved';
 import { getContractOpenings } from '$lib/contract/snapshot-cache';
@@ -28,29 +26,10 @@ function appliedOptions(data: ReadyContract): Record<string, string> {
 			.map((item) => [item.itemId, item.appliedOptionId!])
 	);
 }
-const approvedInputs = new WeakMap<
-	NonNullable<ReadyContract['approved']>,
-	{ snapshot: ReadyContract['snapshot']; input: DocumentSourceInput }
->();
 function approvedInput(data: ReadyContract): DocumentSourceInput {
-	const cached = data.approved ? approvedInputs.get(data.approved) : undefined;
-	if (cached?.snapshot === data.snapshot) return cached.input;
-	const rendered = data.approved
-		? prepareApprovedDocument(
-				data.approved,
-				data.snapshot.items.filter(isRepItem).map(resolveTemplateItem)
-			)
-		: undefined;
-	const input: DocumentSourceInput = {
-		kind: 'records',
-		contract: true,
-		materialized: {
-			data: rendered ? { document: rendered.document, baseline: data.snapshot.blocks } : undefined
-		},
-		items: { data: rendered?.items }
-	};
-	if (data.approved) approvedInputs.set(data.approved, { snapshot: data.snapshot, input });
-	return input;
+	return data.approved
+		? approvedDocumentInput(data.snapshot, data.approved)
+		: { kind: 'records', contract: true, materialized: {}, items: {} };
 }
 
 const isTemplateResource = (id: string) => id === 'template' || id === 'template:buyer';
@@ -77,6 +56,7 @@ export interface ViewerBindings {
 	selectedConcessions: ConcessionSelection;
 	hasPanel?: boolean;
 	interactive?: boolean;
+	annotationsVisible?: boolean;
 	followScroll?: boolean;
 	selectedAnnotationId?: string | null;
 	selectionRequest?: AuthoringSelectionRequest | null;
@@ -110,21 +90,17 @@ export class DocumentResource {
 	bindings = $state.raw<ViewerBindings>();
 	target = $state<HTMLElement>();
 	active = $state(false);
-	draftOwned = $state(false);
 	opening = $state(false);
-	openings = 0;
 	allowed = $state(false);
 	choices = $state.raw<ConcessionSelection>({});
 	confirmedChoices: ConcessionSelection = {};
 	lastUsed = 0;
 	completed = false;
 	readonly priority = () =>
-		this.active || this.opening || this.draftOwned
-			? ('foreground' as const)
-			: ('background' as const);
+		this.active || this.opening ? ('foreground' as const) : ('background' as const);
 	id = $state('');
 	get layout(): DocumentLayout {
-		return isTemplateResource(this.id) || this.id.startsWith('draft:') ? 'standard' : 'contract';
+		return isTemplateResource(this.id) ? 'standard' : 'contract';
 	}
 	constructor(
 		id: string,
@@ -138,7 +114,6 @@ export class DocumentResource {
 		this.allowed = false;
 		this.active = false;
 		this.opening = false;
-		this.openings = 0;
 		this.target = undefined;
 		this.bindings = undefined;
 		this.workspace.renderer.destroy();
@@ -156,7 +131,14 @@ export class DocumentResources {
 	backgroundEnabled = $state(false);
 	paused = $state(false);
 	#candidates = $state.raw<readonly string[]>([]);
-	#pending = $state.raw<readonly ReadyContract[]>([]);
+	#pending = $state.raw<
+		readonly {
+			data: ReadyContract;
+			input: DocumentSourceInput;
+			choices: ConcessionSelection;
+		}[]
+	>([]);
+	#leases = $state.raw<ReadonlyMap<string, { count: number }>>(new Map());
 	#canConstruct = $state(false);
 	#rank: readonly string[] = [];
 	#preparationBudget = 0;
@@ -185,7 +167,6 @@ export class DocumentResources {
 					entry,
 					active: entry.active,
 					opening: entry.opening,
-					draftOwned: entry.draftOwned,
 					pages: entry.workspace.renderer.retainedPageCount,
 					failed: Boolean(
 						entry.workspace.renderer.error ||
@@ -207,25 +188,23 @@ export class DocumentResources {
 				}));
 				const candidates = this.#candidates;
 				const pending = this.#pending;
+				const openingPending = pending.some(({ data }) => this.#leases.has(data.id));
 				untrack(() => {
 					for (const state of states) if (state.prepared) state.entry.completed = true;
 					for (const state of states)
-						if (state.failed && !state.active && !state.opening && !state.draftOwned) {
+						if (state.failed && !state.active && !state.opening) {
 							this.failedPreparation(state.entry.id);
 						}
 					if (candidates !== this.#candidates) return;
 					const foregroundBusy = states.some(
-						(state) =>
-							(state.active || state.opening || state.draftOwned) &&
-							!state.prepared &&
-							!state.failed
+						(state) => (state.active || state.opening) && !state.prepared && !state.failed
 					);
 					const nextId = candidates.find(
 						(id) =>
 							!this.#failed.has(id) &&
 							!states.some((state) => state.entry.id === id && state.prepared)
 					);
-					const constructing = pending.some((data) => data.id === nextId);
+					const constructing = pending.some(({ data }) => data.id === nextId);
 					const savedBusy =
 						foregroundBusy ||
 						candidates.some(
@@ -238,7 +217,6 @@ export class DocumentResources {
 							!paused &&
 							(state.active ||
 								state.opening ||
-								state.draftOwned ||
 								(backgroundEnabled &&
 									!isTemplateResource(state.entry.id) &&
 									(state.prepared || (!foregroundBusy && state.entry.id === nextId))));
@@ -246,9 +224,7 @@ export class DocumentResources {
 					this.#canConstruct =
 						Boolean(createWorkspace) &&
 						!paused &&
-						backgroundEnabled &&
-						!foregroundBusy &&
-						constructing;
+						(openingPending || (backgroundEnabled && !foregroundBusy && constructing));
 					this.warming = savedBusy;
 					this.#trim();
 				});
@@ -256,25 +232,29 @@ export class DocumentResources {
 			$effect(() => {
 				const profiler = profiles.profiler;
 				const pending = this.#pending;
-				const data = this.#candidates
-					.map((id) => pending.find((data) => data.id === id))
-					.find((data) => data !== undefined);
-				if (!this.#canConstruct || !profiler || !data) return;
+				const next =
+					pending.find(({ data }) => this.#leases.has(data.id)) ??
+					this.#candidates
+						.map((id) => pending.find(({ data }) => data.id === id))
+						.find((value) => value !== undefined);
+				if (!this.#canConstruct || !profiler || !next) return;
+				const { data, input, choices } = next;
 				const abort = new AbortController();
 				void profiler.scheduler
 					.run(
-						() => 'background',
+						() => (this.#leases.has(data.id) ? 'foreground' : 'background'),
 						() =>
 							untrack(() => {
 								if (
 									this.#destroyed ||
 									!this.#canConstruct ||
 									profiles.profiler !== profiler ||
-									!this.#pending.includes(data) ||
-									!this.#candidates.includes(data.id)
+									!this.#pending.includes(next) ||
+									(!this.#leases.has(data.id) && !this.#candidates.includes(data.id))
 								)
 									return;
-								const entry = this.acquireContract(data);
+								const entry = this.acquireContract(data, input);
+								this.update(entry, choices);
 								entry.allowed = true;
 								this.#trim();
 							}),
@@ -286,42 +266,20 @@ export class DocumentResources {
 		});
 	}
 	acquire(id: string, input: DocumentSourceInput): DocumentResource {
-		if (this.#pending.some((data) => data.id === id))
-			this.#pending = this.#pending.filter((data) => data.id !== id);
+		if (this.#pending.some(({ data }) => data.id === id))
+			this.#pending = this.#pending.filter(({ data }) => data.id !== id);
 		let entry = this.entries.find((entry) => entry.id === id);
 		if (!entry) {
 			if (!isTemplateResource(id)) this.#makeRoom(id);
 			const createWorkspace = this.#getCreateWorkspace();
 			if (!createWorkspace) throw new Error('Document workspace is not loaded.');
 			entry = new DocumentResource(id, input, createWorkspace);
+			entry.opening = this.#leases.has(id);
+			entry.allowed = entry.opening && !this.paused;
 			this.entries = [...this.entries, entry];
 		} else entry.workspace.accept(input);
 		entry.lastUsed = ++this.#clock;
 		return entry;
-	}
-	createDraft(input: DocumentSourceInput) {
-		const entry = this.acquire(`draft:${++this.#clock}`, input);
-		entry.draftOwned = true;
-		entry.allowed = true;
-		return entry;
-	}
-	/** Associate a confirmed contract with the same workspace, viewer and page elements. */
-	adopt(entry: DocumentResource, data: ReadyContract) {
-		if (!this.entries.includes(entry) || !entry.draftOwned)
-			throw new Error('Draft is unavailable.');
-		const existing = this.entries.find((current) => current !== entry && current.id === data.id);
-		if (existing) this.evict(existing.id);
-		entry.workspace.accept(approvedInput(data));
-		entry.id = data.id;
-		entry.confirmedChoices = appliedOptions(data);
-		this.update(entry, entry.confirmedChoices);
-		// The mounted viewer owns the render mode and its first-page paint handshake.
-		if (entry.workspace.renderer.error) entry.workspace.viewer.retry?.();
-	}
-	releaseDraft(entry: DocumentResource) {
-		entry.draftOwned = false;
-		if (entry.id.startsWith('draft:')) this.evict(entry.id);
-		else this.#trim();
 	}
 	acquireContract(data: ReadyContract, input: DocumentSourceInput = approvedInput(data)) {
 		const entry = this.acquire(data.id, input);
@@ -332,24 +290,47 @@ export class DocumentResources {
 	update(entry: DocumentResource, choices: ConcessionSelection) {
 		if (!sameSelection(entry.choices, choices)) entry.choices = Object.freeze({ ...choices });
 	}
-	/** Called after navigation guards pass, before Home releases its candidates. */
-	beginOpen(id: string) {
+	hasOpening(id: string) {
+		return this.#leases.has(id);
+	}
+	/** A retained document can be shown alongside Help without waiting for another paint. */
+	isPreparedContract(id: string, choices: ConcessionSelection) {
 		const entry = this.entries.find((entry) => entry.id === id);
-		if (!entry) return;
-		entry.openings++;
-		entry.opening = true;
-		entry.allowed = true;
+		const profiler = this.profiles.profiler;
+		const source = entry?.workspace.source.renderSource;
+		return Boolean(
+			entry?.workspace.viewer.layoutPrepared &&
+			profiler &&
+			source &&
+			entry.workspace.renderer.isCurrent({ source, concessions: choices, profiler })
+		);
+	}
+	/** Keyed ownership also protects a resource constructed after module/host admission. */
+	beginOpen(id: string) {
+		if (this.#destroyed) return () => {};
+		const lease = this.#leases.get(id) ?? { count: 0 };
+		lease.count++;
+		this.#leases = new Map(this.#leases).set(id, lease);
+		const entry = this.entries.find((entry) => entry.id === id);
+		if (entry) {
+			entry.opening = true;
+			entry.allowed = !this.paused;
+		}
+		this.#failed.delete(id);
 		this.profiles.scheduler.wake();
 		let released = false;
 		return () => {
 			if (released) return;
 			released = true;
-			entry.openings = Math.max(0, entry.openings - 1);
-			entry.opening = entry.openings > 0;
-			if (!this.#destroyed) {
-				this.candidates(this.#rank);
-				this.#trim();
-			}
+			if (this.#destroyed || this.#leases.get(id) !== lease) return;
+			lease.count--;
+			const leases = new Map(this.#leases);
+			if (!lease.count) leases.delete(id);
+			this.#leases = leases;
+			const current = this.entries.find((entry) => entry.id === id);
+			if (current) current.opening = lease.count > 0;
+			this.candidates(this.#rank);
+			this.#trim();
 		};
 	}
 	activate(
@@ -415,6 +396,7 @@ export class DocumentResources {
 		entry.target = undefined;
 		entry.workspace.viewer.interactionEnabled = false;
 		entry.workspace.viewer.pagesVisible = false;
+		entry.workspace.viewer.firstPagesReady = null;
 		if (this.active === entry) this.active = undefined;
 		this.update(entry, isTemplateResource(entry.id) ? {} : entry.confirmedChoices);
 		this.#trim();
@@ -428,8 +410,7 @@ export class DocumentResources {
 		const reserved = this.entries
 			.filter(
 				(entry) =>
-					!isTemplateResource(entry.id) &&
-					(entry.active || entry.opening || entry.draftOwned || entry.id === recent)
+					!isTemplateResource(entry.id) && (entry.active || entry.opening || entry.id === recent)
 			)
 			.map((entry) => entry.id);
 		const ids = ranked
@@ -441,7 +422,9 @@ export class DocumentResources {
 			)
 			.slice(0, budget);
 		if (!sameOrder(this.#candidates, ids)) this.#candidates = [...ids];
-		const pending = this.#pending.filter((data) => ids.includes(data.id));
+		const pending = this.#pending.filter(
+			({ data }) => this.#leases.has(data.id) || ids.includes(data.id)
+		);
 		if (!sameOrder(this.#pending, pending)) this.#pending = pending;
 		for (const id of this.#failed)
 			if (!isTemplateResource(id) && !ranked.includes(id)) this.#failed.delete(id);
@@ -451,7 +434,6 @@ export class DocumentResources {
 				!isTemplateResource(entry.id) &&
 				!entry.active &&
 				!entry.opening &&
-				!entry.draftOwned &&
 				!ids.includes(entry.id) &&
 				!entry.completed
 			)
@@ -468,47 +450,63 @@ export class DocumentResources {
 	promote(id: string) {
 		this.#failed.delete(id);
 	}
-	prepare(data: ReadyContract) {
+	prepare(
+		data: ReadyContract,
+		input?: DocumentSourceInput,
+		choices: ConcessionSelection = appliedOptions(data)
+	) {
 		if (this.#destroyed) return;
-		const choices = appliedOptions(data);
 		const entry = this.entries.find((entry) => entry.id === data.id);
-		if (entry) entry.confirmedChoices = choices;
+		if (entry) entry.confirmedChoices = appliedOptions(data);
 		if (!data.approved) {
-			if (entry?.active || entry?.opening || entry?.draftOwned) return;
+			if (entry?.active || entry?.opening || this.#leases.has(data.id)) return;
 			this.#incomplete.add(data.id);
-			this.#pending = this.#pending.filter((pending) => pending.id !== data.id);
+			this.#pending = this.#pending.filter(({ data: pending }) => pending.id !== data.id);
 			this.candidates(this.#rank);
 			return;
 		}
 		if (this.#incomplete.delete(data.id)) this.candidates(this.#rank);
 		if (entry) {
 			if (!entry.active) {
-				entry.workspace.accept(approvedInput(data));
-				this.update(entry, entry.confirmedChoices);
+				entry.workspace.accept(input ?? approvedInput(data));
+				this.update(entry, choices);
 			}
 			return;
 		}
-		if (this.#failed.has(data.id) || !this.#candidates.includes(data.id)) return;
-		const pending = this.#pending.find((pending) => pending.id === data.id);
-		if (pending === data) return;
-		if (pending) this.#pending = this.#pending.map((value) => (value === pending ? data : value));
-		else this.#pending = [...this.#pending, data];
+		if (
+			!this.#leases.has(data.id) &&
+			(this.#failed.has(data.id) || !this.#candidates.includes(data.id))
+		)
+			return;
+		const pending = this.#pending.find(({ data: pending }) => pending.id === data.id);
+		if (
+			pending?.data === data &&
+			(!input || pending.input === input) &&
+			sameSelection(pending.choices, choices)
+		)
+			return;
+		const next = { data, input: input ?? approvedInput(data), choices };
+		if (pending) this.#pending = this.#pending.map((value) => (value === pending ? next : value));
+		else this.#pending = [...this.#pending, next];
 	}
 	failedPreparation(id: string) {
 		this.#failed.add(id);
 		const entry = this.entries.find((entry) => entry.id === id);
-		if (entry && !entry.active && !entry.opening && !entry.draftOwned) this.evict(id);
+		if (entry && !entry.active && !entry.opening) this.evict(id);
 		this.candidates(this.#rank);
 	}
 	remove(id: string) {
+		const leases = new Map(this.#leases);
+		leases.delete(id);
+		this.#leases = leases;
 		this.#incomplete.delete(id);
 		this.evict(id);
 		this.candidates(this.#rank.filter((candidate) => candidate !== id));
 	}
 
 	evict(id: string) {
-		if (this.#pending.some((data) => data.id === id))
-			this.#pending = this.#pending.filter((data) => data.id !== id);
+		if (this.#pending.some(({ data }) => data.id === id))
+			this.#pending = this.#pending.filter(({ data }) => data.id !== id);
 		const entry = this.entries.find((entry) => entry.id === id);
 		if (!entry) return;
 		this.entries = this.entries.filter((current) => current !== entry);
@@ -524,7 +522,7 @@ export class DocumentResources {
 			return entry.id === recent ? -1 : index < 0 ? Number.MAX_SAFE_INTEGER : index;
 		};
 		return saved
-			.filter((entry) => !entry.active && !entry.opening && !entry.draftOwned)
+			.filter((entry) => !entry.active && !entry.opening)
 			.sort((a, b) => rank(b) - rank(a) || a.lastUsed - b.lastUsed);
 	}
 	#makeRoom(id: string) {
@@ -565,6 +563,7 @@ export class DocumentResources {
 		this.active = undefined;
 		this.#pending = [];
 		this.#attachments.clear();
+		this.#leases = new Map();
 	}
 }
 export function setDocumentResources(resources: DocumentResources) {

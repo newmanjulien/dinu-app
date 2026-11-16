@@ -1,27 +1,34 @@
 <script lang="ts">
-	import { recordColdStart } from '$lib/document/runtime/render-perf';
-	import { DocumentSearchSession } from '$lib/document/search/search-session.svelte';
 	import UtilityRail from '$lib/components/chrome/UtilityRail.svelte';
-	import type { DocumentToolControls } from './document-tools';
-	import UtilityPanel, { type UtilityPanelName } from './UtilityPanel.svelte';
-	import DocumentSearchPanel from '$lib/components/search/DocumentSearchPanel.svelte';
+	import {
+		loadDocumentSearch,
+		type DocumentToolControls,
+		type SearchToolControls,
+		type ToolState,
+		type ToolStates
+	} from './document-tools';
+	import { loadComponent } from '$lib/auth/component-loader.svelte';
 	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
 	import { helpContent, type HelpVariant } from '$lib/components/ui/modal/help-content';
 	import type { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
-	import { onMount, tick } from 'svelte';
-	import { getDocumentWorkspace } from '$lib/document/runtime/workspace-context';
-	import { getInteractionController, getInteractionOwner } from '$lib/components/ui/interactions';
-	const interactions = getInteractionController();
-	const owner = getInteractionOwner();
+	import {
+		getOptionalDocumentWorkspace,
+		type DocumentWorkspace
+	} from '$lib/document/runtime/workspace-context';
+	import { getInteractionOwner } from '$lib/components/ui/interactions';
 	let {
 		active = true,
 		isAdmin = false,
 		helpVariant,
 		helpReady,
 		help,
+		helpHosted = false,
 		onDownload,
 		downloadReason = null,
+		downloadState,
 		settingsHref,
+		workspace,
+		interactionOwner,
 		onTools
 	}: {
 		active?: boolean;
@@ -29,142 +36,108 @@
 		helpVariant: HelpVariant;
 		helpReady: boolean;
 		help: HelpSession;
+		helpHosted?: boolean;
 		onDownload?: () => void;
 		downloadReason?: string | null;
+		downloadState?: ToolState;
 		settingsHref?: string;
+		workspace?: DocumentWorkspace;
+		interactionOwner?: symbol;
 		onTools?: (tools: DocumentToolControls) => () => void;
 	} = $props();
-	const { source, renderer, viewer } = getDocumentWorkspace();
+	const contextWorkspace = getOptionalDocumentWorkspace();
+	const contextOwner = getInteractionOwner();
+	const document = $derived(workspace ?? contextWorkspace);
+	const owner = $derived(interactionOwner ?? contextOwner);
 	const documentAvailable = $derived(
-		active && viewer.pagesVisible && !source.issue && !renderer.error && !viewer.preparationBlocked
+		Boolean(
+			active &&
+			document?.viewer.pagesVisible &&
+			!document.source.issue &&
+			!document.renderer.error &&
+			!document.viewer.preparationBlocked
+		)
 	);
-	const helpEnabled = $derived(documentAvailable);
+	// The route or buyer shell owns automatic admission; the button can work before pages do.
+	const helpEnabled = $derived(active && help.resolved);
 	$effect(() => {
-		if (helpReady && documentAvailable) help.considerAutomatic();
+		if (!helpHosted && helpReady && documentAvailable) help.considerAutomatic();
 	});
 	$effect(() => {
-		if (!active) help.close();
+		if (!active && !helpHosted) help.close();
 	});
 	function openHelp() {
 		if (helpEnabled) help.openManually();
 	}
-	const searchEnabled = $derived(
-		Boolean(active && viewer.displayedSnapshot && viewer.pagesVisible)
-	);
-	const searchSession = new DocumentSearchSession();
-	let activePanel = $state<UtilityPanelName | null>(null);
-	let panel = $state<UtilityPanel>();
-	const searchOpen = $derived(activePanel === 'search');
-	let panelElement = $state<HTMLElement>();
-	let searchInputElement = $state<HTMLInputElement | null>();
-	$effect(() => searchSession.setPanel(searchOpen ? panelElement : undefined));
-	let desktopRailElement = $state<HTMLElement>();
-	let mobileRailElement = $state<HTMLElement>();
-	$effect(() => {
-		if (!active) closePanel(false);
+	const search = loadComponent(loadDocumentSearch, () => active);
+	const Search = $derived(search.component);
+	let controls = $state.raw<SearchToolControls>();
+	let desktop = $state<HTMLElement>();
+	let mobile = $state<HTMLElement>();
+	$effect(() => controls?.setRails(desktop, mobile));
+	const states = $derived<ToolStates>({
+		search: {
+			applicability: 'present',
+			// A visible disabled Search button does not hold back independent tools.
+			display: search.failed ? 'failed' : 'ready',
+			enabled: controls?.searchEnabled ?? false,
+			retry: search.retry
+		},
+		download: downloadState ?? {
+			applicability: onDownload ? 'present' : 'absent',
+			display: 'ready',
+			enabled: !downloadReason
+		},
+		settings: {
+			applicability: settingsHref ? 'present' : 'absent',
+			display: 'ready',
+			enabled: true
+		},
+		help: { applicability: 'present', display: 'ready', enabled: helpEnabled }
 	});
-	function closePanel(restoreFocus = true) {
-		panel?.close(restoreFocus);
-	}
-	function openSearch(trigger?: HTMLButtonElement) {
-		panel?.show('search', trigger);
-	}
-	function toggleSearch(trigger: HTMLButtonElement) {
-		if (!searchEnabled) return;
-		if (searchOpen) {
-			closePanel();
-			return;
-		}
-		openSearch(trigger);
-	}
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (!searchEnabled || event.defaultPrevented || interactions.modalOpen()) return;
-		const isFindShortcut =
-			(event.metaKey || event.ctrlKey) &&
-			!event.altKey &&
-			!event.shiftKey &&
-			event.key.toLowerCase() === 'f';
-
-		if (isFindShortcut) {
-			event.preventDefault();
-			openSearch(panel?.visibleButton('search'));
-		}
-	}
-
-	$effect(() => {
-		const target = searchEnabled ? viewer.documentStageElement : undefined;
-		if (!searchEnabled && searchOpen) closePanel(false);
-		void viewer.displayedSnapshot?.id;
-		const pages = viewer.displayedSnapshot?.pages ?? [];
-		let cancelled = false;
-		void tick().then(() => {
-			if (cancelled) return;
-			searchSession.setTarget(target ?? undefined);
-			searchSession.setPages(pages);
-			searchSession.refresh(false);
-			if (target) recordColdStart('search-ready');
-		});
-		return () => {
-			cancelled = true;
-		};
-	});
-
 	$effect(() => {
 		if (!onTools || !active) return;
 		return onTools({
 			owner,
 			get searchOpen() {
-				return activePanel === 'search';
+				return controls?.searchOpen ?? false;
 			},
-			searchEnabled,
+			searchEnabled: controls?.searchEnabled ?? false,
 			helpEnabled,
-			onSearchToggle: toggleSearch,
+			states,
+			onSearchToggle: (button) => controls?.onSearchToggle(button),
 			onOpenHelp: openHelp,
-			closePanel,
-			setRails: (desktop, mobile) => {
-				desktopRailElement = desktop;
-				mobileRailElement = mobile;
+			closePanel: (restore) => controls?.closePanel(restore),
+			setRails: (first, second) => {
+				desktop = first;
+				mobile = second;
 			}
 		});
 	});
-
-	onMount(() => {
-		const releaseShortcut = interactions.shortcut(handleKeydown);
-		return () => {
-			releaseShortcut();
-			searchSession.destroy();
-		};
-	});
 </script>
 
-<UtilityPanel
-	bind:this={panel}
-	bind:activePanel
-	bind:element={panelElement}
-	{owner}
-	desktop={desktopRailElement}
-	mobile={mobileRailElement}
-	onLeave={(name) => {
-		if (name === 'search') searchSession.clear();
-	}}
-	focusTarget={() => ({
-		element: searchInputElement,
-		preventScroll: true
-	})}
->
-	{#snippet children()}
-		<DocumentSearchPanel session={searchSession} bind:inputElement={searchInputElement} />
-	{/snippet}
-</UtilityPanel>
-
+{#if Search && document}
+	<Search
+		{active}
+		workspace={document}
+		interactionOwner={owner}
+		onControls={(value) => {
+			controls = value;
+			return () => {
+				if (controls === value) controls = undefined;
+			};
+		}}
+	/>
+{/if}
 {#if !onTools}
 	<UtilityRail
-		{searchOpen}
-		bind:desktopElement={desktopRailElement}
-		bind:mobileElement={mobileRailElement}
-		{searchEnabled}
-		onSearchToggle={toggleSearch}
+		{states}
+		interactionOwner={owner}
+		searchOpen={controls?.searchOpen ?? false}
+		bind:desktopElement={desktop}
+		bind:mobileElement={mobile}
+		searchEnabled={controls?.searchEnabled ?? false}
+		onSearchToggle={(button) => controls?.onSearchToggle(button)}
 		{helpEnabled}
 		helpLabel={helpContent[helpVariant].title}
 		{onDownload}
@@ -173,7 +146,6 @@
 		onOpenHelp={openHelp}
 	/>
 {/if}
-
-{#if helpEnabled && help.open}
+{#if !helpHosted && helpEnabled && help.open}
 	<HelpModal variant={helpVariant} {isAdmin} {help} onClose={() => help.close()} />
 {/if}

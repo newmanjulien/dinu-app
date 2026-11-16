@@ -3,6 +3,7 @@ import { env } from '$env/dynamic/public';
 import { withClerkHandler } from 'svelte-clerk/server';
 import { redirect, type Handle } from '@sveltejs/kit';
 import { isBuyerPath } from '$lib/buyer/urls';
+import { buyerPageCredential } from '$lib/server/buyer-token';
 
 const callbackParameters = [
 	'__clerk_handshake',
@@ -16,7 +17,11 @@ const callbackParameters = [
 	'__session'
 ];
 export const handle: Handle = async ({ event, resolve }) => {
-	if (isBuyerPath(event.url.pathname) || event.url.pathname.startsWith('/api/buyer/')) {
+	const buyerPage = isBuyerPath(event.url.pathname);
+	if (buyerPage || event.url.pathname.startsWith('/api/buyer/')) {
+		if (buyerPage)
+			event.locals.buyerPageCredential = () =>
+				buyerPageCredential(event.request, event.url.origin, event.fetch);
 		const response = await resolve(event);
 		response.headers.set('Cache-Control', 'private, no-store');
 		response.headers.set('Referrer-Policy', 'no-referrer');

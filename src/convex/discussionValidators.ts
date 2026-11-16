@@ -34,6 +34,8 @@ export const storedMessage = v.object({
 	unreadByTeam: v.boolean()
 });
 export const storedReceipt = v.object({
+	retryUntil: v.number(),
+	gcAfter: v.number(),
 	...ownership,
 	actorKey: v.string(),
 	operationId: v.string(),

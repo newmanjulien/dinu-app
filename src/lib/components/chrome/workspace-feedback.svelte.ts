@@ -7,7 +7,6 @@ type Completion = { acknowledgedAt: number; expires: number; sequence: number };
 type AuthoringCompletion = { readonly kind: 'saved' | 'deleted' };
 export type DocumentFeedback = {
 	readonly feedback: OperationStatus | null;
-	readonly renderPending: boolean;
 	readonly renderError: RenderFailure | null;
 	readonly sourceStale: boolean;
 	readonly onRetryRender?: () => void;

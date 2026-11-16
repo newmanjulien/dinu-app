@@ -16,8 +16,6 @@ const bucket = (capacity: number) => ({
 	shards: 1
 });
 const limiter = new RateLimiter(components.rateLimiter, {
-	buyerBrowser: bucket(60),
-	buyerCompany: bucket(3000),
 	activityBrowser: bucket(60),
 	activityLink: bucket(600),
 	activityCompany: bucket(3000),
@@ -137,41 +135,5 @@ export const expire = internalMutation({
 		}
 		if (!done) await ctx.scheduler.runAfter(0, internal.buyerActivityQuota.expire, {});
 		return null;
-	}
-});
-
-/** Only for complete, buyer-only legacy inventories after the old writer has stopped. */
-export const resetLegacy = internalMutation({
-	args: {
-		keys: v.array(
-			v.object({
-				name: v.union(v.literal('buyerBrowser'), v.literal('buyerCompany')),
-				key: v.string()
-			})
-		),
-		writerStoppedAt: v.number()
-	},
-	returns: v.object({ processed: v.number(), reset: v.number(), owned: v.number() }),
-	handler: async (ctx, { keys, writerStoppedAt }) => {
-		if (
-			keys.length > 25 ||
-			!Number.isFinite(writerStoppedAt) ||
-			Date.now() < writerStoppedAt + REFILL_MS
-		)
-			throw new ConvexError('Wait a full refill interval and supply at most 25 legacy keys.');
-		const budget = cleanupBudget(ctx);
-		let processed = 0,
-			reset = 0,
-			owned = 0;
-		for (const { name, key } of keys) {
-			if (await budget.exhausted()) break;
-			if (await ownerFor(ctx, name, key)) owned++;
-			else {
-				await limiter.reset(ctx, name, { key });
-				reset++;
-			}
-			processed++;
-		}
-		return { processed, reset, owned };
 	}
 });

@@ -101,7 +101,7 @@ export class SnapshotStorage {
 			opening.signal.addEventListener('abort', failed, { once: true });
 			this.lifetime.signal.addEventListener('abort', failed, { once: true });
 			try {
-				const request = indexedDB.open(`${this.scope.namespace}:snapshots`, 14);
+				const request = indexedDB.open(`${this.scope.namespace}:snapshots`, 16);
 				request.onupgradeneeded = () => {
 					// Retire obsolete confirmed history/metadata only. The sessionStorage
 					// intent journal has independent ownership and is never migrated here.
@@ -163,6 +163,47 @@ export class SnapshotStorage {
 		} finally {
 			attempt.complete();
 			signal.removeEventListener('abort', abort);
+		}
+	}
+	/** Restore the target's coherent saved wording in one optional transaction. */
+	async getOpening(id: string, signal?: AbortSignal) {
+		try {
+			const db = await this.open();
+			if (!db || signal?.aborted) return;
+			return await this.transaction(
+				db,
+				'readonly',
+				async (tx) => {
+					const metadata = readMetadata(await result(tx.objectStore('metadata').get(id)), id);
+					if (!metadata || signal?.aborted) return;
+					const contract = metadata.contract;
+					const [version, approved] = await Promise.all([
+						result<StoredSnapshot | undefined>(
+							tx.objectStore('snapshots').get(contract.templateVersionId)
+						),
+						result<{ contractId: string; data: unknown } | undefined>(
+							tx.objectStore('approved').get(contract.documentId)
+						)
+					]);
+					return {
+						metadata,
+						snapshot:
+							version?.id === contract.templateVersionId &&
+							validTemplate(version.snapshot, contract.companyId)
+								? version.snapshot
+								: undefined,
+						approved:
+							approved?.contractId === id &&
+							validApprovedDocument(approved.data, contract.documentId) &&
+							approved.data.documentRevision === contract.documentRevision
+								? approved.data
+								: undefined
+					};
+				},
+				signal
+			);
+		} catch {
+			/* Optional disk restoration cannot delay current access. */
 		}
 	}
 	/** Read only mutable metadata; immutable content goes through the shared version loader. */
@@ -236,8 +277,12 @@ export class SnapshotStorage {
 			/* Optional storage cannot block authorized network acquisition. */
 		}
 	}
-	putApproved(contractId: string, data: ApprovedContractDocument, valid: () => boolean) {
-		const bytes = JSON.stringify(data).length * 2;
+	putApproved(
+		contractId: string,
+		data: ApprovedContractDocument,
+		bytes: number,
+		valid: () => boolean
+	) {
 		if (bytes <= SNAPSHOT_BYTES)
 			this.enqueue(`approved:${data.documentId}`, {
 				kind: 'approved',

@@ -11,13 +11,21 @@
 	import TeamLayout from '$lib/components/workspace/TeamLayout.svelte';
 	import { useWorkspaceHints } from './workspace-hints.svelte';
 	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
+	import DocumentHeading from '$lib/components/document/DocumentHeading.svelte';
+	import UtilityRail from '$lib/components/chrome/UtilityRail.svelte';
+	import type { ToolStates } from '$lib/components/document/document-tools';
 	import TemplateSetupLayout from '$lib/components/template/TemplateSetupLayout.svelte';
-	import ContractCreationSkeleton from '$lib/components/workspace/ContractCreationSkeleton.svelte';
+	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import IntegrationDetailsLayout from '$lib/components/workspace/IntegrationDetailsLayout.svelte';
 	import { findIntegrationDetails } from '$lib/integrations';
 	import GuidesLayout from '$lib/components/workspace/GuidesLayout.svelte';
 	import { goto } from '$app/navigation';
 	import { useAccount } from './viewer-session.svelte';
+	import { onDestroy } from 'svelte';
+	import { useContractsSearch } from '$lib/components/workspace/contracts-search.svelte';
+	import SearchField from '$lib/ui/SearchField.svelte';
+	import Button from '$lib/ui/Button.svelte';
+	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	let {
 		header = false,
 		hasPanel = false,
@@ -34,44 +42,116 @@
 	const route = $derived(describeRoute(page.route.id));
 	const hints = useWorkspaceHints();
 	const account = useAccount();
+	const contractsSearch = useContractsSearch();
+	let searchInput = $state<HTMLInputElement | null>();
+	onDestroy(() => {
+		if (searchInput) contractsSearch?.rememberFocus(searchInput);
+	});
 	const viewer = $derived(account?.());
+	const presentation = $derived(
+		viewer?.membership && viewer.company
+			? {
+					name: viewer.profile.name,
+					avatarUrl: viewer.profile.avatarUrl,
+					companyName: viewer.company.name,
+					companyAvatarUrl: viewer.company.avatarUrl,
+					instructionsReady: viewer.instructionsReady
+				}
+			: viewer !== undefined
+				? undefined
+				: hints.presentation
+	);
 	const role = $derived(viewer?.membership?.role ?? hints.role);
 	const templateReady = $derived(viewer?.membership ? viewer.templateReady : hints.templateReady);
 	const integration = $derived(findIntegrationDetails(page.params.slug ?? ''));
-	const creationPending = $derived(route.document === 'new' && templateReady === true);
+	const creationPending = $derived(route.document === 'new' && templateReady !== false);
+	const creationTools: ToolStates = {
+		search: { applicability: 'present', display: 'ready', enabled: false },
+		download: { applicability: 'absent', display: 'ready' },
+		settings: { applicability: 'absent', display: 'ready' },
+		help: { applicability: 'present', display: 'ready', enabled: false }
+	};
 </script>
 
 {#if announce && !creationPending}<span role="status" class="sr-only">{label}</span>{/if}
 {#if header}
-	<AppHeaderLayout {role} templateReady={templateReady ?? false} />
+	<AppHeaderLayout
+		{role}
+		templateReady={templateReady ?? false}
+		profile={presentation?.name !== undefined
+			? { name: presentation.name, avatarUrl: presentation.avatarUrl ?? null }
+			: undefined}
+	/>
 {/if}
-{#if route.requiresTemplate && templateReady === undefined}
-	<div aria-hidden="true" class="mx-auto grid max-w-md gap-3 px-6 py-16">
-		<SkeletonBlock class="h-6 w-48 max-w-full" />
-		<SkeletonBlock class="h-4 w-full" />
-	</div>
-{:else if route.requiresTemplate && !templateReady}
+{#if route.requiresTemplate && templateReady === false}
 	<TemplateSetupLayout {role} />
 {:else if route.document === 'new'}
-	<main inert aria-hidden="true" class="pointer-events-none pt-6 pb-12 blur-sm">
-		<DocumentSkeleton embedded announce={false} />
-	</main>
-	<ContractCreationSkeleton {announce} {label} {children} onClose={() => goto('/contracts')} />
+	<div inert aria-hidden="true" class="pointer-events-none">
+		<UtilityRail states={creationTools} />
+		<DocumentHeading kind="saved" />
+	</div>
+	<ModalShell
+		title="Create a contract"
+		onClose={() => goto('/contracts')}
+		showCloseButton={false}
+		closeOnBackdrop={false}
+	>
+		<p role="status" class="text-sm text-ink-muted">Preparing contract creation…</p>
+		{#if children}<div class="mt-4 grid gap-3">{@render children()}</div>{/if}
+		{#snippet footer()}
+			<div class="ml-auto flex gap-2">
+				<Button variant="secondary" onclick={() => goto('/contracts')}>Cancel</Button>
+				<Button disabled>Create contract</Button>
+			</div>
+		{/snippet}
+	</ModalShell>
 {:else if route.presentation === 'document'}
+	<DocumentHeading
+		kind={route.document === 'template' ? 'template' : 'saved'}
+		audience={page.url.pathname === '/template/buyers' ? 'buyer' : 'rep'}
+	/>
 	<DocumentSkeleton
 		layout={route.document === 'saved' ? 'contract' : 'standard'}
 		template={route.document === 'template'}
+		embedded
 		{hasPanel}
 		announce={false}
 	/>
 {:else if route.presentation === 'contracts'}
-	<ContractsLayout {role} hasBuyerLinks={hints.hasBuyerLinks} />
+	<ContractsLayout {role}>
+		{#snippet toolbar()}
+			{#if contractsSearch}
+				<SearchField
+					bind:element={searchInput}
+					label="Search contracts and buyer links"
+					placeholder="Search by name of company"
+					maxlength={200}
+					bind:value={contractsSearch.value}
+				/>
+			{:else}
+				<SearchField
+					label="Search contracts and buyer links"
+					placeholder="Search by name of company"
+				/>
+			{/if}
+			<Button disabled><PlusIcon class="size-[15px]" aria-hidden="true" />New contract</Button>
+		{/snippet}
+	</ContractsLayout>
 {:else if route.presentation === 'settings'}
-	<SettingsLayout {role} />
+	<SettingsLayout
+		{role}
+		{presentation}
+		email={viewer?.profile.email}
+		approvalEmail={viewer?.company?.approvalEmail}
+	/>
 {:else if route.presentation === 'contract-settings'}
 	<ContractSettingsLayout />
 {:else if route.presentation === 'team'}
-	<TeamLayout {role} />
+	<TeamLayout
+		{role}
+		companyName={presentation?.companyName}
+		canManage={viewer?.permissions.manageMembers ?? false}
+	/>
 {:else if route.presentation === 'integrations'}
 	<IntegrationCatalogLayout {role} />
 {:else if route.presentation === 'guides'}

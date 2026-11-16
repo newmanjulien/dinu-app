@@ -19,6 +19,8 @@ function querySnapshot(input: DocumentSourceInput): DocumentSourceInput {
 			}
 		: { blocks: { data: input.blocks.data, error: input.blocks.error } };
 	switch (input.kind) {
+		case 'prose':
+			return { kind: 'prose', blocks: { data: input.blocks.data, error: input.blocks.error } };
 		case 'records':
 			return {
 				kind: input.kind,

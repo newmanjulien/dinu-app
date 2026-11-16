@@ -6,6 +6,65 @@ import type { LayoutProfileMetrics } from '../pagination/profiler';
 
 const enabled = () => dev || env.PUBLIC_DOCUMENT_PERF === '1';
 
+export function documentLoadingPerfEnabled() {
+	return enabled() && typeof window !== 'undefined';
+}
+
+let nextLoadingViewer = 0;
+export function createDocumentLoadingViewerId() {
+	return documentLoadingPerfEnabled() ? ++nextLoadingViewer : 0;
+}
+
+let nextLoadingOpening = 0;
+export function createDocumentLoadingOpeningId() {
+	return documentLoadingPerfEnabled() ? ++nextLoadingOpening : 0;
+}
+
+type DocumentLoadingMilestone =
+	| 'help-opening-start'
+	| 'help-policy-resolved'
+	| 'help-automatic-open'
+	| 'help-modal-open'
+	| 'help-document-admitted'
+	| 'first-pages-dom-ready'
+	| 'complete-pages-dom-ready'
+	| 'annotation-projection-ready'
+	| 'first-highlights-dom-ready'
+	| 'highlight-actions-enabled';
+
+/** Bounded opening timeline. These are DOM/state milestones, not physical paint. */
+export function recordDocumentLoadingMilestone(
+	name: DocumentLoadingMilestone,
+	detail: {
+		opening?: number;
+		viewer?: number;
+		generation?: number;
+		pages?: number;
+		highlights?: number;
+		active?: 0 | 1;
+	} = {}
+) {
+	if (!documentLoadingPerfEnabled()) return;
+	const route = describeDestination(window.location.pathname);
+	const surface = route.presentation === 'buyer-document' ? 'buyer' : (route.document ?? 'other');
+	const target = window as typeof window & {
+		__documentLoadingPerf?: {
+			name: DocumentLoadingMilestone;
+			at: number;
+			surface: string;
+			opening?: number;
+			viewer?: number;
+			generation?: number;
+			pages?: number;
+			highlights?: number;
+			active?: 0 | 1;
+		}[];
+	};
+	const samples = (target.__documentLoadingPerf ??= []);
+	samples.push({ name, at: performance.now(), surface, ...detail });
+	if (samples.length > 100) samples.shift();
+}
+
 type OverlayWork =
 	| 'measuredPages'
 	| 'measuredNodes'
@@ -309,6 +368,8 @@ export interface RenderPerfSample extends LayoutProfileMetrics {
 	preparationCompleteAt?: number;
 	paginationCompleteAt?: number;
 	firstPageAt?: number;
+	initialBatchAt?: number;
+	initialBatchVisibleAt?: number;
 	preparationSlices: number;
 	maxPreparationSliceMs: number;
 	paintOpportunityAt?: number;

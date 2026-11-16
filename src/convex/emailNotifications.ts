@@ -29,7 +29,7 @@ export function contractNotification(
 ): EmailNotification {
 	const path =
 		event.context === 'buyer-link' && event.buyerToken
-			? `${appUrl}${buyerPath(event.buyerToken)}/contract`
+			? `${appUrl}${buyerPath(event.buyerToken)}`
 			: `${appUrl}/contracts/${event.contractId}`;
 	const params = new URLSearchParams();
 	if (event.kind === 'approval' || event.context === 'buyer-link') params.set('review', '1');

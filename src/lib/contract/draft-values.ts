@@ -6,13 +6,15 @@ import {
 import { validContractState } from './persisted-values';
 import type { ContractSaveRequest } from './persistence.svelte';
 import type { ContractState } from './saved';
+import { parseOperationId } from './operation-identity';
 
 export type ContractDraft = {
-	version: 10;
+	version: 12;
 	commands: ActivityCommand[];
 	base: ContractState;
 	request: ContractSaveRequest | null;
 	conflict: boolean;
+	blocked: boolean;
 };
 export function draftObject(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -28,7 +30,7 @@ export function validDraftCommands(value: unknown, limit: number): value is Acti
 			Object.keys(c).some(
 				(key) => !['id', 'itemId', 'action', 'expectedCurrentChangeId', 'occurredAt'].includes(key)
 			) ||
-			!identifier(c.id) ||
+			!(typeof c.id === 'string' && parseOperationId(c.id)) ||
 			ids.has(c.id) ||
 			!identifier(c.itemId) ||
 			!(c.expectedCurrentChangeId === null || identifier(c.expectedCurrentChangeId)) ||
@@ -51,7 +53,8 @@ export function validDraftRequest(value: unknown, id: string): value is Contract
 		draftObject(value) &&
 		Object.keys(value).every((key) => ['id', 'operationId', 'commands'].includes(key)) &&
 		value.id === id &&
-		identifier(value.operationId) &&
+		typeof value.operationId === 'string' &&
+		Boolean(parseOperationId(value.operationId)) &&
 		validDraftCommands(value.commands, MAX_SAVE_COMMANDS) &&
 		value.commands.length > 0
 	);
@@ -62,14 +65,15 @@ export function readDraft(value: unknown, id: string): ContractDraft | undefined
 	if (
 		!draftObject(value) ||
 		Object.keys(value).some(
-			(key) => !['version', 'base', 'request', 'conflict', 'commands'].includes(key)
+			(key) => !['version', 'base', 'request', 'conflict', 'blocked', 'commands'].includes(key)
 		)
 	)
 		return;
 	if (
-		value.version !== 10 ||
+		value.version !== 12 ||
 		!validContractState(value.base) ||
 		typeof value.conflict !== 'boolean' ||
+		typeof value.blocked !== 'boolean' ||
 		!validDraftCommands(value.commands, MAX_ACTIVITY_COMMANDS) ||
 		!(value.request === null || validDraftRequest(value.request, id))
 	)

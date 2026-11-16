@@ -3,27 +3,36 @@ import { useConvexClient } from 'convex-svelte';
 import { api } from '../../../convex/_generated/api';
 import { useReadQuery } from '$lib/auth/read-query.svelte';
 import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
+import { useStartupSetup } from '$lib/auth/startup-data';
 
 const key = Symbol('company-setup');
 
 /** Workspace-owned progress is shared by support and the setup prompt on every section. */
-export function setCompanySetup(canStart: () => boolean) {
+export function setCompanySetup(canStart: () => boolean = () => true) {
 	const viewer = useViewer();
 	const session = useViewerSession();
+	const startup = useStartupSetup();
 	const client = useConvexClient();
-	let requested = $state(false);
 	let retry = $state(0);
 	let completedMembership = $state<string>();
-	$effect(() => {
-		if (canStart()) untrack(() => (requested = true));
-	});
 	const hints = useReadQuery(api.accounts.setupHints, () =>
-		requested && !session.blocked && !session.closing && !viewer().company.deletionPending
+		canStart() &&
+		session.workspaceAdmitted &&
+		!session.blocked &&
+		!session.closing &&
+		!viewer().company.deletionPending
 			? { membershipId: viewer().membership.id }
 			: 'skip'
 	);
+	const progress = () => {
+		const initial = startup();
+		return (
+			hints.data ??
+			(initial?.membershipId === viewer().membership.id ? initial.progress : undefined)
+		);
+	};
 	$effect(() => {
-		if (hints.data?.complete) completedMembership = viewer().membership.id;
+		if (progress()?.complete) completedMembership = viewer().membership.id;
 	});
 	onMount(() => {
 		const refresh = () => {
@@ -36,11 +45,11 @@ export function setCompanySetup(canStart: () => boolean) {
 	$effect(() => {
 		void retry;
 		void session.transportGeneration;
-		const progress = hints.data;
+		const current = progress();
 		if (
-			!progress ||
-			progress.complete ||
-			progress.nextStep !== null ||
+			!current ||
+			current.complete ||
+			current.nextStep !== null ||
 			session.blocked ||
 			session.closing
 		)
@@ -55,10 +64,20 @@ export function setCompanySetup(canStart: () => boolean) {
 	});
 	return setContext(key, {
 		get progress() {
-			return hints.data;
+			return progress();
+		},
+		get resolved() {
+			return progress() !== undefined || hints.error !== undefined;
+		},
+		get error() {
+			return progress() === undefined && hints.error !== undefined;
+		},
+		retry: () => hints.retry(),
+		get loading() {
+			return hints.isLoading && progress() === undefined;
 		},
 		get complete() {
-			return completedMembership === viewer().membership.id || hints.data?.complete === true;
+			return completedMembership === viewer().membership.id || progress()?.complete === true;
 		}
 	});
 }

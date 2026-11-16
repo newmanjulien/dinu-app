@@ -1,6 +1,6 @@
 <script lang="ts">
-	import CsmCalendarLayout from './CsmCalendarLayout.svelte';
-	import CsmCalendarDates from './CsmCalendarDates.svelte';
+	import CsmTimeListLayout from './CsmTimeListLayout.svelte';
+	import { withinBookingWindow } from '$lib/booking-window';
 	import CsmBookingLayout from './CsmBookingLayout.svelte';
 	import { onMount, tick, untrack } from 'svelte';
 	import { ConvexError } from 'convex/values';
@@ -10,26 +10,13 @@
 	import { api as backend } from '../../../convex/_generated/api';
 	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 	import Button from '$lib/ui/Button.svelte';
-	import IconButton from '$lib/ui/IconButton.svelte';
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
-	import CaretLeftIcon from 'phosphor-svelte/lib/CaretLeftIcon';
-	import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
 	import ClockIcon from 'phosphor-svelte/lib/ClockIcon';
 	import CircleNotchIcon from 'phosphor-svelte/lib/CircleNotchIcon';
 	import { useCsmPreload, type CsmOwner } from './csm-preload.svelte';
-	import type { CalendarSelection } from './csm-availability';
-	import {
-		addDays,
-		addMonths,
-		dateLabel,
-		dateValue,
-		groupSlots,
-		slotLabels,
-		localDate,
-		timeLabel,
-		timeZones
-	} from './csm-calendar';
+	import type { AvailabilitySelection } from './csm-availability';
+	import { dateLabel, groupSlots, slotLabels, localDate, timeLabel, timeZones } from './csm-time';
 
 	type Availability = FunctionReturnType<typeof backend.csmBookings.availability>;
 	type Receipt = NonNullable<FunctionReturnType<typeof backend.csmBookings.attempt>>;
@@ -42,7 +29,7 @@
 		description = 'Choose a time that works for you.'
 	}: {
 		owner: CsmOwner;
-		initial: CalendarSelection;
+		initial: AvailabilitySelection;
 		onBooked: () => void;
 		inProgress?: boolean;
 		admission?: 'ready' | 'in-progress' | 'uncertain' | 'completed' | 'unavailable';
@@ -60,12 +47,9 @@
 	const initialZone = untrack(() => initial.timeZone);
 	let timeZone = $state(initialZone);
 	const zones = timeZones(initialZone);
-	let today = $derived(localDate(new Date(), timeZone));
-	let month = $state(untrack(() => initial.month));
-	let selectedDate = $state(localDate(new Date(), initialZone));
-	let cursor = $state(localDate(new Date(), initialZone));
+	let now = $state(Date.now());
 	let selectedSlot = $state<string>();
-	let calendar = $state<Availability>();
+	let availability = $state<Availability>();
 	let loading = $state(true);
 	let readError = $state('');
 	let message = $state('');
@@ -80,13 +64,10 @@
 	let submissionUncertain = $state(false);
 	let bindingGeneration = $state(0);
 	let checking = $state(false);
-	let findingDate = $state(false);
-	let dateSearchMessage = $state('');
-	let dateSearch: ReadAttempt | undefined;
 	let intent: FunctionArgs<typeof backend.csmBookings.book> | undefined;
 	let root: AbortController;
 	let membershipId: Id<'memberships'>;
-	let dateGrid = $state<HTMLTableElement>();
+	let timeList = $state<HTMLDivElement>();
 	let progressPanel = $state<HTMLDivElement>();
 
 	const ownPending = $derived(
@@ -118,15 +99,18 @@
 	$effect(() => {
 		inProgress = blocked;
 	});
-	const navigationLastDate = $derived(addDays(today, 370));
-	const lastDate = $derived(calendar?.lastDate ?? navigationLastDate);
-	const grouped = $derived(groupSlots(calendar?.slots ?? [], timeZone));
-	const daySlots = $derived(grouped.get(selectedDate) ?? []);
-	const availableDates = $derived(new Set(grouped.keys()));
+	const slots = $derived(
+		(availability?.slots ?? []).filter((slot) => withinBookingWindow(slot.start, now))
+	);
+	const grouped = $derived(groupSlots(slots, timeZone));
 	const labels = $derived(
-		slotLabels(
-			daySlots.map((s) => s.start),
-			timeZone
+		new Map(
+			[...grouped.values()].flatMap((day) => [
+				...slotLabels(
+					day.map((slot) => slot.start),
+					timeZone
+				)
+			])
 		)
 	);
 	const current = () =>
@@ -134,7 +118,7 @@
 		!root.signal.aborted &&
 		membershipId === owner.membershipId &&
 		preload.owner === owner &&
-		owner.calendar.current();
+		owner.availability.current();
 	const interactive = () =>
 		current() &&
 		owner.canRead(mode, replacement) &&
@@ -144,19 +128,25 @@
 		sharedLoaded &&
 		!sharedError &&
 		(mode !== 'setup' || shared?.state === 'ready');
-	const selectable = (date: string) =>
-		interactive() &&
-		!loading &&
-		date.startsWith(month) &&
-		date >= today &&
-		date <= lastDate &&
-		availableDates.has(date);
 
 	onMount(() => {
 		root = new AbortController();
 		membershipId = owner.membershipId;
 		mounted = true;
+		const onVisible = () => {
+			if (document.hidden) return;
+			now = Date.now();
+			if (
+				interactive() &&
+				!loading &&
+				availability?.status === 'ready' &&
+				!owner.availability.peek({ mode, timeZone, ...(replacement ? { replacement } : {}) })
+			)
+				refresh++;
+		};
+		document.addEventListener('visibilitychange', onVisible);
 		return () => {
+			document.removeEventListener('visibilitychange', onVisible);
 			mounted = false;
 			root.abort();
 			inProgress = false;
@@ -183,15 +173,15 @@
 		}
 		if (row?.state === 'booked') {
 			owner.setUnresolved(false);
-			owner.calendar.invalidate();
+			owner.availability.invalidate();
 			onBooked();
 			return;
 		}
 		const unresolved = !!row && ['queued', 'submitting', 'unknown'].includes(row.state);
 		owner.setUnresolved(unresolved);
-		if (unresolved && changed) owner.calendar.invalidate();
+		if (unresolved && changed) owner.availability.invalidate();
 		if (row?.state === 'failed' && changed) {
-			owner.calendar.invalidate();
+			owner.availability.invalidate();
 			selectedSlot = undefined;
 			message =
 				row.error === 'conflict'
@@ -204,9 +194,9 @@
 			refresh++;
 			void tick().then(() => {
 				if (current() && expectedGeneration === bindingGeneration)
-					dateGrid
-						?.querySelector<HTMLButtonElement>(`[data-date="${cursor}"]`)
-						?.focus({ preventScroll: true });
+					(timeList?.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? timeList)?.focus({
+						preventScroll: true
+					});
 			});
 		}
 	}
@@ -265,8 +255,8 @@
 						error
 					),
 				(row) => {
-					if (shared?.state !== row.state) {
-						owner.calendar.invalidate();
+					if (shared && shared.state !== row.state) {
+						owner.availability.invalidate();
 						selectedSlot = undefined;
 						refresh++;
 					}
@@ -282,7 +272,7 @@
 				() => {
 					sharedError = true;
 					sharedLoaded = false;
-					owner.calendar.invalidate();
+					owner.availability.invalidate();
 				},
 				current
 			)
@@ -323,8 +313,7 @@
 		});
 	});
 	$effect(() => {
-		const target = month,
-			zone = timeZone,
+		const zone = timeZone,
 			revision = refresh;
 		if (
 			!mounted ||
@@ -337,7 +326,6 @@
 		let active = true;
 		const selection = {
 			mode,
-			month: target,
 			timeZone: zone,
 			...(replacement ? { replacement } : {})
 		};
@@ -346,45 +334,33 @@
 			!request.signal.aborted &&
 			current() &&
 			(mode !== 'setup' || (sharedLoaded && !sharedError && shared?.state === 'ready')) &&
-			month === target &&
 			timeZone === zone &&
 			refresh === revision;
 		const apply = (data: Availability) => {
-			calendar = data;
-			const days = [...grouped.keys()];
-			if (!days.includes(selectedDate))
-				selectedDate = days.includes(today)
-					? today
-					: (days[0] ?? (target === today.slice(0, 7) ? today : target + '-01'));
-			if (!cursor.startsWith(target)) cursor = selectedDate;
+			availability = data;
+			now = Date.now();
 			loading = false;
 		};
 		untrack(() => {
 			readError = '';
 			selectedSlot = undefined;
-			const ready = owner.calendar.peek(selection);
+			const ready = owner.availability.peek(selection);
 			if (ready) {
 				apply(ready);
 				request.complete();
 				return;
 			}
 			loading = true;
-			calendar = undefined;
-			void waitForRead(owner.calendar.read(selection), request.signal)
+			availability = undefined;
+			void waitForRead(owner.availability.read(selection), request.signal)
 				.then(
 					(data) => {
 						if (canPaint()) apply(data);
 					},
 					() => {
 						// A deadline is terminal for this waiter; accepted work may still warm the cache.
-						if (
-							active &&
-							current() &&
-							month === target &&
-							timeZone === zone &&
-							refresh === revision
-						) {
-							readError = 'The calendar couldn’t load. Please try again.';
+						if (active && current() && timeZone === zone && refresh === revision) {
+							readError = 'Available times couldn’t load. Please try again.';
 							loading = false;
 						}
 					}
@@ -396,130 +372,45 @@
 			request.abort();
 		};
 	});
+	// Expire displayed starts at their actual instant, even if the picker stays open.
 	$effect(() => {
-		void month;
-		void timeZone;
-		void refresh;
-		void owner.unresolved;
-		interactive();
-		untrack(() => {
-			dateSearchMessage = '';
-		});
-		return () => {
-			dateSearch?.abort();
-			dateSearch = undefined;
-			findingDate = false;
-		};
+		if (!mounted || blocked || !slots.length) return;
+		const timer = setTimeout(
+			() => {
+				now = Date.now();
+			},
+			Math.max(1, Date.parse(slots[0].start) - Date.now() + 1)
+		);
+		return () => clearTimeout(timer);
 	});
-	async function findAvailableDate() {
-		if (!interactive() || loading || findingDate) return;
-		const request = new ReadAttempt(18_000, root.signal);
-		dateSearch = request;
-		findingDate = true;
-		dateSearchMessage = '';
-		const zone = timeZone,
-			firstDate = today,
-			limit = lastDate < navigationLastDate ? lastDate : navigationLastDate;
-		try {
-			for (
-				let target = firstDate.slice(0, 7);
-				target <= limit.slice(0, 7);
-				target = addMonths(target + '-01', 1).slice(0, 7)
-			) {
-				if (request.signal.aborted || !interactive()) return;
-				const data = await waitForRead(
-					owner.calendar.read({
-						mode,
-						month: target,
-						timeZone: zone,
-						...(replacement ? { replacement } : {})
-					}),
-					request.signal
-				);
-				if (request.signal.aborted || !interactive()) return;
-				if (data.status !== 'ready') throw new Error('Calendar unavailable.');
-				const end = data.lastDate && data.lastDate < limit ? data.lastDate : limit;
-				const date = [...groupSlots(data.slots, zone).keys()]
-					.filter((day) => day >= firstDate && day <= end)
-					.sort()[0];
-				if (date) {
-					month = target;
-					selectedDate = date;
-					cursor = date;
-					selectedSlot = undefined;
-					return;
-				}
-				if (target >= end.slice(0, 7)) break;
-			}
-			dateSearchMessage = 'No available dates in the booking window.';
-		} catch {
-			if (dateSearch === request && interactive())
-				dateSearchMessage = 'Couldn’t find available dates. Please try again.';
-		} finally {
-			request.complete();
-			if (dateSearch === request) {
-				dateSearch = undefined;
-				findingDate = false;
-			}
-		}
+	$effect(() => {
+		if (selectedSlot && !slots.some((slot) => slot.start === selectedSlot))
+			selectedSlot = undefined;
+	});
+	// Refresh the rolling window at cache expiry; hidden tabs refresh when visible again.
+	$effect(() => {
+		if (!mounted || loading || availability?.status !== 'ready' || !interactive()) return;
+		const expires = owner.availability.expiresAt({
+			mode,
+			timeZone,
+			...(replacement ? { replacement } : {})
+		});
+		if (expires === undefined) return;
+		const timer = setTimeout(
+			() => {
+				if (!document.hidden && interactive()) refresh++;
+			},
+			Math.max(1, expires - Date.now())
+		);
+		return () => clearTimeout(timer);
+	});
+	function chooseSlot(start: string) {
+		now = Date.now();
+		if (interactive() && !loading && withinBookingWindow(start, now)) selectedSlot = start;
 	}
-	function changeMonth(next: string) {
-		if (!interactive() || next < today.slice(0, 7) || next > navigationLastDate.slice(0, 7)) return;
-		month = next;
-		selectedSlot = undefined;
-		selectedDate = next === today.slice(0, 7) ? today : next + '-01';
-		cursor = selectedDate;
-	}
-	async function moveDate(event: KeyboardEvent, date: string) {
-		let next: string;
-		switch (event.key) {
-			case 'ArrowLeft':
-				next = addDays(date, -1);
-				break;
-			case 'ArrowRight':
-				next = addDays(date, 1);
-				break;
-			case 'ArrowUp':
-				next = addDays(date, -7);
-				break;
-			case 'ArrowDown':
-				next = addDays(date, 7);
-				break;
-			case 'Home':
-				next = addDays(date, -dateValue(date).getUTCDay());
-				break;
-			case 'End':
-				next = addDays(date, 6 - dateValue(date).getUTCDay());
-				break;
-			case 'PageUp':
-				next = addMonths(date, event.shiftKey ? -12 : -1);
-				break;
-			case 'PageDown':
-				next = addMonths(date, event.shiftKey ? 12 : 1);
-				break;
-			default:
-				return;
-		}
-		event.preventDefault();
+	function retryAvailability() {
 		if (!interactive()) return;
-		const firstMonth = today.slice(0, 7),
-			lastMonth = navigationLastDate.slice(0, 7);
-		next =
-			next.slice(0, 7) < firstMonth
-				? firstMonth + '-01'
-				: next.slice(0, 7) > lastMonth
-					? navigationLastDate
-					: next;
-		if (next.slice(0, 7) !== month) changeMonth(next.slice(0, 7));
-		cursor = next;
-		await tick();
-		dateGrid
-			?.querySelector<HTMLButtonElement>(`[data-date="${next}"]`)
-			?.focus({ preventScroll: true });
-	}
-	function retryCalendar() {
-		if (!interactive()) return;
-		owner.calendar.invalidate();
+		owner.availability.invalidate();
 		refresh++;
 	}
 	function retryBoot() {
@@ -531,14 +422,14 @@
 		if (
 			!interactive() ||
 			loading ||
-			calendar?.status !== 'ready' ||
+			availability?.status !== 'ready' ||
 			selectedSlot !== start ||
-			Date.parse(start) <= Date.now() ||
-			!daySlots.some((s) => s.start === start)
+			!withinBookingWindow(start, Date.now()) ||
+			!slots.some((s) => s.start === start)
 		)
 			return;
 		owner.setUnresolved(true);
-		owner.calendar.invalidate();
+		owner.availability.invalidate();
 		// Freeze identity and replace the binding synchronously, before any continuation can run.
 		intent = {
 			membershipId,
@@ -658,9 +549,9 @@
 		headingId={id + '-heading'}
 	>
 		{#snippet duration()}
-			{#if calendar?.duration && !blocked}<span
+			{#if availability?.duration && !blocked}<span
 					class="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-muted"
-					><ClockIcon class="size-[15px]" aria-hidden="true" />{calendar.duration} min</span
+					><ClockIcon class="size-[15px]" aria-hidden="true" />{availability.duration} min</span
 				>{/if}{/snippet}
 
 		<div
@@ -685,7 +576,7 @@
 			{:else if mode === 'setup' && sharedLoaded && shared?.state === 'unavailable'}This setup
 				call’s details have changed. Close this window to see its latest status.
 			{:else if readError}{readError}
-			{:else if calendar?.status === 'unavailable'}Booking is temporarily unavailable.
+			{:else if availability?.status === 'unavailable'}Booking is temporarily unavailable.
 			{/if}
 		</div>
 		{#if bootError || (sharedError && !ownPending)}
@@ -716,135 +607,66 @@
 					>{/if}
 			</div>
 		{:else if mode !== 'setup' || !sharedLoaded || shared?.state === 'ready'}
-			<CsmCalendarLayout
-				loading={loading || !bootLoaded}
-				monthHeadingId={id + '-month'}
-				timeZoneId={id + '-zone'}
-			>
-				{#snippet monthTitle()}{dateLabel(month + '-01', { month: 'long', year: 'numeric' })}
-				{/snippet}
-				{#snippet monthNavigation()}<IconButton
-						variant="ghost"
-						aria-label="Previous month"
-						disabled={!interactive() || month <= today.slice(0, 7)}
-						onclick={() => changeMonth(addMonths(month + '-01', -1).slice(0, 7))}
-						><CaretLeftIcon class="size-4" aria-hidden="true" /></IconButton
-					>
-					<IconButton
-						variant="ghost"
-						aria-label="Next month"
-						disabled={!interactive() || month >= navigationLastDate.slice(0, 7)}
-						onclick={() => changeMonth(addMonths(month + '-01', 1).slice(0, 7))}
-						><CaretRightIcon class="size-4" aria-hidden="true" /></IconButton
-					>
-				{/snippet}
-				{#snippet dates()}<CsmCalendarDates
-						{month}
-						{selectedDate}
-						labelledBy={id + '-month'}
-						bind:element={dateGrid}
-					>
-						{#snippet day(date)}{#if date.startsWith(month)}<button
-									type="button"
-									data-date={date}
-									tabindex={cursor === date ? 0 : -1}
-									aria-label={dateLabel(date)}
-									aria-current={date === today ? 'date' : undefined}
-									aria-disabled={!selectable(date)}
-									class={[
-										'flex h-[31px] w-full items-center justify-center rounded-button-md text-[12.5px] font-normal transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none',
-										selectable(date)
-											? selectedDate === date
-												? 'cursor-pointer bg-ink text-surface hover:bg-ink-secondary'
-												: 'cursor-pointer bg-canvas text-ink hover:bg-control-hover'
-											: 'text-ink-muted opacity-45',
-										date === today && 'underline underline-offset-4'
-									]}
-									onfocus={() => {
-										if (interactive()) cursor = date;
-									}}
-									onkeydown={(e) => moveDate(e, date)}
-									onclick={() => {
-										if (selectable(date)) {
-											selectedDate = date;
-											cursor = date;
-											selectedSlot = undefined;
-										}
-									}}>{Number(date.slice(-2))}</button
-								>
-							{:else}<span class="block h-[31px]" aria-hidden="true"></span>{/if}{/snippet}
-					</CsmCalendarDates>{/snippet}
-				{#snippet timesTitle()}
-					{dateLabel(selectedDate, { weekday: 'short', month: 'short', day: 'numeric' })}
-				{/snippet}
-				{#snippet times()}
-					{#if readError}<p class="text-[12.5px] leading-relaxed text-ink-muted">
-							The calendar couldn’t load.
+			<CsmTimeListLayout loading={loading || !bootLoaded} timeZoneId={id + '-zone'}>
+				<div bind:this={timeList} tabindex="-1" aria-label="Available times" class="outline-none">
+					{#if readError || availability?.status === 'unavailable'}
+						<p class="text-[12.5px] leading-relaxed text-ink-muted">
+							{readError ? 'Available times couldn’t load.' : 'Please try again later.'}
 						</p>
 						<Button
 							variant="secondary"
 							class="mt-3"
 							disabled={!interactive()}
-							onclick={retryCalendar}>Retry</Button
+							onclick={retryAvailability}>Retry</Button
 						>
-					{:else if calendar?.status === 'unavailable'}<p
-							class="text-[12.5px] leading-relaxed text-ink-muted"
-						>
-							Please try again later.
-						</p>
-						<Button
-							variant="secondary"
-							class="mt-3"
-							disabled={!interactive()}
-							onclick={retryCalendar}>Retry</Button
-						>
-					{:else if loading}<div class="space-y-1.5" aria-hidden="true">
+					{:else if loading}
+						<span role="status" class="sr-only">Loading available times</span>
+						<div class="space-y-1.5" aria-hidden="true">
+							<SkeletonBlock class="mb-3 h-5 w-32" />
 							{#each [0, 1, 2, 3] as skeleton}<SkeletonBlock
 									class="h-button-sm rounded-button-lg"
 								/>{/each}
 						</div>
-					{:else if !availableDates.size}<p class="text-[12.5px] leading-relaxed text-ink-muted">
-							No available times this month.
+					{:else if !slots.length}
+						<p role="status" class="text-[12.5px] leading-relaxed text-ink-muted">
+							No available times in the next 2 days.
 						</p>
-						<button
-							type="button"
-							class="mt-2 cursor-pointer text-left text-[12.5px] leading-relaxed text-accent underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted"
-							disabled={!interactive() || findingDate}
-							onclick={findAvailableDate}
-							>{findingDate ? 'Finding available dates…' : 'Find next available date'}</button
-						>
-						{#if dateSearchMessage}<p
-								role="status"
-								class="mt-2 text-[12.5px] leading-relaxed text-ink-muted"
-							>
-								{dateSearchMessage}
-							</p>{/if}
-					{:else if !daySlots.length}<p class="text-[12.5px] leading-relaxed text-ink-muted">
-							No times available. Choose another date.
-						</p>
-					{:else}<div class="space-y-1.5">
-							{#each daySlots as slot (slot.start)}{@const label = labels.get(slot.start)!}
-								<div class="flex gap-1.5">
-									<button
-										type="button"
-										class={[
-											'slot-button min-h-button-sm min-w-0 flex-1 cursor-pointer rounded-button-lg border-hairline border-line px-2 py-1.5 text-[12.5px] leading-5 text-ink transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:bg-canvas disabled:text-ink-muted motion-reduce:transition-none',
-											selectedSlot === slot.start ? 'bg-canvas' : 'enabled:hover:bg-field-hover'
-										]}
-										aria-pressed={selectedSlot === slot.start}
-										disabled={!interactive()}
-										onclick={() => {
-											if (interactive()) selectedSlot = slot.start;
-										}}>{label.display}</button
-									>
-									{#if selectedSlot === slot.start}<Button
-											class="h-auto min-h-button-sm min-w-0 flex-1 focus-visible:-outline-offset-2"
-											aria-label={'Book ' + dateLabel(selectedDate) + ' at ' + label.full}
-											disabled={!interactive()}
-											onclick={() => submit(slot.start)}>Book</Button
-										>{/if}
-								</div>{/each}
-						</div>{/if}{/snippet}
+					{:else}
+						<div class="space-y-4">
+							{#each [...grouped] as [date, daySlots] (date)}
+								<section aria-labelledby={id + '-day-' + date}>
+									<h4 id={id + '-day-' + date} class="mb-2 text-[14px] font-medium">
+										{dateLabel(date, { weekday: 'short', month: 'short', day: 'numeric' })}
+									</h4>
+									<div class="space-y-1.5">
+										{#each daySlots as slot (slot.start)}{@const label = labels.get(slot.start)!}
+											<div class="flex gap-1.5">
+												<button
+													type="button"
+													class={[
+														'slot-button min-h-button-sm min-w-0 flex-1 cursor-pointer rounded-button-lg border-hairline border-line px-2 py-1.5 text-[12.5px] leading-5 text-ink transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:bg-canvas disabled:text-ink-muted motion-reduce:transition-none',
+														selectedSlot === slot.start
+															? 'bg-canvas'
+															: 'enabled:hover:bg-field-hover'
+													]}
+													aria-pressed={selectedSlot === slot.start}
+													disabled={!interactive()}
+													onclick={() => chooseSlot(slot.start)}>{label.display}</button
+												>
+												{#if selectedSlot === slot.start}<Button
+														class="h-auto min-h-button-sm min-w-0 flex-1 focus-visible:-outline-offset-2"
+														aria-label={'Book ' + dateLabel(date) + ' at ' + label.full}
+														disabled={!interactive()}
+														onclick={() => submit(slot.start)}>Book</Button
+													>{/if}
+											</div>
+										{/each}
+									</div>
+								</section>
+							{/each}
+						</div>
+					{/if}
+				</div>
 				{#snippet timeZoneControl()}<select
 						id={id + '-zone'}
 						class="h-9 w-full min-w-0 cursor-pointer appearance-none truncate rounded-button-lg border-hairline border-line bg-surface py-0 pr-9 pl-3 text-[13px] leading-5 text-ink outline-none transition-colors enabled:hover:not-focus:bg-field-hover focus:border-accent focus:outline-solid focus:outline-2 focus:outline-offset-1 focus:outline-accent/18 disabled:cursor-default disabled:bg-canvas disabled:text-ink-muted motion-reduce:transition-none"
@@ -863,7 +685,7 @@
 						class="size-3.5 pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted"
 					/>
 				{/snippet}
-			</CsmCalendarLayout>
+			</CsmTimeListLayout>
 		{/if}
 	</CsmBookingLayout>
 {/if}

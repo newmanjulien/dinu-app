@@ -212,6 +212,15 @@ http.route({
 					'Reconnect as the original author before retrying. Your draft is still here.',
 					401
 				);
+			if (
+				error instanceof ConvexError &&
+				error.data &&
+				typeof error.data === 'object' &&
+				'code' in error.data &&
+				typeof error.data.code === 'string' &&
+				['OPERATION_EXPIRED', 'OPERATION_INVALID', 'OPERATION_FUTURE'].includes(error.data.code)
+			)
+				return new Response(JSON.stringify(error.data), { status: 409, headers });
 			if (error instanceof ConvexError)
 				return failure(
 					typeof error.data === 'string' ? error.data : 'This message could not be saved.',

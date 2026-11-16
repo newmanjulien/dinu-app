@@ -10,7 +10,7 @@
 
 <svg
 	aria-hidden="true"
-	class="absolute inset-0 size-full text-edge opacity-[0.14] [stroke-width:1.2]"
+	class="absolute inset-0 size-full text-control-fill opacity-[0.14] [stroke-width:1.2]"
 	viewBox="0 0 1200 1200"
 	preserveAspectRatio="none"
 >

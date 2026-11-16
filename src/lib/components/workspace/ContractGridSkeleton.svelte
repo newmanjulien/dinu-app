@@ -1,12 +1,12 @@
 <script lang="ts">
-	import ContractGrid from './ContractGrid.svelte';
-	import ContractCardLayout from '../contracts/ContractCardLayout.svelte';
+	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 	let { announce = true }: { announce?: boolean } = $props();
 </script>
 
-{#if announce}<span role="status" class="sr-only">Loading contracts</span>{/if}
-<ContractGrid>
-	{#each Array.from({ length: 16 }) as _, index (index)}<ContractCardLayout
-			skeletonIndex={index}
-		/>{/each}
-</ContractGrid>
+<div
+	class="flex items-center gap-2 py-4 text-[13px] text-ink-muted"
+	role={announce ? 'status' : undefined}
+>
+	<span aria-hidden="true"><LoadingWheel class="size-4" /></span>
+	<span>Loading contracts…</span>
+</div>

@@ -1,11 +1,11 @@
 import { pointPosition } from '$lib/document/source-index';
 import type { SourceTarget } from '$lib/document/source-model';
 import type { DocumentAnnotationItem } from '$lib/playbook/document-overlay';
-import type { RenderSnapshot } from './runtime/types';
+import type { AnnotationProjectionDocument } from './runtime/types';
 /** Effective readers expose summaries only where actual wording survives. */
 export function readableAnnotations(
 	items: readonly DocumentAnnotationItem[],
-	snapshot: RenderSnapshot | null
+	snapshot: AnnotationProjectionDocument | null
 ): readonly DocumentAnnotationItem[] {
 	if (!snapshot || !items.length) return [];
 	const index = snapshot.source.sourceIndex;

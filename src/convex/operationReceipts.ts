@@ -9,6 +9,11 @@ import { cancelJob } from './emailDeliveries';
 import { queueNativeCleanup } from './nativeConstructionCleanup';
 import { documentBytes } from './storageCapacity';
 import { retireDiscussionMap } from './discussionMaps';
+import {
+	parseOperationId,
+	operationKey,
+	OPERATION_FUTURE_TOLERANCE_MS
+} from '../lib/contract/operation-identity';
 
 export const receiptChunkFingerprint = (data: string) =>
 	bytesToHex(hash(new TextEncoder().encode(data)));
@@ -22,7 +27,39 @@ export const receiptSectionHash = (
 ) => receiptChunkFingerprint(JSON.stringify([previous, order, fingerprint, records]));
 
 export function operation(value: string) {
-	if (!value.trim() || value.length > 200) throw new ConvexError('Invalid operation identity.');
+	const parsed = parseOperationId(value);
+	if (!parsed)
+		throw new ConvexError({ code: 'OPERATION_INVALID', message: 'Invalid operation identity.' });
+	return parsed;
+}
+
+/** Mutation admission must precede replay, no-op returns and every business write. */
+export function admitOperation(value: string) {
+	const parsed = operation(value),
+		now = Date.now();
+	if (parsed.createdAt > now + OPERATION_FUTURE_TOLERANCE_MS)
+		throw new ConvexError({
+			code: 'OPERATION_FUTURE',
+			message: 'The operation clock is ahead. This request made no business writes.'
+		});
+	if (now >= parsed.retryUntil)
+		throw new ConvexError({
+			code: 'OPERATION_EXPIRED',
+			message: 'This operation expired. Review the preserved intent against the current contract.'
+		});
+	return parsed;
+}
+
+export function receiptDeadline(key: string) {
+	const parts: unknown = JSON.parse(key);
+	if (!Array.isArray(parts) || parts.length !== 3 || typeof parts[2] !== 'string')
+		throw new Error('Invalid operation key.');
+	return { ...operation(parts[2]), operationId: parts[2] };
+}
+
+/** Mutation-only check; queries expose retryUntil without reading a clock. */
+export function operationExpired(row: Pick<Doc<'operationReceipts'>, 'executionUntil'>) {
+	return Date.now() >= row.executionUntil;
 }
 
 /** Immutable original input/result bytes share the existing inline/chunk envelope. */
@@ -71,6 +108,11 @@ export function decodeReceiptPayload<
 }
 
 export async function receiptPayload(ctx: QueryCtx, row: Doc<'operationReceipts'>) {
+	if (row.collecting)
+		throw new ConvexError({
+			code: 'OPERATION_EXPIRED',
+			message: 'This expired operation is being removed.'
+		});
 	if (!row.chunked) return row;
 	const chunks = await ctx.db
 		.query('operationReceiptChunks')
@@ -157,16 +199,31 @@ export function planReceiptWrite(
 			| 'discussion-write'
 			| 'discussion-mark-seen';
 		requestedAt?: number;
-		providerOperationId?: Id<'hubspotQuotePushes'>;
+		outputId?: Id<'contractOutputs'>;
 	},
 	pending?: Pick<
 		Doc<'operationReceipts'>,
-		'actor' | 'operationId' | 'preparation' | 'emailPreparation' | 'outputPreparation'
+		'actor' | 'operationId' | 'preparation' | 'emailPreparation'
 	>
 ) {
 	const { payload, chunks } = encodeReceiptPayload(companyId, key, inputs, result);
+	const { retryUntil, gcAfter, operationId } = receiptDeadline(key);
+	if (pending?.operationId !== undefined && pending.operationId !== operationId)
+		throw new Error('Pending operation identity does not match its key.');
+	// A batch cannot adopt a command after that command's independent deadline.
+	const executionUntil =
+		ownership?.kind === 'playbook-save'
+			? (JSON.parse(inputs) as [string, { commands: { id: string }[] }])[1].commands.reduce(
+					(until, command) => Math.min(until, operation(command.id).retryUntil),
+					retryUntil
+				)
+			: retryUntil;
 	const row = {
 		companyId,
+		retryUntil,
+		executionUntil,
+		gcAfter,
+		operationId,
 		state: pending ? ('preparing' as const) : ('complete' as const),
 		...ownership,
 		...pending,
@@ -194,6 +251,7 @@ export function planReceiptWrite(
 }
 type ReceiptWriteArgs = Parameters<typeof planReceiptWrite>;
 export async function remember(ctx: MutationCtx, ...args: ReceiptWriteArgs) {
+	admitOperation(receiptDeadline(args[1]).operationId);
 	const plan = planReceiptWrite(...args),
 		id = await ctx.db.insert('operationReceipts', plan.row);
 	for (const chunk of plan.chunks)
@@ -210,7 +268,9 @@ export async function sealReceipt(
 	ctx: MutationCtx,
 	row: Doc<'operationReceipts'>,
 	inputs: string,
-	outcome: { state: 'complete'; result: string } | { state: 'failed'; error: string }
+	outcome:
+		| { state: 'complete'; result: string }
+		| { state: 'failed'; error: string; errorCode?: 'OPERATION_EXPIRED' }
 ) {
 	const live = await ctx.db.get('operationReceipts', row._id);
 	if (
@@ -220,6 +280,7 @@ export async function sealReceipt(
 		live.companyId !== row.companyId
 	)
 		throw new Error('Only the original pending operation can be sealed.');
+	if (outcome.state === 'complete') admitOperation(receiptDeadline(live.key).operationId);
 	const payload = await receiptPayload(ctx, live);
 	if (payload.inputs !== inputs) throw new Error('Pending operation input changed.');
 	const result = outcome.state === 'complete' ? outcome.result : '';
@@ -245,7 +306,9 @@ export async function sealReceipt(
 		...encoded.payload,
 		chunked: encoded.payload.chunked,
 		preparation: undefined,
-		error: outcome.state === 'failed' ? outcome.error : undefined
+		emailPreparation: undefined,
+		error: outcome.state === 'failed' ? outcome.error : undefined,
+		errorCode: outcome.state === 'failed' ? outcome.errorCode : undefined
 	});
 	// Release the original map only after this receipt stops owning it. A committed
 	// event or another exact active preparation can still retain the shared chunks.
@@ -264,7 +327,7 @@ export function actorOf(profile: Pick<Doc<'profiles'>, 'name' | 'email'>) {
 }
 export function actionKey(access: CompanyAccess, kind: string, id: string) {
 	operation(id);
-	return JSON.stringify([access.membershipId, kind, id]);
+	return operationKey(access.membershipId, kind, id);
 }
 export async function sha256(value: string) {
 	return Array.from(
@@ -292,9 +355,7 @@ export async function cleanupCompanyOperations(
 					for (const jobId of [
 						row.preparation?.native?.jobId,
 						row.preparation?.passageJobId,
-						row.outputPreparation?.jobId,
-						row.nativeCleanup?.jobId,
-						row.outputCleanup?.jobId
+						row.nativeCleanup?.jobId
 					])
 						await cancelJob(ctx, jobId);
 				}
@@ -311,6 +372,7 @@ export async function cleanupCompanyOperations(
 		))
 	)
 		return false;
+
 	return true;
 }
 
@@ -363,7 +425,7 @@ export async function receiptSealWork(
 		bytes += documentBytes({
 			...sealed,
 			nativeCleanup: {
-				...(row.nativeCleanup ?? { generation: 0, phase: 'documents', cursor: null, offset: 0 }),
+				...(row.nativeCleanup ?? { version: 1, phase: 'documents', offset: 0 }),
 				through: Math.max(row.nativeCleanup?.through ?? -1, row.preparation.native.generation),
 				dueAt: 0,
 				jobId: 'x'.repeat(32)

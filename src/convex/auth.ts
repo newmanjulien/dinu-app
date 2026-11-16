@@ -1,11 +1,9 @@
-import { requireTerminologyReady } from './terminologyMaintenance';
 import { ConvexError } from 'convex/values';
 import type { Doc, Id } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
 import { assertPermission, type Permission } from './permissions';
 
 export async function verifiedIdentity(ctx: Pick<QueryCtx, 'auth'>) {
-	requireTerminologyReady();
 	const identity = await ctx.auth.getUserIdentity();
 	if (!identity || !identity.email || identity.emailVerified !== true)
 		throw new ConvexError('Sign in with a verified email address.');

@@ -28,8 +28,7 @@ const start = '2026-11-07T12:00:00.000Z';
 const ready: Availability = {
 	status: 'ready',
 	slots: [{ start, end: '2026-11-07T12:30:00.000Z' }],
-	duration: 30,
-	lastDate: null
+	duration: 30
 };
 let network: ReturnType<typeof controlledClient>;
 let setupStatus: unknown;
@@ -218,7 +217,10 @@ it('waits for an unblocked owner to warm times and a fresh usable receipt to ena
 	const slot = document.querySelector<HTMLButtonElement>('.slot-button')!;
 	expect(slot).not.toBeNull();
 	expect(slot.disabled).toBe(true);
-	button('Next month').click();
+	const zone = document.querySelector<HTMLSelectElement>('select')!;
+	expect(zone.disabled).toBe(true);
+	zone.value = 'Europe/London';
+	zone.dispatchEvent(new Event('change', { bubbles: true }));
 	slot.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 	await settle();
 	expect(mutation).not.toHaveBeenCalled();

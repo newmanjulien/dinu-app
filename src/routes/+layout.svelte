@@ -16,14 +16,27 @@
 	const preparation = setStartupPreparation();
 	const metadata = setPageMetadata();
 	const route = $derived(describeRoute(page.route.id));
+	const tabTitle = $derived.by(() => {
+		const override = metadata.override;
+		const currentOverride =
+			override?.routeId === page.route.id && override.pathname === page.url.pathname
+				? override.title
+				: undefined;
+		if (route.presentation === 'buyer-document')
+			return currentOverride === 'View contract as buyer' &&
+				page.data.resolvedRouteTitle?.kind === 'current'
+				? currentOverride
+				: (page.data.resolvedRouteTitle?.title ?? '');
+		if (route.document === 'saved') return page.data.resolvedRouteTitle?.title ?? '';
+		if (currentOverride) return currentOverride;
+		return route.title;
+	});
 	onDestroy(() => preparation.cancel());
 </script>
 
 <svelte:head>
 	<link rel="preload" href={editorialFont} as="font" type="font/woff2" crossorigin="anonymous" />
-	<title
-		>{metadata.override?.routeId === page.route.id ? metadata.override.title : route.title}</title
-	>
+	<title>{tabTitle}</title>
 	<meta name="description" content={route.description ?? ''} />
 </svelte:head>
 

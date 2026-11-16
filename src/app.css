@@ -20,7 +20,7 @@
 	--color-control-fill: #e3e6e8;
 	--color-control-hover: #eef0f2;
 	--color-control-border: #d6d8d8;
-	--color-edge: var(--color-control-fill);
+	--color-edge: var(--color-line);
 	--color-surface-hover: color-mix(in srgb, var(--color-canvas) 50%, var(--color-surface));
 	--color-field-hover: color-mix(in srgb, var(--color-surface-hover) 65%, var(--color-surface));
 	--color-fill-subtle: #e8eaed;
@@ -28,7 +28,7 @@
 	--color-skeleton-highlight: rgb(255 255 255 / 30%);
 	--animate-skeleton-shimmer: skeleton-shimmer 2s ease-in-out infinite;
 
-	--shadow-control: 0 1px 3px rgb(32 33 36 / 6%);
+	--shadow-control: 0 1px 3px rgb(32 33 36 / 4%);
 	--shadow-card: 0 1px 3px rgb(32 33 36 / 4%), 0 3px 8px rgb(32 33 36 / 2%);
 	--shadow-floating: 0 2px 5px rgb(32 33 36 / 5%), 0 8px 24px rgb(32 33 36 / 8%);
 	--shadow-dialog: 0 4px 12px rgb(32 33 36 / 6%), 0 20px 60px rgb(32 33 36 / 14%);

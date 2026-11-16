@@ -1,3 +1,4 @@
+import { expireOperation } from './operationExpiry';
 import { v } from 'convex/values';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -25,6 +26,7 @@ export const beginDocument = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await constructionOwned(ctx, args);
 		if (!state?.native.build) return null;
+		if (await expireOperation(ctx, state.row)) return null;
 		if (
 			args.hashes.length < 1 ||
 			args.hashes.length > 512 ||
@@ -85,6 +87,7 @@ export const appendDocument = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await constructionOwned(ctx, args);
 		if (!state) return false;
+		if (await expireOperation(ctx, state.row)) return false;
 		const row = await ctx.db.get('contractDocuments', args.documentId),
 			stage = row?.stage;
 		if (
@@ -157,12 +160,13 @@ export const beginChange = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await constructionOwned(ctx, args);
 		if (!state?.native.build || !state.access) return null;
+		if (await expireOperation(ctx, state.row)) return null;
 		const b = state.native.build;
 		if (
 			b.phase !== 'patch' ||
 			args.row.companyId !== state.row.companyId ||
 			args.row.contractId !== state.contract.root._id ||
-			args.row.kind !== (state.row.kind === 'playbook-save' ? 'playbook' : 'buyer-proposal') ||
+			args.row.kind !== (state.row.kind === 'playbook-save' ? 'playbook' : 'buyer-link') ||
 			args.row.stage ||
 			args.row.chunks < 1 ||
 			args.row.chunks > 64 ||
@@ -218,6 +222,7 @@ export const appendChange = internalMutation({
 	handler: async (ctx, args) => {
 		const state = await constructionOwned(ctx, args);
 		if (!state) return false;
+		if (await expireOperation(ctx, state.row)) return false;
 		const row = await ctx.db.get('contractChanges', args.changeId),
 			stage = row?.stage;
 		if (

@@ -33,7 +33,7 @@ Automatic cancellation carries its captured request/attempt identity. Explicit c
 
 Verified deletion records a permanent issuer-qualified account marker and confirms dispatched company consent in the same mutation, including when no profile remains. Repeated webhooks are idempotent.
 
-Account cleanup normally removes the profile/membership and safely releases the personal avatar; unresolved sole-owner recovery retains them as described below. It retains company contracts, source/playbook template versions, creation receipts, immutable decisions, email events/captured selections and invitations. Historical actor/uploader/creator IDs remain business history; live access/recipient resolution still checks current membership and deletion markers. The existing directory displays Former colleague for a departed creator.
+Account cleanup normally removes the profile/membership and safely releases the personal avatar; unresolved sole-owner recovery retains them as described below. It retains company contracts, source/playbook template versions, immutable decisions, independent output/provider evidence, email events/captured selections and invitations. Executable operation/creation/discussion replay receipts follow their immutable seven-day admission and 24-hour cleanup grace with dependency gates; receipt expiry never erases business history or unresolved outcomes. Historical actor/uploader/creator IDs remain business history; live access/recipient resolution still checks current membership and deletion markers. The existing directory displays Former colleague for a departed creator.
 
 An externally deleted owner transfers to the oldest live remaining member without changing the successor's role. A bounded 25-membership successor page persists its cursor before continuing; the profile remains until ownership is resolved. If no live successor exists, cleanup records `deletedUsers.recoveryCompanyId`, clears its cleanup job and retains the deleted owner's profile, membership, avatar and `company.ownerProfileId` anchor. The deletion marker continues to deny that identity access. The company does not become ownerless. Dispatched company consent instead authorizes company cleanup.
 
@@ -41,7 +41,7 @@ An operator resolves this hold through internal `companies:recoverOwner` with th
 
 Company cleanup uses the [single ordered phase list](../src/convex/deletionValidators.ts): invitations, approvals, deliveries/snapshots, decision receipts, contracts/directory/cleanup markers, template source chunks/live items/create receipts/version history/pointer/templateSources/revisions, memberships and finally the company. The complete matrix maps every current table. Profiles, account tombstones and global sweep progress have separate owners.
 
-Item/contract creation receipts survive individual target deletion to prevent retry resurrection. Shared template versions/revisions/source survive individual contract/item deletion. Company deletion purges its receipts and business history but retains its completed tombstone. There are no legacy notification, attribution or copied-snapshot tables to drain.
+Item-creation receipts retain their independent protocol. Contract creation/operation/discussion receipts prevent retry resurrection through immutable `op1` admission deadlines, even after their eligible physical collection; deleting the target never makes an old identity executable. Shared template versions/revisions/source survive individual contract/item deletion. Company deletion purges its receipts and business history but retains its completed tombstone. The strict runtime has no retired raw activity, historical clause-membership or terminology tables/drains. Canonical current activity/discussion/output/provider owners remain in its bounded cleanup paths.
 
 File release removes the owner's reference, then checks all five ownership families before deleting storage in the same mutation: template source originals (including company-owned pending uploads), profile avatars, company avatars, HubSpot exports and HubSpot quote pushes. A pending source owns its original file even after its uploader leaves. Another owner preserves the bytes. [Storage ownership](../src/convex/storageOwnership.ts) is the authoritative shared check for owner cleanup and the orphan sweep.
 
@@ -73,6 +73,10 @@ First identify the exact deployment and inspect the durable owner, current phase
 - Interrupted orphan-file interval: storageOwnership:cleanOrphanFiles with no continuation args, which resumes the stored active cursor/cutoff.
 
 These are operational instructions, not authorization to mutate a deployment. Never delete dispatched consent or a completed account/company tombstone to clear an error. Prepared-consent expiry/cancellation is conditional on its current request identity; stale callbacks cannot undo dispatch. Delayed children cannot recreate missing parents.
+
+## Strict-release marker obligations
+
+The strict schema contains no raw-activity phase/cursor compatibility. Before release, G08–G10 require every old account/company marker and callback to finish or be deliberately normalized under the preserved old bundle. Old company raw-opening phases also drained current activity/counters; catch up current openings, receipt children and counters even when a marker has already advanced. Preserve selective current account activity erasure and do not infer completion from zero raw tables. The [preservation runbook and exact gates](backend-preservation-cutover.md) cover this prerequisite; all live gates remain UNVERIFIED. Local source changes perform no target normalization or deletion.
 
 ## Verification
 

@@ -19,16 +19,23 @@ export const loadDocumentWorkspace = shared(
 export const loadTemplateWorkspace = shared(
 	() => import('$lib/components/workspace/TemplateWorkspace.svelte')
 );
+export const loadContractCreation = shared(
+	() => import('$lib/components/workspace/ContractCreation.svelte')
+);
 export const loadSavedContract = shared(
 	() => import('$lib/components/workspace/SavedContract.svelte')
 );
 
 /** Caller admits the destination; this downloads code only. */
-export function warmDocumentDestination(kind: 'template' | 'saved') {
+export function warmDocumentDestination(kind: 'template' | 'saved' | 'new') {
 	void Promise.all([
 		loadDocumentHost(),
 		loadDocumentWorkspace(),
-		kind === 'template' ? loadTemplateWorkspace() : loadSavedContract()
+		kind === 'template'
+			? loadTemplateWorkspace()
+			: kind === 'new'
+				? loadContractCreation()
+				: loadSavedContract()
 	]).catch(() => {});
 }
 
@@ -40,11 +47,7 @@ export async function preloadDestination(pathname: string) {
 		preloadCode(pathname),
 		import('./AuthenticatedAccount.svelte'),
 		import('./AccountContentScope.svelte'),
-		pathname === '/invitation'
-			? import('./InvitationLink.svelte')
-			: pathname !== '/onboarding'
-				? import('./Workspace.svelte')
-				: undefined,
+		pathname === '/invitation' ? import('./InvitationLink.svelte') : undefined,
 		route.presentation === 'contracts' ? loadContracts() : undefined,
 		// Generic entry preloads keep template setup cheap; admitted intent warms the editor.
 		route.document && !route.requiresTemplate ? loadDocumentHost() : undefined,

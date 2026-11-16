@@ -3,7 +3,6 @@ import { nativeStage } from './nativeStageValidators';
 import {
 	buyerProposalSource,
 	changeActor,
-	changeKind,
 	decisionAction,
 	playbookSource
 } from '../lib/contract/changes';
@@ -26,40 +25,64 @@ const change = v.object({
 });
 export const storedContractChange = v.union(
 	change.extend({ kind: v.literal('playbook'), source: playbookSource }),
-	change.extend({ kind: v.literal('buyer-proposal'), source: buyerProposalSource })
+	change.extend({
+		kind: v.literal('buyer-link'),
+		policy: v.literal('required'),
+		source: buyerProposalSource
+	})
 );
-/** Only exact current/applied references are mutable. Status follows the effective decision. */
-export const storedContractChangeHead = v.object({
+/** Pending admission belongs to one activation, never to a separate head field. */
+export const pendingChangeReview = v.object({
+	kind: v.literal('pending'),
+	admissionRevision: v.number()
+});
+export const decidedChangeReview = v.object({
+	kind: v.literal('decided'),
+	decisionId: v.id('contractChangeDecisions')
+});
+export const currentChangeReview = v.union(pendingChangeReview, decidedChangeReview);
+const playbookBundle = v.object({
+	changeId: v.id('contractChanges'),
+	optionId: v.union(v.string(), v.null())
+});
+export const currentPlaybookBundle = v.union(
+	playbookBundle.extend({ policy: v.literal('none') }),
+	playbookBundle.extend({ policy: v.literal('required'), review: currentChangeReview })
+);
+export const appliedPlaybookBundle = v.union(
+	playbookBundle.extend({ policy: v.literal('none') }),
+	playbookBundle.extend({
+		policy: v.literal('required'),
+		decisionId: v.id('contractChangeDecisions')
+	})
+);
+export const currentBuyerLinkBundle = v.object({
+	changeId: v.id('contractChanges'),
+	review: currentChangeReview
+});
+export const appliedBuyerLinkBundle = v.object({
+	changeId: v.id('contractChanges'),
+	decisionId: v.id('contractChangeDecisions')
+});
+const head = v.object({
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	kind: changeKind,
-	key: v.string(),
-	activePlaybook: v.boolean(),
-	playbook: v.optional(
-		v.object({
-			current: v.union(
-				v.null(),
-				v.object({
-					optionId: v.union(v.string(), v.null()),
-					policy: v.union(v.literal('none'), v.literal('required'))
-				})
-			),
-			applied: v.union(
-				v.null(),
-				v.object({
-					optionId: v.union(v.string(), v.null()),
-					policy: v.union(v.literal('none'), v.literal('required'))
-				})
-			)
-		})
-	),
-	currentChangeId: v.optional(v.id('contractChanges')),
-	appliedChangeId: v.optional(v.id('contractChanges')),
-	currentDecisionId: v.optional(v.id('contractChangeDecisions')),
-	appliedDecisionId: v.optional(v.id('contractChangeDecisions')),
-	// Renewed on each activation, including a rejected support becoming pending again.
-	pendingAdmissionRevision: v.optional(v.number())
+	key: v.string()
 });
+/** Each variant owns all references and its own compact indexed projection. */
+export const storedContractChangeHead = v.union(
+	head.extend({
+		kind: v.literal('playbook'),
+		current: v.union(currentPlaybookBundle, v.null()),
+		applied: v.union(appliedPlaybookBundle, v.null()),
+		activePlaybook: v.boolean()
+	}),
+	head.extend({
+		kind: v.literal('buyer-link'),
+		current: v.union(currentBuyerLinkBundle, v.null()),
+		applied: v.union(appliedBuyerLinkBundle, v.null())
+	})
+);
 export const storedContractChangeDecision = v.object({
 	stage: v.optional(nativeStage),
 	companyId: v.id('company'),

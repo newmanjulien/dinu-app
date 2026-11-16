@@ -20,9 +20,40 @@ The authenticated account host mounts after Clerk supplies an identity. It remai
 
 `AccountGate` sets the cache identity from the confirmed viewer before workspace children mount. Account or membership changes release the old snapshot cache and discard its persistent namespace. The root session owns cache cleanup on logout, account switching, and teardown; its resource registration survives route changes. Navigation to entry screens preserves confirmed snapshots and opening history.
 
-`AccountSession` also owns shared workspace presentation hints for loading. Once Clerk identifies the user, it uses any available account result (including matching server startup assistance), otherwise reads a versioned, deployment/user-scoped local-storage record containing membership ID, company ID, role, and optional buyer-link presence. A missing or invalid record starts one bounded `accounts.workspaceRole` HTTP query alongside full account startup, including during sign-in; retries follow the session's transport generation. Live viewer membership overrides the role hint and updates storage, retaining buyer-link presence only for the same membership and company. Confirmed membership loss, company departure, and account deletion remove the record; ordinary sign-out clears active state while keeping the user's hint for a later sign-in. Late results cannot cross identities or overwrite live membership. Storage failure leaves the in-memory result usable. Hints never admit private content or grant permissions.
+`AccountSession` owns shared workspace presentation hints for loading. A bounded,
+versioned cookie stores membership/company IDs, role, template readiness,
+instructions readiness, and optional buyer-link presence. It expires after 24 hours
+and is scoped to the Convex deployment, user, and session. The workspace server
+layout reads it only after its existing authentication check and returns matching
+hints as page data, without a backend query. Initial server rendering and hydration
+use the same hints while Clerk connects; the initial seed is retired once Clerk
+loads or the session closes and cannot return for a later identity. Unknown,
+expired, malformed, or mismatched hints retain the common skeleton. The cookie is
+JavaScript-writable and deliberately carries no authority: hints never admit
+private content or grant permissions.
 
-`WorkspaceSkeleton` consumes that shared role for the Integrations catalog and header tab, Settings' company cards, and Team's Invite/pending-invitations section. Presentational skeletons receive the role as a prop and perform no storage access or fetching. All account, workspace-module, and Contracts-module loading boundaries use this same selector. Server HTML and initial hydration show common structure because the server cannot read local storage; the browser selects the role-specific structure after identity and the remembered role or lookup resolve. Unknown roles never default to admin. Document skeletons remain shared.
+Once Clerk identifies the user, any available account result (including matching
+server startup assistance) takes precedence. Otherwise the hint owner reads the
+cookie and matching session/membership/company-scoped local display fields (names
+and avatar URLs, bounded to 16 KiB and 24 hours). Layout facts live only in the
+cookie; larger display fields never enter request headers. If no layout hints are
+available, one bounded `accounts.workspaceRole` request runs independently of full
+account startup, including during sign-in. Retries follow the transport generation.
+Confirmed membership updates persistence after rendering and retains buyer-link
+presence only for the same membership and company. Membership loss, company
+departure, and account deletion remove the current records. Ordinary sign-out
+clears active hints and cancels queued writes; the previous session's cookie cannot
+seed a new session. Late results cannot cross identities or overwrite confirmed
+membership. Storage failure leaves in-memory hints usable.
+
+`WorkspaceSkeleton` consumes these hints at every account/workspace/module loading
+boundary. Known unfinished templates use `TemplateSetupLayout`, including the
+calendar skeleton for admins; known ready templates use the document placeholder or
+the creation dialog with a plain preparation message. Role-specific navigation, Settings, Team, and Integrations skeletons and
+the Contracts buyer-link column use the same context. Presentational components
+receive props and perform no storage access or fetching. Unknown roles never
+default to admin. A stale matching hint can briefly choose an outdated placeholder
+until live account data corrects it.
 
 `Contracts` records buyer-link presence from its company-wide live query: any returned row establishes presence, while only an error-free, exhausted empty result establishes absence. Loading, query failures, and empty intermediate pages do not clear the hint. `WorkspaceSkeleton` passes remembered presence into `ContractsSkeleton`; both it and the mounted Contracts page use the matching buyer-link skeleton while presence is known and rows are pending. The sidebar keeps its 450px desktop column and stacks below contracts on smaller screens. Unknown presence uses the common full-width grid, so a first visit without remembered data can still change layout when links arrive. Buyer-link loading never gates the contract list. Skeletons do not fetch or read storage.
 
@@ -79,7 +110,7 @@ Initial login HTML contains the email form. Anonymous invitation HTML contains a
 
 Ordinary signup preloads and opens onboarding, preserving any requested workspace destination for joining an existing company. After onboarding paints, it preloads the template setup route without speculatively loading Contracts. Creating a company opens `/template`; its completion destination survives temporary blocking of the same session, while navigation waits for readiness. Joining keeps the requested workspace destination. The template editor and renderer load only after the company's template source is ready.
 
-Account admission, workspace admission, and destination readiness are distinct. AccountSession keeps the public route children in one position and runs AuthenticatedAccount as a sibling driver. AccountContentScope installs its shared client only for admitted content; RepWorkspace reads the one application backend-auth publisher. WorkspaceFrame persists around initial skeletons and admitted workspace content. A delivered viewer rejection hides private display while retaining save owners; a confirmed identity/membership/company replacement tears down the old scope. Workspace chrome appears only after membership admission. Contracts controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Template editor code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its naming dialog and skeleton in a lightweight shell while creation code loads. Optional preview imports and reads recover through local retry controls. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
+Account admission, workspace admission, and destination readiness are distinct. AccountSession keeps the public route children in one position and runs AuthenticatedAccount as a sibling driver. AccountContentScope installs its shared client only for admitted content; RepWorkspace reads the one application backend-auth publisher. WorkspaceFrame persists around initial skeletons and admitted workspace content. A delivered viewer rejection hides private display while retaining save owners; a confirmed identity/membership/company replacement tears down the old scope. Workspace chrome appears only after membership admission. Contracts controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Template editor code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its creation dialog in a lightweight shell while creation code loads. Optional preview imports, reads, and rendering recover through local retry controls. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
 
 Invitation preview and resolution run in Convex's default runtime using Web Crypto
 for SHA-256; invitation email uses Node for random-token creation, while contract
@@ -147,10 +178,9 @@ either mode. The former post-upload instructions guide has been removed.
 ## Public buyer routes
 
 `/[token=buyerCode]` displays the contract's current approved document directly, beneath the
-buyer header at the existing navigation height. `/[token=buyerCode]/contract` remains a
-supported alias. Codes are 39-digit strings carrying 128 random bits. The routes live
-in the shared `(buyer)` layout. Existing `/buyer/[token]/contract` URLs remain
-supported; `/buyer/[token]/details` and `/buyer/[token]` redirect to the contract.
+buyer header at the existing navigation height. Codes are 13 case-sensitive ASCII
+base62 characters with about 77.4 bits of entropy. The canonical URL is `/<code>`;
+old buyer route aliases are removed. The route lives in the shared `(buyer)` layout.
 These routes bypass full account/workspace initialization and own an anonymous
 Convex client for the approved document. Existing dashboard sessions are recognised
 separately: a session-cookie hint may load the existing Clerk session, then a private
@@ -184,7 +214,7 @@ Seller-only reads expose native proposal support, current/applied changes and ex
 review eligibility. These facts never enter public discussion responses and clear
 on preview or access loss.
 
-Supporting a shared proposal creates a native buyer-proposal change. Permitted work
+Supporting a shared proposal creates a native buyer-link change. Permitted work
 applies immediately; restricted work waits for admin approval while the current
 approved wording remains visible. Source and decision expectations fence stale work;
 see [contract change reviews](lifecycle.md#contract-change-reviews) for support,

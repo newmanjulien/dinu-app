@@ -32,7 +32,7 @@
 	aria-disabled={disabled || ariaDisabled || undefined}
 	aria-invalid={ariaInvalid}
 	class={cn(
-		'flex h-[35px] w-full min-w-0 items-center gap-[7px] rounded-button-lg border-hairline border-edge bg-surface px-[11px] text-ink shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-aria-disabled:aria-invalid:border-danger/30 not-aria-disabled:aria-invalid:bg-danger-surface not-aria-disabled:aria-invalid:text-danger not-aria-disabled:aria-invalid:focus-within:border-danger not-aria-disabled:aria-invalid:focus-within:outline-danger/18 aria-disabled:bg-canvas aria-disabled:text-ink-muted has-[:disabled]:bg-canvas has-[:disabled]:text-ink-muted motion-reduce:transition-none',
+		'flex h-[35px] w-full min-w-0 items-center gap-[7px] rounded-button-lg border-hairline border-line bg-surface px-[11px] text-ink shadow-control outline-none transition-[background-color] focus-within:border-accent focus-within:outline-solid focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent/18 not-aria-disabled:aria-invalid:border-danger/30 not-aria-disabled:aria-invalid:bg-danger-surface not-aria-disabled:aria-invalid:text-danger not-aria-disabled:aria-invalid:focus-within:border-danger not-aria-disabled:aria-invalid:focus-within:outline-danger/18 aria-disabled:bg-canvas aria-disabled:text-ink-muted has-[:disabled]:bg-canvas has-[:disabled]:text-ink-muted motion-reduce:transition-none',
 		!readonly &&
 			'not-aria-disabled:not-aria-invalid:not-has-[:disabled]:hover:not-focus-within:bg-field-hover',
 		readonly && 'bg-canvas text-ink-muted',

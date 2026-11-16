@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { FunctionReturnType } from 'convex/server';
 	import { useConvexClient } from 'convex-svelte';
 	import { waitForRead } from '$lib/auth/attempt';
@@ -15,30 +16,46 @@
 	let open = $state(false);
 	let trigger = $state<HTMLButtonElement>();
 	const client = useConvexClient();
-	let data = $state.raw<FunctionReturnType<typeof api.buyerActivity.recent>>();
+	const scope = $derived(
+		JSON.stringify([viewer().profile.id, viewer().membership.id, viewer().company.id, id])
+	);
+	let data = $state.raw<{
+		scope: string;
+		rows: FunctionReturnType<typeof api.buyerActivity.recent>;
+	}>();
 	let error = $state(false);
 	let refresh = $state(0);
-	const rows = $derived(data?.filter((row) => row.expiresAt > now));
+	const rows = $derived(
+		data?.scope === scope ? data.rows.filter((row) => row.expiresAt > now) : undefined
+	);
 	$effect(() => {
-		data = undefined;
+		const key = scope;
+		untrack(() => {
+			if (data?.scope !== key) data = undefined;
+		});
 		if (!open) return;
 		error = false;
 		const args = { membershipId: viewer().membership.id, id };
 		void refresh;
 		let cancelled = false;
+		let request = 0;
 		let timer: ReturnType<typeof setTimeout>;
 		async function load() {
+			const currentRequest = ++request;
+			const current = () => !cancelled && currentRequest === request;
 			try {
-				const result = await waitForRead(
-					client.mutation(api.buyerActivity.recent, args),
-					AbortSignal.timeout(15_000)
-				);
-				if (!cancelled) {
-					data = result;
+				// A delivered refusal clears history; only a local deadline may retain it.
+				const response = client.mutation(api.buyerActivity.recent, args).catch((cause) => {
+					if (current()) data = undefined;
+					throw cause;
+				});
+				const result = await waitForRead(response, AbortSignal.timeout(15_000));
+				if (current()) {
+					data = { scope: key, rows: result };
 					error = false;
 				}
 			} catch {
-				if (!cancelled) error = true;
+				if (current()) error = true;
 			}
 			if (!cancelled) timer = setTimeout(load, 30_000);
 		}
@@ -115,7 +132,10 @@
 			aria-describedby={descriptionId}
 			aria-expanded={open}
 			aria-controls={panelId}
-			onclick={() => (open = !open)}
+			onclick={() => {
+				now = Date.now();
+				open = !open;
+			}}
 		>
 			<svg
 				class="size-3.5"
@@ -142,7 +162,7 @@
 	role="group"
 	label="Recent activity"
 	dismissOnFocus
-	class="w-[390px] rounded-xl border-hairline border-control-border bg-surface py-[3px] text-ink shadow-card"
+	class="w-[390px] rounded-xl border-hairline border-edge bg-surface py-[3px] text-ink shadow-card"
 >
 	<h3 class="px-3 py-[7px] text-xs font-normal text-ink-muted/70">Recent activity</h3>
 	{#if error}
@@ -154,11 +174,10 @@
 				onclick={() => refresh++}>Try again</button
 			>
 		</p>
-	{:else if rows === undefined}
-		<p role="status" class="px-3 py-[7px] text-xs text-ink-muted">Loading activity…</p>
-	{:else if rows.length === 0}
+	{/if}
+	{#if rows?.length === 0 && !error}
 		<p class="px-3 py-[7px] text-xs text-ink-muted">No recorded activity.</p>
-	{:else}
+	{:else if rows?.length}
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users need to reach the scrollable history.) -->
 		<ul
 			bind:this={list}

@@ -102,6 +102,7 @@ export async function revokeBuyerCurrentView(
 	contractId: Id<'savedContracts'>
 ) {
 	const link = await linkFor(ctx, contractId);
-	if (link?.companyId === companyId && link.currentView)
+	if (link?.companyId === companyId && link.currentView) {
 		await ctx.db.patch('buyerLinks', link._id, { currentView: null });
+	}
 }

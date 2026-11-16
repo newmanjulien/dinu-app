@@ -23,11 +23,11 @@ export function validatePlaybook(blocks: readonly SourceBlock[], items: readonly
 	};
 	items.forEach((item, i) => {
 		validateTemplateItemContent(item);
-		geometries['audience' in item ? 'buyer' : 'rep'].set(String(i), playbookStructure(item));
+		geometries[item.audience].set(String(i), playbookStructure(item));
 	});
 	Object.values(geometries).forEach((geometry) => geometry.auditGeometry());
 	for (const item of items) {
-		if ('audience' in item) continue;
+		if (item.audience === 'buyer') continue;
 		validateStructuralReplacementContent(item);
 		validateChangeReferences(compiled, item);
 	}

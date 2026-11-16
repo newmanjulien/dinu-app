@@ -3,5 +3,5 @@
 	import { getPageMetadata } from './page-metadata.svelte';
 	let { title }: { title: string } = $props();
 	const metadata = getPageMetadata();
-	$effect(() => metadata.register(title, page.route.id));
+	$effect(() => metadata.register(title, page.route.id, page.url.pathname));
 </script>

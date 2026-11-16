@@ -1,3 +1,9 @@
+import { createOperationId } from '$lib/contract/operation-identity';
+import {
+	assertOperationRetryable,
+	isOperationRecovery,
+	OperationResultFailure
+} from '$lib/contract/operation-recovery';
 import { getContext, setContext } from 'svelte';
 import { ConvexClient } from 'convex/browser';
 import { ConvexError } from 'convex/values';
@@ -15,6 +21,7 @@ import type { Value } from 'convex/values';
 type Clerk = NonNullable<Window['Clerk']>;
 type AccountSession = NonNullable<Clerk['session']>;
 type Seller = NonNullable<FunctionReturnType<typeof api.buyerLinks.sellerContext>>;
+type SellerAvatar = FunctionReturnType<typeof api.profiles.currentAvatar>;
 type SellerOperationKind =
 	| 'change-decision'
 	| 'proposal-support'
@@ -41,6 +48,8 @@ const key = Symbol('buyer-seller');
 /** Classifies the audience and owns the separate authenticated seller transport. */
 export class BuyerSeller {
 	viewer = $state.raw<Seller | null>(null);
+	private avatar = $state.raw<SellerAvatar>();
+	private avatarUnavailable = $state(false);
 	client = $state.raw<ConvexClient>();
 	private buyerPreview = $state(false);
 	private previewGeneration = $state(0);
@@ -63,6 +72,7 @@ export class BuyerSeller {
 	private loading = false;
 	private unsubscribe?: () => void;
 	private stopContext?: () => void;
+	private stopAvatar?: () => void;
 	private attempt?: ReadAttempt;
 	private generation = $state(0);
 	private contextGeneration = $state(0);
@@ -88,6 +98,25 @@ export class BuyerSeller {
 	}
 	get presentation() {
 		return this.phase === 'seller' && this.preview ? 'preview' : this.phase;
+	}
+	get headerReadiness(): 'pending' | 'ready' | 'unavailable' {
+		if (this.phase === 'unavailable') return 'unavailable';
+		if (this.phase === 'checking' || (this.phase === 'seller' && !this.viewer)) return 'pending';
+		return 'ready';
+	}
+	get headerProfile() {
+		const profile = this.viewer?.profile;
+		return profile
+			? {
+					...profile,
+					avatarUrl: this.avatar?.id === profile.id ? this.avatar.avatarUrl : null
+				}
+			: undefined;
+	}
+	get headerAvatarReady() {
+		return (
+			this.viewer !== null && (this.avatarUnavailable || this.avatar?.id === this.viewer.profile.id)
+		);
 	}
 	get accountIdentity() {
 		return JSON.stringify([this.sessionId ?? null, this.generation, this.contextGeneration]);
@@ -202,6 +231,10 @@ export class BuyerSeller {
 		this.attempt?.abort();
 		this.stopContext?.();
 		this.stopContext = undefined;
+		this.stopAvatar?.();
+		this.stopAvatar = undefined;
+		this.avatar = undefined;
+		this.avatarUnavailable = false;
 		for (const [key, intent] of this.intents) {
 			if (!intent.dispatched) this.intents.delete(key);
 		}
@@ -273,8 +306,35 @@ export class BuyerSeller {
 							for (const waiter of this.operationWaiters) waiter.abort();
 							this.preview = false;
 						}
+						if (this.viewer?.profile.id !== viewer?.profile.id) {
+							this.stopAvatar?.();
+							this.stopAvatar = undefined;
+							this.avatar = undefined;
+							this.avatarUnavailable = false;
+						}
 						this.viewer = viewer;
 						this.phase = viewer ? 'seller' : 'buyer';
+						if (viewer && !this.stopAvatar) {
+							const profileId = viewer.profile.id;
+							this.stopAvatar = client.onUpdate(
+								api.profiles.currentAvatar,
+								{},
+								(avatar) => {
+									if (
+										current() &&
+										this.viewer?.profile.id === profileId &&
+										avatar.id === profileId
+									) {
+										this.avatar = avatar;
+										this.avatarUnavailable = false;
+									}
+								},
+								() => {
+									if (current() && this.viewer?.profile.id === profileId)
+										this.avatarUnavailable = true;
+								}
+							);
+						}
 					},
 					fail
 				);
@@ -336,7 +396,7 @@ export class BuyerSeller {
 		const intentKey = JSON.stringify([identity, key]);
 		let intent = this.intents.get(intentKey);
 		if (!intent) {
-			const operationId = crypto.randomUUID();
+			const operationId = createOperationId();
 			intent = { operationId, dispatched: false, uncertain: false, ...create(viewer, operationId) };
 			this.intents.set(intentKey, intent);
 		}
@@ -383,6 +443,7 @@ export class BuyerSeller {
 			}
 			if (!current()) throw new Error('Your seller session changed.');
 			attempt.signal.throwIfAborted();
+			assertOperationRetryable(captured.operationId);
 			captured.dispatched = true;
 			let result: T;
 			try {
@@ -398,11 +459,20 @@ export class BuyerSeller {
 				captured.uncertain = true;
 				result = await receipt();
 			}
-			if (result.status === 'preparing') result = await receipt();
+			if (result.status === 'preparing') {
+				captured.uncertain = true;
+				result = await receipt();
+			}
 			retire();
 			return result;
 		} catch (error) {
-			if (!captured.dispatched || (error instanceof ConvexError && !captured.uncertain)) retire();
+			if (
+				!isOperationRecovery(error) &&
+				(!captured.dispatched ||
+					error instanceof OperationResultFailure ||
+					(error instanceof ConvexError && !captured.uncertain))
+			)
+				retire();
 			throw error;
 		} finally {
 			attempt.complete();

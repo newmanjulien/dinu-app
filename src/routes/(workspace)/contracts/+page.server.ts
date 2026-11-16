@@ -17,7 +17,7 @@ export const load: PageServerLoad = ({ locals, isDataRequest }) => {
 		!('sessionId' in auth) ||
 		!auth.sessionId
 	)
-		return { startup: null, startupHome: null };
+		return { startup: null, startupHome: null, startupSetup: null };
 	const { userId, sessionId } = auth;
 	const token = auth.getToken({ template: 'convex' });
 	function assist<T>(query: (client: ConvexHttpClient) => Promise<T>) {
@@ -45,5 +45,6 @@ export const load: PageServerLoad = ({ locals, isDataRequest }) => {
 	const startupHome: Promise<StartupHome | null> = assist((client) =>
 		client.query(api.accounts.startupHome, {})
 	);
-	return { startup, startupHome };
+	const startupSetup = assist((client) => client.query(api.accounts.setupStartup, {}));
+	return { startup, startupHome, startupSetup };
 };

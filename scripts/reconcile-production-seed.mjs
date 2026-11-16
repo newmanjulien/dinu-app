@@ -394,12 +394,9 @@ export async function reconcile(server, blocks, items) {
 			const details = await Promise.all(heads.map((head) => hydrateHead(ctx, head)));
 			return present(details.find((detail) => detail.trigger.id === item.trigger.id));
 		});
-		assert.ok('concessions' in saved, 'Seed round-trip requires rep instructions');
-		const editing = new AuthoringContext(
-			{ ...item, instructions: item.instructions ?? {} },
-			saved,
-			{ kind: 'editing' }
-		);
+		assert.equal(saved.audience, 'rep', 'Seed round-trip requires rep instructions');
+		if (saved.audience !== 'rep') throw new Error('Expected rep instructions');
+		const editing = new AuthoringContext(item, saved, { kind: 'editing' });
 		assert.deepEqual(editing.payload, item, `Edit/save loses data: ${i}`);
 		validateConcessionUpdate(item, semanticRepInstruction(item));
 		const result = await harness.mutation(api.playbookItems.saveTemplateItem, {

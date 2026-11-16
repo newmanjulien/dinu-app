@@ -4,7 +4,6 @@
 	import DocumentPageFrame from './DocumentPageFrame.svelte';
 	import DocumentWorkspaceGeometry from './DocumentWorkspaceGeometry.svelte';
 	import type { DocumentLayout } from './workspace-layout';
-	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	let {
 		layout = 'standard',
 		template = false,
@@ -33,13 +32,6 @@
 			: 'pt-14 pb-16 min-[1000px]:pt-6'}
 	aria-hidden="true"
 >
-	{#if template && !embedded}
-		<div
-			class="mb-2 grid min-h-(--mobile-utility-rail-height) place-items-center px-2 min-[1000px]:mb-4 min-[1000px]:min-h-6"
-		>
-			<SkeletonBlock class="h-3 w-44" />
-		</div>
-	{/if}
 	<DocumentWorkspaceGeometry {layout} {reviewGutter} {hasPanel}>
 		<DocumentPageFrame>
 			<DocumentPaperSkeleton {label} announce={false} />

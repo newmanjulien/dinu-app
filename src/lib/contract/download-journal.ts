@@ -5,7 +5,8 @@ import type { ConvexClient } from 'convex/browser';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
 
-type Ack = { id: Id<'hubspotExports'>; initiatedAt: number; retryAt?: number };
+type Ack = { id: Id<'hubspotExports'>; initiatedAt: number; releasedAt?: number; retryAt?: number };
+const ACKNOWLEDGEMENT_WINDOW = 7 * 24 * 60 * 60_000;
 const memory = new Map<string, Ack>(),
 	running = new Set<string>();
 function prefix(member: string) {
@@ -34,11 +35,13 @@ function read(member: string) {
 					!('initiatedAt' in value) ||
 					typeof value.initiatedAt !== 'number' ||
 					!Number.isFinite(value.initiatedAt) ||
+					('releasedAt' in value &&
+						(typeof value.releasedAt !== 'number' || !Number.isFinite(value.releasedAt))) ||
 					('retryAt' in value &&
 						(typeof value.retryAt !== 'number' || !Number.isFinite(value.retryAt)))
 				)
 					throw new Error('Malformed acknowledgment');
-				rows.set(value.id as Ack['id'], value as Ack);
+				if (!rows.has(value.id as Ack['id'])) rows.set(value.id as Ack['id'], value as Ack);
 			} catch {
 				try {
 					localStorage.removeItem(key);
@@ -65,11 +68,14 @@ function remove(member: string, id: Ack['id']) {
 export function journalDownload(
 	member: Id<'memberships'>,
 	id: Id<'hubspotExports'>,
-	initiatedAt: number
+	initiatedAt: number,
+	releasedAt: number
 ) {
 	if (!browser) return;
+	// Preserve the first truthful download time for this physical attempt across retries/tabs.
+	if (read(member).some((row) => row.id === id)) return;
 	const key = prefix(member) + id,
-		value = { id, initiatedAt };
+		value = { id, initiatedAt, releasedAt };
 	memory.set(key, value);
 	try {
 		localStorage.setItem(key, JSON.stringify(value));
@@ -84,7 +90,14 @@ export async function flushDownloadAcks(
 	if (!browser || running.has(member)) return;
 	running.add(member);
 	try {
-		for (const row of read(member)
+		const rows = read(member).filter((row) => {
+			if (row.releasedAt !== undefined && Date.now() >= row.releasedAt + ACKNOWLEDGEMENT_WINDOW) {
+				remove(member, row.id);
+				return false;
+			}
+			return true;
+		});
+		for (const row of rows
 			.filter((row) => row.initiatedAt <= Date.now() + 60_000 && (row.retryAt ?? 0) <= Date.now())
 			.slice(0, 25)) {
 			try {

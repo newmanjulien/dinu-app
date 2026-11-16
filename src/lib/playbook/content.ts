@@ -3,7 +3,7 @@ import { sameReplacementAtom } from '../document/replacement-content';
 import { sameSourceTarget, textTarget } from '../document/source-model';
 import type { DeepReadonly } from '../immutable';
 import type {
-	AuthoringInstructions,
+	ApprovalPolicy,
 	Concession,
 	Instructions,
 	RepInstruction,
@@ -85,20 +85,22 @@ export function equalConcession(a: DeepReadonly<Concession>, b: DeepReadonly<Con
 
 /** Preserve stored instruction strings, including empty strings, without UI keys. */
 export function semanticInstructions(
-	value: DeepReadonly<AuthoringInstructions> | undefined
-): Pick<RepInstruction, 'instructions' | 'approvalPolicy'> {
+	value: DeepReadonly<Instructions> | undefined
+): Instructions | undefined {
+	if (value === undefined) return undefined;
 	const instructions: Instructions = {};
 	for (const key of instructionKeys) {
-		const text = value?.[key];
+		const text = value[key];
 		if (text !== undefined) instructions[key] = text;
 	}
-	const guidance = value?.changesNeedApproval;
-	return {
-		...(Object.keys(instructions).length ? { instructions } : {}),
-		approvalPolicy: guidance?.trim()
-			? { kind: 'required', instructions: guidance }
-			: { kind: 'none' }
-	};
+	return instructions;
+}
+
+/** Whitespace clears guidance; nonblank guidance retains the exact authored text. */
+export function semanticApprovalPolicy(policy: DeepReadonly<ApprovalPolicy>): ApprovalPolicy {
+	return policy.kind === 'required' && policy.instructions.trim()
+		? { kind: 'required', instructions: policy.instructions }
+		: { kind: 'none' };
 }
 
 /** Strip UI keys without normalizing business text. */
@@ -109,16 +111,12 @@ export function semanticRepInstruction(
 	>
 ): RepInstruction {
 	return {
+		audience: 'rep',
 		trigger: { id: draft.trigger.id, target: semanticTarget(draft.trigger.target) },
-		...semanticInstructions(draft.instructions),
-		...(draft.approvalPolicy
-			? {
-					approvalPolicy:
-						draft.approvalPolicy.kind === 'required'
-							? { kind: 'required' as const, instructions: draft.approvalPolicy.instructions }
-							: { kind: 'none' as const }
-				}
-			: {}),
+		...(draft.instructions === undefined
+			? {}
+			: { instructions: semanticInstructions(draft.instructions) }),
+		approvalPolicy: semanticApprovalPolicy(draft.approvalPolicy ?? { kind: 'none' }),
 		concessions: draft.concessions.map(semanticConcession)
 	};
 }

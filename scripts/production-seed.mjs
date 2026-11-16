@@ -549,8 +549,10 @@ export function transformExport(source) {
 					'negotiation'
 				]).map((key) => [key, old[key]])
 			);
-			if (old.changesNeedEscalation !== undefined)
-				instructions.changesNeedApproval = old.changesNeedEscalation;
+			/** @type {import('../src/lib/playbook/model').ApprovalPolicy} */
+			const approvalPolicy = old.changesNeedEscalation?.trim()
+				? { kind: 'required', instructions: old.changesNeedEscalation }
+				: { kind: 'none' };
 			const concessions = /** @type {const} */ (['preferred', 'rare']).flatMap((tier) =>
 				old[`${tier}Concessions`].map((c) => {
 					fields(c, ['concessionKey', 'copy', 'replacements'], 'concession');
@@ -591,6 +593,7 @@ export function transformExport(source) {
 			return {
 				triggers,
 				instructions,
+				approvalPolicy,
 				concessions
 			};
 		});
@@ -604,13 +607,11 @@ export function transformExport(source) {
 	normalizeAuthoring(blocks, workingItems, manifest);
 	/** @type {import('../src/lib/playbook/model').RepInstruction[]} */
 	const items = workingItems.map((item) => {
-		const { changesNeedApproval: guidance, ...instructions } = item.instructions;
 		const trigger = item.triggers[0];
 		return {
-			instructions,
-			approvalPolicy: guidance?.trim()
-				? { kind: 'required', instructions: guidance }
-				: { kind: 'none' },
+			audience: 'rep',
+			instructions: item.instructions,
+			approvalPolicy: item.approvalPolicy,
 			trigger: { id: trigger.id, target: trigger.target ?? { kind: 'text', range: trigger.range } },
 			concessions: item.concessions.map((concession) => ({
 				id: concession.id,

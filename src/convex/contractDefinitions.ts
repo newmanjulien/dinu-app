@@ -125,7 +125,7 @@ export const previewBasis = query({
 		if (!(await (await contractReader(ctx, contract.root)).item(args.itemId)))
 			throw new ConvexError('This Playbook option is unavailable.');
 		const selected = await changeHead(ctx, contract, 'playbook', args.itemId);
-		const chain = await approvedChain(ctx, contract, selected?.head.appliedChangeId);
+		const chain = await approvedChain(ctx, contract, selected?.head.applied?.changeId);
 		const manifest = await ctx.db.get('contractDocuments', contract.root.documentId);
 		if (
 			!manifest ||
@@ -137,8 +137,8 @@ export const previewBasis = query({
 			documentId: contract.root.documentId,
 			documentRevision: contract.root.documentRevision,
 			displayIdentity: displayIdentity(contract.root, manifest.fingerprint),
-			currentChangeId: selected?.head.currentChangeId ?? null,
-			appliedChangeId: selected?.head.appliedChangeId ?? null,
+			currentChangeId: selected?.head.current?.changeId ?? null,
+			appliedChangeId: selected?.head.applied?.changeId ?? null,
 			approvedChain: JSON.stringify(chain),
 			currentPatch:
 				selected?.current && selected.current._id !== selected.applied?._id

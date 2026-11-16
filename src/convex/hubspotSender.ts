@@ -104,7 +104,8 @@ export const send = internalAction({
 				!(await ctx.runQuery(internal.hubspotDelivery.authorizeRead, {
 					id,
 					claim,
-					generation: connection.generation
+					generation: connection.generation,
+					now: Date.now()
 				}))
 			)
 				throw new YieldObservation();
@@ -351,7 +352,8 @@ export const send = internalAction({
 			if (
 				event.kind === 'downloaded' &&
 				!event.fileId &&
-				attempt?.fileId &&
+				attempt?.format === 'full' &&
+				attempt.fileId &&
 				retainedUntil(attempt, data.delivery) > Date.now()
 			) {
 				const blob = await ctx.storage.get(attempt.fileId);

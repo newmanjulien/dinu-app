@@ -6,10 +6,11 @@
 	import Menu from '$lib/components/ui/Menu.svelte';
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import { goto } from '$app/navigation';
-	import { warmDocumentDestination } from '$lib/auth/destination-code';
+	import { getWorkspaceDestinations } from '$lib/auth/workspace-context.svelte';
+	const destinations = getWorkspaceDestinations();
 	const viewer = useViewer();
 	const session = useViewerSession();
-	function warmTemplate() {
+	function warmTemplate(path = '/template') {
 		if (
 			session.blocked ||
 			session.closing ||
@@ -18,7 +19,7 @@
 			!viewer().templateReady
 		)
 			return;
-		warmDocumentDestination('template');
+		destinations?.prepare(path);
 	}
 	let templateMenuOpen = $state(false);
 	let templateTrigger = $state<HTMLButtonElement>();
@@ -49,7 +50,7 @@
 	bind:templateTrigger
 	audienceOpen={templateMenuOpen}
 	onToggleAudience={() => (templateMenuOpen = !templateMenuOpen)}
-	onWarmTemplate={warmTemplate}
+	onWarmTemplate={() => warmTemplate()}
 	{notice}
 	{children}
 >
@@ -71,8 +72,10 @@
 			{#snippet children(close)}
 				{#each [{ label: 'Rep template', href: '/template' }, { label: 'Buyer template', href: '/template/buyers' }] as destination}
 					<MenuItem
+						onpointerenter={() => warmTemplate(destination.href)}
+						onfocus={() => warmTemplate(destination.href)}
 						onclick={() => {
-							warmTemplate();
+							warmTemplate(destination.href);
 							close();
 							void goto(destination.href);
 						}}>{destination.label}</MenuItem

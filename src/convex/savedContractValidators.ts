@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { contextCompletion, selections } from './contractValidators';
+import { contractReviews, selections } from './contractValidators';
 import { playbookState } from '../lib/contract/changes';
 import { hubspotLink } from './hubspotValidators';
 import { sourceExpectation } from './contractSourceValidators';
@@ -22,13 +22,10 @@ export const contractState = v.object({
 	documentId: v.id('contractDocuments'),
 	documentRevision: v.number(),
 	stateRevision: v.number(),
-	playbookReviewIdentity: v.string(),
-	buyerLinkReviewIdentity: v.string(),
+	reviews: contractReviews,
 	playbook: v.array(playbookState),
 	hubspot: v.optional(hubspotLink),
 	workBlock,
-	playbookCompletion: v.union(contextCompletion, v.null()),
-	buyerLinkCompletion: v.union(contextCompletion, v.null()),
 	lastOperationId: v.union(v.string(), v.null())
 });
 export const contractMetadata = contractState.extend({
@@ -47,6 +44,16 @@ export const exportRequest = v.object({
 	expectedSource: sourceExpectation,
 	membershipId: v.id('memberships'),
 	id: v.id('savedContracts')
+});
+export const wordExportRequest = exportRequest.extend({
+	operationId: v.string(),
+	claim: v.optional(v.string())
+});
+export const wordExportResult = v.object({
+	url: v.string(),
+	filename: v.string(),
+	attemptId: v.id('hubspotExports'),
+	releasedAt: v.number()
 });
 export const saveResult = v.union(
 	v.object({ status: v.literal('saved'), state: contractState }),

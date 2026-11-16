@@ -1,8 +1,10 @@
+import { textPrefix } from '../lib/text';
+import { markDirectoryBuyerLinkPublished } from './contractDirectory';
 import { contextCompletion } from './contractValidators';
 import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { ConvexError, getConvexSize, v } from 'convex/values';
 import { query, internalMutation, type QueryCtx } from './_generated/server';
-import type { Doc } from './_generated/dataModel';
+import type { Doc, Id } from './_generated/dataModel';
 import { availableCompany, memberForCompany, requireMembership, accessibleContract } from './auth';
 import { helpPreferences, profileView } from './accountViews';
 import { role } from './permissions';
@@ -12,11 +14,16 @@ import {
 	linkSummary,
 	publicStatus
 } from './buyerValidators';
-import { actionKey, receipt, remember, planReceiptWrite } from './operationReceipts';
+import {
+	actionKey,
+	receipt,
+	remember,
+	planReceiptWrite,
+	admitOperation
+} from './operationReceipts';
 import { buyerTokenCollision, isBuyerCode } from '../lib/buyer/token';
 import { seller } from './contractState';
 import { assertStorageCapacity } from './storageCapacity';
-import { requireTerminologyReady } from './terminologyMaintenance';
 import { currentDocumentMaterialization } from './contractDefinitions';
 import { contractReader } from './contractReader';
 import { hiddenAnnotations } from './contractAnnotations';
@@ -32,9 +39,26 @@ const tokenArgs = { token: v.string() };
 function summary(link: Doc<'buyerLinks'>) {
 	return { id: link._id, token: link.token, createdAt: link.createdAt };
 }
+function browseRow(link: Doc<'buyerLinks'>, row: Doc<'contractDirectory'>) {
+	return {
+		id: link._id,
+		contractId: row.contractId,
+		token: link.token,
+		title: row.title,
+		createdAt: link.createdAt,
+		hasUnreadComment: row.hasUnreadComment
+	};
+}
+async function linkedDirectoryRow(
+	ctx: QueryCtx,
+	row: Doc<'contractDirectory'>,
+	companyId: Id<'company'>
+) {
+	const link = await linkFor(ctx, row.contractId);
+	return link?.currentView && link.companyId === companyId ? browseRow(link, row) : null;
+}
 /** Public acquisition depends only on the pointer, immutable content and live gates. */
 async function resolveView(ctx: QueryCtx, token: string) {
-	requireTerminologyReady();
 	if (!isBuyerCode(token)) return null;
 	const link = await ctx.db
 		.query('buyerLinks')
@@ -63,7 +87,7 @@ export const sellerContext = query({
 	returns: v.union(
 		v.null(),
 		v.object({
-			profile: profileView,
+			profile: profileView.omit('avatarUrl'),
 			helpPreferences,
 			membershipId: v.id('memberships'),
 			role,
@@ -83,10 +107,7 @@ export const sellerContext = query({
 			profile: {
 				id: member.profile._id,
 				name: member.profile.name,
-				email: member.profile.email,
-				avatarUrl: member.profile.avatarId
-					? await ctx.storage.getUrl(member.profile.avatarId)
-					: null
+				email: member.profile.email
 			},
 			helpPreferences: member.profile.helpPreferences,
 			membershipId: member.membership._id,
@@ -94,7 +115,7 @@ export const sellerContext = query({
 			contractId: found.contract._id,
 			title: found.view.title,
 			buyerName: found.view.buyerName,
-			completion: found.contract.buyerLinkCompletion ?? null,
+			completion: found.contract.reviews.buyerLink.completion ?? null,
 			expectation: {
 				stateRevision: found.contract.stateRevision,
 				documentId: found.view.documentId,
@@ -115,40 +136,69 @@ export const latest = query({
 	}
 });
 export const browse = query({
-	args: { membershipId: v.id('memberships'), paginationOpts: paginationOptsValidator },
+	args: {
+		membershipId: v.id('memberships'),
+		search: v.optional(v.string()),
+		paginationOpts: paginationOptsValidator
+	},
 	returns: paginationResultValidator(
 		v.object({
 			id: v.id('buyerLinks'),
 			contractId: v.id('savedContracts'),
 			token: v.string(),
 			title: v.string(),
+			createdAt: v.number(),
 			hasUnreadComment: v.boolean()
 		})
 	),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
+		const backfilled = await ctx.db
+			.query('buyerLinkBrowseBackfills')
+			.withIndex('by_key', (q) => q.eq('key', 'directory'))
+			.unique();
+		const term = textPrefix((args.search ?? '').trim(), 200);
+		if (term) {
+			const result = await ctx.db
+				.query('contractDirectory')
+				.withSearchIndex('search_title', (q) => {
+					const scoped = q.search('title', term).eq('companyId', access.companyId);
+					return backfilled ? scoped.eq('hasBuyerLink', true) : scoped;
+				})
+				.paginate(args.paginationOpts);
+			const rows = await Promise.all(
+				result.page.map((row) => linkedDirectoryRow(ctx, row, access.companyId))
+			);
+			return { ...result, page: rows.filter((row) => row !== null) };
+		}
+		if (!backfilled) {
+			const result = await ctx.db
+				.query('buyerLinks')
+				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
+				.order('desc')
+				.paginate(args.paginationOpts);
+			const rows = await Promise.all(
+				result.page.map(async (link) => {
+					if (!link.currentView) return null;
+					const row = await ctx.db
+						.query('contractDirectory')
+						.withIndex('by_contractId', (q) => q.eq('contractId', link.contractId))
+						.unique();
+					return row?.companyId === access.companyId ? browseRow(link, row) : null;
+				})
+			);
+			return { ...result, page: rows.filter((row) => row !== null) };
+		}
+		// The index keeps unread links ahead of read links across page boundaries.
 		const result = await ctx.db
-			.query('buyerLinks')
-			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
+			.query('contractDirectory')
+			.withIndex('by_companyId_hasBuyerLink_hasUnreadComment_buyerLinkCreatedAt', (q) =>
+				q.eq('companyId', access.companyId).eq('hasBuyerLink', true)
+			)
 			.order('desc')
 			.paginate(args.paginationOpts);
 		const rows = await Promise.all(
-			result.page.map(async (link) => {
-				if (!link.currentView) return null;
-				const row = await ctx.db
-					.query('contractDirectory')
-					.withIndex('by_contractId', (q) => q.eq('contractId', link.contractId))
-					.unique();
-				return row?.companyId === access.companyId
-					? {
-							id: link._id,
-							contractId: row.contractId,
-							token: link.token,
-							title: row.title,
-							hasUnreadComment: row.hasUnreadComment
-						}
-					: null;
-			})
+			result.page.map((row) => linkedDirectoryRow(ctx, row, access.companyId))
 		);
 		return { ...result, page: rows.filter((row) => row !== null) };
 	}
@@ -162,6 +212,7 @@ export const capture = internalMutation({
 		const root = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
 		if (!root) throw new ConvexError('This contract is unavailable.');
 		const preparation = args.preparation;
+		if (preparation.kind === 'prepared') admitOperation(preparation.operationId);
 		const key =
 			preparation.kind === 'prepared'
 				? actionKey(access, 'first-link', preparation.operationId)
@@ -233,6 +284,7 @@ export const capture = internalMutation({
 			bytes: getConvexSize(value) + 128 + receiptPlan.work.bytes
 		});
 		const id = await ctx.db.insert('buyerLinks', value);
+		await markDirectoryBuyerLinkPublished(ctx, args.id, value.createdAt);
 		const result = { id, token: value.token, createdAt: value.createdAt };
 		await remember(ctx, access.companyId, key, inputs, JSON.stringify(result), {
 			contractId: args.id
@@ -253,6 +305,40 @@ export const status = query({
 					buyerName: found.view.buyerName
 				}
 			: { kind: 'unavailable' as const };
+	}
+});
+/** One current link snapshot and verified audience for the first page title. */
+export const pageContext = query({
+	args: tokenArgs,
+	returns: v.union(
+		v.object({ kind: v.literal('unavailable') }),
+		v.object({ kind: v.literal('account-error') }),
+		v.object({
+			kind: v.literal('current'),
+			audience: v.union(v.literal('buyer'), v.literal('seller')),
+			buyerName: v.union(v.string(), v.null())
+		})
+	),
+	handler: async (ctx, { token }) => {
+		const found = await resolveView(ctx, token);
+		if (!found) return { kind: 'unavailable' as const };
+		let member: Awaited<ReturnType<typeof memberForCompany>>;
+		try {
+			member = await memberForCompany(ctx, found.link.companyId);
+		} catch (error) {
+			if (error instanceof ConvexError) return { kind: 'account-error' as const };
+			throw error;
+		}
+		// Seller presentation also requires the live contract, as sellerContext does.
+		const contract = member ? await ctx.db.get('savedContracts', found.link.contractId) : null;
+		return {
+			kind: 'current' as const,
+			audience:
+				member && contract?.companyId === found.link.companyId
+					? ('seller' as const)
+					: ('buyer' as const),
+			buyerName: found.view.buyerName
+		};
 	}
 });
 export const currentDocument = query({

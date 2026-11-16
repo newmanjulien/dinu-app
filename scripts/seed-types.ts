@@ -6,7 +6,7 @@ import type {
 	ReplacementAtom,
 	ParagraphRole
 } from '../src/lib/document/source-model';
-import type { AuthoringInstructions } from '../src/lib/playbook/model';
+import type { ApprovalPolicy, Instructions } from '../src/lib/playbook/model';
 export type LegacyAtom = Infer<typeof atom>;
 export type LegacySegment = Infer<typeof segment>;
 export type LegacyNumbering = NonNullable<LegacyBlock['numbering']>;
@@ -49,7 +49,8 @@ export type WorkingChange = {
 export type WorkingTrigger = { id: string; range: SourceRange; target?: SourceTarget };
 export type WorkingItem = {
 	triggers: WorkingTrigger[];
-	instructions: AuthoringInstructions;
+	instructions: Instructions;
+	approvalPolicy: ApprovalPolicy;
 	concessions: {
 		id: string;
 		tier: 'preferred' | 'rare';

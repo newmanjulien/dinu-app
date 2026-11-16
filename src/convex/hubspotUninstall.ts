@@ -1,3 +1,4 @@
+import { settleQuoteOutput } from './outputLifecycle';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
 import { ConvexError, v, type Infer } from 'convex/values';
 import type { WorkId } from '@convex-dev/workpool';
@@ -198,6 +199,7 @@ export const progress = internalMutation({
 				.paginate({ cursor: removal.cursor, numItems: 25 });
 			let wait = 0;
 			for (const row of page.page) {
+				if (row.format !== 'full') continue;
 				if (row.workId) await pool.cancel(ctx, row.workId as WorkId);
 				const remaining = quoteRunningUntil(row) - Date.now();
 				if (remaining > 0) {
@@ -216,6 +218,7 @@ export const progress = internalMutation({
 								? 'HubSpot may have created this quote. Contact Dinu support before pushing this version again.'
 								: 'HubSpot was removed. Existing quotes stay in HubSpot.'
 					});
+				await settleQuoteOutput(ctx, row._id);
 			}
 			if (!wait)
 				await ctx.db.patch('hubspotRemovals', id, {

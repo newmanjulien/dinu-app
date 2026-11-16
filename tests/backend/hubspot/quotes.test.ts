@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -137,11 +138,11 @@ describe('HubSpot Quotes workflow', () => {
 		await f.repClient.mutation(api.contracts.saveChanges, {
 			membershipId: f.rep.membershipId,
 			id: f.id,
-			operationId: 'pending-removal',
+			operationId: fixtureOperationId('pending-removal'),
 			commands: [
 				{
 					...application(f).commands[0],
-					id: 'remove',
+					id: fixtureOperationId('remove'),
 					expectedCurrentChangeId: (await playbookState(f)).playbook[0].currentChangeId,
 					action: { kind: 'set', optionId: null }
 				}
@@ -199,17 +200,18 @@ describe('HubSpot Quotes workflow', () => {
 		for (let turn = 0; turn < 64; turn++) {
 			if (
 				await f.t.mutation(internal.outputReservations.verify, {
-					receiptId: admission.reservation.proof.receiptId
+					outputId: admission.reservation.proof.outputId
 				})
 			)
 				break;
 		}
-		const receiptId = admission.reservation.proof.receiptId;
+		const outputId = admission.reservation.proof.outputId;
 		await f.t.run(async ({ db }) => {
-			const row = (await db.get('operationReceipts', receiptId))!;
-			const value = JSON.parse(row.result);
-			await db.patch('operationReceipts', receiptId, {
-				result: JSON.stringify(Object.fromEntries(Object.entries(value).reverse()))
+			const row = (await db.get('contractOutputs', outputId))!;
+			if (row.format !== 'full') throw new Error('Expected full output evidence');
+			const value = row.reservationManifest!;
+			await db.patch('contractOutputs', outputId, {
+				reservationManifest: Object.fromEntries(Object.entries(value).reverse()) as typeof value
 			});
 		});
 		expect((await f.t.query(internal.hubspotQuotes.content, args)).source.actor.profileId).toBe(
@@ -222,9 +224,10 @@ describe('HubSpot Quotes workflow', () => {
 			})
 		).rejects.toThrow('unavailable');
 		await f.t.run(async ({ db }) => {
-			const row = (await db.get('operationReceipts', receiptId))!;
-			await db.patch('operationReceipts', receiptId, {
-				result: JSON.stringify({ ...JSON.parse(row.result), title: 'Tampered terms' })
+			const row = (await db.get('contractOutputs', outputId))!;
+			if (row.format !== 'full') throw new Error('Expected full output evidence');
+			await db.patch('contractOutputs', outputId, {
+				reservationManifest: { ...row.reservationManifest!, title: 'Tampered terms' }
 			});
 		});
 		await expect(f.t.query(internal.hubspotQuotes.content, args)).rejects.toThrow('ownership');

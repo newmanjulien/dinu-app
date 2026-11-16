@@ -8,6 +8,7 @@ export const contractCleanupPhase = v.union(
 	v.literal('buyerQuotas'),
 	v.literal('discussions'),
 	v.literal('hubspotQuotes'),
+	v.literal('waitingDocuments'),
 	v.literal('documents'),
 	v.literal('documentChunks')
 );

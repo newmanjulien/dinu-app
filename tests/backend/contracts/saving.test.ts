@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { convexTest } from 'convex-test';
 import { convexToJson, jsonToConvex } from 'convex/values';
@@ -12,7 +13,7 @@ import {
 import { writeDirectory } from '../../../src/convex/contractDirectory';
 import { readContract } from '../../../src/convex/contractState';
 import { saveChanges } from '../../../src/convex/contracts';
-import { storeItemRevision } from '../../../src/convex/playbookItemRevisions';
+import { createAuthoringItem } from '../../../src/convex/playbookItemRevisions';
 import { writeContractDocument } from '../../../src/convex/contractDocuments';
 import { createContractDocument } from '../../../src/lib/document/contract-document';
 import schema from '../../../src/convex/schema';
@@ -46,16 +47,17 @@ async function fixture(selected = false) {
 			await writeTemplateSourceChunks(ctx, { companyId, templateSourceId, blocks: [block] })
 		);
 		await db.patch('company', companyId, { templateSourceId });
-		const first = await db.insert('playbookItems', { ...item, companyId, contentRevision: 1 });
-		const second = await db.insert('playbookItems', { ...item, companyId, contentRevision: 1 });
-		const foreign = await db.insert('playbookItems', { ...item, companyId, contentRevision: 1 });
+		const firstItem = await createAuthoringItem(ctx, { ...item, companyId });
+		const secondItem = await createAuthoringItem(ctx, { ...item, companyId });
+		const foreignItem = await createAuthoringItem(ctx, { ...item, companyId });
+		const first = firstItem._id,
+			second = secondItem._id,
+			foreign = foreignItem._id;
 		const choices = { [first]: 'preferred', [second]: 'preferred' };
-		const references = [];
-		for (const itemId of [first, second]) {
-			const document = (await db.get('playbookItems', itemId))!;
-			if ('format' in document) throw new Error('Fixture expected a legacy business row');
-			references.push({ itemId, revisionId: await storeItemRevision(ctx, document) });
-		}
+		const references = [firstItem, secondItem].map((saved) => ({
+			itemId: saved._id,
+			revisionId: saved.currentRevisionId!
+		}));
 		const templateVersionId = await db.insert('templateVersions', {
 			mutability: 'frozen',
 			companyId,
@@ -80,8 +82,10 @@ async function fixture(selected = false) {
 			playbookReviewCount: 0,
 			playbookPendingCount: 0,
 			playbookDeclinedCount: 0,
-			playbookReviewIdentity: 'initial-playbook',
-			buyerLinkReviewIdentity: 'initial-buyer-link',
+			reviews: {
+				playbook: { identity: 'initial-playbook' },
+				buyerLink: { identity: 'initial-buyer-link' }
+			},
 			savedAt: 123,
 			lastOperation: { id: 'previous-operation', callerId: profileId }
 		});
@@ -99,7 +103,7 @@ async function fixture(selected = false) {
 		await t.mutation(api.contracts.saveChanges, {
 			membershipId,
 			id: ids.id,
-			operationId: 'fixture-selection',
+			operationId: fixtureOperationId('fixture-selection'),
 			commands: commandsFor([], ids.choices, 'fixture-selection')
 		});
 	return { t, membershipId, ...ids };
@@ -187,7 +191,7 @@ describe('saving work', () => {
 		const args = {
 			membershipId,
 			id,
-			operationId: 'unchanged-operation',
+			operationId: fixtureOperationId('unchanged-operation'),
 			commands: []
 		};
 		const { result, counts } = observeSave(t, args);
@@ -221,7 +225,7 @@ describe('saving work', () => {
 		expect(await persisted(t, id)).toEqual(before);
 		const changed = {
 			...args,
-			operationId: 'intervening-operation',
+			operationId: fixtureOperationId('intervening-operation'),
 			commands: commandsFor(beforeState.playbook, {}, 'intervening-operation')
 		};
 		const saved = await t.mutation(api.contracts.saveChanges, changed);
@@ -231,7 +235,10 @@ describe('saving work', () => {
 		expect(replay.counts).toEqual(counts);
 		expect(await t.mutation(api.contracts.saveChanges, changed)).toEqual(saved);
 		expect(
-			await t.mutation(api.contracts.saveChanges, { ...changed, operationId: 'stale' })
+			await t.mutation(api.contracts.saveChanges, {
+				...changed,
+				operationId: fixtureOperationId('stale')
+			})
 		).toMatchObject({
 			status: 'conflict',
 			state: { stateRevision: beforeState.stateRevision + 1 }
@@ -250,7 +257,7 @@ describe('saving work', () => {
 						})
 					)
 				),
-				lastOperationId: 'intervening-operation'
+				lastOperationId: fixtureOperationId('intervening-operation')
 			}
 		});
 	});
@@ -260,7 +267,7 @@ describe('saving work', () => {
 		let previous: import('../../../src/lib/contract/changes').PlaybookState[] = [];
 		for (const [index, selected] of [choices, {}, { [first]: 'preferred' }].entries()) {
 			const options = selected;
-			const operationId = `changed-operation-${index}`;
+			const operationId = fixtureOperationId(`changed-operation-${index}`);
 			const changedItems = index === 2 ? 1 : 2;
 			const { result, counts } = observeSave(t, {
 				membershipId,
@@ -315,7 +322,7 @@ describe('saving work', () => {
 				t.mutation(api.contracts.saveChanges, {
 					membershipId,
 					id,
-					operationId: 'invalid-choice',
+					operationId: fixtureOperationId('invalid-choice'),
 					commands: commandsFor([], selectedConcessions, 'invalid-choice')
 				})
 			).rejects.toThrow('This Playbook option is unavailable.');
@@ -329,12 +336,12 @@ describe('saving work', () => {
 		const args = {
 			membershipId,
 			id,
-			operationId: 'noop',
+			operationId: fixtureOperationId('noop'),
 			commands: []
 		};
 		for (const operationId of ['', '   ', 'x'.repeat(201)])
 			await expect(t.mutation(api.contracts.saveChanges, { ...args, operationId })).rejects.toThrow(
-				'Invalid save operation.'
+				'Invalid operation identity.'
 			);
 		await expect(
 			t.mutation(api.contracts.saveChanges, { ...args, expectedEditRevision: -1 } as never)

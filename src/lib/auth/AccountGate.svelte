@@ -1,4 +1,8 @@
 <script lang="ts">
+	import {
+		workspaceReadResources,
+		forgetWorkspaceReadScope
+	} from './workspace-read-snapshots.svelte';
 	import { useAccountContext } from './account-context.svelte';
 	import { useAuth, useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../convex/_generated/api';
@@ -17,6 +21,7 @@
 	const auth = useAuth();
 	const session = useViewerSession();
 	session.registerResources(contractCacheResources);
+	session.registerResources(workspaceReadResources);
 	const viewer = useQuery(api.accounts.viewer, () => (auth.isAuthenticated ? {} : 'skip'));
 	const startup = useStartupData();
 	let receivedViewer = $state(false);
@@ -74,6 +79,21 @@
 		const failure = (generation === nextGeneration ? error : '') || viewer.error?.message || '';
 		const ready = Boolean(auth.isAuthenticated && value && !value.needsInitialization && !failure);
 		untrack(() => {
+			if (
+				account?.membership &&
+				account.company &&
+				(value === null ||
+					(value !== undefined &&
+						(account.profile.id !== value.profile.id ||
+							account.membership.id !== value.membership?.id ||
+							account.company.id !== value.company?.id)))
+			)
+				forgetWorkspaceReadScope({
+					profileId: account.profile.id,
+					membershipId: account.membership.id,
+					companyId: account.company.id
+				});
+			if (viewer.error) workspaceReadResources.clear();
 			if (value) {
 				if (
 					account?.profile.id !== value.profile.id ||

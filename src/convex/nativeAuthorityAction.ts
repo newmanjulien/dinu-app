@@ -72,14 +72,14 @@ export const construct = internalAction({
 					const source = s.target.source!,
 						current = s.target.head?.current;
 					const alreadySupported =
-						current?.kind === 'buyer-proposal' &&
+						current?.kind === 'buyer-link' &&
 						current.source.rootMessageId === source.root._id &&
 						current.source.rootRevision === source.root.revision &&
 						s.target.head?.head.status !== 'rejected';
 					if (!alreadySupported) {
 						const normalized = normalizeProposal(document, source.thread, source.root, s.root);
 						const patch = prepareDocumentChange(document, normalized.changes, s.key);
-						patch.annotationKind = 'buyer-proposal';
+						patch.annotationKind = 'buyer-link';
 						const next = applyDocumentChange(document, patch);
 						changeId = await uploadNativePatch(
 							ctx,
@@ -87,7 +87,7 @@ export const construct = internalAction({
 							{
 								companyId: s.root.companyId,
 								contractId: s.root._id,
-								kind: 'buyer-proposal',
+								kind: 'buyer-link',
 								key: source.thread._id,
 								operationId: s.key,
 								patchKey: s.key,
@@ -117,8 +117,8 @@ export const construct = internalAction({
 				const other = s.scan?.row;
 				let incompatible = false;
 				if (
-					other?.currentChangeId &&
-					other.currentChangeId !== other.appliedChangeId &&
+					other?.current?.changeId &&
+					other.current.changeId !== other.applied?.changeId &&
 					s.scan?.nextStatus !== 'approved'
 				) {
 					try {

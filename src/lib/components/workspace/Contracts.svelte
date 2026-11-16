@@ -1,10 +1,10 @@
 <script lang="ts">
-	import ContractsLayout from './ContractsLayout.svelte';
-	import { resolve } from '$app/paths';
-	import SearchField from '$lib/ui/SearchField.svelte';
+	import { useWorkspaceReadSnapshots } from '$lib/auth/workspace-read-snapshots.svelte';
+	import type { WorkspaceReadRows } from '$lib/auth/workspace-read-storage';
+	import ContractsResultsLayout from './ContractsResultsLayout.svelte';
 	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
 	import { navigating } from '$app/state';
-	import { onDestroy, onMount, untrack } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import type { SavedContractCard } from '$lib/contract/card';
 	import { afterStartupPaint, recordStartup } from '$lib/auth/startup-perf';
 	import { useStartupHome } from '$lib/auth/startup-data';
@@ -17,24 +17,47 @@
 	import ContractCard from '$lib/components/contracts/ContractCard.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
-	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 	import Button from '$lib/ui/Button.svelte';
-	import CompanySetupPrompt from '$lib/features/company-setup/CompanySetupPrompt.svelte';
 	import ContractGrid from './ContractGrid.svelte';
-	import ContractGridSkeleton from './ContractGridSkeleton.svelte';
 	import BuyerLinks from './BuyerLinks.svelte';
-	import BuyerLinksSkeleton from './BuyerLinksSkeleton.svelte';
-	import { getInteractionController, setInteractionOwner } from '$lib/components/ui/interactions';
-	setInteractionOwner(Symbol('contracts'));
-	const interactions = getInteractionController();
+	import { orderBuyerLinks } from './buyer-link-order';
+	import { useContractsSearch } from './contracts-search.svelte';
 	const client = useConvexClient();
 	const cache = getContractSnapshotCache(client);
 	const feedback = getWorkspaceFeedback();
 	const session = useViewerSession();
 	const viewer = useViewer();
+	const reads = useWorkspaceReadSnapshots();
 	const hints = useWorkspaceHints();
 	const hubspot = useHubSpotDeals();
+	let {
+		search,
+		query,
+		settled,
+		firstVisit = false,
+		showHeadings = true,
+		showContent = true,
+		slowResults = false,
+		onSearch,
+		ready = $bindable(false)
+	}: {
+		search: string;
+		query: string;
+		settled: boolean;
+		firstVisit?: boolean;
+		showHeadings?: boolean;
+		showContent?: boolean;
+		slowResults?: boolean;
+		onSearch: (value: string) => void;
+		ready?: boolean;
+	} = $props();
+	const viewState = useContractsSearch();
+	let viewQuery = untrack(() => query);
+	if (viewState && viewState.viewQuery !== viewQuery) {
+		viewState.viewQuery = viewQuery;
+		viewState.contractRows = 4;
+		viewState.buyerLinks = 10;
+	}
 	const admin = $derived(viewer().membership.role === 'admin');
 	const canCreateContract = $derived(viewer().templateReady && viewer().instructionsReady);
 	let visibilityState = $state<DocumentVisibilityState>();
@@ -56,69 +79,218 @@
 	const startup = useStartupHome();
 	const warming = createVisibleContractWarming();
 	onDestroy(() => warming.destroy());
-	let search = $state('');
-	let searchInput = $state<HTMLInputElement | null>();
-	let query = $state('');
+	// The frame owns debounce. Admit the first read only after its current input settles;
+	// subsequent typing keeps the last admitted read until the next settled term.
+	let activeQuery = $state<string>();
+	$effect(() => {
+		if (settled) activeQuery = query;
+	});
 	let listRevision = $state(0);
 	const contracts = usePaginatedQuery(
 		api.contracts.browse,
 		() => {
 			void listRevision;
-			return { membershipId, search: query };
+			return activeQuery === undefined ? 'skip' : { membershipId, search: activeQuery };
 		},
 		{ initialNumItems: 24 }
 	);
 	let buyerLinksRevision = $state(0);
-	let visibleBuyerLinks = $state(10);
+	let visibleBuyerLinks = $state(viewState?.buyerLinks ?? 10);
 	const buyerLinks = usePaginatedQuery(
 		api.buyerLinks.browse,
 		() => {
 			void buyerLinksRevision;
-			return { membershipId };
+			return activeQuery === undefined ? 'skip' : { membershipId, search: activeQuery };
 		},
-		{ initialNumItems: 10, keepPreviousData: true }
+		{ initialNumItems: 10 }
 	);
-	const hasBuyerLinks = $derived(buyerLinks.results.length > 0);
-	const buyerLinksPresence = $derived(
-		hasBuyerLinks
-			? true
-			: !buyerLinks.error && buyerLinks.status === 'Exhausted'
-				? false
-				: undefined
+	type BuyerPage = {
+		rows: WorkspaceReadRows['buyerLinks'];
+		query: string;
+		hasMore: boolean;
+		source: 'snapshot' | 'live';
+	};
+	const rememberedBuyer = reads?.getBrowse(
+		'buyerLinks',
+		untrack(() => query)
 	);
-	const showBuyerLinksSkeleton = $derived(
-		buyerLinksPresence === undefined && !buyerLinks.error && hints.hasBuyerLinks === true
+	let buyerPage = $state.raw<BuyerPage | undefined>(
+		rememberedBuyer && untrack(() => search.trim() === query)
+			? {
+					rows: rememberedBuyer.rows,
+					query: rememberedBuyer.query,
+					hasMore: rememberedBuyer.hasMore,
+					source: 'snapshot'
+				}
+			: undefined
 	);
+	let buyerPaged = false;
+	let contractsPaged = false;
 	$effect(() => {
-		const present = buyerLinksPresence;
-		if (present === undefined || buyerLinks.error || session.blocked || session.closing) return;
-		untrack(() => hints.rememberBuyerLinks({ membershipId, companyId }, present));
+		void activeQuery;
+		contractsPaged = false;
+		buyerPaged = false;
+	});
+	// Capture only unfiltered first pages for the default browsing snapshot.
+	$effect(() => {
+		if (buyerLinks.error) {
+			return;
+		}
+		if (activeQuery === undefined || buyerLinks.status === 'LoadingFirstPage') return;
+		const rows = buyerLinks.results;
+		const currentQuery = activeQuery;
+		const hasMore = buyerLinks.status !== 'Exhausted';
+		const previous = untrack(() => buyerPage);
+		if (
+			previous?.source === 'snapshot' &&
+			previous.query === currentQuery &&
+			previous.rows.length > rows.length &&
+			hasMore
+		)
+			return;
+		untrack(() => {
+			buyerPage = { rows, query: currentQuery, hasMore, source: 'live' };
+			reads?.rememberBrowse('buyerLinks', currentQuery, rows, hasMore);
+			if (!currentQuery && !buyerPaged) reads?.confirm('buyerLinks', rows, hasMore);
+		});
+	});
+	const buyerSnapshot = $derived(!search.trim() && !query ? reads?.get('buyerLinks') : undefined);
+	function matchesLocalSearch(title: string, term: string) {
+		const words = term.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+		const normalized = title.toLocaleLowerCase();
+		return words.every((word) => normalized.includes(word));
+	}
+	const buyerDirectory = $derived(reads?.getDirectory('buyerLinks'));
+	const initialBuyerReady = Boolean(
+		reads?.getDirectory('buyerLinks')?.rows.length ||
+		reads?.getBrowse(
+			'buyerLinks',
+			untrack(() => query)
+		)?.rows.length ||
+		reads?.get('buyerLinks')?.rows.length
+	);
+	const localBuyerRows = $derived(
+		buyerDirectory?.rows.filter((row) => matchesLocalSearch(row.title, search.trim()))
+	);
+	const partialBuyerRows = $derived(
+		search.trim()
+			? reads?.get('buyerLinks')?.rows.filter((row) => matchesLocalSearch(row.title, search.trim()))
+			: undefined
+	);
+	const buyerLiveCurrent = $derived(
+		buyerPage?.source === 'live' &&
+			buyerPage.query === query &&
+			activeQuery === query &&
+			settled &&
+			!buyerLinks.error &&
+			buyerLinks.status !== 'LoadingFirstPage'
+	);
+	const buyerRows = $derived.by(() => {
+		const rows = buyerLiveCurrent
+			? (buyerPage?.rows ?? [])
+			: (localBuyerRows ??
+				(search.trim() === query && buyerPage?.query === query ? buyerPage.rows : undefined) ??
+				partialBuyerRows ??
+				buyerSnapshot?.rows ??
+				[]);
+		return buyerLiveCurrent && search.trim() ? rows : orderBuyerLinks(rows, !search.trim());
+	});
+	const buyerCurrent = $derived(Boolean(localBuyerRows) || buyerLiveCurrent);
+	// Search results never establish whether the company has any links overall.
+	let companyHasBuyerLinks = $state<boolean>();
+	const hasBuyerLinks = $derived(
+		buyerRows.length > 0 ||
+			companyHasBuyerLinks === true ||
+			(companyHasBuyerLinks === undefined &&
+				(hints.hasBuyerLinks === true || Boolean(reads?.get('buyerLinks')?.rows.length)))
+	);
+	const showBuyerLinks = $derived(
+		Boolean(buyerRows.length || hasBuyerLinks || search.trim() || query)
+	);
+	function showMoreBuyerLinks() {
+		visibleBuyerLinks += 3;
+		if (viewState) viewState.buyerLinks = visibleBuyerLinks;
+	}
+	function loadMoreContracts() {
+		contractsPaged = true;
+		contracts.loadMore(24);
+	}
+	$effect(() => {
+		if (!buyerCurrent || activeQuery !== '' || buyerPage?.source !== 'live') return;
+		const present = buyerPage.rows.length > 0 ? true : !buyerPage.hasMore ? false : undefined;
+		if (present === undefined) return;
+		untrack(() => {
+			companyHasBuyerLinks = present;
+			if (!session.blocked && !session.closing)
+				hints.rememberBuyerLinks({ membershipId, companyId }, present);
+		});
 	});
 	const hasMoreBuyerLinks = $derived(
-		buyerLinks.results.length > visibleBuyerLinks ||
-			buyerLinks.status === 'CanLoadMore' ||
-			buyerLinks.status === 'LoadingMore'
+		buyerRows.length > visibleBuyerLinks ||
+			(buyerLiveCurrent
+				? Boolean(buyerPage?.hasMore)
+				: localBuyerRows === undefined
+					? Boolean(buyerSnapshot?.hasMore)
+					: false)
 	);
+	const buyerEmpty = $derived(buyerLiveCurrent && !buyerRows.length && !hasMoreBuyerLinks);
 	$effect(() => {
-		// Fill the visible rows even when deleted contracts leave an empty page.
+		// Fill visible rows and catch up to the page retained from the last visit.
+		const retainedCount =
+			buyerPage?.source === 'snapshot' && buyerPage.query === activeQuery
+				? buyerPage.rows.length
+				: 0;
+		const target = Math.max(visibleBuyerLinks, retainedCount);
 		if (
-			!buyerLinks.error &&
-			buyerLinks.status === 'CanLoadMore' &&
-			buyerLinks.results.length < visibleBuyerLinks
+			!(buyerCurrent || retainedCount) ||
+			buyerLinks.status !== 'CanLoadMore' ||
+			buyerLinks.results.length >= target
 		)
-			buyerLinks.loadMore(3);
+			return;
+		buyerPaged = true;
+		buyerLinks.loadMore(
+			Math.min(
+				retainedCount > buyerLinks.results.length ? 10 : 3,
+				target - buyerLinks.results.length
+			)
+		);
 	});
 	type ContractPage = {
 		cards: SavedContractCard[];
 		query: string;
 		hasMore: boolean;
-		source: 'startup' | 'live';
+		source: 'startup' | 'live' | 'snapshot';
+		changeVersion: number;
 	};
-	let page = $state.raw<ContractPage | null>(null);
+	const rememberedBrowse = reads?.getBrowse(
+		'contracts',
+		untrack(() => query)
+	);
+	const remembered = reads?.get('contracts');
+	let page = $state.raw<ContractPage | null>(
+		rememberedBrowse && untrack(() => search.trim() === query)
+			? {
+					cards: rememberedBrowse.rows.filter((card) => !cache.isDeleted(card._id)),
+					query: rememberedBrowse.query,
+					hasMore: rememberedBrowse.hasMore,
+					source: 'snapshot',
+					changeVersion: reads?.localChangeVersion ?? 0
+				}
+			: remembered && untrack(() => !search && !query)
+				? {
+						cards: remembered.rows.filter((card) => !cache.isDeleted(card._id)),
+						query: '',
+						hasMore: remembered.hasMore,
+						source: 'snapshot',
+						changeVersion: reads?.localChangeVersion ?? 0
+					}
+				: null
+	);
 	let startupEligible = $state(true);
 	const startupPage = $derived.by(() => {
 		const value = startup();
 		return startupEligible &&
+			(reads?.allowsStartup ?? true) &&
 			!search &&
 			!query &&
 			value?.scope.profileId === viewer().profile.id &&
@@ -134,46 +306,37 @@
 		if (query || search || contracts.error || contracts.status !== 'LoadingFirstPage')
 			startupEligible = false;
 	});
-	$effect(() => {
-		const value = search.trim();
-		const timer = setTimeout(() => (query = value), 200);
-		return () => clearTimeout(timer);
-	});
-	function handleTyping(event: KeyboardEvent) {
-		if (
-			!searchInput ||
-			event.defaultPrevented ||
-			event.isComposing ||
-			event.ctrlKey ||
-			event.metaKey ||
-			event.altKey ||
-			event.key.length !== 1 ||
-			event.key === ' '
-		)
-			return;
-		const target = event.target;
-		if (
-			target instanceof HTMLElement &&
-			(target.isContentEditable ||
-				target.closest(
-					'input, textarea, select, [role="textbox"], [role="combobox"], [role="listbox"], [role="menu"]'
-				))
-		)
-			return;
-		event.preventDefault();
-		searchInput.value = (searchInput.value + event.key).slice(0, searchInput.maxLength);
-		searchInput.focus({ preventScroll: true });
-		searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-	}
-	onMount(() => {
-		recordStartup('home-mounted');
-		return interactions.shortcut(handleTyping);
-	});
 	let listTimedOut = $state(false);
 	const liveLoading = $derived(
 		!contracts.error &&
 			(contracts.status === 'LoadingFirstPage' || contracts.status === 'LoadingMore')
 	);
+	let firstLiveRecorded = false;
+	$effect(() => {
+		if (firstLiveRecorded || activeQuery === undefined || contracts.status === 'LoadingFirstPage')
+			return;
+		firstLiveRecorded = true;
+		recordStartup(contracts.error ? 'contracts-first-live-error' : 'contracts-first-live-page');
+	});
+	let directorySyncStarted = false;
+	$effect(() => {
+		if (
+			directorySyncStarted ||
+			!showContent ||
+			!reads ||
+			!session.workspaceAdmitted ||
+			session.blocked ||
+			activeQuery === undefined ||
+			contracts.error ||
+			contracts.status === 'LoadingFirstPage'
+		)
+			return;
+		return afterStartupPaint(() => {
+			if (directorySyncStarted || session.blocked || session.closing) return;
+			directorySyncStarted = true;
+			void reads.syncDirectory(client);
+		});
+	});
 	$effect(() => {
 		// Each search and recovered transport receives a fresh read budget.
 		void query;
@@ -193,44 +356,121 @@
 					cards: initial.page.filter((card) => !cache.isDeleted(card._id)),
 					query: '',
 					hasMore: !initial.isDone,
-					source: 'startup'
+					source: 'startup',
+					changeVersion: reads?.localChangeVersion ?? 0
 				};
 			});
 			return;
 		}
 		if (contracts.error) {
-			untrack(() => (page = null));
 			return;
 		}
-		if (contracts.status === 'LoadingFirstPage') return;
+		if (activeQuery === undefined || contracts.status === 'LoadingFirstPage') {
+			const snapshot = !search && !query ? reads?.get('contracts') : undefined;
+			if (snapshot && !(page?.source === 'snapshot' && page.query === query))
+				untrack(() => {
+					page = {
+						cards: snapshot.rows.filter((card) => !cache.isDeleted(card._id)),
+						query: '',
+						hasMore: snapshot.hasMore,
+						source: 'snapshot',
+						changeVersion: reads?.localChangeVersion ?? 0
+					};
+				});
+			return;
+		}
 		const results = contracts.results;
-		const currentQuery = query;
+		const currentQuery = activeQuery;
 		const hasMore = contracts.status === 'CanLoadMore' || contracts.status === 'LoadingMore';
+		const previous = untrack(() => page);
+		if (
+			previous?.source === 'snapshot' &&
+			previous.query === currentQuery &&
+			previous.cards.length > results.length &&
+			hasMore
+		)
+			return;
 		untrack(() => {
+			if (!currentQuery && !contractsPaged) reads?.confirm('contracts', results, hasMore);
+			reads?.rememberBrowse('contracts', currentQuery, results, hasMore);
 			page = {
 				cards: results.filter((card) => !cache.isDeleted(card._id)),
 				query: currentQuery,
 				hasMore,
-				source: 'live'
+				source: 'live',
+				changeVersion: reads?.localChangeVersion ?? 0
 			};
 		});
 	});
+	$effect(() => {
+		if (
+			page?.source !== 'snapshot' ||
+			page.query !== activeQuery ||
+			contracts.error ||
+			contracts.status !== 'CanLoadMore' ||
+			contracts.results.length >= page.cards.length
+		)
+			return;
+		loadMoreContracts();
+	});
+	const contractDirectory = $derived(reads?.getDirectory('contracts'));
+	const localCards = $derived(
+		contractDirectory?.rows.filter(
+			(card) => !cache.isDeleted(card._id) && matchesLocalSearch(card.title, search.trim())
+		)
+	);
+	const partialCards = $derived(
+		search.trim()
+			? reads
+					?.get('contracts')
+					?.rows.filter(
+						(card) => !cache.isDeleted(card._id) && matchesLocalSearch(card.title, search.trim())
+					)
+			: undefined
+	);
 	const list = $derived.by(() => {
 		const error = listTimedOut || Boolean(contracts.error);
-		const currentQuery = search.trim() === query && page?.query === query;
+		const currentQuery =
+			settled &&
+			activeQuery === query &&
+			page?.query === query &&
+			page?.source === 'live' &&
+			page.changeVersion === (reads?.localChangeVersion ?? 0) &&
+			contracts.status !== 'LoadingFirstPage' &&
+			!contracts.error;
+		const local = !currentQuery && localCards !== undefined;
+		const cachedPage =
+			settled &&
+			page?.query === query &&
+			page.source !== 'live' &&
+			page.changeVersion === (reads?.localChangeVersion ?? 0) &&
+			(page.cards.length > 0 || !page.hasMore);
+		const cards = currentQuery
+			? page!.cards
+			: local
+				? localCards
+				: ((settled &&
+					page?.query === query &&
+					page.changeVersion === (reads?.localChangeVersion ?? 0)
+						? page.cards
+						: undefined) ??
+					partialCards ??
+					[]);
 		const waiting =
-			search.trim() !== query ||
-			(!error &&
-				(page?.query !== query ||
-					(contracts.status === 'LoadingFirstPage' &&
-						!(page?.source === 'startup' && startupPage))));
+			!currentQuery &&
+			!cachedPage &&
+			(!cards.length || !local) &&
+			(!settled ||
+				activeQuery === undefined ||
+				activeQuery !== query ||
+				(!error && (page?.query !== query || contracts.status === 'LoadingFirstPage')));
 		const hasMore = Boolean(currentQuery && page?.hasMore);
 		return {
-			cards: page?.cards ?? [],
-			query: page?.query ?? '',
+			cards,
+			query: search.trim(),
 			error,
 			waiting,
-			empty: Boolean(page && !page.cards.length && !page.hasMore && !waiting && !error),
+			empty: !cards.length && !hasMore && !waiting && (currentQuery || cachedPage) && !error,
 			hasMore,
 			loadingMore: hasMore && page?.source === 'live' && contracts.status === 'LoadingMore',
 			canLoadMore:
@@ -239,33 +479,60 @@
 				!error &&
 				page?.source === 'live' &&
 				contracts.status === 'CanLoadMore',
-			pending: liveLoading || waiting || error
+			pending: waiting || (!cards.length && error && !local)
 		};
 	});
+	const cardMetadataCurrent = $derived(
+		page?.source === 'live' &&
+			contracts.status !== 'LoadingFirstPage' &&
+			activeQuery === query &&
+			settled
+	);
 	let gridWidth = $state(0);
-	let visibleRows = $state(4);
+	let visibleRows = $state(viewState?.contractRows ?? 4);
 	// Match the grid's container breakpoints, rather than the viewport width.
 	const columns = $derived(gridWidth >= 1000 ? 4 : gridWidth >= 600 ? 2 : 1);
 	const visibleLimit = $derived(visibleRows * columns);
 	const visibleCards = $derived(list.cards.slice(0, visibleLimit));
 	const hasHiddenCards = $derived(list.cards.length > visibleLimit);
 	$effect(() => {
-		void query;
+		const current = query;
+		if (current === viewQuery) return;
+		viewQuery = current;
 		visibleRows = 4;
+		visibleBuyerLinks = 10;
+		if (viewState) {
+			viewState.viewQuery = current;
+			viewState.contractRows = 4;
+			viewState.buyerLinks = 10;
+		}
 	});
+	function showMoreContracts() {
+		visibleRows += 4;
+		if (viewState) viewState.contractRows = visibleRows;
+	}
 	$effect(() => {
 		// Reveal fetched cards first; request another page only to fill the visible rows.
-		if (list.canLoadMore && list.cards.length < visibleLimit) contracts.loadMore(24);
+		if (list.canLoadMore && list.cards.length < visibleLimit) loadMoreContracts();
 	});
 	$effect(() => {
-		const pending = list.pending || session.blocked || Boolean(navigating.to);
+		const pending =
+			!showContent ||
+			contracts.status === 'LoadingFirstPage' ||
+			list.pending ||
+			session.blocked ||
+			Boolean(navigating.to);
 		untrack(() => warming.pending(pending));
 	});
-	const hasPage = $derived(page !== null);
+	const hasPage = $derived(page !== null || Boolean(contractDirectory));
+	$effect(() => {
+		ready = hasPage && !list.pending;
+	});
 	$effect(() => {
 		const owner = hubspot.identity;
 		if (
 			!owner ||
+			!showContent ||
 			!session.workspaceAdmitted ||
 			!hasPage ||
 			list.pending ||
@@ -291,37 +558,20 @@
 
 <svelte:document bind:visibilityState />
 
-<WorkspacePresentationReporter outcome={hasPage ? 'success' : list.error ? 'error' : 'pending'} />
+<WorkspacePresentationReporter
+	outcome={showContent && hasPage ? 'success' : list.error ? 'error' : 'pending'}
+/>
 
-<ContractsLayout
+<ContractsResultsLayout
 	role={viewer().membership.role}
-	hasBuyerLinks={hasBuyerLinks || showBuyerLinksSkeleton}
+	hasBuyerLinks={showBuyerLinks}
+	{firstVisit}
+	buyerContentReadyInitially={initialBuyerReady}
+	{showHeadings}
+	{showContent}
 >
-	{#snippet toolbar()}
-		<SearchField
-			bind:element={searchInput}
-			label="Search contracts"
-			placeholder="Search by name of company"
-			maxlength={200}
-			bind:value={search}
-		/>
-		<Button
-			href={canCreateContract ? resolve('/contracts/new') : undefined}
-			disabled={!canCreateContract}
-			onpointerenter={warmDeals}
-			onpointerdown={warmDeals}
-			onfocus={warmDeals}
-			title={canCreateContract
-				? undefined
-				: viewer().templateReady
-					? 'An admin must add instructions to your company’s template.'
-					: 'An admin must set up your company’s template.'}
-			><PlusIcon class="size-[15px]" aria-hidden="true" />New contract</Button
-		>
-	{/snippet}
 	{#snippet notice()}
-		<CompanySetupPrompt />
-		{#if buyerLinks.error && !hasBuyerLinks}
+		{#if buyerLinks.error && !showBuyerLinks}
 			<p role="alert" class="mb-3 text-xs text-ink-muted">
 				We couldn’t load your buyer links. <button
 					class="cursor-pointer underline"
@@ -332,13 +582,8 @@
 	{/snippet}
 	{#snippet contracts()}
 		<div bind:clientWidth={gridWidth}>
-			{#if list.waiting && list.cards.length}
-				<div class="mb-3 flex items-center">
-					<LoadingWheel label="Refreshing contracts" class="size-5" />
-				</div>
-			{/if}
 			{#if list.error && list.cards.length}<p class="mb-3 text-xs text-ink-muted" role="status">
-					We couldn’t refresh your contracts. Showing previous results. <button
+					We couldn’t refresh your contracts. <button
 						class="underline"
 						onclick={() => listRevision++}>Try again</button
 					>
@@ -352,7 +597,9 @@
 					<Button variant="secondary" onclick={() => listRevision++} class="mt-4">Try again</Button>
 				</div>
 			{:else if list.waiting && list.cards.length === 0}
-				<ContractGridSkeleton />
+				{#if list.query || slowResults}<p class="py-2 text-xs text-ink-muted" role="status">
+						{list.query ? 'Searching contracts…' : 'Still getting your contracts…'}
+					</p>{/if}
 			{:else if list.empty}
 				<div
 					class="rounded-base border-hairline border-edge bg-surface px-5 py-9 text-center text-[14px] shadow-card"
@@ -360,7 +607,7 @@
 				>
 					{#if list.query}<h2 class="text-[13px] font-medium">No contracts found</h2>
 						<p class="mt-2 text-[13px] text-ink-muted">No company names match “{list.query}”.</p>
-						<button onclick={() => (search = '')} class="mt-4 text-[13px] underline"
+						<button onclick={() => onSearch('')} class="mt-4 text-[13px] underline"
 							>Clear search</button
 						>
 					{:else}<h2 class="text-[13.5px] font-medium">No contracts yet</h2>
@@ -380,6 +627,7 @@
 						<ContractCard
 							status={feedback.statusFor(contract._id)}
 							{contract}
+							metadataCurrent={cardMetadataCurrent}
 							observe={warming.observe}
 							onWarm={() => warming.warm(contract._id)}
 							onCool={() => warming.cool(contract._id)}
@@ -395,24 +643,33 @@
 						list.error ||
 						list.loadingMore ||
 						(!hasHiddenCards && !list.canLoadMore)}
-					onclick={() => (visibleRows += 4)}>{list.loadingMore ? 'Loading…' : 'Show more'}</Button
+					onclick={showMoreContracts}>{list.loadingMore ? 'Loading…' : 'Show more'}</Button
 				>
 			{/if}
 		</div>
 	{/snippet}
-	{#snippet buyerLinksContent()}
-		{#if hasBuyerLinks}
+	{#snippet buyerLinksContent(showBuyerContent)}
+		{#if showBuyerLinks}
 			<BuyerLinks
 				role={viewer().membership.role}
-				links={buyerLinks.results.slice(0, visibleBuyerLinks)}
+				showContent={showBuyerContent}
+				links={buyerRows.slice(0, visibleBuyerLinks)}
+				emptyMessage={buyerEmpty
+					? search.trim()
+						? `No buyer links match “${search.trim()}”.`
+						: 'No buyer links yet.'
+					: (search.trim() || slowResults) && !buyerRows.length && !buyerLinks.error
+						? search.trim()
+							? 'Still searching buyer links…'
+							: 'Still getting your buyer links…'
+						: undefined}
 				hasMore={hasMoreBuyerLinks}
-				loading={buyerLinks.isLoading}
+				loading={buyerLinks.isLoading && buyerRows.length <= visibleBuyerLinks}
+				unreadCurrent={buyerLiveCurrent}
 				error={Boolean(buyerLinks.error)}
-				onShowMore={() => (visibleBuyerLinks += 3)}
+				onShowMore={showMoreBuyerLinks}
 				onRetry={() => buyerLinksRevision++}
 			/>
-		{:else if showBuyerLinksSkeleton}
-			<BuyerLinksSkeleton />
 		{/if}
 	{/snippet}
-</ContractsLayout>
+</ContractsResultsLayout>

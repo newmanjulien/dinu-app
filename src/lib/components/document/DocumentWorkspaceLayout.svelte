@@ -10,6 +10,8 @@
 	let {
 		hasPanel,
 		loading = false,
+		placeholderPages = 1,
+		placeholderGap = 0,
 		interactive = true,
 		followScroll = false,
 		documentHeight,
@@ -23,6 +25,8 @@
 	}: {
 		hasPanel: boolean;
 		loading?: boolean;
+		placeholderPages?: number;
+		placeholderGap?: number;
 		interactive?: boolean;
 		followScroll?: boolean;
 		documentHeight: number;
@@ -75,7 +79,9 @@
 			tabindex={interactive ? -1 : undefined}
 			style:height={documentHeight ? `${documentHeight}px` : undefined}
 		>
-			{#if loading}<DocumentPaperSkeleton />{/if}<div hidden={loading}>{@render documentContent()}</div>
+			{#if loading}<div class="flex flex-col" style:gap={`${placeholderGap}px`}>
+					{#each Array(placeholderPages) as _}<DocumentPaperSkeleton announce={false} />{/each}
+				</div>{/if}<div hidden={loading}>{@render documentContent()}</div>
 		</div>
 	</DocumentPageFrame>
 

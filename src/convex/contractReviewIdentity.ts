@@ -1,11 +1,11 @@
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { canonicalJson } from '../lib/document/canonical-json';
-import type { ApprovalContext } from '../lib/contract/changes';
+import type { ChangeKind } from '../lib/contract/changes';
 
 export const contextIdentity = (value: unknown) =>
 	bytesToHex(sha256(new TextEncoder().encode(canonicalJson(value))));
-export const initialContextIdentity = (contractId: string, context: ApprovalContext) =>
+export const initialContextIdentity = (contractId: string, context: ChangeKind) =>
 	contextIdentity(['contract-review', contractId, context]);
 
 /** Semantic change clears the previous notification owner. Admin decisions expose

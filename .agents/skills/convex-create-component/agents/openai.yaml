@@ -11,4 +11,4 @@ interface:
     app-facing wrappers before implementing it."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

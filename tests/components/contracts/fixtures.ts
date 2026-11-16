@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 import { getFunctionName, type FunctionReturnType } from 'convex/server';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, vi } from 'vitest';
@@ -38,11 +39,7 @@ vi.mock('convex-svelte', () => ({
 	})
 }));
 vi.mock('$lib/auth/DocumentBody.svelte', () => import('../../support/DocumentBody.svelte'));
-vi.mock('$lib/components/workspace/RepWorkspace.svelte', () => import('./Viewer.svelte'));
-vi.mock(
-	'$lib/components/workspace/ContractPreview.svelte',
-	() => import('../../support/DocumentBody.svelte')
-);
+vi.mock('$lib/components/workspace/SavedDocumentFrame.svelte', () => import('./Viewer.svelte'));
 vi.mock('$lib/components/ui/modal/CompanyNameDialog.svelte', () => import('./NameDialog.svelte'));
 vi.mock('$lib/contract/snapshot-cache', () => ({
 	getContractOpenings: () => ({ read: () => [] }),
@@ -66,10 +63,10 @@ const contract = (
 	title: 'Buyer',
 	savedAt: 1,
 	playbook,
-	playbookReviewIdentity: `playbook:${stateRevision}`,
-	buyerLinkReviewIdentity: 'buyer-link:0',
-	playbookCompletion: null,
-	buyerLinkCompletion: null,
+	reviews: {
+		playbook: { identity: `playbook:${stateRevision}` },
+		buyerLink: { identity: 'buyer-link:0' }
+	},
 	lastOperationId: operation
 });
 /** Native server acknowledgment fixture allocates heads; client commands carry no predicted IDs. */
@@ -104,6 +101,7 @@ const template = (approval = false): TemplateContent => ({
 	blocks: [],
 	items: [
 		{
+			audience: 'rep',
 			_id: 'item-a' as Id<'playbookItems'>,
 			_creationTime: 1,
 			companyId: 'company' as Id<'company'>,
@@ -128,7 +126,7 @@ const template = (approval = false): TemplateContent => ({
 function draft(id = 'contract-a'): ContractDraft {
 	const commands: PlaybookCommand[] = [
 		{
-			id: 'original-command',
+			id: fixtureOperationId('original-command'),
 			itemId: 'item-a' as Id<'playbookItems'>,
 			expectedCurrentChangeId: null,
 			action: { kind: 'set', optionId: 'preferred' },
@@ -136,13 +134,14 @@ function draft(id = 'contract-a'): ContractDraft {
 		}
 	];
 	return {
-		version: 10,
+		version: 12,
 		commands,
 		base: contract(id),
 		conflict: false,
+		blocked: false,
 		request: {
 			id: id as Id<'savedContracts'>,
-			operationId: 'original-operation',
+			operationId: fixtureOperationId('original-operation'),
 			commands: structuredClone(commands)
 		}
 	};
@@ -153,7 +152,11 @@ const controllers: AccountLifecycle[] = [];
 const mounted: ReturnType<typeof mount>[] = [];
 async function settle() {
 	flushSync();
-	await vi.dynamicImportSettled();
+	// Route assertions need these modules; background code warming may continue independently.
+	await Promise.all([
+		import('../../../src/lib/components/workspace/ContractCreation.svelte'),
+		import('../../../src/lib/components/workspace/SavedContract.svelte')
+	]);
 	for (let i = 0; i < 6; i++) {
 		await Promise.resolve();
 		flushSync();
@@ -211,8 +214,11 @@ function fixture({
 				case 'contractDefinitions:current':
 					if (selectedRead) observation.update(selectedPayload(id));
 					break;
-				case 'templates:preview':
-					observation.update(template(approval));
+				case 'templateSources:authoringSource':
+					observation.update({
+						blocks: template(approval).blocks,
+						templateSourceFingerprint: 'templateSource'
+					});
 					break;
 				case 'contracts:state':
 					if (!initialRead) break;
@@ -246,6 +252,10 @@ function fixture({
 		})
 	};
 	const cache = {
+		peek: vi.fn(() => undefined),
+		restore: vi.fn(async () => undefined),
+		restoreMetadata: vi.fn(async () => undefined),
+		invalidate: vi.fn(),
 		peekApproved: vi.fn(() => undefined),
 		rememberApproved: vi.fn((_id, data) => data),
 		loadApproved: vi.fn(async (id: string) => {
@@ -348,7 +358,7 @@ function buyerLinkFixture(owner: ContractEditors, current = () => contract()) {
 	type Client = ConstructorParameters<typeof BuyerLinkController>[0];
 	const latest: FunctionReturnType<typeof api.buyerLinkActions.ensureLatest> = {
 		id: 'link' as Id<'buyerLinks'>,
-		token: '0'.repeat(39),
+		token: 'Ab3Cd4Ef5Gh6I',
 		createdAt: 0
 	};
 	const query = vi.fn<Client['query']>().mockImplementation(async (ref) => {
@@ -396,6 +406,12 @@ function buyerLinkFixture(owner: ContractEditors, current = () => contract()) {
 	return { links, latest, query, action, writeText, onCopied };
 }
 beforeEach(() => {
+	HTMLDialogElement.prototype.showModal = function () {
+		this.open = true;
+	};
+	HTMLDialogElement.prototype.close = function () {
+		this.open = false;
+	};
 	rendering.ready = true;
 	sessionStorage.clear();
 	screen.home = false;

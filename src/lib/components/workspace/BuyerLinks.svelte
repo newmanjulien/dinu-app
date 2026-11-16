@@ -7,6 +7,9 @@
 
 	let {
 		role,
+		showContent = true,
+		unreadCurrent = true,
+		emptyMessage,
 		links,
 		hasMore,
 		loading,
@@ -15,6 +18,9 @@
 		onRetry
 	}: {
 		role: Role;
+		showContent?: boolean;
+		unreadCurrent?: boolean;
+		emptyMessage?: string;
 		links: FunctionReturnType<typeof api.buyerLinks.browse>['page'];
 		hasMore: boolean;
 		loading: boolean;
@@ -24,6 +30,17 @@
 	} = $props();
 </script>
 
-<BuyerLinksLayout {role} {links} {hasMore} {loading} {error} {onShowMore} {onRetry} initialLoading={false}>
+<BuyerLinksLayout
+	{role}
+	{showContent}
+	{unreadCurrent}
+	{links}
+	{hasMore}
+	{loading}
+	{error}
+	{onShowMore}
+	{onRetry}
+	{emptyMessage}
+>
 	{#snippet activity(id)}<LinkActivity {id} />{/snippet}
 </BuyerLinksLayout>

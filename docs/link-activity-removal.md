@@ -1,65 +1,21 @@
-# Legacy activity retirement
+# Retired activity compatibility
 
-The current activity feature records openings and receipts directly. Receipts also
-witness distinct clause membership. It never reads legacy buyerLinkOpens,
-buyerVisits, buyerLinkStats or buyerLinkBrowsers. Old writers are stopped; the old
-buyerVisits.project scheduled entry point is retained as a harmless no-op so queued
-legacy jobs cannot recreate data. See [current policy](cookies-and-activity.md).
+The strict local application retains current `buyerActivityOpenings`, receipt-backed distinct-clause witnesses, `buyerActivityCounters`, required opening `acceptedAt`, verified profile/city attribution and fixed expiries. It removes `buyerLinkOpens`, `buyerVisits`, `buyerLinkStats`, `buyerLinkBrowsers`, historical `buyerActivityClauses`, optional receipt `acceptedAt`, copied-link membership facts, old cleanup fields/phases, exact `buyerBrowser`/`buyerCompany` quota names and the `buyerVisits.project` no-op callback.
 
-Do not run old numbering or visit-projection backfills. Do not carry global browser/account identities into the current model. Schema admission and
-contract/company deletion retain legacy compatibility until all supported deployments
-have completed retirement. Account deletion removes legacy profile-linked activity.
+**NOT DEPLOYABLE TO AN UNVERIFIED POPULATED TARGET.** All live G01–G25 remain UNVERIFIED. Source removal is preparation, not proof of target retirement. Follow the [preservation cutover](backend-preservation-cutover.md), its exact gate table and the linked concrete outside-repository runbook/bundle. No target inventory, drain, conversion, index change or deployment occurred locally.
 
-Before changing deployed data, explicitly select and inspect the deployment read-only:
-writer release, table counts/oldest rows, company/contract ownership, scheduled jobs
-and in-progress deletion markers. Empty deployments need no backfill. Preserve
-anonymous discussion ownership: the new essential cookie adopts the old browser
-cookie value on interaction. Do not remove that compatibility merely because legacy
-analytics has been purged.
+## Prerequisites under the preserved old bundle
 
-For a populated deployment, after the legacy writer is confirmed stopped, the
-internal operator mutation `buyerActivity:retireLegacy` accepts
-`{ "companyId": "...", "writerStoppedAt": 0 }` (use the actual confirmed timestamp).
-Each call is bounded; repeat the same arguments until `done: true`, then repeat to
-confirm `removed: 0`. It drains only the four legacy activity tables for that company.
-It does not delete comments, accounts, contract links or current activity.
-Production deployment and retirement are separate, explicitly authorized operations.
-No retirement or live data inventory has been performed by the local implementation.
+G01–G04/G13 require the real stopped-writer timestamp, old bounded company drain repeated through done and again with zero removed, all-owner/orphan zero evidence and no queued/running projection or delayed recreating writer. The final app has no retirement operator or projection route; do not run a historical command against it.
 
-After every supported deployment is verified empty, remove retired table definitions,
-optional analytics fields, old deletion drains, migration entry points and no-op
-projector. Preserve admission for any in-progress cleanup phases until completed.
-Do not clear the shared rate-limiter component globally; owned limits expire/reset
-through their existing bounded cleanup and parent-deletion paths.
+G05/G06 retain genuine fixed 30-day historical clause and optional receipt witnesses until their deadlines and bounded clearance. Membership-only anomalies retain their real deadline. Never invent receipts, erase active witnesses, reset distinct counts or remove required opening `acceptedAt`.
 
-## Selective account erasure
+G07–G10 require matching setup behavior and deliberate account/company marker normalization before removing their fields/phases/cursors. Old company raw-opening phases also erased **current activity and counters**. Perform and prove current opening/receipt/counter catch-up even for markers already past those phases; account cleanup independently erases current profile-linked opening/receipt children. Old marker/job/generation literals must be cleared/fenced under old admission. Empty raw tables do not discharge this obligation.
 
-Current same-company attribution uses `buyerActivityOpenings.by_profileId`. Account
-cleanup drains these openings and their receipts/historical clause memberships using
-`by_openingId_and_itemId` before erasing the profile. This bounded pass runs independently
-of legacy progress, including when `legacyActivityPhase` is already `done`.
+G11/G12 require exact owned and unowned buyer-only component key inventory, stopped writers and the full 60-second refill before old bounded expiry/reset, followed by absence evidence. Never clear the shared limiter component globally. Preserve `activityBrowser`, `activityLink`, `activityCompany`, `discussionActor` and `discussionCompany` limits and owners.
 
-Before enabling the indexed account eraser, confirm `buyerLinkOpens.by_profileId`,
-`buyerLinkOpens.by_visitorKey` and `buyerVisits.by_profileId` are ready in the selected
-deployment. Large inventories may require staged index backfill before reader cutover.
-The existing `opens` phase drains profile matches and then `account:<profileId>`
-visitor-key matches across all companies, restarting each bounded range from its
-beginning. `visits` drains profile matches; `done` preserves completed progress.
-Old global `legacyActivityCursor` values are ignored and cleared as their current
-phase resumes. Keep optional cursor admission until every supported marker advances.
+## Preserved identity and release limits
 
-## Receipt-backed clause counts
+Essential `dinu_discussion_browser` still adopts an existing valid `dinu_buyer_browser` value on interaction, preserving anonymous comment ownership. Activity retirement does not authorize deleting this behavior, current discussions or ordinary business history. Current activity cookies carry only scoped recognition identity; [current policy](cookies-and-activity.md) explains attribution and limits.
 
-Prepare the receipt `by_openingId_and_itemId` index and optional historical
-`acceptedAt` admission before the new writer cutover. Confirm index readiness and
-that all unexpired membership rows have matching receipts, with all supported writers
-obeying the prior atomic receipt/membership co-creation rule. The new writer uses
-receipt existence for distinct counts and stops membership/timestamp writes.
-
-Keep `buyerActivityClauses`, its validator and expiry/contract/company drains until
-historical rows are verified empty. Keep receipt `acceptedAt` optional until older
-receipts containing it are gone. If unexpected active membership-only rows exist,
-postpone cutover until their fixed deadlines and verified cleanup; do not invent
-receipts, reset counts or delete active replay witnesses. The fixed 30-day lifetime
-allows these compatibility surfaces to retire after cleanup is proved. No live
-inventory, index backfill, writer cutover or table removal has been performed locally.
+Old callback signatures, delayed clients/jobs, genuine witness/refill deadlines, owned/unowned quota keys and advanced-marker catch-up must be recorded against the exact target. The offline preservation converter rejects unresolved old populations/shapes; it does not run those old operators or certify their truth. Empty targets also need verified external obligations and job/client/component clearance. Older/unknown schemas stop release for their own bounded preservation plan. A reset or source-only revert cannot replace these obligations.

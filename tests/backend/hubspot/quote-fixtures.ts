@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 import { vi } from 'vitest';
 import {
 	api,
@@ -31,7 +32,7 @@ export async function quoteArgs(f: Fixture, operationId = 'quote') {
 	return {
 		membershipId: f.owner.membershipId,
 		id: f.id,
-		operationId,
+		operationId: fixtureOperationId(operationId),
 		expectedSource: await expectedSource(f),
 		destination
 	};
@@ -45,7 +46,7 @@ export async function sendQuote(
 ) {
 	await f.t.mutation(internal.hubspotQuotes.pump, {});
 	const row = await f.t.run(({ db }) => db.get('hubspotQuotePushes', id));
-	if (!row?.claim) throw new Error('Quote was not queued');
+	if (row?.format !== 'full' || !row.claim) throw new Error('Quote was not queued');
 	await f.t.action(internal.hubspotQuoteActions.send, { id, claim: row.claim });
 	return f.t.run(({ db }) => db.get('hubspotQuotePushes', id));
 }

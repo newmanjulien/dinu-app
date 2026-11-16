@@ -4,7 +4,7 @@
 	import FileTextIcon from 'phosphor-svelte/lib/FileTextIcon';
 	import InfoBar from '$lib/components/ui/InfoBar.svelte';
 	import CsmBookingSkeleton from '$lib/components/chrome/CsmBookingSkeleton.svelte';
-	import { initialCalendar } from '$lib/components/chrome/csm-preload.svelte';
+	import { initialAvailability } from '$lib/components/chrome/csm-preload.svelte';
 	let {
 		role,
 		children,
@@ -20,7 +20,7 @@
 	class="min-h-[calc(100dvh-var(--app-header-height))] bg-page px-4 pt-14 pb-12 sm:px-6 sm:pt-20 sm:pb-16 md:px-8"
 >
 	<div
-		class="mx-auto max-w-[680px] rounded-base border-hairline border-edge bg-surface p-5 shadow-card sm:p-6"
+		class="mx-auto max-w-[620px] rounded-base border-hairline border-edge bg-surface p-5 shadow-card sm:p-6"
 	>
 		<header class="mb-6 text-left">
 			<h1 class="text-[19px] leading-6 font-medium text-ink">Set up your company’s template</h1>
@@ -39,7 +39,7 @@
 				{@render children()}
 			{:else if role === 'admin'}
 				<CsmBookingSkeleton
-					month={initialCalendar('setup').month}
+					initial={initialAvailability('setup')}
 					description="Choose a time to get your template ready together."
 				/>
 			{:else if role}

@@ -1,3 +1,4 @@
+import { fixtureOperationId } from './operation';
 import type { RepInstruction } from '../../src/lib/playbook/model';
 import type { MutationCtx } from '../../src/convex/_generated/server';
 import type { SourceBlock } from '../../src/lib/document/source-model';
@@ -11,6 +12,7 @@ export const block: SourceBlock = {
 };
 
 export const item: RepInstruction = {
+	audience: 'rep',
 	approvalPolicy: { kind: 'none' },
 	trigger: {
 		id: 'trigger',
@@ -65,7 +67,7 @@ export function commandsFor(
 				(base.find((item) => item.itemId === id)?.currentOptionId ?? null) !== (choices[id] ?? null)
 		)
 		.map((id, index) => ({
-			id: `${operation}:${index}`,
+			id: fixtureOperationId(`${operation}:${index}`),
 			itemId: id as import('../../src/convex/_generated/dataModel').Id<'playbookItems'>,
 			expectedCurrentChangeId: base.find((item) => item.itemId === id)?.currentChangeId ?? null,
 			action: { kind: 'set', optionId: choices[id] ?? null },

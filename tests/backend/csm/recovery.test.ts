@@ -259,7 +259,6 @@ it('blocks retry for unsafe historical failures and preserves their guards throu
 			deletedAt: now,
 			cleanupGeneration: 0,
 			successorCursor: null,
-			legacyActivityPhase: 'done',
 			complete: false
 		});
 		return { initialId, replacementId, replacement, markerId };

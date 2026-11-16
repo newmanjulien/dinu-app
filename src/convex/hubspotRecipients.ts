@@ -15,7 +15,6 @@ import { availableCompany, requireMembership, accessibleContract } from './auth'
 import { activeDestination } from './hubspotInstallation';
 import { connectionToken, HubSpotError, resolveRecipient } from './hubspotApi';
 import { resolveAccess } from './buyerLinks';
-import { terminologyTransition } from './terminologyMaintenance';
 import { documentBytes, assertStorageCapacity } from './storageCapacity';
 import { currentRoot, type CurrentContractRoot } from './contractState';
 import { prepareBuyerCurrentView } from './buyerCurrent';
@@ -33,7 +32,6 @@ const outcome = v.union(
 
 async function eligible(ctx: QueryCtx, root: Doc<'savedContracts'>) {
 	if (
-		terminologyTransition ||
 		env.HUBSPOT_ENABLED !== 'true' ||
 		root.buyer.kind !== 'hubspot' ||
 		!(await availableCompany(ctx, root.companyId))

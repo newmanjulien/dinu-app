@@ -16,7 +16,7 @@ import { decisionCommand } from '../lib/contract/changes';
 import { requireContractWork } from './contractPolicy';
 import {
 	actionKey,
-	operation,
+	admitOperation,
 	receipt,
 	remember,
 	planReceiptWrite,
@@ -112,7 +112,7 @@ export async function authorityTarget(
 			throw new ConvexError('This change was replaced or reviewed. Review its current state.');
 		if (
 			input.args.action === 'undo' &&
-			(change.kind !== 'buyer-proposal' || head.applied?._id !== change._id)
+			(change.kind !== 'buyer-link' || head.applied?._id !== change._id)
 		)
 			throw new ConvexError('This buyer proposal is no longer applied.');
 		if (input.args.action === 'decline' && head.applied?._id === change._id)
@@ -123,7 +123,7 @@ export async function authorityTarget(
 	}
 	await requireProposalLink(ctx, contract, input.args.token);
 	const source = await proposalRoot(ctx, contract, index, input.args);
-	const head = await changeHead(ctx, contract, 'buyer-proposal', source.thread._id, index);
+	const head = await changeHead(ctx, contract, 'buyer-link', source.thread._id, index);
 	if (
 		(head?.current?._id ?? null) !== input.args.expectedCurrentChangeId ||
 		(head?.decision?._id ?? null) !== input.args.expectedDecisionId
@@ -148,7 +148,7 @@ export async function runAuthority(
 	input: AuthorityInput,
 	resuming?: Doc<'operationReceipts'>
 ): Promise<AuthorityResult> {
-	operation(input.args.operationId);
+	admitOperation(input.args.operationId);
 	if (
 		await ctx.db
 			.query('contractCleanups')
@@ -188,10 +188,7 @@ export async function runAuthority(
 		const session = await changeSession(ctx, contract);
 		if (input.kind === 'change-decision') {
 			await session.decide({ ...input.args, operationId: key, access });
-			if (
-				target.change?.kind === 'buyer-proposal' &&
-				target.head?.applied?._id !== target.change._id
-			) {
+			if (target.change?.kind === 'buyer-link' && target.head?.applied?._id !== target.change._id) {
 				const thread = await effectiveBuyerSource(ctx, index, target.change);
 				if (!thread) throw new ConvexError('This proposal changed. Review its current wording.');
 				claim = await prepareProposalClaim(
@@ -215,7 +212,7 @@ export async function runAuthority(
 				interval,
 				discussionTape(session.document).length
 			);
-			await session.withdraw('buyer-proposal', input.args.threadId, input.args.changeId);
+			await session.withdraw('buyer-link', input.args.threadId, input.args.changeId);
 		} else {
 			const source = target.source!;
 			const interval = await index.interval(source.thread);
@@ -228,7 +225,7 @@ export async function runAuthority(
 				discussionTape(session.document).length
 			);
 			if (!(
-				target.head?.current?.kind === 'buyer-proposal' &&
+				target.head?.current?.kind === 'buyer-link' &&
 				target.head.current.source.rootMessageId === source.root._id &&
 				target.head.current.source.rootRevision === source.root.revision &&
 				target.head.head.status !== 'rejected'
@@ -240,7 +237,7 @@ export async function runAuthority(
 					contract.root
 				);
 				await session.stage({
-					source: { kind: 'buyer-proposal', value: normalized.source },
+					source: { kind: 'buyer-link', value: normalized.source },
 					key: source.thread._id,
 					operationId: key,
 					policy: 'required',
@@ -328,17 +325,17 @@ export async function withdrawProposalRoot(
 	rootMessageId: Id<'discussionMessages'>,
 	rootRevision: number
 ) {
-	const value = await session.head('buyer-proposal', threadId),
+	const value = await session.head('buyer-link', threadId),
 		current = value.current;
 	if (
 		!current ||
 		current === value.applied ||
-		current.row.kind !== 'buyer-proposal' ||
+		current.row.kind !== 'buyer-link' ||
 		current.row.source.rootMessageId !== rootMessageId ||
 		current.row.source.rootRevision !== rootRevision
 	)
 		return false;
-	await session.withdraw('buyer-proposal', threadId, current.id);
+	await session.withdraw('buyer-link', threadId, current.id);
 	return true;
 }
 
@@ -363,7 +360,7 @@ export async function prepareAuthorityActivity(
 	const description =
 		input.kind === 'proposal-support'
 			? target.source!.root.text
-			: change?.kind === 'buyer-proposal'
+			: change?.kind === 'buyer-link'
 				? change.source.text
 				: (change?.source.description ?? '');
 	return (
@@ -375,7 +372,7 @@ export async function prepareAuthorityActivity(
 			action === 'approve' ? 'approved' : 'declined',
 			JSON.stringify({
 				context:
-					input.kind === 'proposal-support' || change?.kind === 'buyer-proposal'
+					input.kind === 'proposal-support' || change?.kind === 'buyer-link'
 						? 'buyer-link'
 						: 'playbook',
 				changeId: change?._id,

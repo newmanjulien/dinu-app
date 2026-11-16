@@ -18,11 +18,14 @@ import {
 import {
 	availableCompany,
 	liveProfile,
+	membershipForProfile,
+	requireAccount,
 	requirePermission,
 	verifiedIdentity,
 	type CompanyAccess
 } from './auth';
 import { readTextBody } from '../lib/http-body';
+import { BOOKING_WINDOW_MS, withinBookingWindow } from '../lib/booking-window';
 import schema from './schema';
 import { canonicalState, confirmedEvidence, validOperator } from './csmAttemptState';
 import { assertHistoricalAdmission } from './csmHistory';
@@ -62,7 +65,6 @@ import {
 	iso,
 	validTimeZone,
 	validBookingUid,
-	dateInZone,
 	configuration,
 	slots,
 	calRead,
@@ -223,11 +225,60 @@ export const authorize = internalQuery({
 		return null;
 	}
 });
+export const authorizeOnboardingAvailability = internalQuery({
+	args: {},
+	returns: v.id('profiles'),
+	handler: async (ctx) => {
+		const { profile } = await requireAccount(ctx);
+		if (await membershipForProfile(ctx, profile._id))
+			throw new ConvexError('Your company access has changed. Reload to continue.');
+		return profile._id;
+	}
+});
+async function readAvailability(
+	ctx: ActionCtx,
+	timeZone: string
+): Promise<Infer<typeof availabilityResult>> {
+	const now = Date.now();
+	if (!creationScope()) return { status: 'unavailable', slots: [], duration: 0 };
+	// Attach both handlers immediately; invalid configuration must not wait for slots.
+	const configRead = configuration(ctx);
+	const slotRead = slots(
+		ctx,
+		new Date(now).toISOString(),
+		new Date(now + BOOKING_WINDOW_MS).toISOString(),
+		timeZone
+	).then(
+		(value) => ({ value }),
+		(error: unknown) => ({ error })
+	);
+	const config = await configRead;
+	if (!config) return { status: 'unavailable', slots: [], duration: 0 };
+	const outcome = await slotRead;
+	if ('error' in outcome) throw outcome.error;
+	const result = outcome.value;
+	if (result.some((s) => Date.parse(s.end) - Date.parse(s.start) !== config.duration * 60_000))
+		throw new ConvexError('Invalid calendar duration.');
+	return {
+		status: 'ready',
+		duration: config.duration,
+		slots: result.filter((s) => withinBookingWindow(s.start, now))
+	};
+}
+export const onboardingAvailability = action({
+	args: { timeZone: v.string() },
+	returns: availabilityResult,
+	handler: async (ctx, { timeZone }): Promise<Infer<typeof availabilityResult>> => {
+		const profileId = await ctx.runQuery(internal.csmBookings.authorizeOnboardingAvailability, {});
+		if (!validTimeZone(timeZone)) throw new ConvexError('Invalid time zone.');
+		await limiter.limit(ctx, 'calendar', { key: profileId, throws: true });
+		return readAvailability(ctx, timeZone);
+	}
+});
 export const availability = action({
 	args: {
 		...memberArgs,
 		mode: bookingMode,
-		month: v.string(),
 		timeZone: v.string(),
 		replacement: v.optional(setupReplacement)
 	},
@@ -238,40 +289,9 @@ export const availability = action({
 			mode: a.mode,
 			...(a.replacement ? { replacement: a.replacement } : {})
 		});
-		if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(a.month) || !validTimeZone(a.timeZone))
-			throw new ConvexError('Invalid calendar date or timezone.');
-		const start = Date.parse(a.month + '-01T00:00:00Z');
-		if (start < Date.now() - 40 * 86_400_000 || start > Date.now() + 370 * 86_400_000)
-			throw new ConvexError('Choose a nearer month.');
+		if (!validTimeZone(a.timeZone)) throw new ConvexError('Invalid time zone.');
 		await limiter.limit(ctx, 'calendar', { key: a.membershipId, throws: true });
-		if (!creationScope()) return { status: 'unavailable', slots: [], duration: 0, lastDate: null };
-		const end = new Date(start);
-		end.setUTCMonth(end.getUTCMonth() + 1);
-		// Attach both handlers immediately; invalid configuration must not wait for slots.
-		const configRead = configuration(ctx);
-		const slotRead = slots(
-			ctx,
-			new Date(start - 86_400_000).toISOString(),
-			new Date(+end + 86_400_000).toISOString(),
-			a.timeZone
-		).then(
-			(value) => ({ value }),
-			(error: unknown) => ({ error })
-		);
-		const config = await configRead;
-		if (!config) return { status: 'unavailable', slots: [], duration: 0, lastDate: null };
-		const outcome = await slotRead;
-		if ('error' in outcome) throw outcome.error;
-		const result = outcome.value;
-		if (result.some((s) => Date.parse(s.end) - Date.parse(s.start) !== config.duration * 60_000))
-			throw new ConvexError('Invalid calendar duration.');
-		const date = dateInZone(a.timeZone);
-		return {
-			status: 'ready',
-			duration: config.duration,
-			lastDate: config.lastDate,
-			slots: result.filter((s) => date(s.start).startsWith(a.month))
-		};
+		return readAvailability(ctx, a.timeZone);
 	}
 });
 export const attempt = query({
@@ -344,8 +364,7 @@ export const book = mutation({
 		if (
 			!start ||
 			start !== a.start ||
-			Date.parse(start) <= Date.now() ||
-			Date.parse(start) > Date.now() + 370 * 86_400_000 ||
+			!withinBookingWindow(start, Date.now()) ||
 			!validTimeZone(a.timeZone)
 		)
 			throw new ConvexError('Choose an available time.');

@@ -1,3 +1,4 @@
+import { fixtureOperationId } from '../../support/operation';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getFunctionName, type FunctionReference } from 'convex/server';
 import type { RequestEvent } from '@sveltejs/kit';
@@ -37,6 +38,7 @@ vi.mock('../../../src/lib/server/document/export/word', async (original) => {
 });
 
 integrationClock();
+const buyerCode = 'Ab3Cd4Ef5Gh6I';
 beforeEach(() => {
 	vi.useFakeTimers({
 		toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']
@@ -52,10 +54,10 @@ async function buyer() {
 	const link = await f.t.mutation(internal.buyerLinks.capture, {
 		membershipId: f.owner.membershipId,
 		id: f.id,
-		token: '0'.repeat(39),
+		token: buyerCode,
 		preparation: {
 			kind: 'prepared',
-			operationId: 'first-link',
+			operationId: fixtureOperationId('first-link'),
 			expectedState: {
 				stateRevision: source.stateRevision,
 				documentId: source.documentId,
@@ -78,7 +80,7 @@ async function buyer() {
 const request = (token: string, displayIdentity: unknown) =>
 	POST({
 		params: { token },
-		request: new Request('https://dinu.example/api/buyer/token/download', {
+		request: new Request(`https://dinu.example/api/buyer/${token}/download`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ displayIdentity })
@@ -153,7 +155,7 @@ describe('buyer Word acquisition and final authorization', () => {
 	it.each([undefined, null, '', 'bad', 'F'.repeat(64), 123])(
 		'rejects malformed display identity %s before acquiring content',
 		async (identity) => {
-			const response = await request('0'.repeat(39), identity);
+			const response = await request(buyerCode, identity);
 			expect(response.status).toBe(400);
 			expect(response.headers.get('Cache-Control')).toBe('private, no-store');
 			expect(boundary.query).not.toHaveBeenCalled();
