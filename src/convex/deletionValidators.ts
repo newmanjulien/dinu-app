@@ -31,6 +31,7 @@ export const companyCleanupPhases = [
 	'buyerActivity',
 	'buyerActivityQuotaKeys',
 	'buyerLinks',
+	'buyerLinkShowings',
 	'discussions',
 	'contracts',
 	'contractState',

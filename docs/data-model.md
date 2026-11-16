@@ -2,25 +2,27 @@
 
 Reusable company setup is a **template**; a buyer-specific instance is a **contract**. Shared text/rendering machinery is a **document**. The authoritative table map is [schema.ts](../src/convex/schema.ts).
 
-| Owner                 | Authority                                                                                          | Lifetime                                    |
-| --------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Accounts              | Profiles, memberships and company ownership                                                        | Person or company                           |
-| Template authoring    | Compact heads, immutable revision bodies, current manifest and certified source                    | Company                                     |
-| Frozen templates      | Permanently frozen template manifests and referenced Playbook/source content                       | Company, including after contract deletion  |
-| Contracts             | One small `savedContracts` root and its approved document                                          | Contract                                    |
-| Native changes        | Immutable patches, exact current/applied heads and immutable decisions                             | Contract; output evidence has its own owner |
-| Browse and buyer view | Derived `contractDirectory` and permanent `buyerLinks.currentView`                                 | Contract                                    |
-| Discussions           | Shared contract threads/messages, interval claims, transient maps and exact unread/support indexes | Contract                                    |
-| Operations            | Original-input/result `operationReceipts` and separately paged evidence sections                   | Seven-day replay; 24-hour collection grace                      |
-| Outputs               | `contractOutputs` and proof chunks, Word attempts and Quote observations with full/compact variants | Evidence/holds, then company-lifetime facts  |
-| Integrations          | Captured destinations, leases, dispatch and reconciliation                                         | Each protocol's retention                   |
-| Maintenance           | Bounded deletion, preparation and cleanup progress                                                 | Until owned work completes                  |
+| Owner                 | Authority                                                                                           | Lifetime                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Accounts              | Profiles, memberships and company ownership                                                         | Person or company                           |
+| Template authoring    | Compact heads, immutable revision bodies, current manifest and certified source                     | Company                                     |
+| Frozen templates      | Permanently frozen template manifests and referenced Playbook/source content                        | Company, including after contract deletion  |
+| Contracts             | One small `savedContracts` root and its approved document                                           | Contract                                    |
+| Native changes        | Immutable patches, exact current/applied heads and immutable decisions                              | Contract; output evidence has its own owner |
+| Browse and buyer view | Derived `contractDirectory` and permanent `buyerLinks.currentView`                                  | Contract                                    |
+| Discussions           | Shared contract threads/messages, interval claims, transient maps and exact unread/support indexes  | Contract                                    |
+| Operations            | Original-input/result `operationReceipts` and separately paged evidence sections                    | Seven-day replay; 24-hour collection grace  |
+| Outputs               | `contractOutputs` and proof chunks, Word attempts and Quote observations with full/compact variants | Evidence/holds, then company-lifetime facts |
+| Integrations          | Captured destinations, leases, dispatch and reconciliation                                          | Each protocol's retention                   |
+| Maintenance           | Bounded deletion, preparation and cleanup progress                                                  | Until owned work completes                  |
 
 The seller dashboard and both anonymous and authenticated buyer-link views display one current approved document. Pending alternatives appear only in focused reviews. The strict schema/client release requires classified target inventory, preservation conversion where populated and matching client retirement/reload. A concrete offline current-schema bundle preserves original history; older/unknown schemas require their own bounded plan. All G01–G25 remain UNVERIFIED; local preparation performs no target operation. See [release procedure](deployment.md#backend-ownership-conversion).
 
 ## People and company access
 
 `profiles` describe people and their authentication identity. `memberships` connect people to a company and own their Rep/Admin role. The indexed transactional join enforces at most one membership per profile. Ownership is independent: `company.ownerProfileId` identifies the owner, who may choose the Rep role. Missing ownership supports operator recovery; a missing template source means setup is incomplete.
+
+`buyerLinkBarShowings` remembers one presentation per membership and unlinked contract; `memberships.firstBuyerLinkHintShowing` remembers the dashboard's first-link hint. Contract deletion drains showing records through its bounded cleanup, and account/member removal queues a durable bounded drain before deleting the membership. Company deletion drains both showing records and pending membership drains before removing the company.
 
 `accounts.viewer` returns a profile, optional membership, optional company, and derived permissions. `requireMembership` returns an explicit access object with an actual profile and membership. The server derives identity, checks expected membership IDs, and rejects unavailable or deleting companies. Role is never an account-profile property in the canonical API.
 

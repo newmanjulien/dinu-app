@@ -1,5 +1,4 @@
 <script lang="ts">
-	import CsmIntroduction from './CsmIntroduction.svelte';
 	import CsmBookingSkeleton from './CsmBookingSkeleton.svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
@@ -61,14 +60,11 @@
 		}}
 		onClose={() => current && dialog.close(current)}
 	>
-		<div hidden={inProgress || (!!current && completed === current)}>
-			<CsmIntroduction message={content.message} />
-			{#if content.video && open && completed !== current}
-				{#key content.video.id}
-					<CsmSupportVideo video={content.video} />
-				{/key}
-			{/if}
-		</div>
+		{#if content.video && !inProgress && completed !== current}
+			{#key content.video.id}
+				<CsmSupportVideo video={content.video} />
+			{/key}
+		{/if}
 		{#if current && open}
 			{#key current}
 				{#if BookingBody && admitted === current}
@@ -91,7 +87,11 @@
 						>
 					</p>
 				{:else}
-					<CsmBookingSkeleton description={content.scheduling} initial={current.initial} />
+					<CsmBookingSkeleton
+						description={content.scheduling}
+						initial={current.initial}
+						flushTop={!content.video}
+					/>
 				{/if}
 			{/key}
 		{/if}

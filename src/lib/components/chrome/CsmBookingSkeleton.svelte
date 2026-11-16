@@ -3,11 +3,19 @@
 	import type { AvailabilitySelection } from './csm-availability';
 	import CsmBookingLayout from './CsmBookingLayout.svelte';
 	import CsmTimeListLayout from './CsmTimeListLayout.svelte';
-	let { description, initial }: { description: string; initial: AvailabilitySelection } = $props();
+	let {
+		description,
+		initial,
+		flushTop = false
+	}: {
+		description: string;
+		initial: AvailabilitySelection;
+		flushTop?: boolean;
+	} = $props();
 	const id = $props.id();
 </script>
 
-<CsmBookingLayout {description} headingId={id} loading>
+<CsmBookingLayout {description} {flushTop} headingId={id} loading>
 	<span role="status" class="sr-only">Loading available times</span>
 	<CsmTimeListLayout loading timeZoneId={id + '-zone'}>
 		<div class="space-y-1.5" aria-hidden="true">

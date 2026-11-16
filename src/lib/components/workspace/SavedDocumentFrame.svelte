@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
 	import type { ContractEditor } from '$lib/contract/editors.svelte';
+	import type { BuyerLinkBarVisit } from '$lib/buyer/bar-visit.svelte';
 	import type { useReadQuery } from '$lib/auth/read-query.svelte';
 	import type { api } from '../../../convex/_generated/api';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
@@ -23,6 +24,7 @@
 	import type { SavedRouteFrameState } from './saved-route-frame';
 	let {
 		editor,
+		buyerLinkVisit,
 		latestBuyerLink,
 		interactionAdmitted = true,
 		openingRevision,
@@ -32,6 +34,7 @@
 		onFrame
 	}: {
 		editor: ContractEditor;
+		buyerLinkVisit?: BuyerLinkBarVisit;
 		latestBuyerLink: ReturnType<typeof useReadQuery<typeof api.buyerLinks.latest>>;
 		interactionAdmitted?: boolean;
 		openingRevision?: unknown;
@@ -102,6 +105,7 @@
 {#if editor.persistence}
 	<RepWorkspace
 		{editor}
+		{buyerLinkVisit}
 		{latestBuyerLink}
 		{interactionAdmitted}
 		{openingRevision}

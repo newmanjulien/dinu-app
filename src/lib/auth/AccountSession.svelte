@@ -63,34 +63,6 @@
 					? workspaceViewer.templateReady
 					: undefined
 				: hints.templateReadyFor(hintUserId, hintSessionId);
-		},
-		get hasBuyerLinks() {
-			const membership = workspaceViewer?.membership;
-			if (session.closing || (workspaceViewer !== undefined && !membership)) return undefined;
-			return hints.buyerLinksFor(
-				hintUserId,
-				hintSessionId,
-				membership ? { membershipId: membership.id, companyId: membership.companyId } : undefined
-			);
-		},
-		rememberBuyerLinks(scope, present) {
-			const viewer = workspaceViewer;
-			const membership = viewer?.membership;
-			if (
-				session.closing ||
-				!viewer ||
-				!userId ||
-				!identity ||
-				membership?.id !== scope.membershipId ||
-				membership.companyId !== scope.companyId
-			)
-				return;
-			hints.rememberBuyerLinks(
-				userId,
-				identity,
-				{ ...scope, role: membership.role, templateReady: viewer.templateReady },
-				present
-			);
 		}
 	});
 	const preparation = useStartupPreparation();

@@ -8,6 +8,8 @@
 	let {
 		role,
 		showContent = true,
+		showFirstLinkHint = false,
+		onFirstLinkCardReady,
 		unreadCurrent = true,
 		emptyMessage,
 		links,
@@ -19,6 +21,8 @@
 	}: {
 		role: Role;
 		showContent?: boolean;
+		showFirstLinkHint?: boolean;
+		onFirstLinkCardReady?: () => void;
 		unreadCurrent?: boolean;
 		emptyMessage?: string;
 		links: FunctionReturnType<typeof api.buyerLinks.browse>['page'];
@@ -33,6 +37,8 @@
 <BuyerLinksLayout
 	{role}
 	{showContent}
+	{showFirstLinkHint}
+	{onFirstLinkCardReady}
 	{unreadCurrent}
 	{links}
 	{hasMore}

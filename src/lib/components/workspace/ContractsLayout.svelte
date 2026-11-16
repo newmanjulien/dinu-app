@@ -23,11 +23,7 @@
 		<h1 class="sr-only">Contracts</h1>
 		<div class="mb-6 flex items-center gap-2">
 			{#if toolbar}{@render toolbar()}{:else}
-				<SearchField
-					label="Search contracts and buyer links"
-					placeholder="Search by name of company"
-					disabled
-				/>
+				<SearchField label="Search contracts" placeholder="Search by name of company" disabled />
 				<Button disabled><PlusIcon class="size-[15px]" aria-hidden="true" />New contract</Button>
 			{/if}
 		</div>

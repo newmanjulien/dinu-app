@@ -2,6 +2,7 @@
 	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import type { Id } from '../../../convex/_generated/dataModel';
+	import type { BuyerLinkBarVisit } from '$lib/buyer/bar-visit.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { ReadAttempt } from '$lib/auth/attempt';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
@@ -17,12 +18,14 @@
 	import type { SavedRouteFrameState } from './saved-route-frame';
 	let {
 		id,
+		buyerLinkVisit,
 		interactionAdmitted = true,
 		onVisible,
 		onFailure,
 		onFrame
 	}: {
 		id: string;
+		buyerLinkVisit?: BuyerLinkBarVisit;
 		interactionAdmitted?: boolean;
 		onVisible?: () => void;
 		onFailure?: () => void;
@@ -144,6 +147,7 @@
 		<SavedDocumentFrame
 			openingRevision={opening?.token}
 			{editor}
+			{buyerLinkVisit}
 			{latestBuyerLink}
 			{interactionAdmitted}
 			{onFrame}

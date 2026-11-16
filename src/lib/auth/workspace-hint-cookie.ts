@@ -10,7 +10,6 @@ export type WorkspaceMembership = {
 export type WorkspaceScope = Pick<WorkspaceMembership, 'membershipId' | 'companyId'>;
 export type WorkspaceLayoutHints = WorkspaceMembership & {
 	templateReady?: boolean;
-	hasBuyerLinks?: boolean;
 	instructionsReady?: boolean;
 };
 export type WorkspaceHintSeed = {
@@ -34,7 +33,7 @@ export function workspaceLayoutHints(value: unknown): WorkspaceLayoutHints | und
 		!hintText(fields.membershipId, 256) ||
 		!hintText(fields.companyId, 256) ||
 		(fields.role !== 'admin' && fields.role !== 'rep') ||
-		['templateReady', 'hasBuyerLinks', 'instructionsReady'].some(
+		['templateReady', 'instructionsReady'].some(
 			(key) => fields[key] !== undefined && typeof fields[key] !== 'boolean'
 		)
 	)
@@ -44,7 +43,6 @@ export function workspaceLayoutHints(value: unknown): WorkspaceLayoutHints | und
 		companyId: fields.companyId as Id<'company'>,
 		role: fields.role,
 		templateReady: fields.templateReady as boolean | undefined,
-		hasBuyerLinks: fields.hasBuyerLinks as boolean | undefined,
 		instructionsReady: fields.instructionsReady as boolean | undefined
 	};
 }

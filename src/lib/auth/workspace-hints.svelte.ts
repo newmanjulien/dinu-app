@@ -7,7 +7,6 @@ import {
 	cancelWorkspaceHintWrites,
 	type WorkspaceMembership,
 	type WorkspaceHintState,
-	type WorkspaceScope,
 	type WorkspacePresentation
 } from './workspace-hints-storage';
 
@@ -50,27 +49,6 @@ export class WorkspaceHints {
 		return this.identity?.userId === userId && this.identity?.sessionId === sessionId
 			? (this.membership ?? undefined)
 			: undefined;
-	}
-
-	buyerLinksFor(
-		userId: string | undefined,
-		sessionId: string | undefined,
-		scope?: WorkspaceScope
-	): boolean | undefined {
-		if (
-			this.identity?.userId !== userId ||
-			this.identity?.sessionId !== sessionId ||
-			(scope && !this.matchesScope(scope))
-		)
-			return undefined;
-		return this.membership?.hasBuyerLinks;
-	}
-
-	private matchesScope(scope: WorkspaceScope) {
-		return (
-			this.membership?.membershipId === scope.membershipId &&
-			this.membership?.companyId === scope.companyId
-		);
 	}
 
 	private activate(userId: string, sessionId: string) {
@@ -133,24 +111,7 @@ export class WorkspaceHints {
 			return;
 		this.cancelReads();
 		this.confirmed = true;
-		const hasBuyerLinks =
-			membership && this.matchesScope(membership) ? this.membership?.hasBuyerLinks : undefined;
-		this.membership = membership ? { ...membership, hasBuyerLinks } : null;
-		rememberWorkspaceHints(userId, sessionId, this.membership);
-	}
-
-	rememberBuyerLinks(
-		userId: string,
-		sessionId: string,
-		membership: ConfirmedMembership,
-		present: boolean
-	) {
-		this.confirm(userId, sessionId, {
-			...(this.matchesScope(membership) ? this.membership : undefined),
-			...membership
-		});
-		if (!this.membership || this.membership.hasBuyerLinks === present) return;
-		this.membership = { ...this.membership, hasBuyerLinks: present };
+		this.membership = membership;
 		rememberWorkspaceHints(userId, sessionId, this.membership);
 	}
 
@@ -179,8 +140,6 @@ export interface WorkspaceHintContext {
 	readonly role: Role | undefined;
 	readonly presentation?: WorkspacePresentation;
 	readonly templateReady: boolean | undefined;
-	readonly hasBuyerLinks: boolean | undefined;
-	rememberBuyerLinks: (scope: WorkspaceScope, present: boolean) => void;
 }
 
 const key = Symbol('workspace-hints');
@@ -190,7 +149,5 @@ export const useWorkspaceHints = () =>
 	getContext<WorkspaceHintContext | undefined>(key) ?? {
 		role: undefined,
 		presentation: undefined,
-		templateReady: undefined,
-		hasBuyerLinks: undefined,
-		rememberBuyerLinks: () => {}
+		templateReady: undefined
 	};

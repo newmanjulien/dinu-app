@@ -10,6 +10,7 @@ import {
 	requirePermission
 } from './auth';
 import { revokeInvitation } from './companyInvitations';
+import { cleanupMembershipShowings } from './buyerLinkShowingCleanup';
 import { emailAddress } from './emailValidators';
 import { normalizedName } from './names';
 import { deleteUnownedFile } from './storageOwnership';
@@ -64,6 +65,7 @@ export const removeMember = mutation({
 				.unique();
 			if (invitation) await revokeInvitation(ctx, invitation);
 		}
+		await cleanupMembershipShowings(ctx, target._id, target.companyId);
 		await ctx.db.delete('memberships', target._id);
 		return null;
 	}
@@ -87,6 +89,7 @@ export const leave = mutation({
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		if (access.isOwner) throw new ConvexError('Transfer ownership to a colleague before leaving.');
+		await cleanupMembershipShowings(ctx, access.membershipId, access.companyId);
 		await ctx.db.delete('memberships', access.membershipId);
 		return null;
 	}
@@ -122,7 +125,10 @@ export const recoverOwner = internalMutation({
 			.unique();
 		if (!marker || marker.complete || marker.recoveryCompanyId !== company._id) return null;
 		const membership = await membershipForProfile(ctx, priorOwnerId);
-		if (membership?.companyId === company._id) await ctx.db.delete('memberships', membership._id);
+		if (membership?.companyId === company._id) {
+			await cleanupMembershipShowings(ctx, membership._id, membership.companyId);
+			await ctx.db.delete('memberships', membership._id);
+		}
 		const profile = await ctx.db.get('profiles', priorOwnerId);
 		if (profile) await ctx.db.delete('profiles', profile._id);
 		if (profile?.avatarId) await deleteUnownedFile(ctx, profile.avatarId);

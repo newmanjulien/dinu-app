@@ -20,9 +20,10 @@ and search indexes belong only to the directory.
 Both startup and live browsing use the same authorized reader. Blank browsing sorts
 by descending save time and original creation time; nonblank search uses Convex's
 company-filtered full-text index. Native pagination options and result split
-metadata pass through unchanged. Names and avatars resolve from current company
-membership, once per distinct creator per page; former colleagues retain the
-existing label.
+metadata pass through unchanged. Names and avatars resolve from live profiles,
+once per distinct creator per page. A creator's display name uses their trimmed
+name, then trimmed email, then the company name when no live profile is available
+or both profile fields are blank.
 
 Contract deletion removes its directory row immediately and leaves a durable
 company-scoped cleanup marker for decisions, deliveries and their snapshots.

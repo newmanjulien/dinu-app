@@ -152,6 +152,17 @@ export const clean = internalMutation({
 					ctx.db.query('buyerLinks').withIndex('by_contractId', (q) => q.eq('contractId', id))
 				)
 			)
+				phase = 'buyerLinkShowings';
+		}
+		if (phase === 'buyerLinkShowings') {
+			if (
+				await budget.drain(
+					'buyerLinkBarShowings',
+					ctx.db
+						.query('buyerLinkBarShowings')
+						.withIndex('by_contractId', (q) => q.eq('contractId', id))
+				)
+			)
 				phase = 'discussions';
 		}
 		if (phase === 'discussions') {
@@ -283,8 +294,18 @@ export const clean = internalMutation({
 					.withIndex('by_contractId', (q) => q.eq('contractId', id))
 			))
 		) {
-			await ctx.db.delete('contractCleanups', markerId);
-			return null;
+			// A marker already beyond the new showing phase must still release its rows.
+			if (
+				await budget.drain(
+					'buyerLinkBarShowings',
+					ctx.db
+						.query('buyerLinkBarShowings')
+						.withIndex('by_contractId', (q) => q.eq('contractId', id))
+				)
+			) {
+				await ctx.db.delete('contractCleanups', markerId);
+				return null;
+			}
 		}
 		await schedule(ctx, marker, phase, retryDelay);
 		return null;

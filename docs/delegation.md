@@ -14,8 +14,8 @@ The support dialog host only mounts for admins. All client booking APIs, includi
 availability and receipt/status reads, require admin access. Queued sends recheck the admin role before creating a provider booking.
 The instructional document Help walkthrough remains available to reps and buyers.
 
-During setup, the launcher, Julien’s introduction, temporary embedded video, and
-scheduling explanation differ by section. `supportSection` in `csm-support.ts`
+During setup, the launcher, temporary embedded video, and scheduling explanation
+differ by section. `supportSection` in `csm-support.ts`
 maps every unreleased route requiring a template (`/template`, `/template/buyers`,
 and `/contracts/new`) to upload help. After release, the template routes use
 template help and `/contracts/new` retains contract help. Videos show an
@@ -38,7 +38,7 @@ membership and rechecks all facts before recording optional
 sticky per membership across visits and devices; later deletions/disconnections
 do not restart setup. Existing eligible memberships are detected on their next
 workspace visit. Unknown or failed reads never count as completed. After completion,
-the prompt disappears and admins see a plain support message and calendar across
+the prompt disappears and admins see a support calendar across
 supported sections, without a video.
 
 Onboarding only navigates to the workspace. Initial setup renders Julien's

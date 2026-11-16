@@ -50,6 +50,7 @@
 		{owner}
 		{initial}
 		bind:inProgress
+		flushTop={!content.video}
 		description={content.scheduling}
 		onBooked={booked}
 	/>

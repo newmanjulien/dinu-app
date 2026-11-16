@@ -262,6 +262,7 @@ export default defineSchema({
 		companyId: v.id('company'),
 		// Retired copy milestone; setup now checks buyerLinks directly.
 		setupCompletedAt: v.optional(v.number()),
+		firstBuyerLinkHintShowing: v.optional(v.object({ visitId: v.string(), shownAt: v.number() })),
 		role
 	})
 		.index('by_profileId', ['profileId'])
@@ -438,6 +439,25 @@ export default defineSchema({
 		.index('by_token', ['token'])
 		.index('by_contractId', ['contractId'])
 		.index('by_companyId_and_creatorId', ['companyId', 'creatorId'])
+		.index('by_companyId', ['companyId']),
+	buyerLinkBarShowings: defineTable({
+		membershipId: v.id('memberships'),
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		visitId: v.string(),
+		shownAt: v.number()
+	})
+		.index('by_membershipId_and_contractId', ['membershipId', 'contractId'])
+		.index('by_membershipId', ['membershipId'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
+	buyerLinkShowingCleanups: defineTable({
+		membershipId: v.id('memberships'),
+		companyId: v.id('company'),
+		generation: v.number(),
+		jobId: v.optional(v.id('_scheduled_functions'))
+	})
+		.index('by_membershipId', ['membershipId'])
 		.index('by_companyId', ['companyId']),
 	buyerActivityOpenings: defineTable(activityOpening)
 		.index('by_contractId_and_openingId', ['contractId', 'openingId'])

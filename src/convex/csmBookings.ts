@@ -377,13 +377,7 @@ export const book = mutation({
 			await limiter.limit(ctx, 'book', { key: a.replacement.appointmentId, throws: true });
 		const identity = await verifiedIdentity(ctx);
 		const email = identity.email.trim().toLowerCase();
-		const name =
-			owner.profile.name.trim() ||
-			email
-				.split('@')[0]
-				.replace(/[._+-]+/g, ' ')
-				.trim() ||
-			'Guest';
+		const name = owner.profile.name.trim() || email;
 		const id = await ctx.db.insert('csmBookingAttempts', {
 			format: 2,
 			companyId: owner.companyId,

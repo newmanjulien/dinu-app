@@ -1,4 +1,5 @@
 import type { Id } from '../../../src/convex/_generated/dataModel';
+import { getFunctionName } from 'convex/server';
 import { mount, onDestroy, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { StartupHome } from '../../../src/lib/auth/startup-data';
@@ -15,6 +16,7 @@ import { navigating, page } from '../../support/navigation.svelte';
 const context = vi.hoisted(() => ({
 	query: undefined as unknown,
 	buyerQuery: undefined as unknown,
+	buyerPresence: undefined as unknown,
 	cache: undefined as unknown,
 	setup: undefined as unknown,
 	load: vi.fn(),
@@ -45,7 +47,8 @@ vi.mock('$lib/contract/snapshot-cache', async (importOriginal) => ({
 	getContractSnapshotCache: () => context.cache
 }));
 vi.mock('$lib/auth/read-query.svelte', () => ({
-	useReadQuery: () => context.setup
+	useReadQuery: (ref: Parameters<typeof getFunctionName>[0]) =>
+		getFunctionName(ref) === 'buyerLinks:dashboardPresence' ? context.buyerPresence : context.setup
 }));
 vi.mock(
 	'$lib/components/workspace/IntegrationCatalog.svelte',
@@ -107,6 +110,7 @@ async function fixture(
 		retained?: boolean;
 		owner?: boolean;
 		returning?: boolean;
+		buyerLinksAvailable?: boolean | null;
 	} = {}
 ) {
 	const state = csmState();
@@ -149,6 +153,15 @@ async function fixture(
 		error: undefined,
 		loadMore: vi.fn()
 	});
+	const buyerPresence = reactive({
+		data: {
+			hasActive: options.buyerLinksAvailable === undefined ? true : options.buyerLinksAvailable,
+			hasCreatedOneLink: false
+		},
+		error: undefined,
+		isLoading: false,
+		retry: vi.fn()
+	});
 	let resolveModule!: (value: typeof Contracts) => void;
 	let rejectModule!: (cause: Error) => void;
 	const module = new Promise<typeof Contracts>((resolve, reject) => {
@@ -159,6 +172,7 @@ async function fixture(
 	if (!options.deferModule) resolveModule(Contracts);
 	context.query = query;
 	context.buyerQuery = buyerQuery;
+	context.buyerPresence = buyerPresence;
 	context.cache = cache;
 	const startup: StartupHome = {
 		sessionId: 'session',
@@ -221,7 +235,17 @@ async function fixture(
 		}
 	});
 	await settle();
-	return { state, query, buyerQuery, card, cache, reads, resolveModule, rejectModule };
+	return {
+		state,
+		query,
+		buyerQuery,
+		buyerPresence,
+		card,
+		cache,
+		reads,
+		resolveModule,
+		rejectModule
+	};
 }
 
 it('shows a scoped startup card before the live contracts page arrives', async () => {
@@ -401,18 +425,27 @@ it('reveals saved contracts from a delayed directory read and searches them whil
 });
 
 it('shows retained rows together on return without the cold-entry staging', async () => {
-	const f = await fixture({}, { startup: false, retained: true, returning: true });
+	const f = await fixture(
+		{},
+		{ startup: false, retained: true, returning: true, buyerLinksAvailable: null }
+	);
 	expect(document.querySelector('#contracts-heading')).not.toBeNull();
 	expect(contractCard()).not.toBeNull();
 	expect(document.querySelector('#buyer-links-heading')).not.toBeNull();
 	expect(buyerLink()).not.toBeNull();
 	expect(f.query.status).toBe('LoadingFirstPage');
 	expect(f.buyerQuery.status).toBe('LoadingFirstPage');
+	expect(
+		context.arguments.filter((entry) => entry.kind === 10).map((entry) => entry.args)
+	).toContainEqual({
+		membershipId: 'member',
+		search: ''
+	});
 	expect(document.body.textContent).not.toContain('Still getting your contracts');
 });
 
 it('reveals a newly available buyer-link heading before its delayed row', async () => {
-	const f = await fixture({}, { startup: false });
+	const f = await fixture({}, { startup: false, buyerLinksAvailable: false });
 	await vi.advanceTimersByTimeAsync(80);
 	await settle();
 	expect(document.querySelector('#buyer-links-heading')).toBeNull();
@@ -427,6 +460,7 @@ it('reveals a newly available buyer-link heading before its delayed row', async 
 		}
 	];
 	f.buyerQuery.status = 'Exhausted';
+	f.buyerPresence.data = { hasActive: true, hasCreatedOneLink: false };
 	await settle();
 	expect(document.querySelector('#buyer-links-heading')).not.toBeNull();
 	expect(buyerLink()).toBeNull();

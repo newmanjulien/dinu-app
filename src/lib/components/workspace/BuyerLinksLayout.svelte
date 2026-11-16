@@ -7,10 +7,13 @@
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import QuestionIcon from 'phosphor-svelte/lib/QuestionIcon';
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
+	import Hint from '$lib/ui/Hint.svelte';
 
 	let {
 		role,
 		showContent = true,
+		showFirstLinkHint = false,
+		onFirstLinkCardReady,
 		unreadCurrent = true,
 		links = [],
 		emptyMessage,
@@ -23,6 +26,8 @@
 	}: {
 		role?: Role;
 		showContent?: boolean;
+		showFirstLinkHint?: boolean;
+		onFirstLinkCardReady?: () => void;
 		unreadCurrent?: boolean;
 		emptyMessage?: string;
 		activity?: Snippet<[Id<'savedContracts'>]>;
@@ -33,6 +38,9 @@
 		onShowMore?: () => void;
 		onRetry?: () => void;
 	} = $props();
+	$effect(() => {
+		if (showContent && links.length) onFirstLinkCardReady?.();
+	});
 </script>
 
 <section aria-labelledby="buyer-links-heading" class="min-w-0">
@@ -96,5 +104,6 @@
 				>
 			{/if}
 		</div>
+		{#if showFirstLinkHint}<Hint id="firstBuyerLink" class="mt-3" />{/if}
 	{/if}
 </section>

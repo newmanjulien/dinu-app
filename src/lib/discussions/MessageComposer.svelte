@@ -72,9 +72,9 @@
 	}
 </script>
 
-<div class="mb-2.5">
-	<MessageByline {author} {viewerKey} />
-</div>
+{#if author}<div class="mb-2.5">
+		<MessageByline {author} {viewerKey} />
+	</div>{/if}
 <TextArea
 	attachment={textareaAttachment}
 	class="min-h-0 resize-none overflow-y-hidden"

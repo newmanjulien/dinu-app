@@ -26,6 +26,7 @@
 		onBooked,
 		inProgress = $bindable(false),
 		admission = 'ready',
+		flushTop = false,
 		description = 'Choose a time that works for you.'
 	}: {
 		owner: CsmOwner;
@@ -33,6 +34,7 @@
 		onBooked: () => void;
 		inProgress?: boolean;
 		admission?: 'ready' | 'in-progress' | 'uncertain' | 'completed' | 'unavailable';
+		flushTop?: boolean;
 		description?: string;
 	} = $props();
 	const preload = useCsmPreload();
@@ -547,6 +549,7 @@
 	<CsmBookingLayout
 		description={blocked ? 'Confirming your call' : description}
 		headingId={id + '-heading'}
+		{flushTop}
 	>
 		{#snippet duration()}
 			{#if availability?.duration && !blocked}<span

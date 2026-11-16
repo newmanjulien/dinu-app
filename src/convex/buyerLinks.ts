@@ -135,6 +135,38 @@ export const latest = query({
 		return link?.currentView ? summary(link) : null;
 	}
 });
+export const dashboardPresence = query({
+	args: { membershipId: v.id('memberships') },
+	returns: v.object({
+		hasActive: v.union(v.boolean(), v.null()),
+		hasCreatedOneLink: v.boolean()
+	}),
+	handler: async (ctx, { membershipId }) => {
+		const access = await requireMembership(ctx, membershipId);
+		const [row, ownLinks] = await Promise.all([
+			ctx.db
+				.query('contractDirectory')
+				.withIndex('by_companyId_hasBuyerLink_hasUnreadComment_buyerLinkCreatedAt', (q) =>
+					q.eq('companyId', access.companyId).eq('hasBuyerLink', true)
+				)
+				.first(),
+			ctx.db
+				.query('buyerLinks')
+				.withIndex('by_companyId_and_creatorId', (q) =>
+					q.eq('companyId', access.companyId).eq('creatorId', access.profile._id)
+				)
+				.take(2)
+		]);
+		const hasCreatedOneLink = ownLinks.length === 1 && ownLinks[0].currentView !== null;
+		if (row) return { hasActive: true, hasCreatedOneLink };
+		// Missing flags cannot prove absence until every existing row has been backfilled.
+		const backfilled = await ctx.db
+			.query('buyerLinkBrowseBackfills')
+			.withIndex('by_key', (q) => q.eq('key', 'directory'))
+			.unique();
+		return { hasActive: backfilled ? false : null, hasCreatedOneLink };
+	}
+});
 export const browse = query({
 	args: {
 		membershipId: v.id('memberships'),

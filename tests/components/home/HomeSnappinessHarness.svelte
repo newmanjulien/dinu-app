@@ -9,7 +9,10 @@
 		setWorkspaceReadSnapshots,
 		type WorkspaceReadSnapshots
 	} from '../../../src/lib/auth/workspace-read-snapshots.svelte';
-	import { setContractsSearch } from '../../../src/lib/components/workspace/contracts-search.svelte';
+	import {
+		ContractsSearchSession,
+		setContractsSearch
+	} from '../../../src/lib/components/workspace/contracts-search.svelte';
 	let {
 		state,
 		startup,
@@ -26,13 +29,14 @@
 	untrack(() => {
 		if (reads) setWorkspaceReadSnapshots(reads);
 	});
-	const search = setContractsSearch();
+	const searchSession = new ContractsSearchSession();
+	const search = setContractsSearch(() => searchSession);
 	untrack(() => {
 		if (returning) search.visited = true;
 	});
 	$effect(() => {
-		const value = search.value.trim();
-		const timer = setTimeout(() => (search.query = value), 200);
+		const value = searchSession.value.trim();
+		const timer = setTimeout(() => (searchSession.query = value), 200);
 		return () => clearTimeout(timer);
 	});
 </script>

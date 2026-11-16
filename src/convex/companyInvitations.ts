@@ -11,11 +11,13 @@ import {
 } from './_generated/server';
 import {
 	availableCompany,
+	liveProfile,
 	membershipForProfile,
 	requireAccount,
 	requireCompany,
 	requirePermission
 } from './auth';
+import { sellerAuthorName } from './authorPresentation';
 import { activeDelivery, cancelJob, createDelivery } from './emailDeliveries';
 import { removeDelivery } from './emailDisposal';
 import { pendingInvitationDelivery } from './invitationDeliverySummary';
@@ -100,13 +102,13 @@ export const inbox = query({
 			invitations.map(async (i) => {
 				const [company, inviter] = await Promise.all([
 					availableCompany(ctx, i.companyId),
-					ctx.db.get('profiles', i.inviterProfileId)
+					liveProfile(ctx, i.inviterProfileId)
 				]);
 				return company
 					? {
 							id: i._id,
 							companyName: company.name,
-							inviterName: inviter?.name || 'A colleague'
+							inviterName: await sellerAuthorName(ctx, i.companyId, inviter)
 						}
 					: null;
 			})
@@ -266,7 +268,7 @@ export const prepareDelivery = internalMutation({
 			deliveryId,
 			email,
 			companyName: access.company.name,
-			inviterName: access.profile.name || access.profile.email
+			inviterName: await sellerAuthorName(ctx, access.companyId, access.profile)
 		};
 	}
 });

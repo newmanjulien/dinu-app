@@ -12,10 +12,14 @@
 	import ContractGrid from './ContractGrid.svelte';
 	import ContractsResultsLayout from './ContractsResultsLayout.svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 	import { orderBuyerLinks } from './buyer-link-order';
 
 	let {
 		search,
+		buyerLinksAvailable,
+		showFirstLinkHint = false,
+		onFirstLinkCardReady,
 		role,
 		firstVisit = false,
 		showHeadings = true,
@@ -25,6 +29,9 @@
 		onRetry
 	}: {
 		search: string;
+		buyerLinksAvailable: boolean | undefined;
+		showFirstLinkHint?: boolean;
+		onFirstLinkCardReady?: () => void;
 		role: Role;
 		firstVisit?: boolean;
 		showHeadings?: boolean;
@@ -59,7 +66,9 @@
 		);
 		return orderBuyerLinks(rows, !search.trim());
 	});
-	const showBuyerLinks = $derived(Boolean(buyerRows.length || search.trim()));
+	const showBuyerLinks = $derived(
+		buyerLinksAvailable === true || (buyerLinksAvailable === undefined && buyerRows.length > 0)
+	);
 	let gridWidth = $state(0);
 	let visibleRows = $state(4);
 	const columns = $derived(gridWidth >= 1000 ? 4 : gridWidth >= 600 ? 2 : 1);
@@ -124,9 +133,13 @@
 				{/if}
 			</div>
 		{:else}
-			{#if search.trim() || slowResults}<p class="py-2 text-xs text-ink-muted" role="status">
-					{search.trim() ? 'Searching contracts…' : 'Still getting your contracts…'}
-				</p>{/if}
+			{#if search.trim()}
+				<div class="flex min-h-40 items-center justify-center">
+					<LoadingWheel class="size-5" label="Loading contract results" />
+				</div>
+			{:else if slowResults}
+				<p class="py-2 text-xs text-ink-muted" role="status">Still getting your contracts…</p>
+			{/if}
 		{/if}
 	{/snippet}
 	{#snippet buyerLinksContent(showBuyerContent)}
@@ -134,6 +147,8 @@
 			{#if buyerRows.length}
 				<BuyerLinks
 					{role}
+					showFirstLinkHint={showFirstLinkHint && !search.trim()}
+					onFirstLinkCardReady={!search.trim() ? onFirstLinkCardReady : undefined}
 					showContent={showBuyerContent}
 					links={buyerRows.slice(0, visibleBuyerLinks)}
 					unreadCurrent={false}
@@ -146,6 +161,8 @@
 			{:else}
 				<BuyerLinks
 					{role}
+					showFirstLinkHint={showFirstLinkHint && !search.trim()}
+					onFirstLinkCardReady={!search.trim() ? onFirstLinkCardReady : undefined}
 					showContent={showBuyerContent}
 					links={[]}
 					emptyMessage={search.trim()

@@ -8,6 +8,7 @@
 	import { useAccountContext } from '$lib/auth/account-context.svelte';
 	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
 	import BuyerLinkBarAdmission from './BuyerLinkBarAdmission.svelte';
+	import type { BuyerLinkBarVisit } from '$lib/buyer/bar-visit.svelte';
 	import { ConvexError } from 'convex/values';
 	import { errorCode, workBlockMessage } from '$lib/contract/work-policy';
 	import HubSpotRelink from './HubSpotRelink.svelte';
@@ -50,6 +51,7 @@
 	import type { ViewerBindings } from '$lib/document/runtime/resources.svelte';
 	let {
 		editor: contractEditor,
+		buyerLinkVisit,
 		latestBuyerLink,
 		interactionAdmitted = true,
 		onVisible,
@@ -60,6 +62,7 @@
 		onChrome
 	}: {
 		editor: ContractEditor;
+		buyerLinkVisit?: BuyerLinkBarVisit;
 		latestBuyerLink: ReturnType<typeof useReadQuery<typeof api.buyerLinks.latest>>;
 		interactionAdmitted?: boolean;
 		onVisible?: () => void;
@@ -1159,6 +1162,7 @@
 
 <BuyerLinkBarAdmission
 	id={contractId}
+	visit={buyerLinkVisit}
 	latest={latestBuyerLink}
 	{workspace}
 	available={buyerLinkAvailable}

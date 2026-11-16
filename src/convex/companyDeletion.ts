@@ -48,6 +48,29 @@ async function cleanupCompanyContractState(
 	return true;
 }
 
+async function cleanupCompanyBuyerLinkShowings(
+	ctx: MutationCtx,
+	companyId: Doc<'company'>['_id'],
+	budget: ReturnType<typeof cleanupBudget>
+) {
+	if (
+		!(await budget.drain(
+			'buyerLinkBarShowings',
+			ctx.db
+				.query('buyerLinkBarShowings')
+				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+		))
+	)
+		return false;
+	return budget.drain(
+		'buyerLinkShowingCleanups',
+		ctx.db
+			.query('buyerLinkShowingCleanups')
+			.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+		{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+	);
+}
+
 async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>, delay = 0) {
 	const generation = marker.cleanupGeneration + 1;
 	const jobId = await ctx.scheduler.runAfter(delay, internal.companyDeletion.clean, {
@@ -292,6 +315,9 @@ export const clean = internalMutation({
 							.query('buyerLinks')
 							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 					);
+					break;
+				case 'buyerLinkShowings':
+					drained = await cleanupCompanyBuyerLinkShowings(ctx, companyId, budget);
 					break;
 				case 'discussions':
 					drained = await drain(
@@ -554,6 +580,10 @@ export const clean = internalMutation({
 						break;
 					}
 					if (!(await cleanupCompanyContractState(ctx, companyId, budget))) {
+						drained = false;
+						break;
+					}
+					if (!(await cleanupCompanyBuyerLinkShowings(ctx, companyId, budget))) {
 						drained = false;
 						break;
 					}

@@ -8,7 +8,6 @@
 	import type { SavedContractCard } from '$lib/contract/card';
 	import { afterStartupPaint, recordStartup } from '$lib/auth/startup-perf';
 	import { useStartupHome } from '$lib/auth/startup-data';
-	import { useWorkspaceHints } from '$lib/auth/workspace-hints.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { createVisibleContractWarming } from '$lib/contract/visible-contracts.svelte';
 	import { getContractSnapshotCache } from '$lib/contract/snapshot-cache';
@@ -18,6 +17,7 @@
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 	import ContractGrid from './ContractGrid.svelte';
 	import BuyerLinks from './BuyerLinks.svelte';
 	import { orderBuyerLinks } from './buyer-link-order';
@@ -28,12 +28,14 @@
 	const session = useViewerSession();
 	const viewer = useViewer();
 	const reads = useWorkspaceReadSnapshots();
-	const hints = useWorkspaceHints();
 	const hubspot = useHubSpotDeals();
 	let {
 		search,
 		query,
 		settled,
+		buyerLinksAvailable,
+		showFirstLinkHint = false,
+		onFirstLinkCardReady,
 		firstVisit = false,
 		showHeadings = true,
 		showContent = true,
@@ -44,6 +46,9 @@
 		search: string;
 		query: string;
 		settled: boolean;
+		buyerLinksAvailable: boolean | undefined;
+		showFirstLinkHint?: boolean;
+		onFirstLinkCardReady?: () => void;
 		firstVisit?: boolean;
 		showHeadings?: boolean;
 		showContent?: boolean;
@@ -51,7 +56,8 @@
 		onSearch: (value: string) => void;
 		ready?: boolean;
 	} = $props();
-	const viewState = useContractsSearch();
+	const contractsSearch = useContractsSearch();
+	const viewState = contractsSearch?.current;
 	let viewQuery = untrack(() => query);
 	if (viewState && viewState.viewQuery !== viewQuery) {
 		viewState.viewQuery = viewQuery;
@@ -75,7 +81,6 @@
 			hubspot.prefetch();
 	}
 	const membershipId = viewer().membership.id;
-	const companyId = viewer().company.id;
 	const startup = useStartupHome();
 	const warming = createVisibleContractWarming();
 	onDestroy(() => warming.destroy());
@@ -100,7 +105,9 @@
 		api.buyerLinks.browse,
 		() => {
 			void buyerLinksRevision;
-			return activeQuery === undefined ? 'skip' : { membershipId, search: activeQuery };
+			return activeQuery === undefined || buyerLinksAvailable === false
+				? 'skip'
+				: { membershipId, search: activeQuery };
 		},
 		{ initialNumItems: 10 }
 	);
@@ -196,16 +203,8 @@
 		return buyerLiveCurrent && search.trim() ? rows : orderBuyerLinks(rows, !search.trim());
 	});
 	const buyerCurrent = $derived(Boolean(localBuyerRows) || buyerLiveCurrent);
-	// Search results never establish whether the company has any links overall.
-	let companyHasBuyerLinks = $state<boolean>();
-	const hasBuyerLinks = $derived(
-		buyerRows.length > 0 ||
-			companyHasBuyerLinks === true ||
-			(companyHasBuyerLinks === undefined &&
-				(hints.hasBuyerLinks === true || Boolean(reads?.get('buyerLinks')?.rows.length)))
-	);
 	const showBuyerLinks = $derived(
-		Boolean(buyerRows.length || hasBuyerLinks || search.trim() || query)
+		buyerLinksAvailable === true || (buyerLinksAvailable === undefined && buyerRows.length > 0)
 	);
 	function showMoreBuyerLinks() {
 		visibleBuyerLinks += 3;
@@ -215,16 +214,6 @@
 		contractsPaged = true;
 		contracts.loadMore(24);
 	}
-	$effect(() => {
-		if (!buyerCurrent || activeQuery !== '' || buyerPage?.source !== 'live') return;
-		const present = buyerPage.rows.length > 0 ? true : !buyerPage.hasMore ? false : undefined;
-		if (present === undefined) return;
-		untrack(() => {
-			companyHasBuyerLinks = present;
-			if (!session.blocked && !session.closing)
-				hints.rememberBuyerLinks({ membershipId, companyId }, present);
-		});
-	});
 	const hasMoreBuyerLinks = $derived(
 		buyerRows.length > visibleBuyerLinks ||
 			(buyerLiveCurrent
@@ -571,7 +560,7 @@
 	{showContent}
 >
 	{#snippet notice()}
-		{#if buyerLinks.error && !showBuyerLinks}
+		{#if buyerLinksAvailable !== false && buyerLinks.error && !showBuyerLinks}
 			<p role="alert" class="mb-3 text-xs text-ink-muted">
 				We couldn’t load your buyer links. <button
 					class="cursor-pointer underline"
@@ -597,9 +586,13 @@
 					<Button variant="secondary" onclick={() => listRevision++} class="mt-4">Try again</Button>
 				</div>
 			{:else if list.waiting && list.cards.length === 0}
-				{#if list.query || slowResults}<p class="py-2 text-xs text-ink-muted" role="status">
-						{list.query ? 'Searching contracts…' : 'Still getting your contracts…'}
-					</p>{/if}
+				{#if list.query}
+					<div class="flex min-h-40 items-center justify-center">
+						<LoadingWheel class="size-5" label="Loading contract results" />
+					</div>
+				{:else if slowResults}
+					<p class="py-2 text-xs text-ink-muted" role="status">Still getting your contracts…</p>
+				{/if}
 			{:else if list.empty}
 				<div
 					class="rounded-base border-hairline border-edge bg-surface px-5 py-9 text-center text-[14px] shadow-card"
@@ -652,6 +645,8 @@
 		{#if showBuyerLinks}
 			<BuyerLinks
 				role={viewer().membership.role}
+				showFirstLinkHint={showFirstLinkHint && !search.trim()}
+				onFirstLinkCardReady={!search.trim() ? onFirstLinkCardReady : undefined}
 				showContent={showBuyerContent}
 				links={buyerRows.slice(0, visibleBuyerLinks)}
 				emptyMessage={buyerEmpty

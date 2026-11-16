@@ -50,12 +50,18 @@ membership. Storage failure leaves in-memory hints usable.
 boundary. Known unfinished templates use `TemplateSetupLayout`, including the
 calendar skeleton for admins; known ready templates use the document placeholder or
 the creation dialog with a plain preparation message. Role-specific navigation, Settings, Team, and Integrations skeletons and
-the Contracts buyer-link column use the same context. Presentational components
+the Contracts loading layout use the same context. Presentational components
 receive props and perform no storage access or fetching. Unknown roles never
 default to admin. A stale matching hint can briefly choose an outdated placeholder
 until live account data corrects it.
 
-`Contracts` records buyer-link presence from its company-wide live query: any returned row establishes presence, while only an error-free, exhausted empty result establishes absence. Loading, query failures, and empty intermediate pages do not clear the hint. `WorkspaceSkeleton` passes remembered presence into `ContractsSkeleton`; both it and the mounted Contracts page use the matching buyer-link skeleton while presence is known and rows are pending. The sidebar keeps its 450px desktop column and stacks below contracts on smaller screens. Unknown presence uses the common full-width grid, so a first visit without remembered data can still change layout when links arrive. Buyer-link loading never gates the contract list. Skeletons do not fetch or read storage.
+The mounted Contracts page reads buyer-link presence from Convex. A flagged directory
+row confirms presence; after the directory backfill completes, no flagged row
+confirms absence. Until then, the result remains unknown and buyer-link browsing
+continues so older links remain visible. The buyer-link column appears for confirmed
+presence or rows found while presence is unknown. The sidebar keeps its 450px
+desktop column and stacks below contracts on smaller screens. Buyer-link loading
+never gates the contract list. Skeletons do not fetch or read storage.
 
 `WorkspaceBoundary` requires a live profile, membership, and company. `WorkspaceScope` is keyed by profile and membership and supplies viewer context plus the contract editing sessions that survive route changes. Each workspace captures its own cache instance, cancels its pending reads, and destroys its document resources on teardown; an old workspace cannot cancel a replacement's cache. Membership loss clears the previous membership's draft journal and removes the workspace. Role changes preserve its identity and mounted drafts.
 

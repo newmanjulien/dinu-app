@@ -72,8 +72,9 @@ pending invitations for the removed colleague's email in the same transaction.
 
 Contracts, immutable snapshots, receipts, and approval history belong to the
 company and survive a colleague leaving or deleting only their account. Creator IDs
-retain historical attribution. A creator who no longer has a live membership in
-that company is displayed as a former colleague without exposing their profile.
+retain historical attribution. A creator with a live profile is displayed by their
+name or email, even after leaving the company; without a live profile, the company
+name is displayed.
 Signed deletion markers immediately block the deleted identity. Cleanup normally removes
 its membership, profile, and personal avatar, preserving company business data;
 sole-owner recovery retains those records until ownership is resolved.

@@ -1,11 +1,13 @@
 type HintDefinition = {
 	text: string;
-	visitLimit?: number;
 };
 
 export const hints = {
 	contractsIntro: {
 		text: 'Create and manage buyer contracts using your company’s template and instructions.'
+	},
+	firstBuyerLink: {
+		text: 'Buyer links appear here. Open one to preview the buyer’s view, or copy it from the contract to share it.'
 	},
 	concessionAutoApproved: {
 		text: 'This option applies immediately to the current contract.'
@@ -19,8 +21,3 @@ export const hints = {
 } satisfies Record<string, HintDefinition>;
 
 export type HintId = keyof typeof hints;
-
-export function hintVisitLimit(id: HintId): number | undefined {
-	const hint: HintDefinition = hints[id];
-	return hint.visitLimit;
-}

@@ -1,12 +1,21 @@
 # Contract and buyer-link search
 
-The workspace search bar sends the same debounced company/contract name to the
-contracts and buyer-links queries. Both search `contractDirectory.title` through
-`search_title`, filtered by the authenticated membership's `companyId`. Buyer-link
-search filters `hasBuyerLink: true` after the directory backfill, then checks
-each link's live published pointer and company before returning its token. Before
-the backfill completes, search checks all matching directory rows for a live link.
-Each column has its own cursor.
+The workspace search bar sends the debounced company/contract name to the
+contracts query. A separate live presence query checks the first directory row
+with `hasBuyerLink: true` for the authenticated company. Buyer-link browsing and
+search run while presence is unknown, including during the directory backfill.
+The buyer-link column appears when presence is confirmed or when an unknown
+presence has actual or cached rows. A confirmed absence skips buyer-link browsing
+and hides the column. The search label reflects whether buyer-link browsing can
+run. Before the directory backfill completes, an empty presence lookup remains
+unknown: it cannot prove that no older links exist. If the presence read fails,
+buyer-link browsing continues while the presence result remains unknown.
+Both searches use `contractDirectory.title` through `search_title`, filtered by
+the authenticated membership's `companyId`. Buyer-link search filters
+`hasBuyerLink: true` after the directory backfill, then checks each link's live
+published pointer and company before returning its token. Before the backfill
+completes, search checks all matching directory rows for a live link. Each
+column has its own cursor.
 Blank contract browsing uses `by_companyId_and_savedAt_and_createdAt` descending;
 blank link browsing puts unread comments first, then orders by link creation time.
 Until the backfill completes, blank link browsing uses the existing newest-first
@@ -18,10 +27,12 @@ Contract saves and renames preserve it. Logical deletion revokes the pointer and
 removes the whole directory entry atomically, including retries with an owned
 cleanup marker. Publishing a link does not change contract order.
 
-Only unfiltered first pages are saved as default-list snapshots. Search results
-cannot overwrite those snapshots or company-wide link-presence hints. Changing the
-term resets link pagination and visible rows. Empty results are definitive only
-when the current query has exhausted all pages, including empty intermediate pages.
+Only unfiltered first pages are saved as default-list snapshots. Cached rows can
+keep the column visible while presence is unknown; they do not override a
+confirmed absence. Changing the term resets link pagination and visible
+rows. Leaving the contracts route clears the search. Empty results are definitive
+only when the current query has exhausted all pages, including empty intermediate
+pages.
 
 ## Rollout
 
@@ -58,8 +69,13 @@ These deployment/backfill steps are operational work; local builds do not run th
   the buyer-link empty message. Unfiltered browsing must still show other links.
 - Rename a contract, create its first link, and delete it; verify reactive results.
 - Verify another company's contracts and buyer links never appear.
-- During the backfill, verify an older link still appears. After its final page,
+- During the backfill, verify older links remain browseable even before a flagged
+  row confirms presence. After its final page,
   verify unread links move above read links, including across pagination pages.
+- With no published links, verify typing searches contracts only and no buyer-link
+  column appears. When the first link is published, verify the column and search
+  label update; deleting the last linked contract should hide them again.
+- Search, navigate away, and return to contracts; verify the search is cleared.
 
 `npm run test:perf` checks the existing saving, scheduling, caching, and startup
 work guarantees. Type checks and the production build check integration. These do

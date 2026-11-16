@@ -13,7 +13,7 @@
 		use:focusPlayer
 		src={`${supportVideoOrigin}/embed/${encodeURIComponent(video.id)}?autoplay=1&rel=0&playsinline=1`}
 		title={video.title}
-		class="mt-5 block aspect-video w-full rounded-2xl border-hairline border-line bg-canvas"
+		class="block aspect-video w-full rounded-2xl border-hairline border-line bg-canvas"
 		allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
 		allowfullscreen
 		referrerpolicy="strict-origin-when-cross-origin"
@@ -22,7 +22,7 @@
 	<button
 		type="button"
 		aria-label={`Play ${video.title}`}
-		class="group relative mt-5 block aspect-video w-full cursor-pointer overflow-hidden rounded-2xl border-hairline border-line bg-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+		class="group relative block aspect-video w-full cursor-pointer overflow-hidden rounded-2xl border-hairline border-line bg-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
 		onclick={() => (playing = true)}
 	>
 		<img

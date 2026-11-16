@@ -5,6 +5,7 @@ import { settle } from '../../support/svelte';
 import Harness from './BuyerLinkBarAdmissionHarness.svelte';
 
 vi.mock('$lib/buyer/BuyerLinkBar.svelte', () => import('./BuyerLinkBarProbe.svelte'));
+vi.mock('convex-svelte', () => ({ useConvexClient: () => ({}) }));
 
 let component: ReturnType<typeof mount> | undefined;
 afterEach(async () => {
@@ -26,7 +27,8 @@ it('shows a warm saved footer in the first settled render when both dependencies
 			isLoading: false
 		},
 		available: true,
-		interactionAdmitted: true
+		interactionAdmitted: true,
+		visitShown: false
 	});
 	state.workspace.viewer.firstPagesReady = { source: state.workspace.source.renderSource };
 	component = mount(Harness, { target: document.body, props: { state } });
@@ -46,7 +48,8 @@ it('admits the saved footer after matching first pages and a resolved link, then
 			isLoading: true
 		},
 		available: true,
-		interactionAdmitted: true
+		interactionAdmitted: true,
+		visitShown: false
 	});
 	component = mount(Harness, {
 		target: document.body,
@@ -90,7 +93,8 @@ it('withholds the footer when link availability is unknown, then admits an actio
 		},
 		latest: { data: undefined, error: undefined as Error | undefined, isLoading: true },
 		available: true,
-		interactionAdmitted: true
+		interactionAdmitted: true,
+		visitShown: false
 	});
 	state.workspace.viewer.firstPagesReady = { source: state.workspace.source.renderSource };
 	component = mount(Harness, { target: document.body, props: { state } });

@@ -1,4 +1,5 @@
 import { cancelPreparationJobs } from './csmMeetingPreparation';
+import { cleanupMembershipShowings } from './buyerLinkShowingCleanup';
 import { cancelJob } from './emailDeliveries';
 import { cancelAppointmentJobs } from './csmSetupAppointments';
 import { clearSetupAppointment } from './csmSetupState';
@@ -449,7 +450,10 @@ export const clean = internalMutation({
 			}
 			await ctx.db.patch('company', owned._id, { ownerProfileId: successor?.profileId });
 		}
-		if (membership) await ctx.db.delete('memberships', membership._id);
+		if (membership) {
+			await cleanupMembershipShowings(ctx, membership._id, membership.companyId);
+			await ctx.db.delete('memberships', membership._id);
+		}
 		// Recheck after succession/other cleanup: earlier phases may have admitted
 		// children before the deleted-user fence became visible to their callbacks.
 		if (!(await retireAccountOperations(ctx, profileId, budget))) {

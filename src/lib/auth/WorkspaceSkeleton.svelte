@@ -43,9 +43,10 @@
 	const hints = useWorkspaceHints();
 	const account = useAccount();
 	const contractsSearch = useContractsSearch();
+	const searchState = $derived(contractsSearch?.current);
 	let searchInput = $state<HTMLInputElement | null>();
 	onDestroy(() => {
-		if (searchInput) contractsSearch?.rememberFocus(searchInput);
+		if (searchInput) searchState?.rememberFocus(searchInput);
 	});
 	const viewer = $derived(account?.());
 	const presentation = $derived(
@@ -120,19 +121,16 @@
 {:else if route.presentation === 'contracts'}
 	<ContractsLayout {role}>
 		{#snippet toolbar()}
-			{#if contractsSearch}
+			{#if searchState}
 				<SearchField
 					bind:element={searchInput}
-					label="Search contracts and buyer links"
+					label="Search contracts"
 					placeholder="Search by name of company"
 					maxlength={200}
-					bind:value={contractsSearch.value}
+					bind:value={searchState.value}
 				/>
 			{:else}
-				<SearchField
-					label="Search contracts and buyer links"
-					placeholder="Search by name of company"
-				/>
+				<SearchField label="Search contracts" placeholder="Search by name of company" />
 			{/if}
 			<Button disabled><PlusIcon class="size-[15px]" aria-hidden="true" />New contract</Button>
 		{/snippet}

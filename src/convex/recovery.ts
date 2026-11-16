@@ -29,6 +29,11 @@ export const resume = internalMutation({
 				args: {}
 			},
 			{
+				rows: ctx.db.query('buyerLinkShowingCleanups').withIndex('by_creation_time'),
+				fn: internal.buyerLinkShowingCleanup.resume,
+				args: {}
+			},
+			{
 				rows: ctx.db
 					.query('emailDeliveries')
 					.withIndex('by_disposal_generation', (q) => q.gte('disposal.generation', 1)),

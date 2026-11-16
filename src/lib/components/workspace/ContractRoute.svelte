@@ -9,6 +9,7 @@
 	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { page } from '$app/state';
 	import type { Id } from '../../../convex/_generated/dataModel';
+	import { BuyerLinkBarVisit } from '$lib/buyer/bar-visit.svelte';
 	import type { ContractDestination } from '$lib/contract/saved';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { useConvexClient } from 'convex-svelte';
@@ -64,6 +65,11 @@
 		identity: string;
 		help: HelpSession;
 	}>();
+	let buyerLinkVisit = $state.raw<{
+		destination: string;
+		identity: string;
+		visit: BuyerLinkBarVisit;
+	}>();
 	const helpIdentity = $derived.by(() => {
 		const account = accountViewer();
 		return JSON.stringify([
@@ -79,6 +85,17 @@
 		const destination = data.kind === 'saved' ? data.id : undefined;
 		const identity = helpIdentity;
 		untrack(() => {
+			if (buyerLinkVisit?.destination !== destination || buyerLinkVisit?.identity !== identity)
+				buyerLinkVisit = destination
+					? {
+							destination,
+							identity,
+							visit: new BuyerLinkBarVisit(
+								destination as Id<'savedContracts'>,
+								accountViewer().membership.id
+							)
+						}
+					: undefined;
 			if (helpOpening?.destination === destination && helpOpening?.identity === identity) return;
 			helpOpening?.help.destroy();
 			helpOpening = destination
@@ -90,6 +107,13 @@
 				});
 		});
 	});
+	const currentBuyerLinkVisit = $derived(
+		data.kind === 'saved' &&
+			buyerLinkVisit?.destination === data.id &&
+			buyerLinkVisit.identity === helpIdentity
+			? buyerLinkVisit.visit
+			: undefined
+	);
 	$effect(() => {
 		const opening = helpOpening;
 		const account = accountViewer();
@@ -328,6 +352,7 @@
 					{:else if SavedContract}{#key data.id}
 							<SavedContract
 								id={data.id}
+								buyerLinkVisit={currentBuyerLinkVisit}
 								interactionAdmitted={!creating}
 								onVisible={() => creationPhase('displayed')}
 								onFailure={() => {
