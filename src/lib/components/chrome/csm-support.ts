@@ -35,31 +35,31 @@ const generic: SupportContent = {
 // Temporary Blender open movies. Replace these IDs with the section walkthroughs when ready.
 const setup: Record<SupportSection, SupportContent> = {
 	contracts: {
-		headline: ['Get contracts', 'ready'],
-		action: 'Contract help',
+		headline: ['Contracts', 'guide'],
+		action: 'Get support',
 		scheduling:
-			'Let’s create a contract together, review your team’s workflow, or let me help get a contract ready to send.',
+			"Do you need help sending or managing your contracts? Book a call with our team and we'll be glad to help.",
 		video: { id: 'YE7VzlLtp-4', title: 'Big Buck Bunny', poster: placeholderPoster }
 	},
 	template: {
-		headline: ['Create your', 'template'],
-		action: 'Template help',
+		headline: ['Templates', 'guide'],
+		action: 'Get support',
 		scheduling:
-			'Let’s turn your negotiation rules into clear instructions. I can guide you through the editor or help configure the template for your team.',
+			"Do you need help sending or managing your contracts? Book a call with our team and we'll be glad to help.",
 		video: { id: 'Z4C82eyhwgU', title: 'Caminandes: Gran Dillama', poster: placeholderPoster }
 	},
 	integrations: {
-		headline: ['Connect your', 'tools'],
-		action: 'Connect tools',
+		headline: ['Integrations', 'guide'],
+		action: 'Get support',
 		scheduling:
-			'We can choose the right integration, connect your account together, or check that your contract workflow is working as expected.',
+			"Do you have questions about integrations? Or do you need help connecting your tools? Book a call with our team and we'll be glad to help.",
 		video: { id: 'SkVqJ1SGeL0', title: 'Caminandes 3: Llamigos', poster: placeholderPoster }
 	},
 	upload: {
-		headline: ['Let’s get', 'started'],
-		action: 'Upload help',
+		headline: ['Your first', 'step'],
+		action: 'Let us help',
 		scheduling:
-			'Bring your Word contract and we’ll get your template ready. I can guide you through uploading it or help with the preparation and setup.',
+			"The last step to get you up and running is to set up your company's contract template. Book a call with our team and we'll take care of everything.",
 		video: { id: 'WhWc3b3KhnY', title: 'Spring', poster: placeholderPoster }
 	}
 };

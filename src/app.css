@@ -37,8 +37,8 @@
 	--color-accent-hover: #3278d6;
 	--color-accent-soft: color-mix(in srgb, var(--color-accent) 20%, white);
 	--color-success: #078647;
-	--color-danger: #d92525;
-	--color-danger-hover: #bc2020;
+	--color-danger: #c92e2e;
+	--color-danger-hover: #ad2828;
 	--color-danger-surface: #fff5f5;
 	--color-danger-surface-hover: #fff1f1;
 

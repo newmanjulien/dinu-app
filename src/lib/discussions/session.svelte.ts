@@ -104,6 +104,12 @@ export class DiscussionSession {
 	private operationAuthor = $state.raw<{ key: string; account: boolean }>();
 	readonly reads = new DiscussionReads();
 	readonly feed: LiveDiscussionPages<DiscussionThread>;
+	private get actorPrivateAccess() {
+		return this.actorTransport?.()?.privateAccess ?? this.privateAccess;
+	}
+	private get actorClient() {
+		return this.actorTransport?.()?.client ?? this.client;
+	}
 	private retention = new DiscussionRetention();
 	private recent = $state.raw<DiscussionThread[]>([]);
 	readonly provisionalPosts = new SvelteMap<string, ProvisionalPost>();
@@ -188,7 +194,11 @@ export class DiscussionSession {
 		);
 	}
 	displayReplies(threadId: Id<'discussionThreads'>, rows: Message[]) {
-		return this.displayPosts(rows, this.provisionalReplies(threadId), (message) => message);
+		return this.displayPosts(
+			rows,
+			this.readOnly ? [] : this.provisionalReplies(threadId),
+			(message) => message
+		);
 	}
 	reconcileProvisionalReplies(threadId: Id<'discussionThreads'>, rows: Message[]) {
 		for (const post of this.provisionalReplies(threadId)) {
@@ -561,7 +571,7 @@ export class DiscussionSession {
 	private viewerIdentity = $state.raw<DiscussionAuthor>();
 	private viewerAccount = false;
 	get account() {
-		return Boolean(this.privateAccess || this.viewerAccount);
+		return Boolean(this.actorPrivateAccess || this.viewerAccount);
 	}
 	get viewer() {
 		const viewer = this.viewerIdentity;
@@ -622,7 +632,6 @@ export class DiscussionSession {
 		// Detach the consumer, never the owner of an already-dispatched cookie request.
 		this.attempt?.abort();
 		this.attempt = undefined;
-		for (const stop of this.receipts.values()) stop();
 		this.closeEditors();
 		if (this.selectedThread === 'composer') this.selected = null;
 		if (!this.readOnly && this.active && !this.viewer) void this.loadBuyerViewer();
@@ -968,7 +977,8 @@ export class DiscussionSession {
 		}),
 		readonly buyerName: () => string | null = () => null,
 		readonly privateAccess?: { membershipId: Id<'memberships'>; id: Id<'savedContracts'> },
-		readonly recovery?: DiscussionRecovery
+		readonly recovery?: DiscussionRecovery,
+		readonly perspective: () => 'buyer' | 'seller' = () => 'buyer'
 	) {
 		this.feed = new LiveDiscussionPages(
 			(receive, fail) =>

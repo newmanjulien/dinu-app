@@ -14,10 +14,12 @@
 	import DotsThreeIcon from 'phosphor-svelte/lib/DotsThreeIcon';
 	import { observeVisibleMessage } from './visible-message';
 	import { composerBoundary } from './focus-composer';
+	import type { DeleteConfirmationState } from './delete-confirmation.svelte';
 	let {
 		message,
 		threadId,
 		session,
+		deletion,
 		onActivate,
 		onEdit,
 		canRead,
@@ -26,6 +28,7 @@
 		message: Infer<typeof discussionMessage>;
 		threadId: Id<'discussionThreads'>;
 		session: DiscussionSession;
+		deletion: DeleteConfirmationState;
 		onActivate: (trigger: HTMLButtonElement) => void;
 		onEdit: () => void;
 		canRead: boolean;
@@ -46,9 +49,16 @@
 	let menuOpen = $state(false),
 		trigger = $state<HTMLButtonElement>(),
 		textElement = $state<HTMLParagraphElement>(),
-		confirmationPanel = $state<HTMLDivElement>(),
-		deletionRequest = $state<{ revision: number; error: string | null } | null>(null);
+		confirmationPanel = $state<HTMLDivElement>();
+	const deletionRequest = $derived.by(() => {
+		const current = deletion.current;
+		return current?.messageId === message.id && !current.abandoned ? current : null;
+	});
 	const confirmationId = $props.id();
+	$effect(() => {
+		const messageId = message.id;
+		return () => deletion.clearMessage(messageId);
+	});
 	$effect(() => {
 		const element = textElement,
 			identity = session.reads.identity;
@@ -72,8 +82,12 @@
 		!session.readOnly && Boolean(session.viewerKey) && session.viewerKey === message.author.key
 	);
 	$effect(() => {
-		if (deletionRequest && (message.deleted || message.revision !== deletionRequest.revision || !own))
-			deletionRequest = null;
+		if (
+			deletionRequest &&
+			!deletionRequest.busy &&
+			(message.deleted || message.revision !== deletionRequest.revision || !own)
+		)
+			deletion.cancel(deletionRequest.token);
 	});
 	function edit() {
 		if (session.readOnly || composer?.busy || pendingSource) return;
@@ -114,40 +128,45 @@
 	}
 	function requestDelete() {
 		if (!own || message.deleted || composer?.busy || pendingSource) return;
+		const token = deletion.open(message.id, message.revision);
+		if (token === null) return;
 		menuOpen = false;
-		deletionRequest = { revision: message.revision, error: null };
-		void tick().then(() => confirmationPanel?.querySelector('button')?.focus({ preventScroll: true }));
+		void tick().then(() => {
+			if (deletion.current?.token === token)
+				confirmationPanel?.querySelector('button')?.focus({ preventScroll: true });
+		});
 	}
 	function cancelDelete() {
-		if (composer?.busy) return;
-		deletionRequest = null;
+		const request = deletionRequest;
+		if (!request || composer?.busy || !deletion.cancel(request.token)) return;
 		void tick().then(() => {
-			if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+			if (!deletion.current && trigger?.isConnected) trigger.focus({ preventScroll: true });
 		});
 	}
 	async function confirmDelete() {
 		const request = deletionRequest;
-		if (!request || composer?.busy || pendingSource) return;
+		if (!request || request.busy || composer?.busy || pendingSource) return;
 		if (!own || message.deleted || message.revision !== request.revision) {
-			deletionRequest = { ...request, error: 'This message changed. Close and try again.' };
+			deletion.cancel(request.token);
 			return;
 		}
-		const deletion = session.deleteMessage(message, threadId, reply);
+		if (!deletion.start(request.token)) return;
+		const deletionResult = session.deleteMessage(message, threadId, reply);
 		await tick();
-		if (deletionRequest === request && composer?.busy && confirmationPanel?.isConnected)
+		if (deletion.current?.token === request.token && confirmationPanel?.isConnected)
 			confirmationPanel.focus({ preventScroll: true });
-		const error = await deletion;
-		if (deletionRequest !== request) return;
+		const error = await deletionResult;
+		if (deletion.current?.token !== request.token) return;
+		deletion.finish(request.token, error);
 		if (error) {
-			deletionRequest = { ...request, error };
 			await tick();
-			confirmationPanel
-				?.querySelector<HTMLButtonElement>('button:not(:disabled)')
-				?.focus({ preventScroll: true });
+			if (deletion.current?.token === request.token)
+				confirmationPanel
+					?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+					?.focus({ preventScroll: true });
 		} else {
-			deletionRequest = null;
 			await tick();
-			if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+			if (!deletion.current && trigger?.isConnected) trigger.focus({ preventScroll: true });
 		}
 	}
 </script>
@@ -160,11 +179,7 @@
 	]}
 >
 	{#if canRead && session.active && session.feed.authorized && session.feed.firstPageAccepted && !session.readOnly && session.selected === threadId && session.editingMessage === message.id && composer && !deletionRequest}
-		<div
-			use:composerBoundary={closeEdit}
-			data-discussion-composer
-			class="p-3.5"
-		>
+		<div use:composerBoundary={closeEdit} data-discussion-composer class="p-3.5">
 			<MessageComposer
 				allowDeletion={!reply &&
 					session.threads.some((t) => t.type === 'proposal' && t.root.id === message.id)}
@@ -172,6 +187,7 @@
 				text={composer.text}
 				author={session.viewer}
 				viewerKey={session.viewer?.key}
+				perspective={session.perspective()}
 				title="Edit message"
 				placeholder="Write a message…"
 				submitLabel="Save"
@@ -196,7 +212,11 @@
 			onclick={(event) => onActivate(event.currentTarget)}
 		>
 			<span class="sr-only">{session.readOnly ? 'Read discussion. ' : 'Show reply field. '}</span
-			><MessageByline author={message.author} viewerKey={session.viewerKey} />
+			><MessageByline
+				author={message.author}
+				viewerKey={session.viewerKey}
+				perspective={session.perspective()}
+			/>
 			<p
 				bind:this={textElement}
 				class="mt-2.5 mb-0 whitespace-pre-wrap text-ink-secondary [overflow-wrap:anywhere]"
@@ -208,9 +228,7 @@
 			<SquareIconButton
 				bind:element={trigger}
 				type="button"
-				class={`absolute top-2 right-2 size-[25px] text-ink-muted ${reply
-					? 'opacity-100'
-					: 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 max-md:opacity-100'}`}
+				class="absolute top-2 right-2 size-[25px] text-ink-muted opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100 max-md:opacity-100"
 				aria-label={reply ? 'Reply actions' : 'Message actions'}
 				aria-haspopup="menu"
 				aria-expanded={menuOpen}
@@ -230,7 +248,7 @@
 							edit();
 						}}>Edit</MenuItem
 					><MenuItem
-						disabled={Boolean(composer?.busy || pendingSource)}
+						disabled={Boolean(composer?.busy || pendingSource || deletion.current?.busy)}
 						danger
 						onclick={() => {
 							close();
@@ -247,10 +265,9 @@
 			role="alertdialog"
 			tabindex="-1"
 			aria-labelledby={`${confirmationId}-title`}
-			aria-describedby={`${confirmationId}-description`}
 			class={[
-				'absolute inset-0 z-20 flex flex-col justify-center gap-2.5 p-3.5 text-surface',
-				reply ? 'rounded-[inherit] bg-ink/90' : 'items-center rounded-base bg-ink/80 text-center'
+				'absolute inset-0 z-20 flex flex-col justify-center gap-2.5 bg-danger-surface p-3.5 text-ink',
+				reply ? 'rounded-[inherit]' : 'items-center rounded-base text-center'
 			]}
 			onkeydown={(event) => {
 				if (event.key === 'Escape') {
@@ -279,28 +296,25 @@
 			}}
 		>
 			<div>
-				<p id={`${confirmationId}-title`} class="m-0 text-sm font-medium">
+				<p id={`${confirmationId}-title`} class="m-0 text-[13px] font-normal">
 					{reply ? 'Delete this reply?' : 'Delete this thread?'}
 				</p>
-				<p id={`${confirmationId}-description`} class="mt-0.5 mb-0 text-xs text-surface/85">
-					{reply
-						? 'Only this reply will be removed.'
-						: 'This removes the entire thread and its document highlight.'}
-				</p>
 			</div>
-			<div class="flex flex-wrap gap-2" aria-busy={Boolean(composer?.busy)}>
+			<div class="flex flex-wrap gap-2" aria-busy={deletionRequest.busy}>
 				<Button
-					disabled={Boolean(composer?.busy || pendingSource)}
+					disabled={Boolean(deletionRequest.busy || composer?.busy || pendingSource)}
 					class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
 					onclick={() => void confirmDelete()}
-				>{composer?.busy ? 'Deleting…' : 'Delete'}</Button
+					>{deletionRequest.busy ? 'Deleting…' : 'Delete'}</Button
 				>
-				<Button variant="secondary" disabled={Boolean(composer?.busy)} onclick={cancelDelete}
-					>Cancel</Button
+				<Button
+					variant="secondary"
+					disabled={Boolean(deletionRequest.busy || composer?.busy)}
+					onclick={cancelDelete}>Cancel</Button
 				>
 			</div>
 			{#if deletionRequest.error}
-				<p role="alert" class="m-0 text-xs text-surface">{deletionRequest.error}</p>
+				<p role="alert" class="m-0 text-xs text-danger">{deletionRequest.error}</p>
 			{/if}
 		</div>
 	{/if}

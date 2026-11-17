@@ -34,6 +34,10 @@
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
 	import RepPlaybookPanel from '$lib/components/playbook/RepPlaybookPanel.svelte';
+	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
+	import DocumentPanelBody from '$lib/components/document/DocumentPanelBody.svelte';
+	import Hint from '$lib/ui/Hint.svelte';
+	import type { HintId } from '$lib/ui/hints';
 	import ReviewCompletedModal from '$lib/components/ui/modal/ReviewCompletedModal.svelte';
 	import HeaderContent from '$lib/components/chrome/HeaderContent.svelte';
 	import NoticeBar from '$lib/components/chrome/NoticeBar.svelte';
@@ -466,6 +470,12 @@
 	const item = $derived(
 		source.items?.find((i) => i._id === selectedItemId && i.origin.kind === 'template')
 	);
+	const activeItemId = $derived(item?._id);
+	let interactedConcession = $state<string | null>(null);
+	$effect(() => {
+		void activeItemId;
+		interactedConcession = null;
+	});
 	const inspectorVisible = $derived(Boolean(item));
 	$effect(() => {
 		if (
@@ -503,6 +513,15 @@
 	}
 
 	const isAdmin = $derived(accountViewer().membership.role === 'admin');
+	const playbookHint = $derived<HintId | null>(
+		item && interactedConcession && persistence.choices[item._id] === interactedConcession
+			? isAdmin
+				? 'concessionAutoApproved'
+				: item.review.kind === 'required'
+					? 'concessionApprovalRequired'
+					: 'concessionWithinAuthority'
+			: null
+	);
 	const reviews: ContractReviewController = new ContractReviewController({
 		client,
 		membershipId,
@@ -1011,36 +1030,48 @@
 		</button>
 	</p>
 {/if}
-{#snippet panelContent()}{#if item}<RepPlaybookPanel
-			{item}
-			animateContent={animateInspectorContent}
-			{isAdmin}
-			selected={persistence.choices[item._id]}
-			disabled={!editable}
-			entry={persistence.confirmed.playbook.find((state) => state.itemId === item._id)}
-			intent={persistence.intent[item._id]}
-			preview={contractEditor.focusedPreview}
-			previewError={contractEditor.previewError?.message}
-			previewRetryable={contractEditor.previewRetryable}
-			onRetryPreview={() => contractEditor.prefetchPreview(item._id)}
-			onWithdraw={() => persistence.withdraw(item._id)}
-			onApprove={reviewTags.find(
-				(tag) =>
-					tag.changeId ===
-					persistence.confirmed.playbook.find((state) => state.itemId === item._id)?.currentChangeId
-			)?.approve.allowed === true
-				? () => {
-						const tag = reviewTags.find(
+{#snippet panelContent()}
+	{#if item}
+		<div role="group" aria-label="Playbook options">
+			<DocumentPanelCard label="Playbook">
+				<DocumentPanelBody>
+					<RepPlaybookPanel
+						{item}
+						animateContent={animateInspectorContent}
+						{isAdmin}
+						disabled={!editable}
+						entry={persistence.confirmed.playbook.find((state) => state.itemId === item._id)}
+						intent={persistence.intent[item._id]}
+						preview={contractEditor.focusedPreview}
+						previewError={contractEditor.previewError?.message}
+						previewRetryable={contractEditor.previewRetryable}
+						onRetryPreview={() => contractEditor.prefetchPreview(item._id)}
+						onWithdraw={() => persistence.withdraw(item._id)}
+						onApprove={reviewTags.find(
 							(tag) =>
 								tag.changeId ===
 								persistence.confirmed.playbook.find((state) => state.itemId === item._id)
 									?.currentChangeId
-						);
-						if (tag) void reviews.decide(tag, 'approve');
-					}
-				: undefined}
-			onToggle={toggle}
-		/>{/if}{/snippet}
+						)?.approve.allowed === true
+							? () => {
+									const tag = reviewTags.find(
+										(tag) =>
+											tag.changeId ===
+											persistence.confirmed.playbook.find((state) => state.itemId === item._id)
+												?.currentChangeId
+									);
+									if (tag) void reviews.decide(tag, 'approve');
+								}
+							: undefined}
+						onConcessionInteraction={(id) => (interactedConcession = id)}
+						onToggle={toggle}
+					/>
+				</DocumentPanelBody>
+			</DocumentPanelCard>
+			<Hint id={playbookHint} role="status" class="mt-3" />
+		</div>
+	{/if}
+{/snippet}
 {#snippet footerContent()}
 	{#if reviewPages.error}<p class="mt-3 text-center text-sm text-danger" role="alert">
 			{reviewPages.error}

@@ -10,13 +10,13 @@
 		element?: HTMLButtonElement | null;
 		children: Snippet;
 	};
-
 	let {
 		label,
 		caption,
 		href,
 		element = $bindable(),
 		children: icon,
+		disabled = false,
 		...buttonAttributes
 	}: Props = $props();
 </script>
@@ -35,7 +35,11 @@
 		<span aria-hidden="true" class="hidden min-[1000px]:block">{caption}</span>
 	</a>
 {:else}
-	<span class="flex flex-col items-center gap-[3px] text-[9.5px] leading-[1.2] text-ink-secondary">
+	<span
+		class="flex flex-col items-center gap-[3px] text-[9.5px] leading-[1.2] text-ink-secondary"
+		class:text-ink-muted={disabled}
+		class:opacity-70={disabled}
+	>
 		<SquareIconButton
 			bind:element
 			{...buttonAttributes}

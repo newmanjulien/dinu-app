@@ -1,11 +1,9 @@
 import { afterNavigate, beforeNavigate, disableScrollHandling, onNavigate } from '$app/navigation';
 import { page } from '$app/state';
 import { describeRoute } from '$lib/auth/routes';
-import {
-	getDocumentViewportMetrics,
-	revealInDocumentViewport
-} from '$lib/document/document-viewport';
+import { revealInDocumentViewport } from '$lib/document/document-viewport';
 import { getContext, onMount, setContext, tick, untrack } from 'svelte';
+import type { DocumentSectionHandle } from './section.svelte';
 import type { DocumentViewerState } from './viewer.svelte';
 
 const key = Symbol('document-navigation');
@@ -20,6 +18,15 @@ type DocumentNavigationIntent =
 	  }
 	| { href: string; kind: 'restore'; scroll: ScrollPosition }
 	| { href: string; kind: 'preserve' };
+
+interface ForegroundDocument {
+	readonly identity: object;
+	readonly currentIdentity: () => object;
+	readonly viewer: DocumentViewerState;
+	readonly section: DocumentSectionHandle;
+	readonly active: () => boolean;
+	readonly placed: () => boolean;
+}
 
 function isDocumentRoute(routeId: string | null) {
 	const route = describeRoute(routeId);
@@ -42,24 +49,14 @@ function freshDestination(url: URL): DocumentNavigationIntent {
 /** Replay the router's intended scroll position once deferred document DOM exists. */
 class DocumentNavigation {
 	pending = $state.raw<DocumentNavigationIntent>();
-	placementRevision = $state(0);
+	current = $state.raw<ForegroundDocument>();
 	#preserve = new Set<string>();
-	#viewports = new Set<HTMLElement>();
-	#isVisibleViewport(viewport: HTMLElement) {
-		return (
-			viewport.isConnected &&
-			viewport.clientWidth > 0 &&
-			viewport.clientHeight > 0 &&
-			viewport.getClientRects().length > 0 &&
-			getComputedStyle(viewport).visibility === 'visible'
-		);
-	}
-	#visibleViewport() {
-		return [...this.#viewports].reverse().find((viewport) => this.#isVisibleViewport(viewport));
-	}
 	capture(): DocumentScrollSnapshot {
-		const viewport = this.#visibleViewport();
-		return viewport && isDocumentRoute(page.route.id)
+		const surface = this.current;
+		const viewport = surface?.section.viewport;
+		return surface && viewport && isDocumentRoute(page.route.id) &&
+			surface.identity === surface.currentIdentity() &&
+			surface.active() && surface.section.active && viewport.isConnected
 			? { href: page.url.href, scroll: { x: viewport.scrollLeft, y: viewport.scrollTop } }
 			: null;
 	}
@@ -67,16 +64,11 @@ class DocumentNavigation {
 		if (snapshot?.href === page.url.href && isDocumentRoute(page.route.id))
 			this.open({ href: snapshot.href, kind: 'restore', scroll: snapshot.scroll });
 	}
-	registerViewport(viewport: HTMLElement) {
-		this.#viewports.add(viewport);
-		this.placementChanged();
+	claim(surface: ForegroundDocument) {
+		this.current = surface;
 		return () => {
-			this.#viewports.delete(viewport);
-			this.placementChanged();
+			if (untrack(() => this.current) === surface) this.current = undefined;
 		};
-	}
-	placementChanged() {
-		this.placementRevision++;
 	}
 
 	preserve(href: string) {
@@ -92,27 +84,34 @@ class DocumentNavigation {
 	cancel() {
 		this.pending = undefined;
 	}
-	visible(viewer: DocumentViewerState, active: () => boolean) {
-		const destination = this.pending;
-		if (
-			!destination ||
-			page.url.href !== destination.href ||
-			!active() ||
-			!viewer.pagesVisible ||
-			!viewer.layoutPrepared
-		)
+	#ready(surface: ForegroundDocument) {
+		const viewport = surface.section.viewport;
+		const stage = surface.viewer.documentStageElement;
+		return Boolean(
+			this.current === surface &&
+			surface.identity === surface.currentIdentity() &&
+			surface.active() &&
+			surface.section.active &&
+			surface.placed() &&
+			surface.viewer.pagesVisible &&
+			surface.viewer.layoutPrepared &&
+			viewport?.isConnected &&
+			stage &&
+			viewport.contains(stage)
+		);
+	}
+	visible(surface: ForegroundDocument, destination: DocumentNavigationIntent) {
+		if (this.pending !== destination || page.url.href !== destination.href || !this.#ready(surface))
 			return;
 		void tick().then(() => {
 			if (
 				this.pending !== destination ||
 				page.url.href !== destination.href ||
-				!active() ||
-				!viewer.pagesVisible ||
-				!viewer.layoutPrepared
+				!this.#ready(surface)
 			)
 				return;
-			const scroller = getDocumentViewportMetrics(viewer.documentStageElement).scroller;
-			if (!scroller || !this.#viewports.has(scroller) || !this.#isVisibleViewport(scroller)) return;
+			const scroller = surface.section.viewport!;
+			const stage = surface.viewer.documentStageElement!;
 			this.pending = undefined;
 			let target: HTMLElement | null = null;
 			if (destination.kind === 'restore') {
@@ -134,13 +133,29 @@ class DocumentNavigation {
 				if (destination.vertical?.kind === 'top') scroller.scrollTop = 0;
 			}
 			if (document.activeElement === document.body)
-				(target ?? viewer.documentStageElement)?.focus({ preventScroll: true });
+				(target ?? stage).focus({ preventScroll: true });
 		});
 	}
 }
 
 export function setDocumentNavigation() {
 	const navigation = setContext(key, new DocumentNavigation());
+	$effect(() => {
+		const destination = navigation.pending;
+		const surface = navigation.current;
+		if (!destination || !surface || page.url.href !== destination.href) return;
+		if (
+			surface.identity === surface.currentIdentity() &&
+			surface.active() &&
+			surface.section.active &&
+			surface.placed() &&
+			surface.viewer.pagesVisible &&
+			surface.viewer.layoutPrepared &&
+			surface.section.viewport &&
+			surface.viewer.documentStageElement
+		)
+			untrack(() => navigation.visible(surface, destination));
+	});
 	beforeNavigate(() => navigation.cancel());
 	onNavigate(({ to }) => {
 		if (!to || !isDocumentRoute(to.route.id)) return;
@@ -173,13 +188,20 @@ export function getDocumentNavigation(): DocumentNavigation | undefined {
 	return getContext(key);
 }
 
-export function restoreDocumentNavigation(viewer: DocumentViewerState, active: () => boolean) {
+export function bindDocumentNavigation(
+	viewer: DocumentViewerState,
+	identity: () => object,
+	section: () => DocumentSectionHandle | undefined,
+	active: () => boolean,
+	placed: () => boolean
+) {
 	const navigation = getDocumentNavigation();
 	$effect(() => {
-		void navigation?.pending;
-		void navigation?.placementRevision;
-		void viewer.documentStageElement;
-		if (active() && viewer.pagesVisible && viewer.layoutPrepared)
-			untrack(() => navigation?.visible(viewer, active));
+		const owner = section();
+		const token = identity();
+		if (!navigation || !owner || !active() || !owner.active) return;
+		return untrack(() =>
+			navigation.claim({ identity: token, currentIdentity: identity, viewer, section: owner, active, placed })
+		);
 	});
 }

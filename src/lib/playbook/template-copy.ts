@@ -45,8 +45,7 @@ const copy = {
 	buyer: {
 		editingTitle: 'Edit the explanations buyers see',
 		editingHelpLabel: 'About buyer explanations',
-		editingHelp:
-			'This is where you explain the contract to buyers. What you add here will be visible to buyers in the link they receive',
+		editingHelp: 'When your reps send a link to buyers, these explanations will be included',
 		creationTitle: 'Add an explanation for buyers',
 		addAction: 'Add explanation',
 		editorLabel: 'Explanation editor',

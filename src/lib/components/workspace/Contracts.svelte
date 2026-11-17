@@ -17,7 +17,6 @@
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
 	import Button from '$lib/ui/Button.svelte';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 	import ContractGrid from './ContractGrid.svelte';
 	import BuyerLinks from './BuyerLinks.svelte';
 	import { orderBuyerLinks } from './buyer-link-order';
@@ -37,7 +36,6 @@
 		showFirstLinkHint = false,
 		onFirstLinkCardReady,
 		firstVisit = false,
-		showHeadings = true,
 		showContent = true,
 		onSearch,
 		ready = $bindable(false)
@@ -49,7 +47,6 @@
 		showFirstLinkHint?: boolean;
 		onFirstLinkCardReady?: () => void;
 		firstVisit?: boolean;
-		showHeadings?: boolean;
 		showContent?: boolean;
 		onSearch: (value: string) => void;
 		ready?: boolean;
@@ -166,14 +163,6 @@
 		return words.every((word) => normalized.includes(word));
 	}
 	const buyerDirectory = $derived(reads?.getDirectory('buyerLinks'));
-	const initialBuyerReady = Boolean(
-		reads?.getDirectory('buyerLinks')?.rows.length ||
-		reads?.getBrowse(
-			'buyerLinks',
-			untrack(() => query)
-		)?.rows.length ||
-		reads?.get('buyerLinks')?.rows.length
-	);
 	const localBuyerRows = $derived(
 		buyerDirectory?.rows.filter((row) => matchesLocalSearch(row.title, search.trim()))
 	);
@@ -478,10 +467,18 @@
 	let gridWidth = $state(0);
 	let visibleRows = $state(viewState?.contractRows ?? 4);
 	// Match the grid's container breakpoints, rather than the viewport width.
-	const columns = $derived(gridWidth >= 1000 ? 3 : gridWidth >= 600 ? 2 : 1);
+	const columns = $derived(gridWidth >= 900 ? 3 : gridWidth >= 600 ? 2 : 1);
 	const visibleLimit = $derived(visibleRows * columns);
 	const visibleCards = $derived(list.cards.slice(0, visibleLimit));
 	const hasHiddenCards = $derived(list.cards.length > visibleLimit);
+	const resultsLoading = $derived(
+		showContent &&
+			!list.cards.length &&
+			!(showBuyerLinks && buyerRows.length) &&
+			!list.error &&
+			!(buyerLinksAvailable !== false && buyerLinks.error) &&
+			(list.waiting || list.loadingMore || (buyerLinksAvailable !== false && buyerLinks.isLoading))
+	);
 	$effect(() => {
 		const current = query;
 		if (current === viewQuery) return;
@@ -553,9 +550,8 @@
 	role={viewer().membership.role}
 	hasBuyerLinks={showBuyerLinks}
 	{firstVisit}
-	buyerContentReadyInitially={initialBuyerReady}
-	{showHeadings}
 	{showContent}
+	loading={resultsLoading}
 >
 	{#snippet notice()}
 		{#if buyerLinksAvailable !== false && buyerLinks.error && !showBuyerLinks}
@@ -583,12 +579,6 @@
 					<p>We couldn’t load your contracts.</p>
 					<Button variant="secondary" onclick={() => listRevision++} class="mt-4">Try again</Button>
 				</div>
-			{:else if list.waiting && list.cards.length === 0}
-				{#if list.query}
-					<div class="flex min-h-40 items-center justify-center">
-						<LoadingWheel class="size-5" label="Loading contract results" />
-					</div>
-				{/if}
 			{:else if list.empty}
 				<div
 					class="rounded-base border-hairline border-edge bg-surface px-5 py-9 text-center text-[14px] shadow-card"

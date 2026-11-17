@@ -338,7 +338,7 @@ export async function reconcile(server, blocks, items) {
 		await server.ssrLoadModule('svelte/server')
 	);
 	const { default: RepPlaybookPanel } =
-		/** @type {{default:import('svelte').Component<{item:import('../src/lib/contract/items').ResolvedContractItem;onToggle:(id:string)=>void;onClose:()=>void}>}} */ (
+		/** @type {{default:import('svelte').Component<{item:import('../src/lib/contract/items').ResolvedContractItem;onToggle:(id:string|null)=>void;onConcessionInteraction:(id:string|null)=>void;onWithdraw:()=>void}>}} */ (
 			await server.ssrLoadModule('/src/lib/components/playbook/RepPlaybookPanel.svelte')
 		);
 	/** @param {string} text */
@@ -412,7 +412,12 @@ export async function reconcile(server, blocks, items) {
 		);
 		assert.deepEqual(persisted, item, `Mutation drops business fields: ${i}`);
 		const html = render(RepPlaybookPanel, {
-			props: { item: resolveTemplateItem(saved), onToggle: () => {}, onClose: () => {} }
+			props: {
+				item: resolveTemplateItem(saved),
+				onToggle: () => {},
+				onConcessionInteraction: () => {},
+				onWithdraw: () => {}
+			}
 		}).body;
 		const userText = [
 			...Object.values(item.instructions ?? {}),

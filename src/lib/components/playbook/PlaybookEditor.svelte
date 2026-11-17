@@ -16,20 +16,16 @@
 	import ReplacementEditor from './ReplacementEditor.svelte';
 	import ConcessionRow from './ConcessionRow.svelte';
 	import InlineAction from './InlineAction.svelte';
-	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
-	import DocumentPanelBody from '$lib/components/document/DocumentPanelBody.svelte';
 	import PlaybookSection from './PlaybookSection.svelte';
 	let {
 		controller,
 		animateContent = false,
-		embedded = false,
 		onCancel,
 		onPrimary,
 		onDelete
 	}: {
 		controller: AuthoringController;
 		animateContent?: boolean;
-		embedded?: boolean;
 		onCancel: () => void;
 		onPrimary: () => void;
 		onDelete: () => void;
@@ -102,246 +98,234 @@
 	});
 </script>
 
-{#snippet content()}
-	{#key entry}
-		{#if !creating && draft.persistedId}
-			<div
-				class={[
-					'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3',
-					animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
-				]}
-			>
-				<span class="min-w-0 text-[14px] font-medium text-ink-secondary">{copy.editingTitle}</span>
-				<div class="flex shrink-0 items-center gap-1">
-					<div>
-						<SquareIconButton
-							class="size-[27px]"
-							type="button"
-							aria-label={copy.optionsLabel}
-							disabled={!controller.canDelete}
-							aria-haspopup="menu"
-							aria-expanded={menuOpen}
-							aria-controls={menuId}
-							onclick={() => (menuOpen = !menuOpen)}
-							onkeydown={(event) => {
-								if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-									event.preventDefault();
-									menuOpen = true;
-								}
-							}}
-							bind:element={menuButton}
-						>
-							<DotsThreeVerticalIcon aria-hidden="true" class="size-[19px]" weight="bold" />
-						</SquareIconButton>
-						<Menu
-							open={menuOpen}
-							trigger={menuButton ?? undefined}
-							onClose={() => (menuOpen = false)}
-							id={menuId}
-							label={copy.optionsLabel}
-						>
-							{#snippet children(activate)}
-								<MenuItem
-									danger
-									disabled={!controller.canDelete}
-									onclick={() => {
-										activate();
-										onDelete();
-									}}>{copy.deleteAction}</MenuItem
-								>
-							{/snippet}
-						</Menu>
-					</div>
-				</div>
-			</div>
-		{:else}
-			<div
-				class={[
-					'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-[14px] font-medium text-ink-secondary',
-					animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
-				]}
-			>
-				<span class="min-w-0">{stagedCreation ? stepTitle : copy.creationTitle}</span>
-			</div>
-		{/if}
-		<fieldset
-			use:focusCreationField
-			disabled={!controller.canEdit}
+{#key entry}
+	{#if !creating && draft.persistedId}
+		<div
 			class={[
-				'm-0 flex min-w-0 flex-col gap-2 border-0 p-0',
-				animateContent &&
-					'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]'
+				'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3',
+				animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
 			]}
 		>
-			{#if !isRepItem(draft)}
-				<TextArea
-					aria-label="Explanation"
-					placeholder="Explain this clause in plain English for buyers"
-					bind:value={
-						() => (!isRepItem(draft) ? draft.explanation : ''),
-						(text) => controller.setExplanation(text)
-					}
-				/>
-			{:else if !creating || !creationConcession}
-				<TextArea
-					aria-label="Summary for this clause"
-					placeholder={instructionsFields[0].placeholder}
-					bind:value={
-						() => repDraft?.instructions?.summary ?? '',
-						(text) => controller.setInstruction('summary', text)
-					}
-				/>
-			{:else if step === 'concession'}
-				<ConcessionCreationEditor
-					concession={creationConcession}
-					affectsOtherParts={controller.affectsOtherParts}
-					onAffectedPart={(value) => controller.setAffectedPart(value)}
-					onDescription={(text) => controller.setConcessionDescription(text)}
-					onReplacement={(text) => controller.setReplacement(0, text)}
-					onTier={(tier) => controller.setConcessionTier(tier)}
-					disabled={!controller.canEdit}
-					catalog={controller.referenceCatalog}
-					paragraphs={controller.replacementUsesParagraphs(0)}
-				/>
-			{:else}
-				<div class="flex flex-col gap-3 text-[14px] leading-[1.45] text-ink-muted">
-					{#if !creationConcession.changes[1]}
-						<p class="m-0 text-sm">
-							Select the other affected passage. You can select several adjacent paragraphs, or use
-							an insertion point between paragraphs to add a clause.
-						</p>
-					{/if}
-					<ReplacementEditor
-						label="Replacement clause"
-						placeholder="Write the text that would replace this new clause you highlighted"
-						value={creationConcession.changes[1]?.replacement ?? []}
-						disabled={!controller.canEdit || !creationConcession.changes[1]}
-						catalog={controller.referenceCatalog}
-						paragraphs={controller.replacementUsesParagraphs(1)}
-						onChange={(atoms) => controller.setReplacement(1, atoms)}
-					/>
+			<span class="min-w-0 text-[14px] font-medium text-ink-secondary">{copy.editingTitle}</span>
+			<div class="flex shrink-0 items-center gap-1">
+				<div>
+					<SquareIconButton
+						class="size-[27px]"
+						type="button"
+						aria-label={copy.optionsLabel}
+						disabled={!controller.canDelete}
+						aria-haspopup="menu"
+						aria-expanded={menuOpen}
+						aria-controls={menuId}
+						onclick={() => (menuOpen = !menuOpen)}
+						onkeydown={(event) => {
+							if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+								event.preventDefault();
+								menuOpen = true;
+							}
+						}}
+						bind:element={menuButton}
+					>
+						<DotsThreeVerticalIcon aria-hidden="true" class="size-[19px]" weight="bold" />
+					</SquareIconButton>
+					<Menu
+						open={menuOpen}
+						trigger={menuButton ?? undefined}
+						onClose={() => (menuOpen = false)}
+						id={menuId}
+						label={copy.optionsLabel}
+					>
+						{#snippet children(activate)}
+							<MenuItem
+								danger
+								disabled={!controller.canDelete}
+								onclick={() => {
+									activate();
+									onDelete();
+								}}>{copy.deleteAction}</MenuItem
+							>
+						{/snippet}
+					</Menu>
 				</div>
-			{/if}
-			{#if !creating && repDraft}
-				<div class="flex min-w-0 flex-col gap-2 text-[14px] leading-[1.45] text-ink-muted">
-					{#each instructionsFields.slice(1) as field}
-						<PlaybookSection value={field.key} label={field.label} bind:open>
-							<TextArea
-								aria-label={`${field.label} for this clause`}
-								placeholder={field.placeholder}
-								bind:value={
-									() => repDraft?.instructions?.[field.key] ?? '',
-									(text) => controller.setInstruction(field.key, text)
-								}
-							/>
-						</PlaybookSection>
-					{/each}
-					<PlaybookSection value="approval-policy" label={approvalGuidanceField.label} bind:open>
+			</div>
+		</div>
+	{:else}
+		<div
+			class={[
+				'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-[14px] font-medium text-ink-secondary',
+				animateContent && 'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both]'
+			]}
+		>
+			<span class="min-w-0">{stagedCreation ? stepTitle : copy.creationTitle}</span>
+		</div>
+	{/if}
+	<fieldset
+		use:focusCreationField
+		disabled={!controller.canEdit}
+		class={[
+			'm-0 flex min-w-0 flex-col gap-2 border-0 p-0',
+			animateContent &&
+				'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:24ms]'
+		]}
+	>
+		{#if !isRepItem(draft)}
+			<TextArea
+				aria-label="Explanation"
+				placeholder="Explain this clause in plain English for buyers"
+				bind:value={
+					() => (!isRepItem(draft) ? draft.explanation : ''),
+					(text) => controller.setExplanation(text)
+				}
+			/>
+		{:else if !creating || !creationConcession}
+			<TextArea
+				aria-label="Summary for this clause"
+				placeholder={instructionsFields[0].placeholder}
+				bind:value={
+					() => repDraft?.instructions?.summary ?? '',
+					(text) => controller.setInstruction('summary', text)
+				}
+			/>
+		{:else if step === 'concession'}
+			<ConcessionCreationEditor
+				concession={creationConcession}
+				affectsOtherParts={controller.affectsOtherParts}
+				onAffectedPart={(value) => controller.setAffectedPart(value)}
+				onDescription={(text) => controller.setConcessionDescription(text)}
+				onReplacement={(text) => controller.setReplacement(0, text)}
+				onTier={(tier) => controller.setConcessionTier(tier)}
+				disabled={!controller.canEdit}
+				catalog={controller.referenceCatalog}
+				paragraphs={controller.replacementUsesParagraphs(0)}
+			/>
+		{:else}
+			<div class="flex flex-col gap-3 text-[14px] leading-[1.45] text-ink-muted">
+				{#if !creationConcession.changes[1]}
+					<p class="m-0 text-sm">
+						Select the other affected passage. You can select several adjacent paragraphs, or use an
+						insertion point between paragraphs to add a clause.
+					</p>
+				{/if}
+				<ReplacementEditor
+					label="Replacement clause"
+					placeholder="Write the text that would replace this new clause you highlighted"
+					value={creationConcession.changes[1]?.replacement ?? []}
+					disabled={!controller.canEdit || !creationConcession.changes[1]}
+					catalog={controller.referenceCatalog}
+					paragraphs={controller.replacementUsesParagraphs(1)}
+					onChange={(atoms) => controller.setReplacement(1, atoms)}
+				/>
+			</div>
+		{/if}
+		{#if !creating && repDraft}
+			<div class="flex min-w-0 flex-col gap-2 text-[14px] leading-[1.45] text-ink-muted">
+				{#each instructionsFields.slice(1) as field}
+					<PlaybookSection value={field.key} label={field.label} bind:open>
 						<TextArea
-							aria-label={`${approvalGuidanceField.label} for this clause`}
-							placeholder={approvalGuidanceField.placeholder}
+							aria-label={`${field.label} for this clause`}
+							placeholder={field.placeholder}
 							bind:value={
-								() =>
-									repDraft?.approvalPolicy.kind === 'required'
-										? repDraft.approvalPolicy.instructions
-										: '',
-								(text) => controller.setApprovalGuidance(text)
+								() => repDraft?.instructions?.[field.key] ?? '',
+								(text) => controller.setInstruction(field.key, text)
 							}
 						/>
 					</PlaybookSection>
-					{#each tiers as tier}
-						{@const concessions = repDraft.concessions.filter(
-							(concession) => concession.tier === tier
-						)}
-						<PlaybookSection
-							value={tier}
-							label={`${tier === 'preferred' ? 'Preferred' : 'Rare'} concessions`}
-							danger={tier === 'rare'}
-							bind:open
-						>
-							{#each concessions as concession (concession.id)}
-								{@const descriptionId = `${menuId}-concession-${concession.id}`}
-								<ConcessionRow description={concession.description} {descriptionId}>
-									<InlineAction
-										danger
-										describedBy={descriptionId}
-										onclick={() => requestConcessionDelete(concession)}
-										>Delete concession</InlineAction
-									>
-								</ConcessionRow>
-							{/each}
-							<button
-								bind:this={addButtons[tier]}
-								type="button"
-								class="self-start cursor-pointer whitespace-nowrap border-0 bg-transparent p-0 text-accent [font:inherit] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-								onclick={() => controller.addConcession(tier)}
-								>{tier === 'rare' ? 'Add a rare concession' : 'Add a concession'}</button
-							>
-						</PlaybookSection>
-					{/each}
-				</div>
-			{/if}
-		</fieldset>
-		<div
-			class={[
-				'flex flex-col gap-2',
-				animateContent &&
-					'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:48ms]'
-			]}
-		>
-			<div class="flex flex-wrap items-center justify-end gap-3" class:pt-px={stagedCreation}>
-				{#if creating && controller.canCancelLocation}
-					<Button
-						variant="secondary"
-						class="mr-auto"
-						disabled={!controller.canEdit}
-						onclick={() => controller.cancelSecondaryLocationChoice()}>Cancel location</Button
+				{/each}
+				<PlaybookSection value="approval-policy" label={approvalGuidanceField.label} bind:open>
+					<TextArea
+						aria-label={`${approvalGuidanceField.label} for this clause`}
+						placeholder={approvalGuidanceField.placeholder}
+						bind:value={
+							() =>
+								repDraft?.approvalPolicy.kind === 'required'
+									? repDraft.approvalPolicy.instructions
+									: '',
+							(text) => controller.setApprovalGuidance(text)
+						}
+					/>
+				</PlaybookSection>
+				{#each tiers as tier}
+					{@const concessions = repDraft.concessions.filter(
+						(concession) => concession.tier === tier
+					)}
+					<PlaybookSection
+						value={tier}
+						label={`${tier === 'preferred' ? 'Preferred' : 'Rare'} concessions`}
+						danger={tier === 'rare'}
+						bind:open
 					>
-				{/if}
-				{#if phase?.kind === 'conflict'}
-					<Button variant="secondary" onclick={() => controller.useSaved()}
-						>Use saved version</Button
-					>
-				{/if}
-				<Button variant="secondary" disabled={!canCancel} onclick={onCancel}>Cancel</Button>
-				<Tooltip
-					text={actionReason}
-					trigger={actionHintTrigger}
-					standalone={false}
-					enabled={Boolean(actionReason)}
-				>
-					{#snippet children(descriptionId)}
-						<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the disabled button is unavailable.) -->
-						<span
-							bind:this={actionHintTrigger}
-							class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-							role="group"
-							tabindex={actionReason ? 0 : undefined}
-							aria-label={forwardLabel}
-							aria-describedby={actionReason ? descriptionId : undefined}
+						{#each concessions as concession (concession.id)}
+							{@const descriptionId = `${menuId}-concession-${concession.id}`}
+							<ConcessionRow description={concession.description} {descriptionId}>
+								<InlineAction
+									danger
+									describedBy={descriptionId}
+									onclick={() => requestConcessionDelete(concession)}
+									>Delete concession</InlineAction
+								>
+							</ConcessionRow>
+						{/each}
+						<button
+							bind:this={addButtons[tier]}
+							type="button"
+							class="self-start cursor-pointer whitespace-nowrap border-0 bg-transparent p-0 text-accent [font:inherit] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+							onclick={() => controller.addConcession(tier)}
+							>{tier === 'rare' ? 'Add a rare concession' : 'Add a concession'}</button
 						>
-							<Button
-								variant="secondary"
-								class="disabled:pointer-events-none"
-								disabled={forwardDisabled}
-								aria-describedby={actionReason ? descriptionId : undefined}
-								onclick={onPrimary}>{forwardLabel}</Button
-							>
-						</span>
-					{/snippet}
-				</Tooltip>
+					</PlaybookSection>
+				{/each}
 			</div>
+		{/if}
+	</fieldset>
+	<div
+		class={[
+			'flex flex-col gap-2',
+			animateContent &&
+				'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:48ms]'
+		]}
+	>
+		<div class="flex flex-wrap items-center justify-end gap-3" class:pt-px={stagedCreation}>
+			{#if creating && controller.canCancelLocation}
+				<Button
+					variant="secondary"
+					class="mr-auto"
+					disabled={!controller.canEdit}
+					onclick={() => controller.cancelSecondaryLocationChoice()}>Cancel location</Button
+				>
+			{/if}
+			{#if phase?.kind === 'conflict'}
+				<Button variant="secondary" onclick={() => controller.useSaved()}>Use saved version</Button>
+			{/if}
+			<Button variant="secondary" disabled={!canCancel} onclick={onCancel}>Cancel</Button>
+			<Tooltip
+				text={actionReason}
+				trigger={actionHintTrigger}
+				standalone={false}
+				enabled={Boolean(actionReason)}
+			>
+				{#snippet children(descriptionId)}
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the disabled button is unavailable.) -->
+					<span
+						bind:this={actionHintTrigger}
+						class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+						role="group"
+						tabindex={actionReason ? 0 : undefined}
+						aria-label={forwardLabel}
+						aria-describedby={actionReason ? descriptionId : undefined}
+					>
+						<Button
+							variant="secondary"
+							class="disabled:pointer-events-none"
+							disabled={forwardDisabled}
+							aria-describedby={actionReason ? descriptionId : undefined}
+							onclick={onPrimary}>{forwardLabel}</Button
+						>
+					</span>
+				{/snippet}
+			</Tooltip>
 		</div>
-	{/key}
-{/snippet}
-
-{#if embedded}
-	{@render content()}
-{:else}
-	<DocumentPanelCard label={copy.editorLabel}>
-		<DocumentPanelBody>{@render content()}</DocumentPanelBody>
-	</DocumentPanelCard>
-{/if}
+	</div>
+{/key}
 
 {#if concessionToDelete}
 	<ConfirmModal

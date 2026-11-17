@@ -23,11 +23,14 @@
 		class="mx-auto max-w-[620px] rounded-base border-hairline border-edge bg-surface p-5 shadow-card sm:p-6"
 	>
 		<header class="mb-6 text-left">
-			<h1 class="text-[19px] leading-6 font-medium text-ink">Set up your company’s template</h1>
+			<h1 class="text-[19px] leading-6 font-medium text-ink">
+				Book a call to set up your template
+			</h1>
 			{#if role && !bookingInProgress}
 				<p class="mt-1 text-[13px] leading-6 text-ink-muted">
 					{#if role === 'admin'}
-						Book a call with Julien to get your company’s template ready.
+						The only thing left to do is to set up the template for your company's contracts. Our
+						team will take care of everything.
 					{:else}
 						Your team can start creating contracts once an admin sets up your company’s template.
 					{/if}

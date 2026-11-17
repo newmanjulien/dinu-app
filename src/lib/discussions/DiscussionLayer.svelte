@@ -33,8 +33,6 @@
 		if (session.selected === 'composer') {
 			collapseComposer(restore);
 		} else {
-			if (!restore && !session.replyingTo && !session.editingMessage) return;
-			session.closeEditors();
 			session.selected = null;
 			if (restore && openingTrigger?.isConnected) openingTrigger.focus({ preventScroll: true });
 		}
@@ -642,7 +640,7 @@
 					orphaned={!resolved.has(thread.id)}
 					recovery={showRecovery ? recovery : undefined}
 				>
-					{#snippet detail(replyTrigger, onReplyTrigger)}
+					{#snippet detail(replyTrigger, onReplyTrigger, deletion)}
 						{#if active && !obscured && session.active && session.feed.authorized && session.feed.firstPageAccepted}
 							{#key thread.id}
 								<DiscussionThread
@@ -655,6 +653,7 @@
 									}}
 									{replyTrigger}
 									{onReplyTrigger}
+									{deletion}
 								/>
 							{/key}
 						{/if}
@@ -705,6 +704,7 @@
 								deleting={composer.deleteSelectedWording}
 								author={session.viewer}
 								viewerKey={session.viewer?.key}
+								perspective={session.perspective()}
 								title={composer.type === 'proposal' ? 'Propose change' : 'Add comment'}
 								placeholder={composer.type === 'proposal'
 									? 'Write the proposed wording or change…'

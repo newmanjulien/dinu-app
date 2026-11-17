@@ -21,9 +21,12 @@
 				class="size-7 shrink-0 rounded-full"
 			/>{/if}{/if}
 	<div class="min-w-0 flex-1">
-		{#if identity}{@render identity()}{:else}<SkeletonBlock
-				class="h-5 w-40 max-w-[70%]"
-			/><SkeletonBlock class="h-4 w-52 max-w-[85%]" />{/if}
+		{#if identity}{@render identity()}{:else}
+			<div class="grid gap-2">
+				<SkeletonBlock class="h-4 w-40 max-w-[70%]" />
+				<SkeletonBlock class="h-3 w-52 max-w-[85%]" />
+			</div>
+		{/if}
 	</div>
 	{#if actions}{@render actions()}{:else if invitations}<SkeletonBlock
 			class="h-button-sm shrink-0 rounded-button-lg px-[13px] py-[7.5px] text-[12.5px]"

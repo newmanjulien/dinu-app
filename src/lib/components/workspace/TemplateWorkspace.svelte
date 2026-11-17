@@ -670,7 +670,6 @@
 									</div>
 								{:else if entry}
 									<PlaybookEditor
-										embedded
 										controller={authoring}
 										animateContent={animateEditorContent}
 										onCancel={cancel}

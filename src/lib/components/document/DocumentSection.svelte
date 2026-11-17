@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { getDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
+	import { setDocumentSection } from '$lib/document/runtime/section.svelte';
 	import { DESKTOP_TOOL_RAIL_EDGE } from './workspace-layout';
 
 	let {
@@ -8,12 +8,15 @@
 		children,
 		active = true
 	}: { heading: Snippet; children: Snippet; active?: boolean } = $props();
-	const navigation = getDocumentNavigation();
 	let viewport = $state<HTMLDivElement>();
-	$effect(() => {
-		const view = viewport;
-		if (!active || !view) return;
-		return navigation?.registerViewport(view);
+	setDocumentSection({
+		identity: Symbol('document-section'),
+		get viewport() {
+			return viewport;
+		},
+		get active() {
+			return active;
+		}
 	});
 </script>
 

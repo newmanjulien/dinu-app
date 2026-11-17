@@ -99,6 +99,7 @@ import type * as discussionOperationReferences from "../discussionOperationRefer
 import type * as discussionOperations from "../discussionOperations.js";
 import type * as discussionPassage from "../discussionPassage.js";
 import type * as discussionPassageAction from "../discussionPassageAction.js";
+import type * as discussionPassageIndex from "../discussionPassageIndex.js";
 import type * as discussionPreparation from "../discussionPreparation.js";
 import type * as discussionPreparationValidators from "../discussionPreparationValidators.js";
 import type * as discussionProposals from "../discussionProposals.js";
@@ -298,6 +299,7 @@ declare const fullApi: ApiFromModules<{
   discussionOperations: typeof discussionOperations;
   discussionPassage: typeof discussionPassage;
   discussionPassageAction: typeof discussionPassageAction;
+  discussionPassageIndex: typeof discussionPassageIndex;
   discussionPreparation: typeof discussionPreparation;
   discussionPreparationValidators: typeof discussionPreparationValidators;
   discussionProposals: typeof discussionProposals;

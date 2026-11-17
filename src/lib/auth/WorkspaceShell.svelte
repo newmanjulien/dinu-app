@@ -55,7 +55,9 @@
 		clearTimeout(completionTimer);
 		completionNotice = changed
 			? changed.kind === 'deleted'
-				? 'Box deleted'
+				? changed.audience === 'buyer'
+					? 'Explanation deleted'
+					: 'Instructions deleted'
 				: changed.audience === 'buyer'
 					? 'Explanation saved'
 					: 'Instructions saved'

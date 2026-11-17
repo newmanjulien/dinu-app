@@ -13,6 +13,7 @@ import type { Snippet } from 'svelte';
 import { getContext, setContext, untrack } from 'svelte';
 import type { DocumentLayoutProfiles } from './layout-context.svelte';
 import { recordColdStart } from './render-perf';
+import type { DocumentSectionHandle } from './section.svelte';
 import type { DocumentSourceInput } from './source.svelte';
 import { type ConcessionSelection } from './types';
 import type { DocumentWorkspace } from './workspace-context';
@@ -41,6 +42,8 @@ export interface ViewerBindings {
 		outcome: import('$lib/auth/workspace-presentation.svelte').PresentationOutcome
 	) => void;
 	active?: boolean;
+	/** Whether this binding is the route's intended foreground viewer. */
+	foreground?: boolean;
 	prepare?: boolean;
 	/** Demand only; item bodies and subscriptions belong to the authoring session. */
 	itemPreload?: (ids: readonly string[]) => void;
@@ -74,9 +77,27 @@ export interface ViewerBindings {
 }
 export interface DocumentAttachment {
 	readonly entry: DocumentResource;
-	bind: (bindings: ViewerBindings, target?: HTMLElement) => () => void;
+	bind: (
+		bindings: ViewerBindings,
+		target: HTMLElement | undefined,
+		section: DocumentSectionHandle
+	) => () => void;
 	update: (choices: ConcessionSelection) => void;
 	release: () => void;
+}
+/** One route binding owns its target, section, and any physical placement claim. */
+export interface DocumentAttachmentBinding {
+	readonly bindings: ViewerBindings;
+	readonly target: HTMLElement | undefined;
+	readonly section: DocumentSectionHandle;
+	place: (wrapper: HTMLElement) => void;
+	unplace: (wrapper: HTMLElement) => void;
+}
+export interface DocumentPlacement {
+	readonly binding: DocumentAttachmentBinding;
+	readonly wrapper: HTMLElement;
+	readonly section: DocumentSectionHandle;
+	readonly target: HTMLElement;
 }
 function sameOrder<T>(a: readonly T[], b: readonly T[]) {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
@@ -84,8 +105,14 @@ function sameOrder<T>(a: readonly T[], b: readonly T[]) {
 export class DocumentResource {
 	readonly owner = Symbol('document-resource');
 	readonly workspace: DocumentWorkspace;
-	bindings = $state.raw<ViewerBindings>();
-	target = $state<HTMLElement>();
+	attachmentBinding = $state.raw<DocumentAttachmentBinding>();
+	placement = $state.raw<DocumentPlacement>();
+	get bindings() {
+		return this.attachmentBinding?.bindings;
+	}
+	get target() {
+		return this.attachmentBinding?.target;
+	}
 	active = $state(false);
 	opening = $state(false);
 	allowed = $state(false);
@@ -111,8 +138,8 @@ export class DocumentResource {
 		this.allowed = false;
 		this.active = false;
 		this.opening = false;
-		this.target = undefined;
-		this.bindings = undefined;
+		this.placement = undefined;
+		this.attachmentBinding = undefined;
 		this.workspace.renderer.destroy();
 		this.workspace.source.destroy?.();
 	}
@@ -338,14 +365,35 @@ export class DocumentResources {
 		const owns = () => !this.#destroyed && this.#attachments.get(entry) === attachment;
 		const attachment: DocumentAttachment = {
 			entry,
-			bind: (bindings, target) => {
+			bind: (bindings, target, section) => {
 				if (!owns()) return () => {};
-				entry.bindings = bindings;
-				entry.target = target;
+				const binding: DocumentAttachmentBinding = {
+					bindings,
+					target,
+					section,
+					place: (wrapper) => {
+						if (
+							!owns() ||
+							entry.attachmentBinding !== binding ||
+							!target ||
+							!section.viewport?.contains(target) ||
+							wrapper.parentElement !== target
+						)
+							return;
+						entry.placement = { binding, wrapper, section, target };
+					},
+					unplace: (wrapper) => {
+						const placement = untrack(() => entry.placement);
+						if (placement?.binding === binding && placement.wrapper === wrapper)
+							entry.placement = undefined;
+					}
+				};
+				entry.placement = undefined;
+				entry.attachmentBinding = binding;
 				return () => {
-					if (!owns() || entry.bindings !== bindings) return;
-					entry.bindings = undefined;
-					if (entry.target === target) entry.target = undefined;
+					if (!owns() || untrack(() => entry.attachmentBinding) !== binding) return;
+					entry.placement = undefined;
+					entry.attachmentBinding = undefined;
 				};
 			},
 			update: (next) => {
@@ -353,6 +401,8 @@ export class DocumentResources {
 			},
 			release: () => {
 				if (!owns()) return;
+				entry.placement = undefined;
+				entry.attachmentBinding = undefined;
 				this.#attachments.delete(entry);
 				this.deactivate(entry);
 			}
@@ -365,8 +415,8 @@ export class DocumentResources {
 		// Protect the incoming owner before releasing an attachment that may trim resources.
 		// On the same entry, replacing the map token makes the old cleanup inert.
 		if (previous && previous.entry !== entry) previous.release();
-		entry.bindings = undefined;
-		entry.target = undefined;
+		entry.placement = undefined;
+		entry.attachmentBinding = undefined;
 		entry.lastUsed = ++this.#clock;
 		this.#failed.delete(entry.id);
 		const profiler = this.profiles.profiler;
@@ -389,8 +439,8 @@ export class DocumentResources {
 	private deactivate(entry: DocumentResource) {
 		entry.active = false;
 		if (isTemplateResource(entry.id)) entry.allowed = false;
-		entry.bindings = undefined;
-		entry.target = undefined;
+		entry.placement = undefined;
+		entry.attachmentBinding = undefined;
 		entry.workspace.viewer.interactionEnabled = false;
 		entry.workspace.viewer.pagesVisible = false;
 		entry.workspace.viewer.firstPagesReady = null;

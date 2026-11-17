@@ -5,13 +5,15 @@
 	import DiscussionMessage from './DiscussionMessage.svelte';
 	import ProvisionalMessage from './ProvisionalMessage.svelte';
 	import ReplyComposer from './ReplyComposer.svelte';
+	import type { DeleteConfirmationState } from './delete-confirmation.svelte';
 	let {
 		thread,
 		session,
 		canRead,
 		onActivate,
 		replyTrigger,
-		onReplyTrigger
+		onReplyTrigger,
+		deletion
 	}: {
 		thread: DiscussionThread;
 		session: DiscussionSession;
@@ -19,6 +21,7 @@
 		onActivate: () => void;
 		replyTrigger?: HTMLButtonElement;
 		onReplyTrigger: (trigger: HTMLButtonElement) => void;
+		deletion: DeleteConfirmationState;
 	} = $props();
 	const composer = $derived(session.replyComposer(thread.id));
 	const replyLease = untrack(() => session.acquireReplies(thread.id));
@@ -66,6 +69,7 @@
 			message={row.saved}
 			threadId={thread.id}
 			{session}
+			{deletion}
 			canRead={canRead && feed.authorized && feed.firstPageAccepted}
 			reply
 			onActivate={activate}

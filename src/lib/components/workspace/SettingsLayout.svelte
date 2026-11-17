@@ -11,24 +11,13 @@
 		role,
 		editCompanyProfile = role === 'admin',
 		presentation,
-		email,
-		approvalEmail,
 		field
 	}: {
 		role?: Role;
 		editCompanyProfile?: boolean;
 		presentation?: WorkspacePresentation;
-		email?: string;
-		approvalEmail?: string | null;
 		field?: Snippet<[SettingsField]>;
 	} = $props();
-	const values = $derived({
-		name: presentation?.name,
-		email,
-		companyName: presentation?.companyName,
-		approvalEmail: approvalEmail ?? undefined,
-		role: role === 'admin' ? 'Admin' : role === 'rep' ? 'Rep' : undefined
-	});
 	const cards = $derived([
 		fields.name,
 		fields.email,
@@ -53,7 +42,6 @@
 		{#each cards as card (card.id)}
 			{#if field}{@render field(card)}{:else}<SettingsCardPlaceholder
 					{card}
-					value={card.id in values ? values[card.id as keyof typeof values] : undefined}
 					profile={card.id === 'avatar' && presentation?.name !== undefined
 						? { name: presentation.name, avatarUrl: presentation.avatarUrl ?? null }
 						: card.id === 'companyAvatar' && presentation?.companyName !== undefined

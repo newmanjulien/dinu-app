@@ -1,15 +1,16 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { getDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
-	const navigation = getDocumentNavigation();
+	import type { DocumentAttachmentBinding } from '$lib/document/runtime/resources.svelte';
 	let {
 		target,
+		binding,
 		visible,
 		interactive,
 		resource,
 		children
 	}: {
 		target?: HTMLElement;
+		binding?: DocumentAttachmentBinding;
 		visible: boolean;
 		interactive: boolean;
 		resource?: string;
@@ -23,9 +24,10 @@
 			destination = target ?? parking;
 		if (node && destination && node.parentElement !== destination) {
 			destination.append(node);
-			navigation?.placementChanged();
 		}
+		if (node && binding && node.parentElement === binding.target) binding.place(node);
 		return () => {
+			if (node && binding) binding.unplace(node);
 			if (node && parking && node.parentElement !== parking) parking.append(node);
 		};
 	});

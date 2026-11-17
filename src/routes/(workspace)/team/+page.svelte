@@ -98,8 +98,9 @@
 	const colleagueRows = $derived(
 		colleagues.error ? [] : (colleaguePage ?? reads?.get('colleagues')?.rows ?? [])
 	);
+	const invitationSnapshot = $derived(reads?.get('invitations'));
 	const invitationRows = $derived(
-		!canManage || invitations.error ? [] : (invitationPage ?? reads?.get('invitations')?.rows ?? [])
+		!canManage || invitations.error ? [] : (invitationPage ?? invitationSnapshot?.rows ?? [])
 	);
 	const colleaguesCurrent = $derived(!colleagues.error && colleagues.status !== 'LoadingFirstPage');
 	const invitationsCurrent = $derived(
@@ -144,10 +145,23 @@
 	const invitationsLoading = $derived(
 		canManage &&
 			invitations.status === 'LoadingFirstPage' &&
-			!invitationRows.length &&
+			!invitationSnapshot &&
 			!invitations.error &&
 			!invitationsTimedOut
 	);
+	const invitationsEmptyConfirmed = $derived(
+		!invitations.error &&
+			(invitations.status === 'Exhausted' ||
+				(invitations.status === 'LoadingFirstPage' && invitationSnapshot?.hasMore === false))
+	);
+	let invitationsSkeletonVisible = $state(false);
+	$effect(() => {
+		const loading = invitationsLoading;
+		invitationsSkeletonVisible = false;
+		if (!loading) return;
+		const timer = setTimeout(() => (invitationsSkeletonVisible = true), 200);
+		return () => clearTimeout(timer);
+	});
 	let modalOpen = $state(false);
 	let emailInput = $state('');
 	let sending = $state(false);
@@ -356,7 +370,11 @@
 	{/snippet}
 	{#snippet invitationsContent()}
 		{#if invitationsLoading}
-			<TeamRowsSkeleton invitations />
+			{#if invitationsSkeletonVisible}
+				<TeamRowsSkeleton invitations />
+			{:else}
+				<div aria-hidden="true" class="h-12"></div>
+			{/if}
 		{:else}
 			<TeamListLayout>
 				{#each invitationRows as invitation (invitation.id)}
@@ -400,9 +418,7 @@
 							>
 						{/snippet}
 					</TeamRowLayout>
-				{:else}{#if !invitations.error && invitations.status === 'Exhausted'}<li
-							class="p-3.5 text-[13px] text-ink-muted"
-						>
+				{:else}{#if invitationsEmptyConfirmed}<li class="p-3.5 text-[13px] text-ink-muted">
 							No pending invitations.
 						</li>{/if}{/each}
 			</TeamListLayout>

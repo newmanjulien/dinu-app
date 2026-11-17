@@ -322,7 +322,7 @@
 								: {})
 						}}
 						admission={booking.kind === 'unavailable' ? 'unavailable' : booking.state}
-						description="Choose a time to get your template ready together."
+						description="Choose a time for a 20 minute call."
 						onBooked={() => {}}
 					/>
 				{/key}
@@ -398,10 +398,10 @@
 			<div role="status" aria-atomic="true" class="w-full">
 				<h2 class="text-[15.5px] leading-6 font-medium text-ink [overflow-wrap:anywhere]">
 					{ready
-							? 'Waiting for Julien'
-							: dragging
-								? 'Drop your Word document here'
-								: fileName || 'Drop your Word document here'}
+						? 'Waiting for Julien'
+						: dragging
+							? 'Drop your Word document here'
+							: fileName || 'Drop your Word document here'}
 				</h2>
 				<p class="mx-auto mt-1.5 max-w-[440px] text-[13px] leading-5 text-ink-muted">
 					{#if ready}

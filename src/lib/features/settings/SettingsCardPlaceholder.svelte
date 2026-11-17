@@ -6,10 +6,8 @@
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	let {
 		card,
-		value,
 		profile
 	}: {
-		value?: string;
 		profile?: { name: string; avatarUrl: string | null };
 		card: {
 			title: string;
@@ -44,14 +42,10 @@
 	<SettingsCard
 		title={card.title}
 		description={card.description}
-		action={value !== undefined || profile || card.kind === 'readonly' || card.kind === 'avatar'
-			? undefined
-			: action}
+		action={card.kind === 'text' || card.kind === 'danger' ? action : undefined}
 		media={card.kind === 'avatar' ? avatar : undefined}
 	>
-		{#if value !== undefined}
-			<p class="mt-4 min-h-9 max-w-sm break-words text-sm text-ink">{value || 'Not set'}</p>
-		{:else if card.warning}
+		{#if card.warning}
 			<div
 				class="mt-4 flex min-h-9 items-center gap-2 rounded-button-lg bg-canvas px-3 text-[0.74rem] leading-5 text-ink-muted"
 			>

@@ -62,7 +62,8 @@
 					}),
 					() => publicContract.buyerName,
 					privateAccess,
-					recovery
+					recovery,
+					() => (seller?.presentation === 'seller' ? 'seller' : 'buyer')
 				)
 		);
 		session = current;

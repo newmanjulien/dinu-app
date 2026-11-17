@@ -14,6 +14,16 @@
 		untrack(() => (entry.id === 'template:buyer' ? 'explanation' : 'instructions'))
 	);
 	const bindings = $derived(entry.bindings);
+	const attachmentBinding = $derived(entry.attachmentBinding);
+	const physicallyPlaced = $derived.by(() => {
+		const placement = entry.placement;
+		return Boolean(
+			placement &&
+			placement.binding === attachmentBinding &&
+			placement.wrapper.parentElement === placement.target &&
+			placement.section.viewport?.contains(placement.target)
+		);
+	});
 	let hasPanel = $state(false);
 	// Binding replacement must not briefly collapse an already open panel's space.
 	$effect.pre(() => {
@@ -27,6 +37,7 @@
 
 <RetainedDocumentMount
 	target={entry.target}
+	binding={attachmentBinding}
 	visible={readyToShow}
 	interactive={entry.active}
 	resource={entry.id}
@@ -36,6 +47,10 @@
 		failure={bindings?.failure}
 		onRetry={bindings?.onRetry}
 		active={readyToShow}
+		foreground={bindings?.foreground ?? readyToShow}
+		section={attachmentBinding?.section}
+		navigationIdentity={attachmentBinding}
+		placementReady={physicallyPlaced}
 		interactive={!paused && entry.active && (bindings?.interactive ?? true)}
 		annotationsVisible={bindings?.annotationsVisible ?? true}
 		retained

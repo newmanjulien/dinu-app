@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
 	import DiscussionMessage from './DiscussionMessage.svelte';
+	import { DeleteConfirmationState } from './delete-confirmation.svelte';
 	import OperationStatus from './OperationStatus.svelte';
 	import type { DiscussionSession, DiscussionThread } from './session.svelte';
 
@@ -20,8 +21,15 @@
 		orphaned?: boolean;
 		onActivate: () => void;
 		recovery?: Snippet;
-		detail?: Snippet<[HTMLButtonElement | undefined, (trigger: HTMLButtonElement) => void]>;
+		detail?: Snippet<
+			[
+				HTMLButtonElement | undefined,
+				(trigger: HTMLButtonElement) => void,
+				DeleteConfirmationState
+			]
+		>;
 	} = $props();
+	const deletion = new DeleteConfirmationState();
 	const composer = $derived(session.replyComposer(thread.id));
 	const pendingOperations = $derived(
 		[...session.work.operations.values()].filter(
@@ -75,6 +83,7 @@
 		threadId={thread.id}
 		{session}
 		{canRead}
+		{deletion}
 		onActivate={activateReply}
 		onEdit={selectThread}
 	/>
@@ -89,5 +98,5 @@
 			{/each}
 		</div>
 	{/if}
-	{@render detail?.(replyTrigger, rememberReplyTrigger)}
+	{@render detail?.(replyTrigger, rememberReplyTrigger, deletion)}
 </DocumentPanelCard>

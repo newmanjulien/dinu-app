@@ -25,10 +25,12 @@
 		onSubmit,
 		onCheckResult,
 		author,
-		viewerKey
+		viewerKey,
+		perspective = 'buyer'
 	}: {
 		author?: import('./session.svelte').DiscussionAuthor;
 		viewerKey?: string;
+		perspective?: 'buyer' | 'seller';
 		id?: string;
 		text: string;
 		title: string;
@@ -76,7 +78,7 @@
 </script>
 
 {#if author}<div class="mb-2.5">
-		<MessageByline {author} {viewerKey} />
+		<MessageByline {author} {viewerKey} {perspective} />
 	</div>{/if}
 <TextArea
 	attachment={textareaAttachment}
@@ -108,9 +110,9 @@
 		{errorMessage}
 	</p>
 {/if}
-<div class="mt-3 flex flex-wrap justify-end gap-2">
+<div class="mt-3 flex flex-wrap justify-end gap-3">
 	{#if closeLabel && onClose}
-		<Button variant="ghost" onclick={onClose}>
+		<Button variant="secondary" onclick={onClose}>
 			{closeLabel}
 		</Button>
 	{/if}

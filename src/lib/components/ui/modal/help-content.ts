@@ -23,40 +23,31 @@ export const helpContent = {
 					'Green clauses have explanations. Select one to read a plain English explanation.'
 			},
 			{
-				title: 'Find what you need',
-				description: 'Use Search to find words or phrases in the contract.'
+				title: 'Ask questions',
+				description: 'Add a comment to ask questions about the contract.'
 			},
 			{
-				title: 'Discuss next steps',
-				description:
-					'Leave comments or propose changes on the contract. Word downloads always contain the latest published contract.'
+				title: 'Get answers',
+				description: 'The rep who sent you the contract will see your comments and answer.'
 			}
 		]
 	},
 	rep: {
-		title: 'How Dinu works',
-		intro: 'Dinu helps you understand, negotiate and close sales contracts.',
+		title: 'How buyer links work',
+		intro: 'Buyer links let you exchange comments with your buyer.',
 		steps: [
 			{
-				title: 'Open a clause',
-				highlight: { text: 'Blue clauses have instructions.', color: 'blue' },
-				description:
-					'Blue clauses have instructions. Select one to read the instructions for that clause.'
+				title: 'Leave a comment',
+				highlight: { text: 'Highlight a clause', color: 'blue' },
+				description: 'Highlight a clause to leave a comment for the buyer.'
 			},
 			{
-				title: 'Understand the clause',
-				description:
-					'Clauses are explained in plain English and include tips for negotiating with buyers.'
+				title: 'Buyers answer',
+				description: 'Buyers can see you comments, answer and leave their own comments.'
 			},
 			{
-				title: 'Negotiate safely',
-				description: 'Automatically apply concessions to the clauses you can negotiate.',
-				adminNote: 'Concessions are automatically approved because you’re an admin.'
-			},
-			{
-				title: 'Publish approved wording',
-				description:
-					'Open the buyer link as a seller and choose Publish to buyer once every submitted change is approved. Each publication creates a version. Downloads and HubSpot use the latest published version.'
+				title: 'Buyers propose changes',
+				description: 'You can get changes approved with 1 click if buyers propose them.'
 			}
 		]
 	},

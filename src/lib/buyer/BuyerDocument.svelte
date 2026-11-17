@@ -186,8 +186,10 @@
 	let selectedId = $state<string | null>(null);
 	let selectedAnnotationId = $state<string | null>(null);
 	const selected = $derived(content.explanations.find((i) => i.itemId === selectedId));
+	let animateExplanationContent = $state(false);
 	function close(restore = true) {
 		const focus = restore ? workspace.viewer.captureAnnotationFocus?.() : undefined;
+		animateExplanationContent = false;
 		selectedId = null;
 		selectedAnnotationId = null;
 		if (focus) focus();
@@ -235,7 +237,9 @@
 	{#if selected?.explanation.trim()}
 		<DocumentPanelCard label="Clause explanation">
 			<DocumentPanelBody>
-				<ClauseText text={selected.explanation} />
+				{#key selected.itemId}
+					<ClauseText text={selected.explanation} animateContent={animateExplanationContent} />
+				{/key}
 			</DocumentPanelBody>
 		</DocumentPanelCard>
 	{/if}
@@ -372,6 +376,7 @@
 				if (!active || !content.explanations.find((i) => i.itemId === itemId)?.explanation.trim())
 					return false;
 				const changed = selectedId !== itemId;
+				animateExplanationContent = Boolean(selected) && changed;
 				selectedId = itemId;
 				selectedAnnotationId = annotationId;
 				if (changed) onClauseOpen?.(itemId);

@@ -136,12 +136,7 @@
 		{/snippet}
 	</ContractsLayout>
 {:else if route.presentation === 'settings'}
-	<SettingsLayout
-		{role}
-		{presentation}
-		email={viewer?.profile.email}
-		approvalEmail={viewer?.company?.approvalEmail}
-	/>
+	<SettingsLayout {role} {presentation} />
 {:else if route.presentation === 'contract-settings'}
 	<ContractSettingsLayout />
 {:else if route.presentation === 'team'}

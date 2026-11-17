@@ -2,7 +2,16 @@
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	import UserIcon from 'phosphor-svelte/lib/UserIcon';
 	import type { DiscussionAuthor } from './session.svelte';
-	let { author, viewerKey }: { author: DiscussionAuthor; viewerKey?: string } = $props();
+	let {
+		author,
+		viewerKey,
+		perspective
+	}: {
+		author: DiscussionAuthor;
+		viewerKey?: string;
+		perspective: 'buyer' | 'seller';
+	} = $props();
+	const you = $derived(perspective === 'buyer' ? author.buyer : author.key === viewerKey);
 </script>
 
 <div class="flex min-w-0 items-center gap-2">
@@ -17,6 +26,6 @@
 			aria-hidden="true"><UserIcon size={19} weight="regular" /></span
 		>{/if}
 	<span class="min-w-0 truncate text-[13px] leading-[1.2] font-medium text-ink"
-		>{author.key === viewerKey ? 'You' : author.name}</span
+		>{you ? 'You' : author.name}</span
 	>
 </div>

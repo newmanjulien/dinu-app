@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type ArticleIcon from 'phosphor-svelte/lib/ArticleIcon';
+	import type EnvelopeSimpleOpenIcon from 'phosphor-svelte/lib/EnvelopeSimpleOpenIcon';
 	import FloatingSurface from '$lib/components/ui/FloatingSurface.svelte';
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
@@ -16,7 +16,7 @@
 		actions: readonly {
 			id: string;
 			label: string;
-			icon: typeof ArticleIcon;
+			icon: typeof EnvelopeSimpleOpenIcon;
 			enabled?: boolean;
 			reason?: string;
 			onSelect: () => void;
@@ -24,7 +24,7 @@
 		onClose: (reason: CloseReason) => void;
 		element?: HTMLDivElement | null;
 	} = $props();
-	const buttons = $state<Record<string, HTMLButtonElement | null>>({});
+	const buttons = $state<Record<string, HTMLElement | null>>({});
 	const preserveSelection = (event: PointerEvent) => event.preventDefault();
 </script>
 
@@ -51,17 +51,18 @@
 			onpointerdown={preserveSelection}
 		>
 			{#snippet children(descriptionId)}
-				<SquareIconButton
-					bind:element={buttons[action.id]}
-					class="size-[27px] rounded-[9.5px]"
-					type="button"
-					disabled={!enabled}
-					aria-describedby={descriptionId}
-					onclick={action.onSelect}
-					aria-label={enabled ? action.label : `${action.label}: ${action.reason}`}
-				>
-					<action.icon aria-hidden="true" class="size-5" weight="regular" />
-				</SquareIconButton>
+				<span class="inline-flex" bind:this={buttons[action.id]}>
+					<SquareIconButton
+						class="size-[27px] rounded-[9.5px]"
+						type="button"
+						disabled={!enabled}
+						aria-describedby={descriptionId}
+						onclick={action.onSelect}
+						aria-label={enabled ? action.label : `${action.label}: ${action.reason}`}
+					>
+						<action.icon aria-hidden="true" class="size-5" weight="regular" />
+					</SquareIconButton>
+				</span>
 			{/snippet}
 		</Tooltip>
 	{/each}

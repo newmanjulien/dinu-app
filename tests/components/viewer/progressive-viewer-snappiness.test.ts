@@ -1,4 +1,4 @@
-import { mount, unmount } from 'svelte';
+import { mount, unmount, type Snippet } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DocumentResources } from '../../../src/lib/document/runtime/resources.svelte';
 import { createDocumentWorkspace } from '../../../src/lib/document/runtime/workspace-factory';
@@ -387,7 +387,7 @@ it('prepares an active opening parked without a target, then reuses its mounted 
 		blocks: { data: data.blocks },
 		items: { data: data.records }
 	});
-	resources.activate(entry);
+	const attachment = resources.activate(entry);
 	const controls = reactive({ active: true });
 	cleanups.push(() => {
 		resources.destroy();
@@ -404,8 +404,20 @@ it('prepares an active opening parked without a target, then reuses its mounted 
 		snapshot = entry.workspace.renderer.snapshot,
 		measures = layout.measure.mock.calls.length;
 	expect(nodes.length).toBeGreaterThan(3);
-	entry.target = document.createElement('div');
-	document.body.append(entry.target);
+	const viewport = document.createElement('div');
+	const target = document.createElement('div');
+	viewport.append(target);
+	document.body.append(viewport);
+	attachment.bind(
+		{
+			panelContent: (() => {}) as unknown as Snippet,
+			selectedConcessions: {},
+			onRemoveConcession() {},
+			onSelect() {}
+		},
+		target,
+		{ identity: Symbol('test-section'), viewport, active: true }
+	);
 	await settle();
 	expect(entry.workspace.viewer.pagesVisible).toBe(true);
 	expect(entry.workspace.renderer.snapshot).toBe(snapshot);

@@ -12,7 +12,11 @@
 
 	import { setAnnotationRegistry } from '$lib/document/annotation-registry';
 	import { DocumentAnnotationProjection } from '$lib/document/annotation-projection';
-	import { restoreDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
+	import { bindDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
+	import {
+		getDocumentSection,
+		type DocumentSectionHandle
+	} from '$lib/document/runtime/section.svelte';
 	import {
 		matchesMountedSnapshot,
 		type MountedDocumentRevision
@@ -99,6 +103,10 @@
 	let {
 		reserveReviewGutter = false,
 		active = true,
+		foreground = true,
+		section = getDocumentSection(),
+		navigationIdentity,
+		placementReady,
 		interactive = true,
 		annotationsVisible = true,
 		retained = false,
@@ -138,6 +146,10 @@
 		discussions?: DiscussionSession;
 		annotationItems?: readonly import('$lib/playbook/document-overlay').DocumentAnnotationItem[];
 		active?: boolean;
+		foreground?: boolean;
+		section?: DocumentSectionHandle;
+		navigationIdentity?: object;
+		placementReady?: boolean;
 		interactive?: boolean;
 		annotationsVisible?: boolean;
 		retained?: boolean;
@@ -178,7 +190,21 @@
 	} = $props();
 	const { source, renderer, viewer } = getDocumentWorkspace();
 	const loadingViewer = createDocumentLoadingViewerId();
-	restoreDocumentNavigation(viewer, () => active);
+	const physicallyPlaced = $derived(
+		placementReady ??
+			Boolean(
+				viewer.documentStageElement && section?.viewport?.contains(viewer.documentStageElement)
+			)
+	);
+	const presented = $derived(physicallyPlaced && foreground && (section?.active ?? true));
+	const localNavigationIdentity = {};
+	bindDocumentNavigation(
+		viewer,
+		() => navigationIdentity ?? localNavigationIdentity,
+		() => section,
+		() => active && foreground,
+		() => physicallyPlaced
+	);
 	const interacting = $derived(active && interactive);
 	const snapshot = $derived(renderer.snapshot);
 	const annotationLabel = getAnnotationLabel();
@@ -999,7 +1025,7 @@
 	const presentationOutcome = $derived(
 		hasActiveConflicts || (renderer.error && (!pages.length || incomplete))
 			? 'error'
-			: viewer.layoutPrepared && viewer.pagesVisible && current
+			: presented && viewer.layoutPrepared && viewer.pagesVisible && current
 				? 'success'
 				: 'pending'
 	);

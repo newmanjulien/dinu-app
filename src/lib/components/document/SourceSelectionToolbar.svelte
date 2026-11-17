@@ -18,9 +18,9 @@
 		getDocumentSelection,
 		type SelectionNotice
 	} from '$lib/document/selection/document-selection';
-	import ArticleIcon from 'phosphor-svelte/lib/ArticleIcon';
+	import EnvelopeSimpleIcon from 'phosphor-svelte/lib/EnvelopeSimpleIcon';
 	import LightningIcon from 'phosphor-svelte/lib/LightningIcon';
-	import CopyIcon from 'phosphor-svelte/lib/CopyIcon';
+	import CopySimpleIcon from 'phosphor-svelte/lib/CopySimpleIcon';
 	import type { CloseReason } from '$lib/components/ui/interactions';
 	let {
 		audience = 'rep',
@@ -54,9 +54,9 @@
 		};
 	} = $props();
 	const actions = $derived([
-		{ mode: 'add-item', label: templateCopy(audience).addAction, icon: ArticleIcon },
+		{ mode: 'add-item', label: templateCopy(audience).addAction, icon: EnvelopeSimpleIcon },
 		copyRepSummary
-			? { mode: 'copy-rep-summary' as const, label: 'Copy rep summary', icon: CopyIcon }
+			? { mode: 'copy-rep-summary' as const, label: 'Copy rep summary', icon: CopySimpleIcon }
 			: { mode: 'concession' as const, label: 'Add concession', icon: LightningIcon }
 	] as const);
 	let actionStates = $state<SelectionActions | null>(null);
@@ -202,7 +202,7 @@
 				label: action.label,
 				icon: action.icon,
 				enabled: state.enabled,
-				reason: state.enabled ? undefined : state.reason,
+				reason: state.enabled ? undefined : 'Disabled for this clause',
 				onSelect: () => {
 					void confirm(action.mode);
 				}

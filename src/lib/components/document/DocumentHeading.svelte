@@ -32,7 +32,7 @@
 			};
 		if (buyerPresentation?.kind === 'seller')
 			return {
-				title: 'Leave and answer comments',
+				title: 'Add, see and answer comments',
 				hintLabel: 'About seller comments',
 				hint: 'Leave comments on the contract and reply to buyer comments here.'
 			};
@@ -50,7 +50,7 @@
 			return {
 				title: `This is your contract with ${buyerPresentation.companyName}`,
 				hintLabel: 'About your contract',
-				hint: `Review your contract with ${buyerPresentation.companyName} and leave comments here.`
+				hint: `Review your contract and leave comments if you have questions.`
 			};
 		return null;
 	});

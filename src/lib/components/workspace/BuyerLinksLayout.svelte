@@ -49,7 +49,7 @@
 		<Tooltip
 			label="About buyer links"
 			text={role === 'admin'
-				? 'These are the links that reps send to buyers. The explanations you added to the buyer template are displayed here.'
+				? 'These are the links reps send to buyers. The explanations you added to the buyer template are displayed here.'
 				: 'These are the links you send to buyers so they can understand and comment on your contract.'}
 		>
 			{#snippet children()}

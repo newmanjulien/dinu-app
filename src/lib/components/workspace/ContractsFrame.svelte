@@ -1,13 +1,11 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { navigating } from '$app/state';
 	import { loadModule } from '$lib/auth/component-loader.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getWorkspaceDestinations } from '$lib/auth/workspace-context.svelte';
 	import { afterStartupPaint, recordStartup } from '$lib/auth/startup-perf';
-	import { useStartupHome } from '$lib/auth/startup-data';
-	import { useWorkspaceReadSnapshots } from '$lib/auth/workspace-read-snapshots.svelte';
 	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { FirstLinkHintVisit } from '$lib/buyer/first-link-hint-visit.svelte';
 	import { useCompanySetup } from '$lib/features/company-setup/company-setup.svelte';
@@ -33,33 +31,15 @@
 	const searchState = $derived(contractsSearch?.current);
 	const firstVisit = Boolean(contractsSearch && !contractsSearch.visited);
 	const setup = useCompanySetup();
-	const reads = useWorkspaceReadSnapshots();
 	const membershipId = viewer().membership.id;
 	const firstLinkHintVisit =
 		contractsSearch?.current?.firstLinkHintVisit(membershipId) ??
 		new FirstLinkHintVisit(membershipId);
 	const buyerLinkPresence = useReadQuery(api.buyerLinks.dashboardPresence, { membershipId });
 	const buyerLinksAvailable = $derived(buyerLinkPresence.data?.hasActive ?? undefined);
-	const startupHome = useStartupHome();
-	const initialHome = startupHome();
-	// Only stage a cold entry that began before setup or contract data was ready.
-	const initialResultsReady = Boolean(
-		reads?.getDirectory('contracts') ||
-		reads?.getBrowse(
-			'contracts',
-			untrack(() => searchState?.query ?? '')
-		) ||
-		reads?.get('contracts') ||
-		(initialHome?.scope.profileId === viewer().profile.id &&
-			initialHome.scope.membershipId === viewer().membership.id &&
-			initialHome.scope.companyId === viewer().company.id)
-	);
-	const needsContentLead = firstVisit && (!setup.resolved || !initialResultsReady);
-	const needsSetupLead = $derived(firstVisit && Boolean(setup.progress && !setup.complete));
-	let setupLeadElapsed = $state(false);
-	let contentLeadElapsed = $state(false);
-	const showHeadings = $derived(setup.resolved && (!needsSetupLead || setupLeadElapsed));
-	const showContent = $derived(showHeadings && (!needsContentLead || contentLeadElapsed));
+	// Let the admitted headings paint before revealing rows already in memory.
+	let headingsPainted = $state(false);
+	const showContent = $derived(!firstVisit || headingsPainted);
 	let buyerCardReady = $state(false);
 	const showFirstLinkHint = $derived(firstLinkHintVisit.shown);
 	$effect(() => {
@@ -80,13 +60,8 @@
 		if (showContent && contractsSearch) contractsSearch.visited = true;
 	});
 	$effect(() => {
-		if (!needsSetupLead || !setup.resolved) return;
-		return afterStartupPaint(() => (setupLeadElapsed = true));
-	});
-	$effect(() => {
-		if (!needsContentLead || !showHeadings) return;
-		const timer = setTimeout(() => (contentLeadElapsed = true), 80);
-		return () => clearTimeout(timer);
+		if (!firstVisit) return;
+		return afterStartupPaint(() => (headingsPainted = true));
 	});
 	const results = loadModule(
 		() => getContracts() ?? loadContracts(),
@@ -217,7 +192,6 @@
 				{showFirstLinkHint}
 				{onFirstLinkCardReady}
 				{firstVisit}
-				{showHeadings}
 				{showContent}
 				onSearch={updateSearch}
 				bind:ready={resultsReady}
@@ -229,7 +203,6 @@
 				{showFirstLinkHint}
 				{onFirstLinkCardReady}
 				{firstVisit}
-				{showHeadings}
 				{showContent}
 				role={viewer().membership.role}
 				failed={results.failed}

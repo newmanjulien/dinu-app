@@ -8,7 +8,11 @@
 </script>
 
 <div data-discussion-provisional class="p-3.5">
-	<MessageByline author={post.author} viewerKey={post.author.key} />
+	<MessageByline
+		author={post.author}
+		viewerKey={post.author.key}
+		perspective={session.perspective()}
+	/>
 	<p class="mt-2.5 mb-0 whitespace-pre-wrap text-ink-secondary [overflow-wrap:anywhere]">
 		{post.text || 'Delete selected wording'}
 	</p>
@@ -27,7 +31,10 @@
 	{/if}
 	{#if post.failed}
 		<div class="mt-2.5 text-xs text-danger" role="alert">
-			<p>{post.failureMessage ?? (post.kind === 'reply' ? 'We couldn’t reply.' : 'We couldn’t post this message.')}</p>
+			<p>
+				{post.failureMessage ??
+					(post.kind === 'reply' ? 'We couldn’t reply.' : 'We couldn’t post this message.')}
+			</p>
 			<InlineAction
 				disabled={!session.canRestorePost(post.source)}
 				onclick={() => session.restorePostDraft(post.source)}>Edit draft</InlineAction

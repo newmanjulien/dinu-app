@@ -12,7 +12,6 @@
 	import ContractGrid from './ContractGrid.svelte';
 	import ContractsResultsLayout from './ContractsResultsLayout.svelte';
 	import Button from '$lib/ui/Button.svelte';
-	import LoadingWheel from '$lib/ui/LoadingWheel.svelte';
 	import { orderBuyerLinks } from './buyer-link-order';
 
 	let {
@@ -22,7 +21,6 @@
 		onFirstLinkCardReady,
 		role,
 		firstVisit = false,
-		showHeadings = true,
 		showContent = true,
 		failed = false,
 		onRetry
@@ -33,7 +31,6 @@
 		onFirstLinkCardReady?: () => void;
 		role: Role;
 		firstVisit?: boolean;
-		showHeadings?: boolean;
 		showContent?: boolean;
 		failed?: boolean;
 		onRetry?: () => void;
@@ -54,9 +51,6 @@
 		)
 	);
 	const buyerDirectory = $derived(reads?.getDirectory('buyerLinks'));
-	const initialBuyerReady = Boolean(
-		reads?.getDirectory('buyerLinks')?.rows.length || reads?.get('buyerLinks')?.rows.length
-	);
 	const firstBuyerLinks = $derived(reads?.get('buyerLinks'));
 	const buyerRows = $derived.by(() => {
 		const rows = (buyerDirectory?.rows ?? firstBuyerLinks?.rows ?? []).filter((row) =>
@@ -67,9 +61,12 @@
 	const showBuyerLinks = $derived(
 		buyerLinksAvailable === true || (buyerLinksAvailable === undefined && buyerRows.length > 0)
 	);
+	const resultsLoading = $derived(
+		showContent && !failed && !cards.length && !(showBuyerLinks && buyerRows.length)
+	);
 	let gridWidth = $state(0);
 	let visibleRows = $state(4);
-	const columns = $derived(gridWidth >= 1000 ? 3 : gridWidth >= 600 ? 2 : 1);
+	const columns = $derived(gridWidth >= 900 ? 3 : gridWidth >= 600 ? 2 : 1);
 	const visibleLimit = $derived(visibleRows * columns);
 	let visibleBuyerLinks = $state(10);
 	$effect(() => {
@@ -92,10 +89,9 @@
 <ContractsResultsLayout
 	{role}
 	{firstVisit}
-	buyerContentReadyInitially={initialBuyerReady}
-	{showHeadings}
 	{showContent}
 	hasBuyerLinks={showBuyerLinks}
+	loading={resultsLoading}
 >
 	{#snippet notice()}
 		{#if failed}
@@ -130,12 +126,6 @@
 					</Button>
 				{/if}
 			</div>
-		{:else}
-			{#if search.trim()}
-				<div class="flex min-h-40 items-center justify-center">
-					<LoadingWheel class="size-5" label="Loading contract results" />
-				</div>
-			{/if}
 		{/if}
 	{/snippet}
 	{#snippet buyerLinksContent(showBuyerContent)}

@@ -23,14 +23,17 @@ it('prevents old attachments from clearing a replacement view', () => {
 	});
 	const old = resources.activate(entry, { 'item-a': 'old' });
 	const current = resources.activate(entry, { 'item-a': 'new' });
+	const viewport = document.createElement('div');
 	const target = document.createElement('div');
+	viewport.append(target);
+	const section = { identity: Symbol('test-section'), viewport, active: true };
 	const bindings = {
 		panelContent: (() => {}) as unknown as Snippet,
 		selectedConcessions: { 'item-a': 'new' },
 		onRemoveConcession() {},
 		onSelect() {}
 	};
-	current.bind(bindings, target);
+	current.bind(bindings, target, section);
 	workspace.viewer.pagesVisible = true;
 	old.update({ 'item-a': 'stale' });
 	old.release();

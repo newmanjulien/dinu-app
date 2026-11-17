@@ -150,6 +150,7 @@
 			{...bindings}
 			reviewTags={interactionAdmitted ? bindings?.reviewTags : []}
 			active={!runtime.paused}
+			foreground={interactionAdmitted}
 			prepare={!runtime.paused && editor.definitionsReady}
 			interactive={interactionAdmitted && !session.blocked && editor.definitionsReady}
 			annotationsVisible={interactionAdmitted}
