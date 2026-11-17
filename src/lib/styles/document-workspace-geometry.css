@@ -1,42 +1,17 @@
-/* Resolve container units inside the shared wrapper, including during loading. */
+/* Center the paper and panel after the tools rail while keeping review controls clear. */
 .document-workspace-geometry {
-	--reserved-width: 30px;
-	--available-width: max(0px, calc(100cqw - var(--reserved-width)));
-	--review-gutter: min(var(--review-gutter-max), var(--available-width));
-	--panel-min-width: var(--panel-min-width-floor);
-	--side-panel-reserved-width: calc(
-		var(--rail-safe-gutter) + var(--panel-min-width) + var(--panel-gap) + var(--right-gutter)
+	--page-width: calc(var(--review-gutter) + var(--paper-width));
+	--panel-span: 0px;
+	--group-width: calc(var(--paper-width) + var(--panel-span));
+	--rail-edge: var(--tool-rail-edge, 0px);
+	--paper-left: max(
+		calc(var(--rail-edge) + var(--review-gutter)),
+		calc((100cqw + var(--rail-edge) - var(--group-width)) / 2)
 	);
-	--paper-width: min(
-		var(--paper-max-width),
-		max(0px, calc(var(--available-width) - var(--review-gutter)))
-	);
-	--page-width: calc(var(--paper-width) + var(--review-gutter));
-	--page-margin-left: auto;
-	--page-margin-right: auto;
-	--panel-width: clamp(
-		var(--panel-min-width),
-		calc(
-			100cqw - var(--rail-safe-gutter) - var(--page-width) - var(--panel-gap) - var(--right-gutter)
-		),
-		480px
-	);
-	--page-left: min(
-		calc(50cqw - var(--page-width) / 2),
-		calc(100cqw - var(--right-gutter) - var(--panel-width) - var(--panel-gap) - var(--page-width))
-	);
+	--page-left: calc(var(--paper-left) - var(--review-gutter));
+	--workspace-width: max(100cqw, calc(var(--paper-left) + var(--group-width)));
 }
 
-/* Match the side-panel container queries in DocumentWorkspaceLayout. */
-@container (min-width: 1150px) {
-	.document-workspace-geometry {
-		--review-gutter: min(var(--desktop-review-gutter-max), clamp(92px, 7cqw, 100px));
-		--panel-min-width: clamp(var(--panel-min-width-floor), 26cqw, var(--panel-comfortable-width));
-	}
-
-	.document-workspace-geometry.has-panel {
-		--reserved-width: var(--side-panel-reserved-width);
-		--page-margin-left: var(--page-left);
-		--page-margin-right: 0;
-	}
+.document-workspace-geometry.has-right-rail {
+	--panel-span: calc(var(--panel-gap) + var(--panel-width));
 }

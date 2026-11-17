@@ -6,14 +6,17 @@
 	import type { DiscussionAnchor } from './validators';
 	import type { DocumentHighlightController } from '$lib/document/highlights/controller';
 	import DocumentPanelRail from '$lib/components/document/DocumentPanelRail.svelte';
-	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
+	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
+	import DocumentPanelBody from '$lib/components/document/DocumentPanelBody.svelte';
 	import InlineAction from '$lib/components/playbook/InlineAction.svelte';
-	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
-	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import { captureDiscussionAnchor, discussionDomRange, indexDiscussionDom } from './dom-anchor';
 	import { packAnnotationRail } from './annotation-rail-layout';
+	import DiscussionRootCard from './DiscussionRootCard.svelte';
+	import ProvisionalMessage from './ProvisionalMessage.svelte';
 	import DiscussionThread from './DiscussionThread.svelte';
 	import MessageComposer from './MessageComposer.svelte';
+	import OperationStatus from './OperationStatus.svelte';
+	import { composerBoundary } from './focus-composer';
 	import SelectionToolbar from '$lib/components/document/SelectionToolbar.svelte';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
 	import { setInteractionOwner, type CloseReason } from '$lib/components/ui/interactions';
@@ -27,15 +30,18 @@
 			openingTrigger = documentRoot ?? undefined;
 	}
 	function dismissPanel(restore: boolean) {
-		if (!restore && !session.replyingTo && !session.editingMessage) return;
 		if (session.selected === 'composer') {
-			if (!restore || session.drafts.submitting) return;
-			session.cancel();
+			collapseComposer(restore);
 		} else {
+			if (!restore && !session.replyingTo && !session.editingMessage) return;
 			session.closeEditors();
 			session.selected = null;
+			if (restore && openingTrigger?.isConnected) openingTrigger.focus({ preventScroll: true });
 		}
-		if (restore && openingTrigger?.isConnected) openingTrigger.focus({ preventScroll: true });
+	}
+	function collapseComposer(restoreFocus = false) {
+		session.collapseCreate();
+		if (restoreFocus && openingTrigger?.isConnected) openingTrigger.focus({ preventScroll: true });
 	}
 
 	let {
@@ -61,37 +67,63 @@
 	} = $props();
 	let rail = $state<HTMLDivElement>(),
 		positions = $state.raw<Record<string, number>>({}),
-		anchors = $state.raw<Record<string, number>>({}),
+		positioned = $state.raw<Set<string>>(new Set()),
 		resolved = $state.raw<Set<string>>(new Set()),
 		bottom = $state(0);
 	let toolbar = $state.raw<{
 		reference: FloatingVirtualAnchor;
 		anchor: DiscussionAnchor;
 	} | null>(null);
+	const visibleComposerCard = $derived(session.visibleComposerCard);
+	const standaloneCreateOperations = $derived(
+		[...session.work.operations.values()].filter(
+			(operation) =>
+				operation.command.kind === 'create' &&
+				session.hasOperationStatus(operation.source) &&
+				!session.provisionalPosts.has(operation.source) &&
+				operation.source !== visibleComposerCard?.id
+		)
+	);
 	const selectionGeometryListeners = new Set<() => void>();
 	let dismissedSelection: string | undefined;
 	let alive = true;
 	let ranges = $state.raw(new Map<string, Range>());
 	let documentBottom = $state(0);
+	let railOrder: string[] = [];
+	let railOrderFrozen = false;
+	let railOrderInputs:
+		| {
+				root: HTMLElement;
+				layout: HTMLElement;
+				highlights: DocumentHighlightController | undefined;
+				render: unknown;
+				width: number;
+				cards: string;
+		  }
+		| undefined;
+	let measuredAnchors = new Map<string, { signature: string; top: number }>();
 	$effect(() => {
 		if (!active || obscured) session.closeEditors();
 	});
 	let frame: number | undefined,
 		selectionPointer: number | null = null;
+	const rootCards = $derived(session.displayRoots);
 	const cards = $derived([
-		...session.threads.map((t) => ({
-			id: t.id,
-			anchor: t.anchor,
-			type: t.type,
-			available: session.feed.authorized
+		...rootCards.map((card) => ({
+			key: card.key,
+			id: card.id,
+			anchor: card.anchor,
+			type: card.type,
+			available: card.available
 		})),
-		...(session.visibleComposer
+		...(visibleComposerCard
 			? [
 					{
+						key: 'composer',
 						id: 'composer',
-						anchor: session.visibleComposer.anchor,
-						type: session.visibleComposer.type,
-						available: session.visibleComposer.contentIdentity === session.contentIdentity()
+						anchor: visibleComposerCard.anchor,
+						type: visibleComposerCard.type,
+						available: visibleComposerCard.contentIdentity === session.contentIdentity()
 					}
 				]
 			: [])
@@ -216,39 +248,83 @@
 	}
 	function measure() {
 		if (!alive || !active || !layout?.isConnected || !documentRoot?.isConnected || !cards.length) {
-			anchors = {};
+			railOrder = [];
+			railOrderFrozen = false;
+			railOrderInputs = undefined;
+			measuredAnchors.clear();
 			resolved = new Set();
 			positions = {};
+			positioned = new Set();
 			bottom = 0;
 			documentBottom = active ? (layout?.getBoundingClientRect().height ?? 0) : 0;
 			return;
 		}
+		const cardSignature = JSON.stringify(
+			cards.map((card) => [card.key, card.id, card.anchor, card.available])
+		);
+		const documentWidth = documentRoot.getBoundingClientRect().width;
+		// Mounted-page revisions can change during scrolling without changing anchor order.
+		const sameDocument =
+			railOrderInputs?.root === documentRoot &&
+			railOrderInputs.layout === layout &&
+			railOrderInputs.highlights === highlights &&
+			railOrderInputs.render === renderRevision &&
+			railOrderInputs.width === documentWidth;
+		if (!sameDocument) measuredAnchors.clear();
+		const sameCards = sameDocument && railOrderInputs?.cards === cardSignature;
+		if (!sameCards) {
+			railOrder = [];
+			railOrderFrozen = false;
+		}
 		const base = layout.getBoundingClientRect(),
-			next: Record<string, number> = {};
+			next: Record<string, number> = {},
+			retainedAnchors = new Map<string, { signature: string; top: number }>();
 		documentBottom = base.height;
 		const items = cards.map((card, order) => {
+			const signature = JSON.stringify([card.id, card.anchor, card.available]);
 			const rect = card.available
 				? highlights?.annotationAnchorRect(groupName(card.id))
 				: undefined;
-			if (rect) next[card.id] = Math.max(0, rect.top - base.top);
+			const cached = measuredAnchors.get(card.key);
+			const cachedTop = cached?.signature === signature ? cached.top : undefined;
+			// A zero-size rect is the highlight controller's page-top placeholder while
+			// character geometry is unavailable. Keep the last exact anchor instead.
+			if (rect && (rect.width || rect.height)) next[card.key] = Math.max(0, rect.top - base.top);
+			const exactTop = next[card.key] ?? cachedTop;
+			if (exactTop !== undefined) retainedAnchors.set(card.key, { signature, top: exactTop });
+			const anchorTop = exactTop ?? (rect ? Math.max(0, rect.top - base.top) : undefined);
 			const node = rail?.querySelector<HTMLElement>(
 				`[data-discussion-card="${CSS.escape(card.id)}"]`
 			);
 			return {
-				id: card.id,
-				anchorTop: next[card.id] ?? anchors[card.id] ?? order * 90,
+				id: card.key,
+				anchorTop: anchorTop ?? order * 90,
 				height: node?.getBoundingClientRect().height ?? 100,
 				order
 			};
 		});
+		const selectedKey = cards.find((card) => card.id === session.selected)?.key;
+		const selectedTop = selectedKey ? retainedAnchors.get(selectedKey)?.top : undefined;
+		// A selected range can gain precise geometry before other ranges do. Keep the
+		// established order while its current anchor and card height are remeasured.
 		const packed = packAnnotationRail(
 			items,
-			session.selected && next[session.selected] !== undefined
-				? { id: session.selected, targetTop: next[session.selected] }
-				: null
+			selectedKey && selectedTop !== undefined ? { id: selectedKey, targetTop: selectedTop } : null,
+			sameCards && (railOrderFrozen || selectedTop !== undefined) ? railOrder : undefined
 		);
-		anchors = next;
+		measuredAnchors = retainedAnchors;
+		railOrder = packed.orderedIds;
+		railOrderFrozen ||= selectedTop !== undefined;
+		railOrderInputs = {
+			root: documentRoot,
+			layout,
+			highlights,
+			render: renderRevision,
+			width: documentWidth,
+			cards: cardSignature
+		};
 		resolved = new Set(ranges.keys());
+		positioned = new Set(Object.keys(positions));
 		positions = packed.placements;
 		bottom = packed.bottom;
 	}
@@ -331,11 +407,11 @@
 		rememberTrigger();
 		onActivate?.();
 		session.begin(toolbar.anchor, type);
-		focusDraft();
+		focusComposer();
 		toolbar = null;
 		window.getSelection()?.removeAllRanges();
 	}
-	function focusDraft() {
+	function focusComposer() {
 		const current = session.captureWriteAccess();
 		void tick().then(() => {
 			if (
@@ -343,13 +419,41 @@
 				active &&
 				!obscured &&
 				session.selected === 'composer' &&
-				!session.drafts.submitting
+				session.visibleComposer?.open &&
+				!session.visibleComposer.busy
 			)
 				rail
 					?.querySelector<HTMLTextAreaElement>('[data-discussion-card="composer"] textarea')
 					?.focus({ preventScroll: true });
 		});
 	}
+	$effect(() => {
+		const selected = session.selected;
+		const replyingTo = session.replyingTo;
+		if (!selected || !active || obscured) return;
+		void tick().then(() => {
+			if (session.selected !== selected || session.replyingTo !== replyingTo) return;
+			const panel = rail?.querySelector<HTMLElement>('[data-workspace-panel]');
+			if (!panel || getComputedStyle(panel).overflowY !== 'auto') return;
+			const card = rail?.querySelector<HTMLElement>(
+				`[data-discussion-card="${CSS.escape(selected)}"]`
+			);
+			const target =
+				(replyingTo === selected && card?.querySelector<HTMLElement>('[data-discussion-reply]')) ||
+				card?.querySelector<HTMLElement>('[data-discussion-provisional]') ||
+				card;
+			if (!target) return;
+			const bounds = target.getBoundingClientRect(),
+				viewport = panel.getBoundingClientRect(),
+				viewportTop = viewport.top + (panel.firstElementChild?.getBoundingClientRect().height ?? 0);
+			if (bounds.top < viewportTop) panel.scrollTop += bounds.top - viewportTop;
+			else if (bounds.bottom > viewport.bottom)
+				panel.scrollTop +=
+					target === card && bounds.height > viewport.bottom - viewportTop
+						? bounds.top - viewportTop
+						: bounds.bottom - viewport.bottom;
+		});
+	});
 	export function activate(id: string, restoreToDocument = false) {
 		if (session.readOnly && id === 'composer') return;
 		rememberTrigger();
@@ -357,7 +461,7 @@
 			openingTrigger = documentRoot ?? undefined;
 		onActivate?.();
 		session.selected = id;
-		if (id === 'composer') focusDraft();
+		if (id === 'composer') focusComposer();
 		if (!session.readOnly) void session.loadBuyerViewer();
 	}
 	onMount(() => {
@@ -442,7 +546,7 @@
 
 {#snippet recovery()}
 	<div class="flex flex-col gap-2 text-xs">
-		<p class="text-danger">Your draft is still here. Reconnect your account, then retry.</p>
+		<p class="text-danger">Reconnect your account to continue discussions.</p>
 		<div class="flex flex-wrap gap-x-3 gap-y-2">
 			<InlineAction href="/login" target="_blank">Sign in in another tab</InlineAction>
 			<InlineAction onclick={() => session.loadBuyerViewer()}>Retry account</InlineAction>
@@ -478,25 +582,26 @@
 			]}
 		/>
 	{/if}
-	{#if session.threads.length || session.visibleComposer || session.error || (!session.loading && !session.done)}
+	{#if session.error || standaloneCreateOperations.length || (!session.loading && !session.done)}
 		<div
 			class="pointer-events-auto absolute inset-x-3 z-10 flex flex-wrap items-center justify-end gap-3 text-xs text-ink-muted"
 			style:top={`${Math.max(documentBottom, bottom) + 8}px`}
 		>
-			{#if session.visibleComposer && session.selected !== 'composer'}
-				<InlineAction onclick={() => activate('composer')}>Continue draft</InlineAction>
-			{/if}
-			{#if session.threads.length}<span class="@min-[1150px]:hidden"
-					><InlineAction onclick={() => activate(session.threads[0].id)}
-						>View discussions</InlineAction
-					></span
-				>{/if}
 			{#if !session.done && !session.error}<InlineAction
 					disabled={session.loading}
 					onclick={() => session.loadMore()}>More discussions</InlineAction
 				>{/if}
 			{#if session.error}<p role="alert" class="text-danger">{session.error}</p>
 				<InlineAction onclick={() => session.retry()}>Retry discussions</InlineAction>{/if}
+			{#each standaloneCreateOperations as operation (operation.id)}
+				<OperationStatus
+					{session}
+					source={operation.source}
+					label={operation.command.kind === 'create' && operation.command.type === 'proposal'
+						? 'proposed change'
+						: 'comment'}
+				/>
+			{/each}
 		</div>
 	{/if}
 {/if}
@@ -506,91 +611,133 @@
 	active={active && !obscured}
 	label="Contract discussions"
 >
-	{#each session.threads as thread, index (thread.id)}
-		{@const showRecovery =
-			!session.readOnly &&
-			session.authRequired &&
-			(session.selected === thread.id ||
-				(!session.selected && !session.drafts.composer && index === 0))}
+	{#each rootCards as card, index (card.key)}
 		<div
 			use:observeCard
-			data-discussion-card={thread.id}
+			data-discussion-card={card.id}
 			class={[
-				'pointer-events-auto absolute inset-x-0 top-0 @min-[1150px]:translate-y-(--discussion-top) @max-[1150px]:static',
-				session.selected !== thread.id && !showRecovery && '@max-[1150px]:hidden'
+				'pointer-events-auto absolute inset-x-0 top-0 translate-y-(--discussion-top)',
+				positioned.has(card.key) &&
+					'motion-safe:transition-[translate] motion-safe:duration-120 motion-safe:ease-in-out',
+				session.selected === card.id && 'z-1'
 			]}
-			style:--discussion-top={`${positions[thread.id] ?? 0}px`}
+			style:--discussion-top={`${positions[card.key] ?? 0}px`}
 		>
-			<DiscussionThread
-				{thread}
-				{session}
-				canRead={active && !obscured}
-				onActivate={() => {
-					rememberTrigger();
-					onActivate?.();
-				}}
-				orphaned={!resolved.has(thread.id)}
-				recovery={showRecovery ? recovery : undefined}
-			>
-				{#snippet header()}
-					<div
-						class="flex items-center justify-end gap-3 px-3 pt-2 pb-1 text-xs @min-[1150px]:hidden"
-					>
-						<InlineAction
-							disabled={index === 0}
-							onclick={() => activate(session.threads[index - 1].id)}>Previous</InlineAction
-						>
-						<InlineAction
-							disabled={index === session.threads.length - 1}
-							onclick={() => activate(session.threads[index + 1].id)}>Next</InlineAction
-						>
-						<SquareIconButton aria-label="Close discussion" onclick={() => dismissPanel(true)}
-							><XIcon aria-hidden="true" class="size-5.5" /></SquareIconButton
-						>
-					</div>
-				{/snippet}
-			</DiscussionThread>
+			{#if card.kind === 'thread'}
+				{@const thread = card.thread}
+				{@const showRecovery =
+					!session.readOnly &&
+					session.authRequired &&
+					(session.selected === thread.id ||
+						session.hasThreadOperation(thread.id) ||
+						(!session.selected && !session.work.composer && index === 0))}
+				<DiscussionRootCard
+					{thread}
+					{session}
+					canRead={active && !obscured}
+					onActivate={() => {
+						rememberTrigger();
+						onActivate?.();
+					}}
+					orphaned={!resolved.has(thread.id)}
+					recovery={showRecovery ? recovery : undefined}
+				>
+					{#snippet detail(replyTrigger, onReplyTrigger)}
+						{#if active && !obscured && session.active && session.feed.authorized && session.feed.firstPageAccepted}
+							{#key thread.id}
+								<DiscussionThread
+									{thread}
+									{session}
+									canRead={active && !obscured}
+									onActivate={() => {
+										rememberTrigger();
+										onActivate?.();
+									}}
+									{replyTrigger}
+									{onReplyTrigger}
+								/>
+							{/key}
+						{/if}
+					{/snippet}
+				</DiscussionRootCard>
+			{:else}
+				<DocumentPanelCard
+					label={card.post.type === 'proposal' ? 'Proposed change' : 'Comment'}
+					selected={session.selected === card.id}
+				>
+					<ProvisionalMessage post={card.post} {session} />
+					{#if session.authRequired && session.selected === card.id}<div class="p-3.5">
+							{@render recovery()}
+						</div>{/if}
+				</DocumentPanelCard>
+			{/if}
 		</div>
 	{/each}
-	{#if session.visibleComposer}
+	{#if visibleComposerCard}
+		{@const composer = visibleComposerCard}
 		<div
+			use:composerBoundary={collapseComposer}
+			data-discussion-composer
 			use:observeCard
 			data-discussion-card="composer"
 			class={[
-				'pointer-events-auto absolute inset-x-0 top-0 @min-[1150px]:translate-y-(--discussion-top) @max-[1150px]:static',
-				session.selected !== 'composer' && '@max-[1150px]:hidden'
+				'pointer-events-auto absolute inset-x-0 top-0 translate-y-(--discussion-top)',
+				positioned.has('composer') &&
+					'motion-safe:transition-[translate] motion-safe:duration-120 motion-safe:ease-in-out',
+				session.selected === 'composer' && 'z-1'
 			]}
 			style:--discussion-top={`${positions.composer ?? 0}px`}
-			onfocusin={() => (session.selected = 'composer')}
+			onfocusin={() => {
+				if (composer.open) session.selected = 'composer';
+			}}
 		>
-			<PlaybookCard
-				label={session.visibleComposer.type === 'proposal' ? 'Propose change' : 'Add comment'}
+			<DocumentPanelCard
+				label={composer.type === 'proposal' ? 'Propose change' : 'Add comment'}
+				selected={session.selected === 'composer'}
 			>
-				{#if session.authRequired && (session.selected === 'composer' || !session.threads.length)}{@render recovery()}{/if}
-				<div data-discussion-composer>
-					<MessageComposer
-						allowDeletion={session.visibleComposer.type === 'proposal'}
-						text={session.drafts.text}
-						author={session.viewer}
-						viewerKey={session.viewer?.key}
-						title={session.visibleComposer.type === 'proposal' ? 'Propose change' : 'Add comment'}
-						placeholder={session.visibleComposer.type === 'proposal'
-							? 'Write the proposed wording or change…'
-							: 'Write a comment…'}
-						submitLabel={session.visibleComposer.type === 'proposal' ? 'Propose change' : 'Comment'}
-						cancelLabel="Cancel"
-						submitOnEnter
-						pending={session.drafts.submitting}
-						errorMessage={session.drafts.composeError ?? session.error ?? ''}
-						onTextChange={(text) => (session.drafts.text = text)}
-						onCancel={() => session.cancel()}
-						onSubmit={() => void session.submit()}
-					/>
-				</div>
-			</PlaybookCard>
+				<DocumentPanelBody>
+					{#if composer.open && session.selected === 'composer'}
+						{#if session.authRequired && (session.selected === 'composer' || !session.threads.length)}{@render recovery()}{/if}
+						<div>
+							<MessageComposer
+								allowDeletion={composer.type === 'proposal'}
+								text={composer.text}
+								deleting={composer.deleteSelectedWording}
+								author={session.viewer}
+								viewerKey={session.viewer?.key}
+								title={composer.type === 'proposal' ? 'Propose change' : 'Add comment'}
+								placeholder={composer.type === 'proposal'
+									? 'Write the proposed wording or change…'
+									: 'Write a comment…'}
+								submitLabel={composer.type === 'proposal' ? 'Propose change' : 'Comment'}
+								closeLabel="Cancel"
+								pending={composer.busy}
+								checkResultId={session.checkableOperationId(composer.id)}
+								errorMessage={composer.error ?? session.error ?? ''}
+								onTextChange={(text) => session.updatePostText(composer, text)}
+								onDeleteChange={(deleting) => session.updatePostDeletion(composer, deleting)}
+								onClose={() => collapseComposer(true)}
+								onSubmit={() => session.submit()}
+								onCheckResult={(operationId) => session.submit(operationId)}
+							/>
+						</div>
+					{:else if session.work.operations.has(composer.id)}
+						<div class="flex flex-col gap-3">
+							<OperationStatus
+								{session}
+								source={composer.id}
+								label={composer.type === 'proposal' ? 'proposed change' : 'comment'}
+							/>
+							{#if session.authRequired}{@render recovery()}{/if}
+						</div>
+					{/if}
+				</DocumentPanelBody>
+			</DocumentPanelCard>
 		</div>
 	{/if}
-	{#if !session.readOnly && session.authRequired && !session.threads.length && !session.drafts.composer}
-		<PlaybookCard label="Reconnect your account">{@render recovery()}</PlaybookCard>
+	{#if session.showReconnectCard}
+		<DocumentPanelCard label="Reconnect your account">
+			<DocumentPanelBody>{@render recovery()}</DocumentPanelBody>
+		</DocumentPanelCard>
 	{/if}
 </DocumentPanelRail>

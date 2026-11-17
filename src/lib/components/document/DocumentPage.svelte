@@ -55,11 +55,15 @@
 </script>
 
 {#snippet breakControls(group: BreakOccurrence)}
-	<span class="selection-break-owner" data-selection-break-owner={group.order}>
+	<span
+		class="selection-break-owner"
+		data-selection-break-owner={group.order}
+		data-selection-group={group.group.id}
+		data-selection-gap={group.gap}
+	>
 		<StructuralBoundaryControls
 			options={options(group)}
 			gap={group.gap}
-			selectionGroup={group.group.id}
 			annotations={structuralBoundaryAnnotations}
 			{selectedAnnotationId}
 			{interactive}
@@ -74,7 +78,7 @@
 <!-- prettier-ignore -->
 <article
 	use:mountSelectionPage={{ page, document: selectionDocument }}
-	class="document-page relative isolate h-(--document-page-height) w-(--document-page-width) overflow-hidden px-(--document-page-horizontal-padding) pt-(--document-page-top-padding) pb-(--document-page-bottom-padding) data-[page-number=1]:pt-(--document-first-page-top-padding) rounded-none border-0 bg-surface shadow-card outline-(length:--surface-border-width) outline-edge outline-offset-[calc(-1*var(--surface-border-width))]"
+	class="document-page relative isolate h-(--document-page-height) w-(--paper-width) overflow-hidden px-(--document-page-horizontal-padding) pt-(--document-page-top-padding) pb-(--document-page-bottom-padding) data-[page-number=1]:pt-(--document-first-page-top-padding) rounded-none border-0 bg-surface shadow-card outline-(length:--surface-border-width) outline-edge outline-offset-[calc(-1*var(--surface-border-width))]"
 	aria-label={`Page ${page.number}`}
 	data-page-number={page.number}
 >

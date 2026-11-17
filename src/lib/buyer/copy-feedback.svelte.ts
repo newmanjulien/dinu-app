@@ -8,8 +8,11 @@ export class BuyerLinkCopyFeedback {
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private alive = true;
 
-	show = () => {
-		this.publish({ message: 'Latest link copied', kind: 'success' }, 2500);
+	show = (created: boolean) => {
+		this.publish(
+			{ message: created ? 'Link created and copied' : 'Link copied', kind: 'success' },
+			2500
+		);
 	};
 
 	showError = (message: string) => {

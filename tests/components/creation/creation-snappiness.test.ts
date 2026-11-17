@@ -628,7 +628,7 @@ it('keeps unknown installation lightweight and preserves installed reconnect pol
 	const deals = picker(f);
 	f.mount(deals);
 	await settle();
-	expect(document.body.textContent).toContain('Checking HubSpot connection');
+	expect(document.body.textContent).toContain('Create a contract');
 	expect(
 		document.querySelector('input[autocomplete="organization"]')?.closest('[hidden]')
 	).not.toBeNull();

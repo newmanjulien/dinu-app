@@ -2,64 +2,30 @@
 	import '$lib/styles/document-workspace-geometry.css';
 	import type { Snippet } from 'svelte';
 	import { PAGE_FORMAT } from '$lib/document/pagination/page-format';
-	import {
-		type DocumentLayout,
-		REVIEW_GUTTER_WIDTH,
-		RAIL_SAFE_GUTTER,
-		PANEL_MIN_WIDTH,
-		PANEL_COMFORTABLE_WIDTH,
-		PANEL_GAP,
-		RIGHT_GUTTER
-	} from './workspace-layout';
+	import { REVIEW_GUTTER_WIDTH, PANEL_WIDTH, PANEL_GAP } from './workspace-layout';
 
 	let {
-		layout = 'standard',
-		reviewGutter = 0,
-		hasPanel = false,
-		onPageResize,
+		reserveReviewGutter = false,
+		hasRightRail = false,
+		notice,
 		children
 	}: {
-		layout?: DocumentLayout;
-		reviewGutter?: number;
-		hasPanel?: boolean;
-		onPageResize?: (width: number) => void;
+		reserveReviewGutter?: boolean;
+		hasRightRail?: boolean;
+		notice?: Snippet;
 		children: Snippet;
 	} = $props();
-
-	function measurePage(node: HTMLDivElement) {
-		const update = (width: number) => {
-			if (width > 0) onPageResize?.(width);
-		};
-		update(node.getBoundingClientRect().width);
-		const observer = new ResizeObserver(([entry]) => {
-			update(entry.contentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width);
-		});
-		observer.observe(node);
-		return { destroy: () => observer.disconnect() };
-	}
 </script>
 
-<div class="w-full @container">
-	<div
-		class="document-workspace-geometry relative w-full"
-		class:has-panel={hasPanel}
-		style:--paper-max-width={`${PAGE_FORMAT.width}px`}
-		style:--review-gutter-max={`${reviewGutter}px`}
-		style:--desktop-review-gutter-max={`${layout === 'contract' ? REVIEW_GUTTER_WIDTH : reviewGutter}px`}
-		style:--rail-safe-gutter={`${RAIL_SAFE_GUTTER}px`}
-		style:--panel-min-width-floor={`${PANEL_MIN_WIDTH}px`}
-		style:--panel-comfortable-width={`${PANEL_COMFORTABLE_WIDTH}px`}
-		style:--panel-gap={`${PANEL_GAP}px`}
-		style:--right-gutter={`${RIGHT_GUTTER}px`}
-	>
-		{#if onPageResize}
-			<!-- Measure even while the document content is hidden or has not mounted. -->
-			<div
-				class="pointer-events-none invisible absolute h-0 w-(--paper-width)"
-				use:measurePage
-				aria-hidden="true"
-			></div>
-		{/if}
-		{@render children()}
-	</div>
+<!-- Narrow screens intentionally keep panels beside fixed-width paper; opening one does not auto-scroll horizontally. -->
+{@render notice?.()}
+<div
+	class="document-workspace-geometry relative w-(--workspace-width) pb-[var(--document-section-bottom-padding,64px)]"
+	class:has-right-rail={hasRightRail}
+	style:--paper-width={`${PAGE_FORMAT.width}px`}
+	style:--review-gutter={`${reserveReviewGutter ? REVIEW_GUTTER_WIDTH : 0}px`}
+	style:--panel-width={`${PANEL_WIDTH}px`}
+	style:--panel-gap={`${PANEL_GAP}px`}
+>
+	{@render children()}
 </div>

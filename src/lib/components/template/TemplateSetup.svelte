@@ -327,10 +327,6 @@
 					/>
 				{/key}
 			{/key}
-		{:else}
-			<p role="status" class="mt-4 text-[13px] leading-6 text-ink-muted">
-				Your booking details are being checked. Booking is temporarily unavailable.
-			</p>
 		{/if}
 	{:else if canUpload}
 		{#if !ready}
@@ -401,9 +397,7 @@
 			</div>
 			<div role="status" aria-atomic="true" class="w-full">
 				<h2 class="text-[15.5px] leading-6 font-medium text-ink [overflow-wrap:anywhere]">
-					{parsing
-						? 'Checking your template…'
-						: ready
+					{ready
 							? 'Waiting for Julien'
 							: dragging
 								? 'Drop your Word document here'

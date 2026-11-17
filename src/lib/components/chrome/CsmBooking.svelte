@@ -484,7 +484,7 @@
 			}
 			// The mutation may still commit. Check replays this same UUID until it can bind.
 			submissionUncertain = true;
-			message = 'We’re checking whether your call was booked.';
+			message = '';
 		} finally {
 			request.complete();
 		}
@@ -511,9 +511,6 @@
 					client.action(backend.csmBookings.checkStatus, { membershipId, attemptId: key }),
 					request.signal
 				);
-				if (current() && expectedGeneration === bindingGeneration)
-					message =
-						'Status checked. If your booking is still being confirmed, please check again shortly.';
 			}
 		} catch {
 			if (current() && expectedGeneration === bindingGeneration)
@@ -542,12 +539,12 @@
 			aria-atomic="true"
 			class="text-[15.5px] leading-6 font-medium text-ink"
 		>
-			{receipt?.state === 'booked' ? 'Your call is booked' : 'We’re booking your call…'}
+			{receipt?.state === 'booked' ? 'Your call is booked' : 'Book a call'}
 		</h2>
 	</div>
 {:else}
 	<CsmBookingLayout
-		description={blocked ? 'Confirming your call' : description}
+		description={description}
 		headingId={id + '-heading'}
 		{flushTop}
 	>
@@ -565,16 +562,6 @@
 		>
 			{#if bootError || (sharedError && !ownPending)}Your booking status couldn’t load. Please try
 				again.
-			{:else if receipt?.state === 'booked' && receipt.mode === mode}Your call is booked. Updating
-				your setup status…
-			{:else if blocked}{message ||
-					(receipt?.state === 'unknown' || submitting
-						? 'We’re checking whether your call was booked.'
-						: admission === 'uncertain'
-							? 'We’re checking the current setup booking. Please wait before choosing another time.'
-							: admission === 'unavailable' || admission === 'completed'
-								? 'Your setup booking details have changed. Please wait for the latest status.'
-								: 'Booking your call…')}
 			{:else if message}{message}
 			{:else if mode === 'setup' && sharedLoaded && shared?.state === 'unavailable'}This setup
 				call’s details have changed. Close this window to see its latest status.
@@ -597,11 +584,9 @@
 							receipt.timeZone
 						)} <span class="text-ink-muted">({receipt.timeZone.replaceAll('_', ' ')})</span>
 					</p>{/if}
-				<p class="mt-2 text-[13px] leading-relaxed text-ink-muted">
-					{needsRecovery
-						? 'Your booking is taking longer than expected. Check its status before choosing another time.'
-						: 'We’ll continue once your latest booking details are confirmed.'}
-				</p>
+				{#if needsRecovery}<p class="mt-2 text-[13px] leading-relaxed text-ink-muted">
+						Your booking is taking longer than expected. Check its status before choosing another time.
+					</p>{/if}
 				{#if needsRecovery && (attemptId || submissionUncertain || mode === 'setup')}<Button
 						variant="secondary"
 						class="mt-4"

@@ -10,6 +10,7 @@ import { helpPreferences, profileView } from './accountViews';
 import { role } from './permissions';
 import {
 	currentBuyerDocument,
+	linkCapture,
 	linkPreparation,
 	linkSummary,
 	publicStatus
@@ -238,7 +239,7 @@ export const browse = query({
 /** Crypto remains in the action; native readiness + pointer creation is one transaction. */
 export const capture = internalMutation({
 	args: { ...sellerArgs, preparation: linkPreparation, token: v.string() },
-	returns: linkSummary,
+	returns: linkCapture,
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		const root = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
@@ -263,10 +264,10 @@ export const capture = internalMutation({
 				throw new ConvexError('This link request is unavailable.');
 			const link = await linkFor(ctx, args.id);
 			if (!link?.currentView) throw new ConvexError('This link is unavailable.');
-			return summary(link);
+			return { ...summary(link), created: true };
 		}
 		const existing = await linkFor(ctx, args.id);
-		if (existing?.currentView) return summary(existing);
+		if (existing?.currentView) return { ...summary(existing), created: false };
 		if (existing || preparation.kind !== 'prepared' || !key)
 			throw new ConvexError(
 				'Prepare the current approved contract before creating its first link.'
@@ -317,7 +318,7 @@ export const capture = internalMutation({
 		});
 		const id = await ctx.db.insert('buyerLinks', value);
 		await markDirectoryBuyerLinkPublished(ctx, args.id, value.createdAt);
-		const result = { id, token: value.token, createdAt: value.createdAt };
+		const result = { id, token: value.token, createdAt: value.createdAt, created: true };
 		await remember(ctx, access.companyId, key, inputs, JSON.stringify(result), {
 			contractId: args.id
 		});

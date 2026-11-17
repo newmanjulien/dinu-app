@@ -257,7 +257,8 @@ describe('immutable template creation', () => {
 			rootWrites: 0,
 			directoryWrites: 0,
 			content: 0,
-			documentWrites: 0
+			documentWrites: 0,
+			passageIndexWrites: 0
 		};
 		await t.run((ctx) => {
 			const db = new Proxy(ctx.db, {
@@ -268,6 +269,7 @@ describe('immutable template creation', () => {
 						if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
 							if (args[0] === 'contractDocuments' || args[0] === 'contractDocumentChunks')
 								counts.documentWrites++;
+							else if (args[0] === 'discussionPassageIndexes') counts.passageIndexWrites++;
 							else if (args[0] === 'savedContracts') counts.rootWrites++;
 							else if (args[0] === 'contractDirectory') counts.directoryWrites++;
 							else counts.writes++;
@@ -301,7 +303,8 @@ describe('immutable template creation', () => {
 			rootWrites: 2,
 			directoryWrites: 1,
 			content: 1,
-			documentWrites: 3
+			documentWrites: 3,
+			passageIndexWrites: 1
 		});
 	});
 	it('refuses first-link creation when saving advances beyond the flushed revision', async () => {

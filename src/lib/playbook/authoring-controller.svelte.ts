@@ -292,8 +292,7 @@ export class AuthoringController {
 				? this.editingUnavailableReason
 				: validation ||
 					(action === 'save' && !this.submission.available ? this.submission.reason : '') ||
-					this.creationIncompleteReason ||
-					(action === 'save' && !this.creating && !this.dirty ? 'No changes to save.' : '');
+					this.creationIncompleteReason;
 		const label = action === 'advance' ? 'Add the other part' : action === 'add' ? 'Add' : 'Save';
 		return {
 			action,

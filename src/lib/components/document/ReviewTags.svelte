@@ -10,7 +10,7 @@
 	import type { ReviewTag, ReviewNavigation, ReviewDecision } from '$lib/contract/approval';
 	import type { SelectionDocument } from '$lib/document/selection/selection-model';
 	import type { PaginatedPage } from '$lib/document/pagination/types';
-	import { getDocumentViewportMetrics } from '$lib/document/document-viewport';
+	import { revealInDocumentViewport } from '$lib/document/document-viewport';
 	import { reviewTagExplanation } from './review-tag-copy';
 	let {
 		host,
@@ -20,8 +20,7 @@
 		ready,
 		visible,
 		document,
-		pages,
-		scale
+		pages
 	}: {
 		host?: HTMLElement;
 		tags: readonly ReviewTag[];
@@ -31,7 +30,6 @@
 		visible: boolean;
 		document?: SelectionDocument;
 		pages: readonly PaginatedPage[];
-		scale: number;
 	} = $props();
 	let anchors = $state.raw<ReviewAnchor[]>([]);
 	let projectionPending = $state(true);
@@ -62,8 +60,7 @@
 			mountedDocument = document,
 			shown = visible;
 		const key = geometryKey,
-			mountedPages = pages,
-			pageScale = scale;
+			mountedPages = pages;
 		// Retry geometry after the viewer finishes preparing or becomes interactive again.
 		void ready;
 		let cancelled = false;
@@ -79,7 +76,6 @@
 										tags,
 										mountedDocument,
 										mountedPages,
-										pageScale,
 										key
 									);
 									if (!tags.some((tag) => tag.kind === 'buyer-link')) return projected;
@@ -157,8 +153,10 @@
 			if (!node) return;
 			if (!target) root.setAttribute('tabindex', '-1');
 			node.focus({ preventScroll: true });
-			window.scrollBy({
-				top: node.getBoundingClientRect().top - getDocumentViewportMetrics().top,
+			revealInDocumentViewport(node, {
+				block: 'start',
+				inline: target ? 'nearest' : 'none',
+				inlineInset: target ? 8 : 0,
 				behavior: 'smooth'
 			});
 		});
@@ -200,7 +198,7 @@
 					<button
 						type="button"
 						class={[
-							'absolute left-0 flex h-8.5 @min-[1150px]:h-[clamp(32px,2.6cqw,34px)] w-[calc(100%+8px)] cursor-pointer items-center justify-center gap-1 @min-[1150px]:gap-[clamp(3px,0.3cqw,4px)] rounded-l-lg border-0 pr-2 font-sans text-[13px] @min-[1150px]:text-[clamp(12px,1cqw,13px)] font-normal leading-[1.2] whitespace-nowrap shadow-control focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent aria-disabled:cursor-default',
+							'absolute left-0 flex h-8.5 w-[calc(100%+8px)] cursor-pointer items-center justify-center gap-1 rounded-l-lg border-0 pr-2 font-sans text-[13px] font-normal leading-[1.2] whitespace-nowrap shadow-control focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent aria-disabled:cursor-default',
 							!tag.admin && tag.status === 'pending'
 								? 'bg-control-fill text-ink-muted'
 								: tag.status === 'approved'
@@ -237,7 +235,7 @@
 						{label(tag)}{#if tag.admin}<CaretDownIcon
 								aria-hidden="true"
 								weight="bold"
-								class="size-3 @min-[1150px]:size-[clamp(11px,0.9cqw,12px)]"
+								class="size-3"
 							/>{/if}
 					</button>
 				{/snippet}

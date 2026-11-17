@@ -1,5 +1,9 @@
 <script lang="ts">
 	import { orderedTools, type ToolStates } from '$lib/components/document/document-tools';
+	import {
+		DESKTOP_TOOL_RAIL_INSET,
+		DESKTOP_TOOL_RAIL_WIDTH
+	} from '$lib/components/document/workspace-layout';
 	import RailTool from './RailTool.svelte';
 	import DownloadSimpleIcon from 'phosphor-svelte/lib/DownloadSimpleIcon';
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
@@ -139,9 +143,11 @@
 <div
 	use:protect={interactionOwner ?? true}
 	bind:this={desktopElement}
-	class="pointer-events-none fixed top-[calc(var(--app-header-height)+14px)] left-1 z-15 max-[999px]:hidden"
+	class="pointer-events-none fixed top-[calc(var(--app-header-height)+14px)] left-(--desktop-tool-rail-inset) z-15 max-[999px]:hidden"
+	style:--desktop-tool-rail-inset={`${DESKTOP_TOOL_RAIL_INSET}px`}
+	style:--desktop-tool-rail-width={`${DESKTOP_TOOL_RAIL_WIDTH}px`}
 >
-	<nav class="pointer-events-none flex w-16 flex-col items-center" aria-label="Document tools">
+	<nav class="pointer-events-none flex w-(--desktop-tool-rail-width) flex-col items-center" aria-label="Document tools">
 		<div class="pointer-events-auto flex flex-col items-center gap-3.5">
 			{#if visible.has('search')}
 				<RailTool

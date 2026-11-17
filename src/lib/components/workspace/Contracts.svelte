@@ -39,7 +39,6 @@
 		firstVisit = false,
 		showHeadings = true,
 		showContent = true,
-		slowResults = false,
 		onSearch,
 		ready = $bindable(false)
 	}: {
@@ -52,7 +51,6 @@
 		firstVisit?: boolean;
 		showHeadings?: boolean;
 		showContent?: boolean;
-		slowResults?: boolean;
 		onSearch: (value: string) => void;
 		ready?: boolean;
 	} = $props();
@@ -480,7 +478,7 @@
 	let gridWidth = $state(0);
 	let visibleRows = $state(viewState?.contractRows ?? 4);
 	// Match the grid's container breakpoints, rather than the viewport width.
-	const columns = $derived(gridWidth >= 1000 ? 4 : gridWidth >= 600 ? 2 : 1);
+	const columns = $derived(gridWidth >= 1000 ? 3 : gridWidth >= 600 ? 2 : 1);
 	const visibleLimit = $derived(visibleRows * columns);
 	const visibleCards = $derived(list.cards.slice(0, visibleLimit));
 	const hasHiddenCards = $derived(list.cards.length > visibleLimit);
@@ -590,8 +588,6 @@
 					<div class="flex min-h-40 items-center justify-center">
 						<LoadingWheel class="size-5" label="Loading contract results" />
 					</div>
-				{:else if slowResults}
-					<p class="py-2 text-xs text-ink-muted" role="status">Still getting your contracts…</p>
 				{/if}
 			{:else if list.empty}
 				<div
@@ -653,11 +649,7 @@
 					? search.trim()
 						? `No buyer links match “${search.trim()}”.`
 						: 'No buyer links yet.'
-					: (search.trim() || slowResults) && !buyerRows.length && !buyerLinks.error
-						? search.trim()
-							? 'Still searching buyer links…'
-							: 'Still getting your buyer links…'
-						: undefined}
+					: undefined}
 				hasMore={hasMoreBuyerLinks}
 				loading={buyerLinks.isLoading && buyerRows.length <= visibleBuyerLinks}
 				unreadCurrent={buyerLiveCurrent}

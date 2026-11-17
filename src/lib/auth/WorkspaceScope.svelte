@@ -110,17 +110,14 @@
 					onSaved: (notice) => {
 						reads.contractChanged(notice.id, notice.name);
 						void reads.syncDirectory(client);
-						feedback.contractSaved(notice);
 					},
 					onDeleted: (id) => {
 						reads.contractChanged(id, undefined, true);
 						void reads.syncDirectory(client);
-						feedback.contractDeleted(id);
 					},
 					onRenamed: (id, name) => {
 						reads.contractChanged(id, name);
 						void reads.syncDirectory(client);
-						feedback.contractRenamed(id, name);
 					}
 				})
 		)
@@ -195,7 +192,6 @@
 			}
 		})
 	);
-	const authoringFeedback = feedback.registerAuthoring();
 	onMount(() => {
 		const stopDestinations = destinations.mount();
 		sessions.start();
@@ -207,7 +203,6 @@
 		destinations.clear();
 		reads.destroy();
 		hubspot.destroy();
-		authoringFeedback.release();
 		authoring.destroy();
 		buyerAuthoring.destroy();
 		templateSource.destroy();
@@ -225,20 +220,6 @@
 			authoring.configure(available && admin, frozen, generation);
 			buyerAuthoring.configure(available && admin, frozen, generation);
 		});
-	});
-	let latestAuthoringCompletion = $state.raw<TemplateAuthoringSession['completion']>(null);
-	$effect(() => {
-		const completion = authoring.completion;
-		if (completion) untrack(() => (latestAuthoringCompletion = completion));
-	});
-	$effect(() => {
-		const completion = buyerAuthoring.completion;
-		if (completion) untrack(() => (latestAuthoringCompletion = completion));
-	});
-	$effect(() => {
-		const completion = latestAuthoringCompletion;
-		const pending = authoring.pending || buyerAuthoring.pending;
-		untrack(() => authoringFeedback.update(completion, pending));
 	});
 	beforeNavigate((navigation) => {
 		if (account.blocked && !account.closing && !navigation.willUnload) navigation.cancel();

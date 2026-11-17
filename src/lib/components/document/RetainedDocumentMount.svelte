@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { getDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
+	const navigation = getDocumentNavigation();
 	let {
 		target,
 		visible,
@@ -19,7 +21,10 @@
 	$effect(() => {
 		const node = element,
 			destination = target ?? parking;
-		if (node && destination && node.parentElement !== destination) destination.append(node);
+		if (node && destination && node.parentElement !== destination) {
+			destination.append(node);
+			navigation?.placementChanged();
+		}
 		return () => {
 			if (node && parking && node.parentElement !== parking) parking.append(node);
 		};

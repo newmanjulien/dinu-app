@@ -476,12 +476,15 @@ export class DiscussionIndex {
 		this.advanceGeneration();
 		this.advanceStorageGeneration();
 	}
-	async tombstone(ctx: MutationCtx, thread: Doc<'discussionThreads'>) {
+	async tombstone(ctx: MutationCtx, thread: Doc<'discussionThreads'>, unreadPrepared = false) {
 		if (!this.owned(thread)) throw new Error('Discussion tombstone ownership is invalid.');
 		if (thread.tombstoned) return;
+		if (unreadPrepared && this.liveThreads.get(thread._id)?.unreadMessageCount !== 0)
+			throw new Error('Discussion unread removal was not prepared.');
 		await this.normalizeSupport(ctx, thread);
 		if (
 			thread.unreadMessageCount > 0 &&
+			!unreadPrepared &&
 			!(await this.tree(thread.indexedDocumentRevision).remove(entryOf(thread)))
 		)
 			throw new Error('Removed unread thread has no aggregate entry.');

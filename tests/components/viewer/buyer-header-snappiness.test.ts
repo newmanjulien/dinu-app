@@ -49,7 +49,11 @@ afterEach(async () => {
 async function admitLink() {
 	component = mount(Harness, { target: document.body });
 	await settle();
-	network.publish('buyerLinks:status', { kind: 'current', buyerName: 'Ocean Buyer' });
+	network.publish('buyerLinks:status', {
+		kind: 'current',
+		buyerName: 'Ocean Buyer',
+		companyName: 'Ocean Company'
+	});
 	await settle();
 	expect(document.querySelector('[data-document-body]')).not.toBeNull();
 	expect(
@@ -74,7 +78,9 @@ it('admits the buyer header before the heading and contract body on a cold load'
 	await clock.frame();
 	await vi.advanceTimersByTimeAsync(0);
 	await settle();
-	expect(document.querySelector('h1')?.textContent).toContain('Review this contract');
+	expect(document.querySelector('h1')?.textContent).toContain(
+		'This is your contract with Ocean Company'
+	);
 	expect(
 		document.querySelector('[data-document-body]')?.closest('[aria-hidden="true"]')
 	).toBeNull();

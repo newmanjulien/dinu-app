@@ -160,7 +160,8 @@ export function importDomSelection(
 export function readSelectedDomEnvelope(
 	root: HTMLElement,
 	range: Range,
-	classify: (text: Text, from: number, to: number) => boolean
+	classify: (text: Text, from: number, to: number) => boolean,
+	visitElement?: (element: Element) => boolean
 ): boolean {
 	if (
 		!root.isConnected ||
@@ -171,9 +172,18 @@ export function readSelectedDomEnvelope(
 	const ancestor = range.commonAncestorContainer;
 	// A paragraph selection should not walk every text node in the contract.
 	const scope = ancestor.nodeType === Node.TEXT_NODE ? ancestor.parentNode! : ancestor;
-	const walker = root.ownerDocument.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+	const walker = root.ownerDocument.createTreeWalker(
+		scope,
+		visitElement ? NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT : NodeFilter.SHOW_TEXT
+	);
 	try {
+		if (visitElement && scope.nodeType === Node.ELEMENT_NODE && !visitElement(scope as Element))
+			return false;
 		for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+			if (node.nodeType === Node.ELEMENT_NODE) {
+				if (visitElement && !visitElement(node as Element)) return false;
+				continue;
+			}
 			const text = node as Text;
 			const from =
 				range.startContainer === text

@@ -429,6 +429,7 @@ export async function createContract(
 	const documentId = await writeContractDocument(ctx, {
 		companyId: access.companyId,
 		contractId: id,
+		documentRevision: 0,
 		document
 	});
 	// The only second root write completes cyclic ownership before any receipt or return.

@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { useConvexClient } from 'convex-svelte';
 	import { contractDocumentFromRenderTransport } from '$lib/document/contract-document';
-	import { DiscussionSession } from '$lib/discussions/session.svelte';
+	import type { DiscussionSession } from '$lib/discussions/session.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import type { FunctionReturnType } from 'convex/server';
 	import type { api } from '../../convex/_generated/api';
@@ -15,7 +14,8 @@
 	import BuyerDocumentFrame from './BuyerDocumentFrame.svelte';
 	import DocumentTools from '$lib/components/document/DocumentTools.svelte';
 	import type { DocumentToolControls } from '$lib/components/document/document-tools';
-	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
+	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
+	import DocumentPanelBody from '$lib/components/document/DocumentPanelBody.svelte';
 	import ClauseText from '$lib/components/playbook/ClauseText.svelte';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
 	import type { Priority } from '$lib/document/runtime/scheduler';
@@ -23,7 +23,7 @@
 	import { getBuyerSeller } from './seller.svelte';
 	import { getBuyerContract } from './contract.svelte';
 	import BuyerChangeActions from './BuyerChangeActions.svelte';
-	import type { DiscussionAccess } from '$lib/discussions/validators';
+	import BuyerDiscussions from './BuyerDiscussions.svelte';
 	import { BuyerChangeReview } from './reviews.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ReviewCompletedModal from '$lib/components/ui/modal/ReviewCompletedModal.svelte';
@@ -180,99 +180,9 @@
 			untrack(() => (review.navigation = {}));
 		}
 	});
-	const publicClient = useConvexClient();
 	const generation = untrack(() => publicContract.generation);
 	const bindTools = (tools: DocumentToolControls) => publicContract.bindTools(generation, tools);
-	const contentRevision = $derived(content.contentRevision);
-	const discussionIdentity = $derived(seller?.identity);
-	const discussionAccount = $derived(seller?.accountIdentity);
-	const discussionMembership = $derived(seller?.viewer?.membershipId);
-	const discussionContract = $derived(seller?.viewer?.contractId);
-	const discussionPrivate = $derived(Boolean(seller?.visible));
 	let discussions = $state.raw<DiscussionSession>();
-	$effect(() => {
-		// A different document may no longer contain these passages. Keep drafts in
-		// their recovery owner, but never carry its old readable discussion windows.
-		void content.contentIdentity;
-		const identity = discussionIdentity,
-			accountIdentity = discussionAccount,
-			privateClient = seller?.client,
-			membershipId = discussionMembership,
-			id = discussionContract,
-			sellerAccessEnabled = discussionPrivate;
-		const privateAccess =
-			sellerAccessEnabled && privateClient && membershipId && id ? { membershipId, id } : undefined;
-		const access: DiscussionAccess = { token };
-		const session = untrack(
-			() =>
-				new DiscussionSession(
-					privateAccess ? privateClient! : publicClient,
-					access,
-					() => contentRevision,
-					() => content.contentIdentity,
-					() => ({
-						readOnly:
-							identity !== seller?.identity ||
-							accountIdentity !== seller?.accountIdentity ||
-							Boolean(seller?.discussionPolicy.readOnly),
-						generation: seller?.discussionPolicy.generation ?? 0
-					}),
-					() => publicContract.buyerName,
-					publicContract.discussionRecovery.forScope(
-						JSON.stringify([token, seller?.recoveryIdentity])
-					),
-					privateAccess
-				)
-		);
-		discussions = session;
-		return () => {
-			session.destroy();
-			if (discussions === session) discussions = undefined;
-		};
-	});
-	$effect(() => {
-		const session = discussions;
-		if (!session) return;
-		const { generation } = session.policy();
-		untrack(() => session.synchronizePolicy(generation));
-	});
-	$effect(() => discussions?.setActive(active && prepare));
-	$effect(() => discussions?.reconcileOperations());
-	$effect(() => {
-		const session = discussions;
-		if (!session?.active || !session.feed.authorized || !session.feed.firstPageAccepted) return;
-		void [...session.drafts.created];
-		untrack(() => session.reconcileCreateOutcomes());
-	});
-	$effect(() => {
-		const session = discussions;
-		if (!session) return;
-		const identity = seller?.identity;
-		const accountIdentity = seller?.accountIdentity;
-		const eligible =
-			active &&
-			prepare &&
-			session.feed.authorized &&
-			session.feed.firstPageAccepted &&
-			identity &&
-			accountIdentity &&
-			seller?.client;
-		untrack(() =>
-			session.reads.configure(
-				eligible ? JSON.stringify([identity, accountIdentity, token]) : undefined,
-				eligible
-					? (messages) => seller!.markMessagesSeen(identity!, accountIdentity!, messages)
-					: undefined
-			)
-		);
-	});
-	$effect(() => {
-		const session = discussions;
-		if (!session) return;
-		const identity = seller?.identity;
-		const accountIdentity = seller?.accountIdentity;
-		untrack(() => session.recognizeSeller(identity, accountIdentity));
-	});
 	let selectedId = $state<string | null>(null);
 	let selectedAnnotationId = $state<string | null>(null);
 	const selected = $derived(content.explanations.find((i) => i.itemId === selectedId));
@@ -296,6 +206,26 @@
 	});
 </script>
 
+<svelte:boundary
+	onerror={() => {
+		console.error('Buyer discussions failed', { stage: 'session' });
+		untrack(() => (discussions = undefined));
+	}}
+>
+	<BuyerDiscussions
+		{content}
+		{token}
+		{active}
+		{prepare}
+		onSession={(session) => (discussions = session)}
+	/>
+	{#snippet failed(_error, reset)}
+		<div role="alert" class="flex items-center justify-center gap-3 px-4 py-2 text-xs text-danger">
+			<span>Discussions are unavailable.</span>
+			<Button variant="secondary" onclick={reset}>Retry discussions</Button>
+		</div>
+	{/snippet}
+</svelte:boundary>
 <BoxDismissal
 	{owner}
 	active={active && Boolean(selected)}
@@ -303,13 +233,11 @@
 />
 {#snippet panelContent()}
 	{#if selected?.explanation.trim()}
-		<PlaybookCard label="Clause explanation">
-			<ClauseText
-				text={selected.explanation}
-				closeLabel="Close explanation"
-				onClose={() => close()}
-			/>
-		</PlaybookCard>
+		<DocumentPanelCard label="Clause explanation">
+			<DocumentPanelBody>
+				<ClauseText text={selected.explanation} />
+			</DocumentPanelBody>
+		</DocumentPanelCard>
 	{/if}
 {/snippet}
 {#snippet documentActions(
@@ -321,16 +249,26 @@
 	ready: boolean
 )}
 	{#if seller?.visible && review && discussions}
-		<BuyerChangeActions
-			{review}
-			session={discussions}
-			{root}
-			{layout}
-			{highlights}
-			{renderRevision}
-			{domRevision}
-			ready={ready && publicContract?.displayed?.contentIdentity === content.contentIdentity}
-		/>
+		<svelte:boundary
+			onerror={() => console.error('Buyer discussions failed', { stage: 'changes' })}
+		>
+			<BuyerChangeActions
+				{review}
+				session={discussions}
+				{root}
+				{layout}
+				{highlights}
+				{renderRevision}
+				{domRevision}
+				ready={ready && publicContract?.displayed?.contentIdentity === content.contentIdentity}
+			/>
+			{#snippet failed(_error, reset)}
+				<div role="alert" class="p-3 text-xs text-danger">
+					Change discussions are unavailable.
+					<button class="underline" onclick={reset}>Retry</button>
+				</div>
+			{/snippet}
+		</svelte:boundary>
 	{/if}
 {/snippet}
 {#snippet footerContent()}
@@ -398,15 +336,15 @@
 	/>
 	{#if workspace.source.issue}
 		<p role="alert" class="p-8 text-center text-sm">
-			This contract is unavailable. Ask your rep for a new link.
+			This contract is unavailable. Ask your rep for help.
 		</p>
 	{:else}
 		<DocumentViewer
+			reserveReviewGutter
 			{discussions}
 			{documentActions}
 			{footerContent}
 			reviewTags={reviewTags ?? []}
-			reviewGutter={reviewing && review?.changes.length ? 96 : 0}
 			reviewNavigation={reviewTags ? review?.navigation : undefined}
 			onReviewDecision={(tag, status) => void review?.decide(tag, status)}
 			{active}

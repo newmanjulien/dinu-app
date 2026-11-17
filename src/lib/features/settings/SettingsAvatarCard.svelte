@@ -60,11 +60,7 @@
 		class="sr-only"
 		onchange={handleFileChange}
 	/>
-	{#if errorText || uploading}
-		<p class="mt-4 text-[0.72rem] leading-5 {errorText ? 'text-danger' : 'text-ink-muted'}">
-			{errorText ?? 'Uploading...'}
-		</p>
-	{/if}
+	{#if errorText}<p class="mt-4 text-[0.72rem] leading-5 text-danger">{errorText}</p>{/if}
 
 	{#snippet media()}
 		<button

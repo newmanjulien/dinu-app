@@ -32,7 +32,6 @@
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
 	import { ContractReviewPages } from '$lib/contract/review-pages.svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
-	import { REVIEW_GUTTER_WIDTH } from '$lib/components/document/workspace-layout';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
 	import RepPlaybookPanel from '$lib/components/playbook/RepPlaybookPanel.svelte';
 	import ReviewCompletedModal from '$lib/components/ui/modal/ReviewCompletedModal.svelte';
@@ -463,7 +462,7 @@
 	let animateInspectorContent = $state(false);
 	let selectedItemId = $state<string | null>(null),
 		selectedAnnotationId = $state<string | null>(null);
-	$effect(() => contractEditor.preparePreview(selectedItemId));
+	$effect(() => contractEditor.focusPreview(selectedItemId));
 	const item = $derived(
 		source.items?.find((i) => i._id === selectedItemId && i.origin.kind === 'template')
 	);
@@ -493,7 +492,6 @@
 		)
 			return false;
 		animateInspectorContent = inspectorVisible && selectedItemId !== itemId;
-		contractEditor.prefetchPreview(itemId);
 		selectedItemId = itemId;
 		selectedAnnotationId = annotationId;
 	}
@@ -571,7 +569,6 @@
 					: {})
 			}))
 	);
-	const reviewGutter = $derived(reviewTags.length ? REVIEW_GUTTER_WIDTH : 0);
 
 	const approvalCount = $derived(
 		(approvalQuery.data?.summary.pendingCount ?? 0) +
@@ -729,7 +726,14 @@
 	);
 	const exportReady = $derived(exportDisabledReason === null);
 	const canExport = $derived(downloadDisabledReason === null);
-	const mainActionLabel = $derived(quotesInstalled ? 'Push to HubSpot' : 'Download as .docx');
+	const mainActionLabel = $derived.by(() => {
+		if (quotesInstalled) {
+			if (pushingQuote || quotePending)
+				return quote?.state === 'verifying' ? 'Verifying in HubSpot…' : 'Preparing HubSpot quote…';
+			return 'Push to HubSpot';
+		}
+		return preparingWord ? 'Preparing Word download…' : 'Download as .docx';
+	});
 	const mainActionDisabledReason = $derived(
 		quotesInstalled ? quoteDisabledReason : downloadDisabledReason
 	);
@@ -890,7 +894,6 @@
 			hasPanel: inspectorVisible,
 			selectedAnnotationId,
 			reviewTags,
-			reviewGutter,
 			reviewNavigation: reviews.navigation,
 			onReviewDecision: (tag, status) => void reviews.decide(tag, status),
 			selectedConcessions: renderChoices,
@@ -1017,9 +1020,9 @@
 			entry={persistence.confirmed.playbook.find((state) => state.itemId === item._id)}
 			intent={persistence.intent[item._id]}
 			preview={contractEditor.focusedPreview}
-			previewBusy={contractEditor.previewBusy}
 			previewError={contractEditor.previewError?.message}
-			onPrefetch={() => contractEditor.prefetchPreview(item._id)}
+			previewRetryable={contractEditor.previewRetryable}
+			onRetryPreview={() => contractEditor.prefetchPreview(item._id)}
 			onWithdraw={() => persistence.withdraw(item._id)}
 			onApprove={reviewTags.find(
 				(tag) =>
@@ -1037,7 +1040,6 @@
 					}
 				: undefined}
 			onToggle={toggle}
-			onClose={() => close()}
 		/>{/if}{/snippet}
 {#snippet footerContent()}
 	{#if reviewPages.error}<p class="mt-3 text-center text-sm text-danger" role="alert">
@@ -1140,9 +1142,7 @@
 		{#if reviews.decisionError}<p class="mt-3 text-center text-sm text-ink-muted" role="alert">
 				{reviews.decisionError.message}
 			</p>{/if}
-		{#if preparingWord}
-			<p class="mt-3 text-center text-sm text-ink-muted" role="status">Preparing Word download…</p>
-		{:else if exportError}
+		{#if exportError}
 			<p class="mt-3 text-center text-sm text-ink-muted" role="alert">{exportError}</p>
 		{/if}
 	</div>

@@ -45,7 +45,8 @@ export function downloadState() {
 		notice: null,
 		pending: false,
 		savePending,
-		preparePreview: vi.fn()
+		preparePreview: vi.fn(),
+		focusPreview: vi.fn()
 	};
 	return { state, ready, editor, savePending };
 }

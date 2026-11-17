@@ -4,7 +4,7 @@
 	--document-highlight-rep-selected: color-mix(in srgb, var(--color-accent) 28%, transparent);
 	--document-highlight-buyer: color-mix(in srgb, var(--color-success) 16%, transparent);
 	--document-highlight-buyer-hover: color-mix(in srgb, var(--color-success) 22%, transparent);
-	--document-highlight-buyer-selected: color-mix(in srgb, var(--color-success) 28%, transparent);
+	--document-highlight-buyer-selected: color-mix(in srgb, var(--color-success) 34%, transparent);
 	--document-highlight-revision-added: #dcf1b9;
 	--document-highlight-revision-removed: var(--color-fill-subtle);
 	--document-highlight-selection: var(--color-accent-soft);
@@ -78,7 +78,6 @@
 	left: 0;
 	width: 100%;
 	height: var(--boundary-gap);
-	--boundary-handle-size: calc(24px / var(--document-page-scale, 1));
 }
 
 .structural-boundary-controls button {

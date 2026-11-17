@@ -12,6 +12,7 @@
 	import { useWorkspaceHints } from './workspace-hints.svelte';
 	import DocumentSkeleton from '$lib/components/document/DocumentSkeleton.svelte';
 	import DocumentHeading from '$lib/components/document/DocumentHeading.svelte';
+	import DocumentSection from '$lib/components/document/DocumentSection.svelte';
 	import UtilityRail from '$lib/components/chrome/UtilityRail.svelte';
 	import type { ToolStates } from '$lib/components/document/document-tools';
 	import TemplateSetupLayout from '$lib/components/template/TemplateSetupLayout.svelte';
@@ -28,13 +29,11 @@
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	let {
 		header = false,
-		hasPanel = false,
 		label = 'Loading your workspace',
 		announce = true,
 		children
 	}: {
 		header?: boolean;
-		hasPanel?: boolean;
 		label?: string;
 		announce?: boolean;
 		children?: Snippet;
@@ -97,7 +96,6 @@
 		showCloseButton={false}
 		closeOnBackdrop={false}
 	>
-		<p role="status" class="text-sm text-ink-muted">Preparing contract creation…</p>
 		{#if children}<div class="mt-4 grid gap-3">{@render children()}</div>{/if}
 		{#snippet footer()}
 			<div class="ml-auto flex gap-2">
@@ -107,17 +105,19 @@
 		{/snippet}
 	</ModalShell>
 {:else if route.presentation === 'document'}
-	<DocumentHeading
-		kind={route.document === 'template' ? 'template' : 'saved'}
-		audience={page.url.pathname === '/template/buyers' ? 'buyer' : 'rep'}
-	/>
-	<DocumentSkeleton
-		layout={route.document === 'saved' ? 'contract' : 'standard'}
-		template={route.document === 'template'}
-		embedded
-		{hasPanel}
-		announce={false}
-	/>
+	<DocumentSection>
+		{#snippet heading()}
+			<DocumentHeading
+				kind={route.document === 'template' ? 'template' : 'saved'}
+				audience={page.url.pathname === '/template/buyers' ? 'buyer' : 'rep'}
+			/>
+		{/snippet}
+		<DocumentSkeleton
+			reserveReviewGutter={route.document === 'saved'}
+			template={route.document === 'template'}
+			announce={false}
+		/>
+	</DocumentSection>
 {:else if route.presentation === 'contracts'}
 	<ContractsLayout {role}>
 		{#snippet toolbar()}

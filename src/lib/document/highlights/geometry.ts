@@ -31,6 +31,39 @@ export interface StructuralBoundaryTarget {
 
 export type StructuralBoundaryRect = Pick<HighlightRect, 'x' | 'y' | 'width' | 'height'>;
 
+/** The committed gap measured from its stable owner, clipped to the page and text column. */
+export function measureSelectionBreak(owner: HTMLElement, gap: number) {
+	const page = owner.closest<HTMLElement>('.document-page');
+	const content = owner.closest<HTMLElement>('.document-page__content');
+	if (
+		!page ||
+		!content ||
+		!owner.isConnected ||
+		!Number.isFinite(gap) ||
+		gap <= 0 ||
+		owner.dataset.selectionGap !== String(gap)
+	)
+		return null;
+	const pageBounds = page.getBoundingClientRect();
+	const contentBounds = content.getBoundingClientRect();
+	const scale = pageBounds.width / page.offsetWidth;
+	if (!Number.isFinite(scale) || scale <= 0) return null;
+	const ownerBounds = owner.getBoundingClientRect();
+	const top = Math.max(ownerBounds.top, pageBounds.top);
+	const bottom = Math.min(ownerBounds.top + gap * scale, pageBounds.bottom);
+	const left = Math.max(ownerBounds.left, contentBounds.left, pageBounds.left);
+	const right = Math.min(ownerBounds.right, contentBounds.right, pageBounds.right);
+	if (bottom <= top || right <= left) return null;
+	return {
+		page: Number(page.dataset.pageNumber),
+		bounds: new DOMRect(left, top, right - left, bottom - top),
+		left: (left - pageBounds.left) / scale,
+		top: (top - pageBounds.top) / scale,
+		width: (right - left) / scale,
+		height: (bottom - top) / scale
+	};
+}
+
 interface Band {
 	y: number;
 	height: number;
@@ -266,6 +299,13 @@ export function measureStructuralBoundaryTarget(
 	target: HTMLElement
 ): StructuralBoundaryTarget | null {
 	const key = target.dataset.structuralBoundary;
+	const owner = target.closest<HTMLElement>('[data-selection-break-owner]');
+	const gap = Number(owner?.dataset.selectionGap);
+	// Subpixel gaps use the existing gutter target instead of a content-width bar.
+	if (key && owner && gap >= 1) {
+		const measured = measureSelectionBreak(owner, gap);
+		return measured ? { key, ...measured } : null;
+	}
 	const page = target.closest<HTMLElement>('.document-page');
 	const content = target.closest<HTMLElement>('.document-page__content');
 	if (!key || !page || !content || !target.isConnected) return null;

@@ -192,7 +192,8 @@ export const clean = internalMutation({
 				'discussionTransitionMapChunks',
 				'discussionUnreadNodes',
 				'discussionUnreadControls',
-				'discussionPassageClaims'
+				'discussionPassageClaims',
+				'discussionPassageIndexes'
 			] as const) {
 				if (
 					!(await budget.drain(

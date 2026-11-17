@@ -266,9 +266,6 @@
 					: `Showing ${deals.length} ${deals.length === 1 ? 'deal' : 'deals'}. Linked deals are unavailable. Search to find another deal.`}
 			</p>{/if}
 	{/if}
-	{#if !owner || (!busy && eligibilityLoading)}<p class="text-xs text-ink-muted" role="status">
-			{!owner ? 'Checking HubSpot connection…' : 'Checking deal availability…'}
-		</p>{/if}
 	{#if eligibilityError}<p class="text-sm text-danger" role="alert">
 			We couldn’t check which deals are already linked.
 			<button type="button" class="underline" onclick={() => eligibility?.retry()}>Try again</button
@@ -286,10 +283,8 @@
 			>
 		</p>{/if}
 </div>
-{#if !displayOwner}<p class="mt-2 text-sm text-ink-muted">
+{#if !displayOwner && (connection.error || connection.data)}<p class="mt-2 text-sm text-ink-muted">
 		{connection.error
 			? 'We couldn’t check HubSpot. Reconnect or reload to continue.'
-			: !connection.data
-				? 'Checking HubSpot…'
-				: 'Ask an admin to connect or reconnect HubSpot before choosing a deal.'}
+			: 'Ask an admin to connect or reconnect HubSpot before choosing a deal.'}
 	</p>{/if}

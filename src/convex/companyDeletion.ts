@@ -341,6 +341,7 @@ export const clean = internalMutation({
 						'discussionTransitionMapChunks',
 						'discussionUnreadNodes',
 						'discussionPassageClaims',
+						'discussionPassageIndexes',
 						'discussionMessages',
 						'discussionThreads',
 						'discussionReceipts'

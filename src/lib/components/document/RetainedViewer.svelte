@@ -32,7 +32,7 @@
 	resource={entry.id}
 >
 	<DocumentViewer
-		layout={entry.layout}
+		reserveReviewGutter={entry.reserveReviewGutter}
 		failure={bindings?.failure}
 		onRetry={bindings?.onRetry}
 		active={readyToShow}
@@ -50,9 +50,6 @@
 		reviewTags={entry.active && bindings?.annotationsVisible !== false
 			? bindings?.reviewTags
 			: undefined}
-		reviewGutter={entry.active && bindings?.annotationsVisible !== false
-			? bindings?.reviewGutter
-			: 0}
 		reviewNavigation={entry.active ? bindings?.reviewNavigation : undefined}
 		onReviewDecision={bindings?.onReviewDecision}
 		{hasPanel}

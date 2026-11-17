@@ -163,6 +163,7 @@ it('retains accepted discussions through a local page timeout but clears it on d
 					revision: 1,
 					deleted: false,
 					createdAt: 0,
+					operationId: null,
 					author: { key: 'buyer', name: 'Buyer', avatarUrl: null, buyer: true }
 				}
 			}
@@ -243,7 +244,7 @@ it('reports successful clipboard writes to one feedback owner and extends dismis
 			},
 			action: async (action) => {
 				expect(getFunctionName(action)).toBe(getFunctionName(api.buyerLinkActions.ensureLatest));
-				return latest as FunctionReturnType<typeof action>;
+				return { ...latest, created: false } as FunctionReturnType<typeof action>;
 			}
 		},
 		{

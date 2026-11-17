@@ -10,11 +10,12 @@ import { saveError } from '$lib/contract/saved';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import { buyerPath } from './urls';
 
-type Link = FunctionReturnType<typeof api.buyerLinkActions.ensureLatest>;
+type Link = NonNullable<FunctionReturnType<typeof api.buyerLinks.latest>>;
+type CaptureResult = FunctionReturnType<typeof api.buyerLinkActions.ensureLatest>;
 type Capture = {
 	args: FunctionArgs<typeof api.buyerLinkActions.ensureLatest>;
-	link?: Link;
-	work?: Promise<Link>;
+	link?: CaptureResult;
+	work?: Promise<CaptureResult>;
 	uncertain?: boolean;
 };
 
@@ -29,7 +30,7 @@ export class BuyerLinkController {
 		private editors: Pick<ContractEditors, 'reserveForLink'>,
 		private membershipId: Id<'memberships'>,
 		private id: Id<'savedContracts'>,
-		private onCopied: () => void
+		private onCopied: (created: boolean) => void
 	) {}
 	destroy() {
 		this.alive = false;
@@ -37,10 +38,10 @@ export class BuyerLinkController {
 	}
 	async copy() {
 		await this.withLink(async (link) => {
-			await this.copyToClipboard(`${location.origin}${buyerPath(link.token)}`);
+			await this.copyToClipboard(`${location.origin}${buyerPath(link.token)}`, link.created);
 		});
 	}
-	private async withLink(complete: (link: Link) => void | Promise<void>) {
+	private async withLink(complete: (link: CaptureResult) => void | Promise<void>) {
 		if (this.busy || !this.alive) return;
 		this.error = null;
 		this.busy = 'Checking link…';
@@ -87,9 +88,11 @@ export class BuyerLinkController {
 					reservation.release();
 				}
 			}
-			link ??= await this.confirmCapture(deadline.signal);
+			const result = link
+				? { ...link, created: false }
+				: await this.confirmCapture(deadline.signal);
 			if (!this.alive) return;
-			await complete(link);
+			await complete(result);
 			// Only the requested completion action consumes this capture.
 			this.operation = undefined;
 		} catch (error) {
@@ -106,7 +109,7 @@ export class BuyerLinkController {
 		if (operation.args.preparation.kind === 'prepared')
 			assertOperationRetryable(operation.args.preparation.operationId);
 		this.busy = 'Creating link…';
-		const work: Promise<Link> = this.client
+		const work: Promise<CaptureResult> = this.client
 			.action(api.buyerLinkActions.ensureLatest, operation.args)
 			.then(
 				(link) => {
@@ -136,13 +139,17 @@ export class BuyerLinkController {
 			throw error;
 		}
 	}
-	private async copyToClipboard(url: string) {
+	private async copyToClipboard(url: string, created: boolean) {
 		try {
 			await navigator.clipboard.writeText(url);
 		} catch {
-			throw new ConvexError('Couldn’t copy the link. Try again.');
+			throw new ConvexError(
+				created
+					? 'Link created, but couldn’t copy it. Try again.'
+					: 'Couldn’t copy the link. Try again.'
+			);
 		}
 		// Every copy action uses the workspace confirmation after the clipboard accepts the URL.
-		if (this.alive) this.onCopied();
+		if (this.alive) this.onCopied(created);
 	}
 }

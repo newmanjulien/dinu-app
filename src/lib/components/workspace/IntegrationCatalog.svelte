@@ -28,8 +28,6 @@
 					onclick={() => catalog.retry()}>Try again</button
 				>
 			</p>
-		{:else if catalog.loading}
-			<p role="status" class="mb-3 text-xs text-ink-muted">Checking installation…</p>
 		{/if}
 	{/snippet}
 </IntegrationCatalogLayout>

@@ -2,7 +2,7 @@ import { getDocumentHighlights, type DocumentHighlightController } from '../high
 import type { PaginatedPage } from '../pagination/types';
 import type { MountedDocumentRevision } from '../runtime/viewer.svelte';
 import { DocumentSearchCache, DocumentSearchRanges } from './document-search';
-import { getDocumentViewportMetrics } from '../document-viewport';
+import { revealInDocumentViewport } from '../document-viewport';
 import { countSearchWork } from '../runtime/render-perf';
 import type { DocumentSearchResult } from './types';
 
@@ -246,16 +246,15 @@ export class DocumentSearchSession {
 		countSearchWork('rangeMeasurements');
 		const rects = Array.from(activeResult.getClientRects());
 		const rect = rects.find((candidate) => candidate.width > 0 || candidate.height > 0);
-		if (!rect) return;
+		if (!rect || !this.#target) return;
 
 		const searchPanelBottom = this.#panel?.getBoundingClientRect().bottom ?? 0;
-		const viewportTop = Math.max(getDocumentViewportMetrics().top, searchPanelBottom + 16);
-		const viewportBottom = window.innerHeight - 24;
-		if (rect.top >= viewportTop && rect.bottom <= viewportBottom) return;
-
 		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		window.scrollBy({
-			top: rect.top - (viewportTop + viewportBottom) / 2,
+		revealInDocumentViewport(this.#target, {
+			bounds: rect,
+			block: 'center-if-hidden',
+			topEdge: searchPanelBottom + 16,
+			bottomInset: 24,
 			behavior: reducedMotion ? 'auto' : 'smooth'
 		});
 	}

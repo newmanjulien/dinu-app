@@ -14,6 +14,7 @@ const copy = {
 		deleteConfirm:
 			'Permanently delete these instructions? Any unsaved local edits will also be discarded.',
 		discardRetainedConfirm: 'Discard the retained instruction draft?',
+		discardPreviousConfirm: 'Discard your previous unsaved instruction changes?',
 		loadFailureTitle: 'Couldn’t load instructions',
 		loadFailureHint: 'Try again to load the instructions for this clause.',
 		loading: 'Loading instructions',
@@ -54,6 +55,7 @@ const copy = {
 		deleteConfirm:
 			'Permanently delete this explanation? Any unsaved local edits will also be discarded.',
 		discardRetainedConfirm: 'Discard the retained explanation draft?',
+		discardPreviousConfirm: 'Discard your previous unsaved explanation changes?',
 		loadFailureTitle: 'Couldn’t load explanation',
 		loadFailureHint: 'Try again to load the explanation for this clause.',
 		loading: 'Loading explanation',

@@ -577,6 +577,18 @@ export default defineSchema({
 	})
 		.index('by_companyId', ['companyId'])
 		.index('by_contractId', ['contractId']),
+	// Bounded, reusable validation data for an exact published document revision.
+	discussionPassageIndexes: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		documentId: v.id('contractDocuments'),
+		documentRevision: v.number(),
+		manifestSeal: v.string(),
+		data: v.bytes()
+	})
+		.index('by_documentId_and_documentRevision', ['documentId', 'documentRevision'])
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
 	contractChanges: defineTable(storedContractChange)
 		.index('by_stage_receiptId_generation_unit_slot', [
 			'stage.receiptId',

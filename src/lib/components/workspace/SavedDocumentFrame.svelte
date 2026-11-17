@@ -135,21 +135,20 @@
 	}}
 >
 	<main
-		class="pb-[calc(64px+var(--buyer-link-bar-height,0px))] [--workspace-loading-inset:calc(var(--spacing)*30)] min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*22)]"
+		class="[--document-section-bottom-padding:calc(64px+var(--buyer-link-bar-height,0px))] [--workspace-loading-inset:calc(var(--spacing)*30)] min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*22)]"
 		onclickcapture={recordDocumentInput}
 		aria-label="Contract document"
 	>
 		<DocumentViewerSlot
 			{attachment}
 			entry={resource}
-			layout="contract"
+			reserveReviewGutter
 			panelContent={emptyPanel}
 			selectedConcessions={editor.renderChoices}
 			onRemoveConcession={() => {}}
 			onSelect={() => false}
 			{...bindings}
 			reviewTags={interactionAdmitted ? bindings?.reviewTags : []}
-			reviewGutter={interactionAdmitted ? bindings?.reviewGutter : 0}
 			active={!runtime.paused}
 			prepare={!runtime.paused && editor.definitionsReady}
 			interactive={interactionAdmitted && !session.blocked && editor.definitionsReady}

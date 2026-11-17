@@ -1,5 +1,6 @@
 <script lang="ts">
 	import TextArea from '$lib/ui/TextArea.svelte';
+	import { multilineSubmitShortcut } from '$lib/ui/multiline-submit-shortcut';
 	import { Button, ModalShell } from '$lib/ui';
 
 	type Props = {
@@ -13,6 +14,9 @@
 	};
 
 	let { error, isAdding, open, value, onClose, onSubmit, onValueChange }: Props = $props();
+	const shortcut = multilineSubmitShortcut(() => {
+		if (!isAdding) void onSubmit();
+	});
 </script>
 
 <ModalShell {open} title="Invite" dismissible={!isAdding} {onClose}>
@@ -30,6 +34,9 @@
 		oninput={(event) => {
 			if (!isAdding) onValueChange(event.currentTarget.value);
 		}}
+		onkeydown={shortcut.keydown}
+		oncompositionstart={shortcut.compositionStart}
+		oncompositionend={shortcut.compositionEnd}
 	/>
 	{#if error}
 		<p id="team-member-emails-error" class="mt-2 text-[0.72rem] text-danger">{error}</p>

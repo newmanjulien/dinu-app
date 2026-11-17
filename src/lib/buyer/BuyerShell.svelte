@@ -6,6 +6,7 @@
 
 	import BuyerDocumentFrame from './BuyerDocumentFrame.svelte';
 	import DocumentHeading from '$lib/components/document/DocumentHeading.svelte';
+	import DocumentSection from '$lib/components/document/DocumentSection.svelte';
 	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import RouteTitle from '$lib/auth/RouteTitle.svelte';
 	import { onMount, onDestroy, untrack, type Snippet } from 'svelte';
@@ -30,6 +31,7 @@
 	import ArrowSquareOutIcon from 'phosphor-svelte/lib/ArrowSquareOutIcon';
 	import AccountMenu from '$lib/components/chrome/AccountMenu.svelte';
 	import { BuyerSeller, setBuyerSeller } from './seller.svelte';
+	import { DiscussionRecovery, setDiscussionRecovery } from '$lib/discussions/recovery.svelte';
 	import type { HelpPolicy } from '$lib/components/ui/modal/help-session.svelte';
 	import { isBuyerHelpHidden, setBuyerHelpHidden } from '$lib/components/ui/modal/help-storage';
 	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
@@ -55,6 +57,7 @@
 		opening: contract.help.loadingOpening
 	});
 	const seller = setBuyerSeller(new BuyerSeller(initialToken));
+	setDiscussionRecovery(new DiscussionRecovery(initialToken));
 	const headerReadiness = $derived(seller.headerReadiness);
 	const headerProfile = $derived(seller.headerProfile);
 	let firstPaintPassed = $state(false);
@@ -146,6 +149,17 @@
 		return client.subscribeToConnectionState(update);
 	});
 	const status = useReadQuery(api.buyerLinks.status, { token: initialToken });
+	const headingPresentation = $derived.by(() => {
+		if (headerReadiness !== 'ready' || status.rejected || status.data?.kind !== 'current')
+			return undefined;
+		const current = status.data;
+		if (seller.presentation === 'seller') return { kind: 'seller' as const };
+		if (seller.presentation === 'preview')
+			return { kind: 'preview' as const, buyerName: current.buyerName };
+		if (seller.presentation === 'buyer')
+			return { kind: 'buyer' as const, companyName: current.companyName };
+		return undefined;
+	});
 	$effect(() => {
 		contract.buyerName = status.data?.kind === 'current' ? status.data.buyerName : null;
 	});
@@ -200,7 +214,7 @@
 	<meta name="referrer" content="no-referrer" />
 </svelte:head>
 <header
-	class="sticky top-0 z-40 border-b-[length:var(--surface-border-width)] border-line bg-surface"
+	class="sticky top-0 left-0 z-40 border-b-[length:var(--surface-border-width)] border-line bg-surface"
 	style:--app-header-height="var(--app-nav-height)"
 >
 	<div
@@ -292,32 +306,39 @@
 		<Button variant="secondary" class="mt-5" onclick={() => seller.retry()}>Try again</Button>
 	</main>
 {:else if !status.rejected && status.data?.kind === 'current'}
-	{#if contract.refreshError}<p role="alert" class="p-4 text-center text-sm">
-			{contract.refreshError}
-			<button class="underline" onclick={() => contract.retryDocument()}>Try again</button>
-		</p>{/if}
-	{#if status.error}<p role="alert" class="p-4 text-center text-sm">
-			We couldn’t refresh link access. <button class="underline" onclick={() => status.retry()}
-				>Try again</button
-			>
-		</p>{/if}
-	{#if contractVisible}
-		<DocumentHeading kind="buyer" />
-	{/if}
-	<div class:invisible={!contractVisible} aria-hidden={!contractVisible} inert={!contractVisible}>
-		{@render children()}
-	</div>
+	<DocumentSection active={contractVisible}>
+		{#snippet heading()}
+			{#if contract.refreshError}<p role="alert" class="p-4 text-center text-sm">
+					{contract.refreshError}
+					<button class="underline" onclick={() => contract.retryDocument()}>Try again</button>
+				</p>{/if}
+			{#if status.error}<p role="alert" class="p-4 text-center text-sm">
+					We couldn’t refresh link access. <button class="underline" onclick={() => status.retry()}
+						>Try again</button
+					>
+				</p>{/if}
+			{#if contractVisible}<DocumentHeading
+					kind="buyer"
+					buyerPresentation={headingPresentation}
+				/>{/if}
+		{/snippet}
+		<div class:invisible={!contractVisible} aria-hidden={!contractVisible} inert={!contractVisible}>
+			{@render children()}
+		</div>
+	</DocumentSection>
 {:else if status.data?.kind === 'unavailable' || status.error}
 	<main class="mx-auto max-w-md px-6 py-16 text-center">
 		<h1 class="text-lg font-medium">Link unavailable</h1>
 		<p class="mt-3 text-sm text-ink-muted">
-			We couldn’t open this contract. Check your connection or ask for the latest link.
+			We couldn’t open this contract. Check your connection or ask your rep for help.
 		</p>
 		<Button variant="secondary" class="mt-5" onclick={() => status.retry()}>Try again</Button>
 	</main>
 {:else}
 	{#if contractVisible}
-		<DocumentHeading kind="buyer" />
-		<BuyerDocumentFrame loading />
+		<DocumentSection>
+			{#snippet heading()}<DocumentHeading kind="buyer" />{/snippet}
+			<BuyerDocumentFrame loading />
+		</DocumentSection>
 	{/if}
 {/if}

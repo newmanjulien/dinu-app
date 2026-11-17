@@ -208,10 +208,7 @@ http.route({
 				'code' in error.data &&
 				error.data.code === 'DISCUSSION_IDENTITY_CHANGED'
 			)
-				return failure(
-					'Reconnect as the original author before retrying. Your draft is still here.',
-					401
-				);
+				return failure('Reconnect as the original author before retrying.', 401);
 			if (
 				error instanceof ConvexError &&
 				error.data &&

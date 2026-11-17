@@ -81,6 +81,7 @@ export function messageProjector(ctx: QueryCtx, contract: Doc<'savedContracts'>)
 			revision: message.revision,
 			deleted: message.deleted,
 			createdAt: message._creationTime,
+			operationId: message.operationId ?? null,
 			author: { ...(await author), key: message.authorKey }
 		};
 	};

@@ -36,9 +36,7 @@
 				bind:value={search}
 			/>
 			<section aria-label="Integration catalog">
-				{#if notice}{@render notice()}{:else if loading}
-					<p role="status" class="mb-3 text-xs text-ink-muted">Checking installation…</p>
-				{/if}
+				{#if notice}{@render notice()}{/if}
 				<div class="overflow-hidden rounded-xl border-hairline border-edge">
 					{#each entries as integration, index (integration.slug)}
 						<div

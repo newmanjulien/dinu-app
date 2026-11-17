@@ -54,10 +54,10 @@ export function panelTargetBounds(
 		const ids = new Set(groups.map((group) => group.id));
 		for (const occurrence of context.occurrences) {
 			if (occurrence.kind !== 'break' || !ids.has(occurrence.group.id)) continue;
-			const controls = pages
+			const owner = pages
 				.get(occurrence.page)
-				?.querySelector<HTMLElement>(`[data-selection-group="${occurrence.group.id}"]`);
-			for (const element of controls?.querySelectorAll<HTMLElement>('[data-structural-boundary]') ??
+				?.querySelector<HTMLElement>(`[data-selection-break-owner="${occurrence.order}"]`);
+			for (const element of owner?.querySelectorAll<HTMLElement>('[data-structural-boundary]') ??
 				[]) {
 				const bounds = measureStructuralBoundaryTarget(element)?.bounds;
 				if (bounds) return bounds;

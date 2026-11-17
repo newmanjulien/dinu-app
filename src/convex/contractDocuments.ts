@@ -17,6 +17,8 @@ import { MAX_SNAPSHOT_BYTES } from './templateCapacity';
 import { DiscussionPreparationRequired } from './discussionMaps';
 import { requireNativeReachability } from './nativeStage';
 import { requireLiveDocumentOwner } from './contractDocumentLifetime';
+import { discussionTape } from '../lib/discussions/tape';
+import { buildPassageIndex, MAX_PASSAGE_INDEX_BYTES } from '../lib/discussions/passage-index';
 
 const CHUNK_BYTES = 128 * 1024;
 const MIN_CHUNK_BYTES = 16 * 1024;
@@ -138,6 +140,26 @@ export function assertContractDocumentManifest(
 		throw unavailable();
 }
 
+/** A small seal for the exact manifest and ordered chunks used by deferred readers. */
+export function contractDocumentSeal(manifest: Doc<'contractDocuments'>): string {
+	return fingerprint(
+		encoder.encode(
+			JSON.stringify([
+				manifest._id,
+				manifest.companyId,
+				manifest.contractId,
+				manifest.format,
+				manifest.fingerprint,
+				manifest.chunkIds,
+				manifest.chunkHashes,
+				manifest.dataBytes,
+				manifest.readBytes,
+				manifest.blockCount
+			])
+		)
+	);
+}
+
 /** Callers authorize the owning contract before loading its private lineage. */
 export async function readContractDocument(
 	ctx: QueryCtx,
@@ -238,6 +260,8 @@ export function decodeContractDocumentChunks(
 
 export type PreparedContractDocument = {
 	scope: Scope;
+	documentRevision: number;
+	passageIndexDocument?: ContractDocument;
 	chunks: PlannedChunk[];
 	hashes: string[];
 	fingerprint: string;
@@ -251,7 +275,11 @@ export type PreparedContractDocument = {
 /** Encode and measure once, before the native engine's first business write. */
 export async function prepareContractDocument(
 	ctx: QueryCtx,
-	args: Scope & { document: ContractDocument; previousDocumentId?: Id<'contractDocuments'> }
+	args: Scope & {
+		document: ContractDocument;
+		documentRevision: number;
+		previousDocumentId?: Id<'contractDocuments'>;
+	}
 ): Promise<PreparedContractDocument> {
 	await requireLiveDocumentOwner(ctx, args);
 	const chunks = planContractDocumentChunks(args.document),
@@ -289,6 +317,10 @@ export async function prepareContractDocument(
 	);
 	return {
 		scope,
+		documentRevision: args.documentRevision,
+		...(old?.fingerprint !== documentFingerprint
+			? { passageIndexDocument: args.document }
+			: {}),
 		chunks,
 		hashes,
 		fingerprint: documentFingerprint,
@@ -322,7 +354,7 @@ export async function commitContractDocument(
 		}
 		chunkIds.push(id);
 	}
-	return ctx.db.insert('contractDocuments', {
+	const manifest = {
 		...plan.scope,
 		format: 1,
 		fingerprint: plan.fingerprint,
@@ -331,12 +363,44 @@ export async function commitContractDocument(
 		dataBytes: plan.dataBytes,
 		readBytes: plan.readBytes,
 		blockCount: plan.blockCount
-	});
+	} as const;
+	const id = await ctx.db.insert('contractDocuments', manifest);
+	const metrics = plan.passageIndexDocument
+		? await ctx.meta.getTransactionMetrics()
+		: null;
+	if (
+		plan.passageIndexDocument &&
+		metrics &&
+		metrics.documentsWritten.remaining > 80 &&
+		metrics.bytesWritten.remaining > MAX_PASSAGE_INDEX_BYTES + 4_000_000
+	) {
+		const passageIndex = buildPassageIndex(discussionTape(plan.passageIndexDocument));
+		if (passageIndex.byteLength > MAX_PASSAGE_INDEX_BYTES) return id;
+		const value = {
+			...plan.scope,
+			documentId: id,
+			documentRevision: plan.documentRevision,
+			manifestSeal: contractDocumentSeal({
+				...manifest,
+				_id: id,
+				_creationTime: 0
+			}),
+			data: passageIndex
+		};
+		const bytes = documentBytes({ ...value, _id: 'x'.repeat(32), _creationTime: 0 });
+		if (metrics.bytesWritten.remaining > bytes + 4_000_000)
+			await ctx.db.insert('discussionPassageIndexes', value);
+	}
+	return id;
 }
 /** Standalone creation keeps the same encode/measure/write path. */
 export async function writeContractDocument(
 	ctx: MutationCtx,
-	args: Scope & { document: ContractDocument; previousDocumentId?: Id<'contractDocuments'> }
+	args: Scope & {
+		document: ContractDocument;
+		documentRevision: number;
+		previousDocumentId?: Id<'contractDocuments'>;
+	}
 ): Promise<Id<'contractDocuments'>> {
 	const plan = await prepareContractDocument(ctx, args);
 	if (plan.existingId) return plan.existingId;

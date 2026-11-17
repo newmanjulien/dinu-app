@@ -7,11 +7,54 @@ import type { DiscussionAccess } from './session.svelte';
 import type { discussionMessage } from './validators';
 import { DiscussionRetention, LiveDiscussionPages } from './live-pages.svelte';
 type Message = Infer<typeof discussionMessage>;
+
+/** Share a small number of in-flight page reads across every visible thread. */
+export class ReplyLoadScheduler {
+	private readonly limit = 4;
+	private queued = new Map<ReplyDiscussion, () => boolean>();
+	private running = new Set<ReplyDiscussion>();
+	private scheduled = false;
+	request(owner: ReplyDiscussion, run: () => boolean) {
+		if (this.queued.has(owner) || this.running.has(owner)) return;
+		this.queued.set(owner, run);
+		this.schedule();
+	}
+	complete(owner: ReplyDiscussion) {
+		if (!this.running.delete(owner)) return;
+		this.schedule();
+	}
+	cancel(owner: ReplyDiscussion) {
+		this.queued.delete(owner);
+		this.complete(owner);
+	}
+	private schedule() {
+		if (this.scheduled) return;
+		this.scheduled = true;
+		queueMicrotask(() => {
+			this.scheduled = false;
+			while (this.running.size < this.limit && this.queued.size) {
+				const [owner, run] = this.queued.entries().next().value!;
+				this.queued.delete(owner);
+				this.running.add(owner);
+				try {
+					if (!run()) this.complete(owner);
+				} catch (error) {
+					this.complete(owner);
+					owner.feed.refuse(
+						error instanceof Error ? error : new Error('Comments are unavailable.')
+					);
+				}
+			}
+		});
+	}
+}
+
 /** History, latest window and own successful writes have distinct visibility lifetimes. */
 export class ReplyDiscussion {
 	readonly feed: LiveDiscussionPages<Message>;
 	private tail = $state.raw<Message[]>([]);
 	private own = $state.raw<Message[]>([]);
+	private deleted = $state.raw(new Set<Id<'discussionMessages'>>());
 	private created = new Map<Id<'discussionMessages'>, (() => void) | undefined>();
 	private stopTail?: () => void;
 	private tailOwner?: symbol;
@@ -21,6 +64,7 @@ export class ReplyDiscussion {
 		if (!this.feed.authorized) return [];
 		const rows = new Map<string, Message>();
 		for (const row of [...this.own, ...this.feed.rows, ...this.tail]) {
+			if (this.deleted.has(row.id)) continue;
 			const previous = rows.get(row.id);
 			if (
 				!previous ||
@@ -35,6 +79,7 @@ export class ReplyDiscussion {
 		private client: ConvexClient,
 		private access: DiscussionAccess,
 		private threadId: Id<'discussionThreads'>,
+		private scheduler: ReplyLoadScheduler,
 		retention = new DiscussionRetention()
 	) {
 		this.feed = new LiveDiscussionPages(
@@ -47,15 +92,31 @@ export class ReplyDiscussion {
 					receive,
 					fail
 				),
-			() => this.reconcile(),
-			{ retention, reply: true, evicted: () => this.created.clear() }
+			() => {
+				this.reconcile();
+				this.advanceLoading();
+			},
+			{ retention, reply: true, evicted: () => this.created.clear(), autoLoadEmptyPage: false }
 		);
+	}
+	private advanceLoading() {
+		if (!this.active) return;
+		if (!this.feed.loading) this.scheduler.complete(this);
+		if (
+			this.feed.firstPageAccepted &&
+			!this.feed.loading &&
+			!this.feed.done &&
+			!this.feed.error &&
+			this.feed.authorized
+		)
+			this.scheduler.request(this, () => this.feed.loadMore());
 	}
 	setActive(active: boolean) {
 		if (this.active === active) return;
 		this.active = active;
 		this.generation++;
 		if (!active) {
+			this.scheduler.cancel(this);
 			// Collapse all readable windows before releasing their current observations.
 			this.feed.stop(this.rows);
 			this.releaseTail();
@@ -63,10 +124,18 @@ export class ReplyDiscussion {
 			this.own = [];
 			return;
 		}
-		this.feed.reset();
+		this.scheduler.request(this, () => {
+			this.feed.reset();
+			return true;
+		});
 	}
 	retry() {
-		if (this.active) this.feed.retry();
+		if (!this.active) return;
+		this.scheduler.cancel(this);
+		this.scheduler.request(this, () => {
+			this.feed.retry();
+			return true;
+		});
 	}
 	showCreated(id: Id<'discussionMessages'>) {
 		if (!this.created.has(id)) this.created.set(id, undefined);
@@ -78,6 +147,12 @@ export class ReplyDiscussion {
 		}
 		if (!this.active) this.feed.retainDisplay();
 		this.reconcile();
+	}
+	hideDeleted(id: Id<'discussionMessages'>) {
+		this.created.get(id)?.();
+		this.created.delete(id);
+		this.own = this.own.filter((row) => row.id !== id);
+		this.deleted = new Set([...this.deleted, id]);
 	}
 	private releaseCreated() {
 		for (const [id, stop] of this.created) {
@@ -191,6 +266,7 @@ export class ReplyDiscussion {
 	}
 	destroy() {
 		this.active = false;
+		this.scheduler.cancel(this);
 		this.generation++;
 		this.releaseTail();
 		this.releaseCreated();

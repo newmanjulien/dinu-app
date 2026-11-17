@@ -5,7 +5,13 @@
 	const authoring = getTemplateAuthoringSession();
 	const buyers = getTemplateAuthoringSession('buyer');
 	const feedback = getWorkspaceFeedback();
-	const label = $derived(buyers.status ?? authoring.status ?? feedback.label);
+	let { completionNotice = null }: { completionNotice?: string | null } = $props();
+	const label = $derived(
+		(buyers.needsAttention ? buyers.status : null) ??
+			(authoring.needsAttention ? authoring.status : null) ??
+			feedback.label ??
+			completionNotice
+	);
 </script>
 
 {#if label}

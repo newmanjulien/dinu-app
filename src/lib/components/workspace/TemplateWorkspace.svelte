@@ -2,7 +2,8 @@
 	import { AuthoringController } from '$lib/playbook/authoring-controller.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { untrack, onMount, onDestroy, tick } from 'svelte';
-	import { beforeNavigate } from '$app/navigation';
+	import { afterNavigate, beforeNavigate, goto } from '$app/navigation';
+	import type { BeforeNavigate } from '@sveltejs/kit';
 	import { page } from '$app/state';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import { createDocumentWorkspace } from '$lib/document/runtime/workspace-factory';
@@ -31,8 +32,10 @@
 	import SourceSelectionToolbar from '$lib/components/document/SourceSelectionToolbar.svelte';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
 	import PlaybookEditor from '$lib/components/playbook/PlaybookEditor.svelte';
-	import PlaybookCard from '$lib/components/playbook/PlaybookCard.svelte';
+	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
+	import DocumentPanelBody from '$lib/components/document/DocumentPanelBody.svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import ConfirmModal from '$lib/ui/ConfirmModal.svelte';
 	import PlaybookReadBody from '$lib/components/playbook/PlaybookReadBody.svelte';
 	import WorkspaceDocumentFeedback from './WorkspaceDocumentFeedback.svelte';
 	import type { TemplateRouteFrameState } from './template-route-frame';
@@ -210,6 +213,44 @@
 
 	authoringSession.installController(AuthoringController);
 	const authoring = authoringSession.controller;
+	type ConfirmationRequest = {
+		title: string;
+		message: string;
+		confirmLabel: string;
+		destructive?: boolean;
+		error?: string;
+		onConfirm: () => void | Promise<void>;
+	};
+	let confirmation = $state.raw<ConfirmationRequest | null>(null);
+	let approvedLeave: {
+		from: string;
+		to: string;
+		type: 'goto' | 'popstate';
+		delta?: number;
+	} | null = null;
+	let stopWaitingForHistory: (() => void) | undefined;
+	onDestroy(() => stopWaitingForHistory?.());
+	afterNavigate(() => {
+		confirmation = null;
+		stopWaitingForHistory?.();
+		stopWaitingForHistory = undefined;
+	});
+	async function confirmRequestedAction() {
+		const request = confirmation;
+		if (!request) return;
+		const from = page.url.href;
+		confirmation = null;
+		await tick();
+		try {
+			await request.onConfirm();
+		} catch {
+			if (!disposed && page.url.href === from && confirmation === null)
+				confirmation = {
+					...request,
+					error: 'We couldn’t complete this action. Please try again.'
+				};
+		}
+	}
 	onMount(() => {
 		if (!isAdmin) return;
 		return authoringSession.attach(() => ({
@@ -268,6 +309,9 @@
 		recordTemplateSourceUpdate();
 	});
 	const projectionMatches = $derived(source.compactStructure && sourceMatches);
+	const locationPicking = $derived(
+		projectionMatches && authoringSession.entryMatchesSource && authoring.locationPicking
+	);
 	const entry = $derived(
 		projectionMatches && authoringSession.entryMatchesSource ? authoring.entry : null
 	);
@@ -364,19 +408,116 @@
 	}
 	function remove() {
 		if (!authoring.canDelete) return;
-		if (!window.confirm(copy.deleteConfirm)) return;
-		void runEditorAction(() => authoring.remove());
+		const target = authoring.entry;
+		confirmation = {
+			title: copy.deleteAction,
+			message: copy.deleteConfirm,
+			confirmLabel: copy.deleteAction,
+			destructive: true,
+			onConfirm: () => {
+				if (authoring.entry === target && authoring.canDelete)
+					return runEditorAction(() => authoring.remove());
+			}
+		};
 	}
 	function restoreSubmittedDraft() {
 		const replace = authoring.hasUnsavedWork;
-		if (
-			replace &&
-			!window.confirm('Replace your current unsaved draft with the retained submitted draft?')
-		)
+		if (!replace) {
+			authoringSession.restore(false);
 			return;
-		authoringSession.restore(replace);
+		}
+		const target = authoring.entry;
+		confirmation = {
+			title: 'Replace unsaved draft?',
+			message: 'Replace your current unsaved draft with the retained submitted draft?',
+			confirmLabel: 'Replace draft',
+			destructive: true,
+			onConfirm: () => {
+				if (
+					authoring.entry === target &&
+					authoringSession.phase === 'recovery' &&
+					authoringSession.recoveryCanRestore
+				)
+					authoringSession.restore(true);
+			}
+		};
+	}
+	function discardPreviousDraft() {
+		const target = authoring.entry;
+		confirmation = {
+			title: 'Discard previous draft?',
+			message: copy.discardPreviousConfirm,
+			confirmLabel: 'Discard draft',
+			destructive: true,
+			onConfirm: () => {
+				if (
+					authoring.entry === target &&
+					!authoringSession.entryMatchesSource &&
+					authoring.hasUnsavedWork
+				) {
+					authoring.discard();
+					authoringSession.acceptSource();
+				}
+			}
+		};
+	}
+	function discardRetainedDraft() {
+		confirmation = {
+			title: 'Discard retained draft?',
+			message: copy.discardRetainedConfirm,
+			confirmLabel: 'Discard draft',
+			destructive: true,
+			onConfirm: () => {
+				if (authoringSession.phase === 'recovery') authoringSession.discardRecovery();
+			}
+		};
+	}
+	function requestLeaveConfirmation(navigation: BeforeNavigate, message: string) {
+		const from = navigation.from?.url.href;
+		const to = navigation.to?.url.href;
+		navigation.cancel();
+		if (!from || !to) return;
+		confirmation = null;
+		stopWaitingForHistory?.();
+		stopWaitingForHistory = undefined;
+		const popstate = navigation.type === 'popstate';
+		const delta = popstate ? navigation.delta : undefined;
+		const request: ConfirmationRequest = {
+			title: 'Leave without saving?',
+			message,
+			confirmLabel: 'Discard and leave',
+			destructive: true,
+			onConfirm: async () => {
+				if (page.url.href !== from || session.blocked || session.closing) return;
+				approvedLeave = { from, to, type: popstate ? 'popstate' : 'goto', delta };
+				if (popstate) {
+					window.history.go(delta);
+				} else {
+					try {
+						await goto(to);
+					} finally {
+						approvedLeave = null;
+					}
+				}
+			}
+		};
+		if (!popstate) {
+			confirmation = request;
+			return;
+		}
+		// Kit reverses a cancelled popstate asynchronously. Replay only after it restores this entry.
+		const restored = () => {
+			if (window.location.href !== from) return;
+			stopWaitingForHistory?.();
+			stopWaitingForHistory = undefined;
+			confirmation = request;
+		};
+		window.addEventListener('popstate', restored);
+		stopWaitingForHistory = () => window.removeEventListener('popstate', restored);
 	}
 	beforeNavigate((navigation) => {
+		const approval = approvedLeave;
+		approvedLeave = null;
 		if (session.closing) return;
 		if (session.blocked && !navigation.willUnload) {
 			navigation.cancel();
@@ -398,13 +539,34 @@
 			authoring.reportBlocked(decision.message);
 			return;
 		}
-		if (decision.kind === 'confirm-discard' && !window.confirm(decision.message)) {
-			navigation.cancel();
-			return;
+		if (decision.kind === 'confirm-discard') {
+			const approved =
+				approval !== null &&
+				approval.from === navigation.from?.url.href &&
+				approval.to === navigation.to?.url.href &&
+				approval.type === navigation.type &&
+				(navigation.type !== 'popstate' || approval.delta === navigation.delta);
+			if (!approved) {
+				requestLeaveConfirmation(navigation, decision.message);
+				return;
+			}
 		}
 		if (!authoring.leave(true)) navigation.cancel();
 	});
 </script>
+
+{#if confirmation}
+	<ConfirmModal
+		portal
+		title={confirmation.title}
+		message={confirmation.message}
+		confirmLabel={confirmation.confirmLabel}
+		destructive={confirmation.destructive}
+		error={confirmation.error}
+		onConfirm={confirmRequestedAction}
+		onCancel={() => (confirmation = null)}
+	/>
+{/if}
 
 <WorkspacePresentationReporter
 	active={active && !runtime.paused}
@@ -437,14 +599,7 @@
 		{#if !authoringSession.entryMatchesSource && authoring.hasUnsavedWork}
 			<div role="status" class="mx-auto max-w-3xl px-6 py-3 text-sm">
 				<p>The template source changed. Your previous draft is retained separately.</p>
-				<button
-					class="mt-2 underline"
-					onclick={() => {
-						if (window.confirm(copy.leaveConfirm)) {
-							authoring.discard();
-							authoringSession.acceptSource();
-						}
-					}}>Discard previous draft</button
+				<button class="mt-2 underline" onclick={discardPreviousDraft}>Discard previous draft</button
 				>
 			</div>
 		{/if}
@@ -460,14 +615,16 @@
 				>
 			</div>
 		{/if}
-		{#if templateSource.error || authoringSession.structureError || (authoringSession.detailError && !pendingPanel?.error)}<div
+		{#if templateSource.error || authoringSession.structureError || authoringSession.detailError || pendingPanel?.error}<div
 				class="mx-auto max-w-3xl px-6 text-sm text-danger"
 				role="status"
 			>
 				<p>
 					{templateSource.error
 						? 'Unable to refresh the template. Please try again.'
-						: authoringSession.structureError || authoringSession.detailError}
+						: pendingPanel?.error
+							? copy.loadFailureHint
+							: authoringSession.structureError || authoringSession.detailError}
 				</p>
 				<button type="button" class="underline" onclick={() => authoringSession.retryReads()}
 					>Retry refresh</button
@@ -482,12 +639,8 @@
 					disabled={!authoringSession.recoveryCanRestore}
 					onclick={restoreSubmittedDraft}>Restore submitted draft</button
 				>
-				<button
-					type="button"
-					class="ml-4 underline"
-					onclick={() => {
-						if (window.confirm(copy.discardRetainedConfirm)) authoringSession.discardRecovery();
-					}}>Discard draft</button
+				<button type="button" class="ml-4 underline" onclick={discardRetainedDraft}
+					>Discard draft</button
 				>
 			</div>
 		{/if}
@@ -497,86 +650,78 @@
 			<main
 				oninputcapture={recordDocumentInput}
 				onclickcapture={recordDocumentInput}
-				class="template-selection-enabled pb-12 [--workspace-loading-inset:calc(var(--spacing)*16+var(--mobile-utility-rail-height))] min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*27)]"
+				class="template-selection-enabled [--document-section-bottom-padding:48px] [--workspace-loading-inset:calc(var(--spacing)*16+var(--mobile-utility-rail-height))] min-[1000px]:[--workspace-loading-inset:calc(var(--spacing)*27)]"
 				aria-label="Template editor"
 			>
 				{#snippet panelContent()}
 					{#if source.renderSource && (pendingPanel || entry)}
-						<PlaybookCard label={copy.editorLabel}>
-							{#if pendingPanel}
-								<div aria-busy={!pendingPanel.error} aria-label={copy.loading} class="grid gap-3">
-									<h2 class="text-sm font-medium">{copy.editingTitle}</h2>
-									{#if pendingPanel.body}<PlaybookReadBody item={pendingPanel.body} />{/if}
-									{#if pendingPanel.error}
-										<p role="status" class="text-[13px] leading-relaxed text-ink-muted">
-											{copy.loadFailureHint}
-										</p>
-									{/if}
-								</div>
-								<div class="flex justify-end gap-2">
-									<Button variant="secondary" onclick={cancel}>Close</Button>
-									{#if pendingPanel.error}<Button onclick={() => authoringSession.retryReads()}
-											>Try again</Button
-										>{/if}
-								</div>
-							{:else if entry}
-								<PlaybookEditor
-									embedded
-									controller={authoring}
-									animateContent={animateEditorContent}
-									onCancel={cancel}
-									onPrimary={() => runEditorAction(() => authoring.primary())}
-									onDelete={remove}
-								/>
-							{/if}
-						</PlaybookCard>
+						<DocumentPanelCard label={copy.editorLabel} viewportScrollable={locationPicking}>
+							<DocumentPanelBody>
+								{#if pendingPanel}
+									<div aria-busy={!pendingPanel.error} aria-label={copy.loading} class="grid gap-3">
+										<h2 class="text-sm font-medium">{copy.editingTitle}</h2>
+										{#if pendingPanel.body}<PlaybookReadBody item={pendingPanel.body} />{/if}
+									</div>
+									<div class="flex justify-end gap-2">
+										<Button variant="secondary" onclick={cancel}>Close</Button>
+										{#if pendingPanel.error}<Button onclick={() => authoringSession.retryReads()}
+												>Try again</Button
+											>{/if}
+									</div>
+								{:else if entry}
+									<PlaybookEditor
+										embedded
+										controller={authoring}
+										animateContent={animateEditorContent}
+										onCancel={cancel}
+										onPrimary={() => runEditorAction(() => authoring.primary())}
+										onDelete={remove}
+									/>
+								{/if}
+							</DocumentPanelBody>
+						</DocumentPanelCard>
 					{/if}
 				{/snippet}
-				{#if !entry && authoring.feedback}<p
-						class="mx-auto max-w-3xl px-6 text-sm text-danger"
-						role="status"
-					>
+				{#if authoring.feedback}<p class="mx-auto max-w-3xl px-6 text-sm text-danger" role="status">
 						{authoring.feedback}
 					</p>{/if}
-				<DocumentViewerSlot
-					{attachment}
-					entry={resource}
-					active={available}
-					onPresentation={(outcome) => (viewerPresentation = outcome)}
-					prepare={!runtime.paused && source.renderReady}
-					{itemPreload}
-					interactive={available}
-					hasPanel={Boolean(entry || pendingPanel)}
-					followScroll={projectionMatches &&
-						authoringSession.entryMatchesSource &&
-						authoring.locationPicking}
-					{panelContent}
-					selectedAnnotationId={pendingPanel?.annotationId ??
-						(entry ? authoring.selectedAnnotationId : undefined)}
-					selectionRequest={projectionMatches ? authoringSession.selectionRequest : null}
-					selectedRanges={projectionMatches && authoringSession.entryMatchesSource
-						? authoringHighlightRanges
-						: []}
-					previewChanges={projectionMatches && authoringSession.entryMatchesSource
-						? previewChanges
-						: EMPTY_PREVIEW_CHANGES}
-					selectedConcessions={{}}
-					onRemoveConcession={() => authoring.clearPreview()}
-					panelTarget={projectionMatches && authoringSession.entryMatchesSource
-						? (pendingPanel?.target ?? draft?.trigger.target)
-						: undefined}
-					picking={projectionMatches &&
-						authoringSession.entryMatchesSource &&
-						authoring.locationPicking}
-					sourceSelectionEnabled={projectionMatches &&
-						authoringSession.entryMatchesSource &&
-						authoring.textSelectionEnabled &&
-						!pendingPanel}
-					allowPlaybookNavigation={true}
-					playbookNavigationReady={projectionMatches}
-					onSelect={selectItem}
-					onDocumentBackground={() => dismiss(false)}
-				/>
+				<div class="w-full">
+					<DocumentViewerSlot
+						{attachment}
+						entry={resource}
+						active={available}
+						onPresentation={(outcome) => (viewerPresentation = outcome)}
+						prepare={!runtime.paused && source.renderReady}
+						{itemPreload}
+						interactive={available}
+						hasPanel={Boolean(entry || pendingPanel)}
+						followScroll={locationPicking}
+						{panelContent}
+						selectedAnnotationId={pendingPanel?.annotationId ??
+							(entry ? authoring.selectedAnnotationId : undefined)}
+						selectionRequest={projectionMatches ? authoringSession.selectionRequest : null}
+						selectedRanges={projectionMatches && authoringSession.entryMatchesSource
+							? authoringHighlightRanges
+							: []}
+						previewChanges={projectionMatches && authoringSession.entryMatchesSource
+							? previewChanges
+							: EMPTY_PREVIEW_CHANGES}
+						selectedConcessions={{}}
+						onRemoveConcession={() => authoring.clearPreview()}
+						panelTarget={projectionMatches && authoringSession.entryMatchesSource
+							? (pendingPanel?.target ?? draft?.trigger.target)
+							: undefined}
+						picking={locationPicking}
+						sourceSelectionEnabled={projectionMatches &&
+							authoringSession.entryMatchesSource &&
+							authoring.textSelectionEnabled &&
+							!pendingPanel}
+						allowPlaybookNavigation={true}
+						playbookNavigationReady={projectionMatches}
+						onSelect={selectItem}
+						onDocumentBackground={() => dismiss(false)}
+					/>
+				</div>
 			</main>
 		</InteractionInputScope>
 		{#if available && viewer.interactionEnabled && viewer.displayedSnapshot}<SourceSelectionToolbar

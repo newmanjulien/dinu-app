@@ -64,7 +64,10 @@ describe('route and editing lifetimes', () => {
 		await settle();
 		expect(f.owner.entries).toHaveLength(0);
 		expect(f.active()).toBe(0);
-		expect(f.feedback.statusFor('contract-a')).toBe('Saved');
+		expect(f.onSaved).toHaveBeenCalledWith(
+			expect.objectContaining({ id: 'contract-a', status: 'Saved', memoryOnly: false })
+		);
+		expect(f.feedback.statusFor('contract-a')).toBeUndefined();
 	});
 	it('waits for the write response when metadata acknowledges first', async () => {
 		const f = fixture();

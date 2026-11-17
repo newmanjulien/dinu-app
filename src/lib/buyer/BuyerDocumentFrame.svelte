@@ -13,9 +13,13 @@
 	} = $props();
 </script>
 
-<main class="pb-20" aria-label="Contract document" style:--buyer-link-bar-height="0px">
+<main
+	aria-label="Contract document"
+	style:--buyer-link-bar-height="0px"
+	style:--document-section-bottom-padding="80px"
+>
 	{#if loading}
-		<DocumentSkeleton embedded label={loadingLabel} />
+		<DocumentSkeleton reserveReviewGutter label={loadingLabel} />
 	{:else}
 		{@render children?.()}
 	{/if}

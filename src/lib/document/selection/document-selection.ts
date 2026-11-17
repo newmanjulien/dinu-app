@@ -32,6 +32,12 @@ export const getDocumentSelection = (root: HTMLElement | undefined) =>
 	root ? controllers.get(root) : undefined;
 const GROUP = 'document-selection-breaks';
 
+function edgeScrollDelta(pointer: number, start: number, end: number, frameScale: number) {
+	const distance =
+		pointer < start + 48 ? pointer - start - 48 : pointer > end - 48 ? pointer - end + 48 : 0;
+	return Math.max(-24, Math.min(24, distance / 4)) * frameScale;
+}
+
 /** One source-picking owner per active, committed document snapshot. */
 export class DocumentSelectionController {
 	readonly surface: SelectionSurface;
@@ -51,7 +57,6 @@ export class DocumentSelectionController {
 	} | null = null;
 	#frame: number | undefined;
 	#destroyed = false;
-	#scrollOwner: HTMLElement | Window;
 	#lastFrame = 0;
 	#toolbar: HTMLElement | undefined;
 
@@ -61,7 +66,6 @@ export class DocumentSelectionController {
 		readonly highlights: DocumentHighlightController
 	) {
 		this.surface = new SelectionSurface(root, snapshot);
-		this.#scrollOwner = this.#findScrollOwner();
 		controllers.set(root, this);
 		root.setAttribute('data-source-selection-enabled', '');
 		this.#interaction = createSelectionInteraction({
@@ -114,16 +118,6 @@ export class DocumentSelectionController {
 		this.root.dispatchEvent(
 			new CustomEvent<GestureNotice>(SELECTION_GESTURE, { detail: { kind, x, y } })
 		);
-	}
-	#findScrollOwner(): HTMLElement | Window {
-		for (let node = this.root.parentElement; node; node = node.parentElement) {
-			if (
-				/(auto|scroll)/.test(getComputedStyle(node).overflowY) &&
-				node.scrollHeight > node.clientHeight
-			)
-				return node;
-		}
-		return window;
 	}
 	bindToolbar(element: HTMLElement) {
 		this.#toolbar = element;
@@ -203,12 +197,9 @@ export class DocumentSelectionController {
 			}
 		}
 		if (!page || !this.root.contains(page)) return null;
-		// Gap rectangles are the real existing margins. Zero-area gutters are saved navigation only.
-		for (const group of this.surface.pageBreaks(Number(page.dataset.pageNumber))) {
-			if (group.page !== Number(page.dataset.pageNumber) || group.occurrence.gap <= 0) continue;
-			const bounds = this.highlights.structuralBoundary(group.key)?.bounds;
-			if (bounds && y >= bounds.top && y < bounds.bottom) return this.surface.breakPosition(group);
-		}
+		// The break owner is the interaction source for the existing paragraph margin.
+		const gap = this.surface.breakAt(page, y);
+		if (gap) return this.surface.breakPosition(gap);
 		const bounds = page.getBoundingClientRect();
 		const hit = this.highlights.selectionHit(
 			page,
@@ -320,34 +311,26 @@ export class DocumentSelectionController {
 			this.#frame = undefined;
 			if (!this.#drag || this.#destroyed) return;
 			const { x, y } = this.#drag;
-			const bounds =
-				this.#scrollOwner instanceof HTMLElement
-					? this.#scrollOwner.getBoundingClientRect()
-					: {
-							top: getDocumentViewportMetrics().top,
-							bottom: window.innerHeight,
-							left: 0,
-							right: window.innerWidth
-						};
-			const distance =
-				y < bounds.top + 48
-					? y - bounds.top - 48
-					: y > bounds.bottom - 48
-						? y - bounds.bottom + 48
-						: 0;
-			const delta =
-				Math.max(-24, Math.min(24, distance / 4)) *
-				Math.min(2, this.#lastFrame ? (time - this.#lastFrame) / 16.67 : 1);
+			const bounds = getDocumentViewportMetrics(this.root);
+			const frameScale = Math.min(2, this.#lastFrame ? (time - this.#lastFrame) / 16.67 : 1);
 			this.#lastFrame = time;
 			const resolved = this.#update();
-			if (delta && resolved && x >= bounds.left && x <= bounds.right) {
-				const previous =
-					this.#scrollOwner instanceof HTMLElement ? this.#scrollOwner.scrollTop : window.scrollY;
-				this.#scrollOwner.scrollBy({ top: delta, behavior: 'instant' });
-				const current =
-					this.#scrollOwner instanceof HTMLElement ? this.#scrollOwner.scrollTop : window.scrollY;
-				if (current !== previous) this.#schedule();
-			}
+			const scroller = bounds.scroller;
+			if (!resolved || !scroller) return;
+			const top =
+				x >= bounds.left && x <= bounds.right
+					? edgeScrollDelta(y, bounds.top, bounds.bottom, frameScale)
+					: 0;
+			const left =
+				y >= bounds.top && y <= bounds.bottom
+					? edgeScrollDelta(x, bounds.left, bounds.right, frameScale)
+					: 0;
+			if (!top && !left) return;
+			const previousTop = scroller.scrollTop;
+			const previousLeft = scroller.scrollLeft;
+			scroller.scrollBy({ top, left, behavior: 'instant' });
+			if (scroller.scrollTop !== previousTop || scroller.scrollLeft !== previousLeft)
+				this.#schedule();
 		});
 	}
 	#stopFrame() {

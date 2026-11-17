@@ -58,12 +58,7 @@
 	});
 </script>
 
-<div
-	class="relative w-full"
-	bind:this={layoutElement}
-	style:--panel-top={`${panelTop ?? 0}px`}
-	style:min-height={`${documentHeight}px`}
->
+<div class="relative w-full" bind:this={layoutElement}>
 	{#snippet footer()}{#if !loading}{@render footerContent?.()}{/if}{/snippet}
 	<DocumentPageFrame {footer}>
 		<!-- Programmatic focus only; inert previews have no focus target. -->

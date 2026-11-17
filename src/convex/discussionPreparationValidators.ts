@@ -139,6 +139,7 @@ export const sourcePassage = v.object({
 	inputHash: v.string(),
 	documentId: v.id('contractDocuments'),
 	documentRevision: v.number(),
+	manifestSeal: v.string(),
 	start: v.number(),
 	end: v.number(),
 	tapeLength: v.number()

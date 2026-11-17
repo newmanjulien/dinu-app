@@ -17,13 +17,20 @@ import type { ResolvedRun } from './model';
 import type { PaginatedPage } from './pagination/types';
 import type { AnnotationProjectionDocument } from './runtime/types';
 import type { SelectionDocument } from './selection/selection-model';
+import { revealInDocumentViewport } from './document-viewport';
 
 export type AnnotationDomRevision = {
 	id: number;
 	pages: readonly PaginatedPage[];
 	selectionDocument?: SelectionDocument;
 };
-type Token = { element: HTMLElement; page: number; from: number; to: number; visual?: SourceTarget };
+type Token = {
+	element: HTMLElement;
+	page: number;
+	from: number;
+	to: number;
+	visual?: SourceTarget;
+};
 type PageTokens = {
 	page: PaginatedPage;
 	element: HTMLElement;
@@ -48,10 +55,7 @@ export class DocumentAnnotationProjection {
 	private tokens = new Map<string, Token[]>();
 	private generated: Token[] = [];
 	private owners = new Map<string, Owner>();
-	private projected = new Map<
-		string,
-		{ annotation: DocumentAnnotation; owners: string[] }
-	>();
+	private projected = new Map<string, { annotation: DocumentAnnotation; owners: string[] }>();
 	private containers = new WeakMap<Element, number>();
 	private nextContainer = 0;
 	private layers = new Map<HTMLElement, HTMLElement>();
@@ -387,10 +391,10 @@ export class DocumentAnnotationProjection {
 		const index = snapshot.source.sourceIndex;
 		const includedPages = new Set(snapshot.pages.map((page) => page.number));
 		const mounted = new Map(
-			Array.from(this.stage.querySelectorAll<HTMLElement>('.document-page'), (element) => [
-				Number(element.dataset.pageNumber),
-				element
-			] as const)
+			Array.from(
+				this.stage.querySelectorAll<HTMLElement>('.document-page'),
+				(element) => [Number(element.dataset.pageNumber), element] as const
+			)
 		);
 		const dirtyPages = new Set<number>();
 		if (rebuildAll) {
@@ -566,7 +570,7 @@ export class DocumentAnnotationProjection {
 		if (descriptor.ranges[0]) this.highlights.ensureRangeGeometry(descriptor.ranges[0]);
 		this.positionOwners([owner]);
 		if (owner.element.dataset.annotationMeasured === 'true') {
-			if (native && cold) owner.element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+			if (native && cold) revealInDocumentViewport(owner.element);
 			this.pendingPreparation = null;
 		} else
 			this.pendingPreparation = {
@@ -592,8 +596,7 @@ export class DocumentAnnotationProjection {
 		}
 		if (element.dataset.annotationMeasured !== 'true') return;
 		this.pendingPreparation = null;
-		if (pending.reveal && pending.intent === this.intentVersion)
-			element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+		if (pending.reveal && pending.intent === this.intentVersion) revealInDocumentViewport(element);
 	}
 	private positionOwners(owners: Iterable<Owner> = this.owners.values()) {
 		for (const owner of owners) {

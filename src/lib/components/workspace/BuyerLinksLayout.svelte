@@ -65,7 +65,7 @@
 						href={buyerPath(link.token)}
 						target="_blank"
 						rel="noopener noreferrer"
-						aria-label={`Open buyer link for ${link.title}${unreadCurrent && link.hasUnreadComment ? '. Unread comment.' : ''} (opens in a new tab)`}
+						aria-label={`Open buyer link for ${link.title}${unreadCurrent && link.hasUnreadComment ? '. Unread.' : ''} (opens in a new tab)`}
 						class="flex flex-wrap items-center gap-x-2.5 gap-y-1 py-[9px] pr-[56px] pl-[11px] text-[13px] leading-5 font-normal break-words transition-colors hover:bg-field-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
 					>
 						<span class="min-w-0">{link.title} link</span>
@@ -74,7 +74,7 @@
 								class="inline-flex shrink-0 items-center gap-1.5 rounded-full border-hairline border-edge bg-surface px-2 py-0.5 text-[11px] leading-4 font-normal text-ink"
 							>
 								<span aria-hidden="true" class="size-1.5 rounded-full bg-emerald-400"></span>
-								Unread comment
+								Unread
 							</span>
 						{/if}
 					</a>

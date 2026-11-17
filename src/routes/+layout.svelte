@@ -11,9 +11,18 @@
 	import StartupDataProvider from '$lib/auth/StartupDataProvider.svelte';
 	import ClerkSessionProvider from '$lib/auth/ClerkSessionProvider.svelte';
 	import { setStartupPreparation } from '$lib/auth/startup-preparation';
+	import {
+		setDocumentNavigation,
+		type DocumentScrollSnapshot
+	} from '$lib/document/runtime/navigation.svelte';
 	import { onDestroy } from 'svelte';
 	let { children } = $props();
 	const preparation = setStartupPreparation();
+	const documentNavigation = setDocumentNavigation();
+	export const snapshot = {
+		capture: (): DocumentScrollSnapshot => documentNavigation.capture(),
+		restore: (value: DocumentScrollSnapshot) => documentNavigation.restore(value)
+	};
 	const metadata = setPageMetadata();
 	const route = $derived(describeRoute(page.route.id));
 	const tabTitle = $derived.by(() => {

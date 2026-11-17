@@ -420,9 +420,7 @@
 				</p>
 			</div>
 
-			{#if verification.status === 'preparing'}
-				<p class="text-[0.72rem] leading-5 text-ink-muted">Preparing verification...</p>
-			{:else if showVerificationInput}
+			{#if showVerificationInput}
 				<div>
 					<label
 						for="delete-account-verification"

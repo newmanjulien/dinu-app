@@ -68,7 +68,7 @@ function firstCandidate(page: CachedPage, start: number) {
 }
 
 /** Cache source parsing and location projection by mounted selection document and page. Coordinates
- * stay relative to the page, so appended pages and viewport scaling reuse earlier work. */
+ * stay relative to the fixed-size page, so appended pages reuse earlier work. */
 export class ReviewAnchorProjector {
 	private document?: SelectionDocument;
 	private geometryKey?: string;
@@ -80,7 +80,6 @@ export class ReviewAnchorProjector {
 		tags: readonly Pick<ReviewTag, 'changeId' | 'target'>[],
 		document: SelectionDocument,
 		pages: readonly PaginatedPage[],
-		scale: number,
 		geometryKey: string
 	): ReviewAnchor[] {
 		const index = document.index;
@@ -131,7 +130,6 @@ export class ReviewAnchorProjector {
 		}
 		const pageNumbers = new Set(pages.map((page) => page.number));
 		for (const number of this.cache.keys()) if (!pageNumbers.has(number)) this.cache.delete(number);
-		if (scale <= 0) return [];
 		const origin = host.getBoundingClientRect().top;
 		const elements = new Map(
 			Array.from(host.querySelectorAll<HTMLElement>('[data-page-number]')).map((element) => [
@@ -220,7 +218,7 @@ export class ReviewAnchorProjector {
 						const rect = target?.getBoundingClientRect();
 						return {
 							generated: false,
-							...(rect?.height ? { target: (rect.top - bounds.top) / scale } : {})
+							...(rect?.height ? { target: rect.top - bounds.top } : {})
 						};
 					}
 					const { start, end } = location;
@@ -240,7 +238,7 @@ export class ReviewAnchorProjector {
 						if (!overlaps) continue;
 						if (token.top === undefined) {
 							const rect = token.span.getClientRects()[0];
-							token.top = rect?.height ? (rect.top - bounds.top) / scale : null;
+							token.top = rect?.height ? rect.top - bounds.top : null;
 						}
 						if (token.top === null) continue;
 						projection.target = Math.min(projection.target ?? Infinity, token.top);
@@ -260,7 +258,7 @@ export class ReviewAnchorProjector {
 			// Generated insertion text takes precedence globally, including at page boundaries.
 			const inserted = mounted.some(({ cached }) => cached.projections[i].generated);
 			const add = (cached: CachedPage, top: number, local: number) => {
-				const target = top + local * scale;
+				const target = top + local;
 				anchors.push({
 					key: location.key,
 					changeId: location.changeId,
@@ -293,7 +291,7 @@ export class ReviewAnchorProjector {
 					const bounds = cached.element.getBoundingClientRect();
 					let fallback: Fallback | null = null;
 					if (rect && rect.top >= bounds.top && rect.top < bounds.bottom)
-						fallback = { target: (rect.top - bounds.top) / scale, distance: -1 };
+						fallback = { target: rect.top - bounds.top, distance: -1 };
 					else {
 						// Numbered paragraphs trim source whitespace. Find the nearest
 						// visible token in this passage, once per immutable page and point.
@@ -303,7 +301,7 @@ export class ReviewAnchorProjector {
 							if (fallback && distance >= fallback.distance) continue;
 							if (token.top === undefined) {
 								const rect = token.span.getClientRects()[0];
-								token.top = rect?.height ? (rect.top - bounds.top) / scale : null;
+								token.top = rect?.height ? rect.top - bounds.top : null;
 							}
 							if (token.top !== null) fallback = { target: token.top, distance };
 						}

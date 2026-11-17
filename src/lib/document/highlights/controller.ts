@@ -969,14 +969,14 @@ export class DocumentHighlightController {
 		if (!this.#visibilityDirty) return;
 		this.#visibilityDirty = false;
 		this.#visiblePages.clear();
-		const top = getDocumentViewportMetrics().top;
+		const viewport = getDocumentViewportMetrics(this.#stage);
 		for (const [number, element] of this.#pageElements) {
 			const bounds = element.getBoundingClientRect();
 			if (
-				bounds.bottom > top &&
-				bounds.top < window.innerHeight &&
-				bounds.right > 0 &&
-				bounds.left < window.innerWidth
+				bounds.bottom > viewport.top &&
+				bounds.top < viewport.bottom &&
+				bounds.right > viewport.left &&
+				bounds.left < viewport.right
 			)
 				this.#visiblePages.add(number);
 		}

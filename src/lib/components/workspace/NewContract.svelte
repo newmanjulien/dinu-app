@@ -81,7 +81,6 @@
 		!connection.isLoading && !connection.error ? modeFor(connection.data) : undefined
 	);
 	let formMode = $state<Mode | undefined>(untrack(() => modeFor(hubspot.displayConnection)));
-	let modeNotice = $state('');
 	let name = $state('');
 	let validation = $state<string | null>(null);
 	let nameInput = $state<HTMLInputElement>();
@@ -92,11 +91,6 @@
 		const next = modeFor(hubspot.displayConnection);
 		if (!next || locked || createdId || deleted) return;
 		untrack(() => {
-			if (formMode && next !== formMode)
-				modeNotice =
-					next === 'deal'
-						? 'HubSpot is now installed. Choose a deal to create your contract. Your contract name is kept.'
-						: 'HubSpot was disconnected. Name your contract to continue. Your deal search is kept.';
 			formMode = next;
 		});
 	});
@@ -230,7 +224,6 @@
 	closeOnBackdrop={false}
 >
 	<form id={formId} onsubmit={(event) => void submit(event)}>
-		{#if modeNotice}<p class="mb-3 text-sm text-ink-muted" role="status">{modeNotice}</p>{/if}
 		<div
 			hidden={formMode !== 'manual'}
 			inert={formMode !== 'manual'}
@@ -267,9 +260,6 @@
 				disabled={busy || existingAttempt}
 			/>
 		</div>
-		{#if !currentMode && !connection.error}
-			<p class="mt-3 text-xs text-ink-muted" role="status">Checking HubSpot connection…</p>
-		{/if}
 		{#if connection.error}<p role="alert" class="mt-3 text-sm text-danger">
 				We couldn’t check your HubSpot installation. <button
 					type="button"

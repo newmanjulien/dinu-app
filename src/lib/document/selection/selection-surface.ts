@@ -4,6 +4,7 @@ import type { SourcePoint, SourceTarget } from '$lib/document/source-model';
 import type { RenderSnapshot } from '../runtime/types';
 import type { PaginatedPage } from '../pagination/types';
 import { sourceTextToken, readSelectedDomEnvelope } from './dom-selection';
+import { measureSelectionBreak } from '../highlights/geometry';
 import type { CapturedNativeSelection } from './selection-gesture';
 import {
 	breakGroupKey,
@@ -107,7 +108,7 @@ export class SelectionSurface {
 			for (const occurrence of this.document.pages.get(pageNumber) ?? []) {
 				if (occurrence.kind === 'break') {
 					const element = page.querySelector<HTMLElement>(
-						`[data-selection-group="${occurrence.group.id}"]`
+						`[data-selection-break-owner="${occurrence.order}"][data-selection-group="${occurrence.group.id}"]`
 					);
 					if (!element) continue;
 					const entry = {
@@ -196,6 +197,16 @@ export class SelectionSurface {
 	pageBreaks(page: number): readonly VisibleBreak[] {
 		return this.#pageBreaks.get(page) ?? [];
 	}
+	/** Hit the physical gap from its stable owner and the committed layout gap. */
+	breakAt(page: HTMLElement, y: number): VisibleBreak | null {
+		for (const entry of this.pageBreaks(Number(page.dataset.pageNumber))) {
+			if (entry.element.closest('.document-page') !== page) continue;
+			if (!this.live(this.breakPosition(entry))) continue;
+			const measured = measureSelectionBreak(entry.element, entry.occurrence.gap);
+			if (measured && y >= measured.bounds.top && y < measured.bounds.bottom) return entry;
+		}
+		return null;
+	}
 	entry(position: DisplayPosition) {
 		return this.document.occurrences[position.occurrence];
 	}
@@ -246,6 +257,7 @@ export class SelectionSurface {
 				page &&
 				this.#pageLive(page, entry) &&
 				page.contains(handle.element) &&
+				Number(handle.element.dataset.selectionBreakOwner) === entry.order &&
 				Number(handle.element.dataset.selectionGroup) === entry.group.id
 			);
 		}
@@ -378,24 +390,55 @@ export class SelectionSurface {
 			};
 		}
 	}
-	#envelope(range: Range) {
+	#envelope(range: Range, include?: (start: DisplayPosition, end: DisplayPosition) => void) {
 		let previous = -1;
-		return readSelectedDomEnvelope(this.root, range, (node, from) => {
-			if (this.#presentation.get(node) === node.data) return true;
-			const binding = this.#texts.get(node);
-			if (
-				!binding ||
-				binding.occurrence.order < previous ||
-				!this.live({
-					document: this.document,
-					occurrence: binding.occurrence.order,
-					offset: binding.start + from
-				})
-			)
-				return false;
-			previous = binding.occurrence.order;
-			return true;
-		});
+		return readSelectedDomEnvelope(
+			this.root,
+			range,
+			(node, from, to) => {
+				if (this.#presentation.get(node) === node.data) return true;
+				const binding = this.#texts.get(node);
+				if (
+					!binding ||
+					binding.occurrence.order < previous ||
+					!this.live({
+						document: this.document,
+						occurrence: binding.occurrence.order,
+						offset: binding.start + from
+					})
+				)
+					return false;
+				previous = binding.occurrence.order;
+				if (include) {
+					const start = this.position(node, from),
+						end = this.position(node, to);
+					if (!start || !end) return false;
+					include(start, end);
+				}
+				return true;
+			},
+			include
+				? (element) => {
+						if (!(element instanceof HTMLElement)) return true;
+						const order = Number(element.dataset.selectionBreakOwner);
+						if (!element.hasAttribute('data-selection-break-owner')) return true;
+						const handle = this.#breaks.get(order),
+							parent = element.parentNode;
+						if (!handle || handle.element !== element || !parent) return true;
+						const before = this.breakPosition(handle);
+						if (!this.live(before)) return true;
+						const offset = Array.prototype.indexOf.call(parent.childNodes, element);
+						if (
+							element.contains(range.startContainer) ||
+							element.contains(range.endContainer) ||
+							(range.comparePoint(parent, offset) === 0 &&
+								range.comparePoint(parent, offset + 1) === 0)
+						)
+							include(before, { ...before, offset: 1 });
+						return true;
+					}
+				: undefined
+		);
 	}
 	resolve(
 		extent: DisplayExtent,
@@ -540,62 +583,28 @@ export class SelectionSurface {
 			nativeInput: captured,
 			unavailable: 'unowned'
 		});
-		// Read the original envelope before element endpoint normalization can discard evidence.
-		if (!this.#envelope(range)) return nativeOnly();
-		let low = this.position(range.startContainer, range.startOffset),
-			high = this.position(range.endContainer, range.endOffset);
-		if (!low || !high) {
-			const walker = this.root.ownerDocument.createTreeWalker(this.root, NodeFilter.SHOW_TEXT);
-			for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-				const text = node as Text,
-					binding = this.#texts.get(text);
-				if (!binding) continue;
-				const from =
-					range.startContainer === text
-						? range.startOffset
-						: range.comparePoint(text, 0) >= 0
-							? 0
-							: text.length;
-				const to =
-					range.endContainer === text
-						? range.endOffset
-						: range.comparePoint(text, text.length) <= 0
-							? text.length
-							: 0;
-				if (from < to) {
-					low ??= this.position(text, from);
-					high = this.position(text, to);
-				}
-			}
-		}
-		for (const handle of this.breaks) {
-			if (handle.occurrence.gap <= 0) continue;
-			const owner = handle.element.parentElement,
-				parent = owner?.parentNode;
-			if (!owner || !parent) continue;
-			const offset = Array.prototype.indexOf.call(parent.childNodes, owner);
-			if (
-				range.comparePoint(parent, offset) === 0 &&
-				range.comparePoint(parent, offset + 1) === 0
-			) {
-				const before = this.breakPosition(handle),
-					after = { ...before, offset: 1 };
-				if (!low || comparePositions(before, low) < 0) low = before;
-				if (!high || comparePositions(after, high) > 0) high = after;
-			}
-		}
+		const selected: { low: DisplayPosition | null; high: DisplayPosition | null } = {
+			low: null,
+			high: null
+		};
+		const include = (start: DisplayPosition, end: DisplayPosition) => {
+			if (!selected.low || comparePositions(start, selected.low) < 0) selected.low = start;
+			if (!selected.high || comparePositions(end, selected.high) > 0) selected.high = end;
+		};
+		// Validate and collect positions in one range-scoped traversal. Unowned selected text
+		// remains evidence even when native endpoints are on elements or presentation anchors.
+		if (!this.#envelope(range, include)) return nativeOnly();
+		const { low, high } = selected;
 		if (!low || !high) return nativeOnly();
-		return (
-			this.resolve(
-				{
-					document: this.document,
-					anchor: captured.backward ? high : low,
-					head: captured.backward ? low : high
-				},
-				true,
-				captured
-			) ?? nativeOnly()
+		const value = this.resolve(
+			{
+				document: this.document,
+				anchor: captured.backward ? high : low,
+				head: captured.backward ? low : high
+			},
+			true
 		);
+		return value ? { ...value, nativeInput: captured } : nativeOnly();
 	}
 	/** Plain and safe structural HTML follow selected physical occurrences, including header repeats. */
 	serialize(value: SelectionValue): { text: string; html: string } | null {

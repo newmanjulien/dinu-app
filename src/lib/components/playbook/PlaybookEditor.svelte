@@ -6,6 +6,8 @@
 	import Menu from '$lib/components/ui/Menu.svelte';
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import ConfirmModal from '$lib/ui/ConfirmModal.svelte';
+	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import type { DeepReadonly } from '../../immutable';
 	import { isRepItem, type Concession } from '$lib/playbook/model';
 	import { approvalGuidanceField, instructionsFields } from '$lib/playbook/instructions-fields';
@@ -14,7 +16,8 @@
 	import ReplacementEditor from './ReplacementEditor.svelte';
 	import ConcessionRow from './ConcessionRow.svelte';
 	import InlineAction from './InlineAction.svelte';
-	import PlaybookCard from './PlaybookCard.svelte';
+	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
+	import DocumentPanelBody from '$lib/components/document/DocumentPanelBody.svelte';
 	import PlaybookSection from './PlaybookSection.svelte';
 	let {
 		controller,
@@ -44,10 +47,15 @@
 	const actionReason = $derived(primaryAction.reason);
 	const forwardDisabled = $derived(primaryAction.disabled);
 	const menuId = $props.id();
+	let actionHintTrigger = $state<HTMLSpanElement>();
 	let menuOpen = $state(false);
 	let menuButton = $state<HTMLButtonElement | null>();
 	const addButtons: Partial<Record<Concession['tier'], HTMLButtonElement>> = {};
 	const tiers = ['preferred', 'rare'] as const;
+	let concessionToDelete = $state.raw<{
+		concession: DeepReadonly<Concession>;
+		entry: typeof controller.entry;
+	} | null>(null);
 
 	function focusCreationField(fieldset: HTMLFieldSetElement) {
 		if (!creating) return;
@@ -66,13 +74,18 @@
 		};
 	}
 
-	async function requestConcessionDelete(concession: DeepReadonly<Concession>) {
-		if (!window.confirm(`Remove this concession from the draft?\n\n${concession.description}`))
-			return;
-		const key = controller.entry;
-		if (!controller.removeConcession(concession.id)) return;
+	function requestConcessionDelete(concession: DeepReadonly<Concession>) {
+		concessionToDelete = { concession, entry: controller.entry };
+	}
+
+	async function confirmConcessionDelete() {
+		const request = concessionToDelete;
+		if (!request) return;
+		concessionToDelete = null;
+		if (controller.entry !== request.entry) return;
+		if (!controller.removeConcession(request.concession.id)) return;
 		await tick();
-		if (controller.entry === key) addButtons[concession.tier]?.focus();
+		if (controller.entry === request.entry) addButtons[request.concession.tier]?.focus();
 	}
 
 	const creationConcession = $derived(controller.creationConcession);
@@ -85,6 +98,7 @@
 		void entry;
 		menuOpen = false;
 		open = null;
+		concessionToDelete = null;
 	});
 </script>
 
@@ -274,21 +288,7 @@
 				animateContent &&
 					'motion-safe:animate-[clause-panel-content-in_140ms_ease-out_both] [animation-delay:48ms]'
 			]}
-			aria-live="polite"
 		>
-			{#if actionReason}
-				<p
-					id={`${menuId}-reason`}
-					class="m-0 text-sm"
-					class:text-danger={primaryAction.isError}
-					class:text-ink-secondary={!primaryAction.isError}
-				>
-					{actionReason}
-				</p>
-			{/if}
-			{#if controller.feedback}
-				<p class="m-0 text-sm text-danger" role="status">{controller.feedback}</p>
-			{/if}
 			<div class="flex flex-wrap items-center justify-end gap-3" class:pt-px={stagedCreation}>
 				{#if creating && controller.canCancelLocation}
 					<Button
@@ -304,17 +304,52 @@
 					>
 				{/if}
 				<Button variant="secondary" disabled={!canCancel} onclick={onCancel}>Cancel</Button>
-				<Button
-					variant="secondary"
-					disabled={forwardDisabled}
-					aria-describedby={actionReason ? `${menuId}-reason` : undefined}
-					onclick={onPrimary}>{forwardLabel}</Button
+				<Tooltip
+					text={actionReason}
+					trigger={actionHintTrigger}
+					standalone={false}
+					enabled={Boolean(actionReason)}
 				>
+					{#snippet children(descriptionId)}
+						<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users focus this wrapper to read why the disabled button is unavailable.) -->
+						<span
+							bind:this={actionHintTrigger}
+							class="inline-flex rounded-button-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+							role="group"
+							tabindex={actionReason ? 0 : undefined}
+							aria-label={forwardLabel}
+							aria-describedby={actionReason ? descriptionId : undefined}
+						>
+							<Button
+								variant="secondary"
+								class="disabled:pointer-events-none"
+								disabled={forwardDisabled}
+								aria-describedby={actionReason ? descriptionId : undefined}
+								onclick={onPrimary}>{forwardLabel}</Button
+							>
+						</span>
+					{/snippet}
+				</Tooltip>
 			</div>
 		</div>
 	{/key}
 {/snippet}
 
-{#if embedded}{@render content()}{:else}<PlaybookCard label={copy.editorLabel}
-		>{@render content()}</PlaybookCard
-	>{/if}
+{#if embedded}
+	{@render content()}
+{:else}
+	<DocumentPanelCard label={copy.editorLabel}>
+		<DocumentPanelBody>{@render content()}</DocumentPanelBody>
+	</DocumentPanelCard>
+{/if}
+
+{#if concessionToDelete}
+	<ConfirmModal
+		title="Delete concession?"
+		message={`Remove this concession from the draft?\n\n${concessionToDelete.concession.description}`}
+		confirmLabel="Delete concession"
+		destructive
+		onConfirm={confirmConcessionDelete}
+		onCancel={() => (concessionToDelete = null)}
+	/>
+{/if}

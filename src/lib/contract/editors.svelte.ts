@@ -69,6 +69,8 @@ type EditingSession = {
 	journal: DraftJournal;
 	ownsRecovery: boolean;
 };
+type PreviewState =
+	{ kind: 'loading' } | { kind: 'ready'; basis: PreviewBasis } | { kind: 'error'; error: Error };
 
 function previewError(cause: unknown) {
 	return cause instanceof Error ? cause : new Error('Selected contract wording is unavailable.');
@@ -306,12 +308,12 @@ export class ContractEditor {
 		return this.restoration;
 	}
 	private previewItemId = $state<Id<'playbookItems'>>();
-	private readonly previewBases = new SvelteMap<string, PreviewBasis>();
+	private readonly previewStates = new SvelteMap<string, PreviewState>();
+	private readonly previewRecency = new Set<string>();
 	private readonly basisFlights = new Map<
 		string,
 		{ attempt: ReadAttempt; result: Promise<void> }
 	>();
-	private previewFailure = $state.raw<{ key: string; error: Error }>();
 	private view!: {
 		renderChoices: Record<string, string>;
 		items: ReturnType<typeof resolveTemplateItem>[];
@@ -351,16 +353,33 @@ export class ContractEditor {
 		return this.view.focusedPreview;
 	}
 	get previewError() {
-		return (
-			this.view.previewError ??
-			(this.previewFailure && this.previewFailure.key === this.basisKey(this.previewItemId)
-				? this.previewFailure.error
-				: undefined)
-		);
+		const state = this.previewState;
+		return this.view.previewError ?? (state?.kind === 'error' ? state.error : undefined);
 	}
 	get previewBusy() {
+		return this.previewState?.kind === 'loading';
+	}
+	get previewRetryable() {
+		return this.previewState?.kind === 'error';
+	}
+	private get previewState() {
 		const key = this.basisKey(this.previewItemId);
-		return Boolean(key && !this.previewBases.has(key) && !this.previewError);
+		return key ? this.previewStates.get(key) : undefined;
+	}
+	private rememberPreview(key: string) {
+		this.previewRecency.delete(key);
+		this.previewRecency.add(key);
+		const focusedKey = this.basisKey(this.previewItemId);
+		while (this.previewRecency.size > 32) {
+			const oldest = this.previewRecency.keys().next().value!;
+			if (oldest === focusedKey) {
+				this.previewRecency.delete(oldest);
+				this.previewRecency.add(oldest);
+				continue;
+			}
+			this.previewRecency.delete(oldest);
+			this.previewStates.delete(oldest);
+		}
 	}
 	private basisKey(itemId?: string) {
 		if (!itemId || !this.approved || !this.persistence || !this.currentDocumentReady)
@@ -373,24 +392,23 @@ export class ContractEditor {
 			head?.appliedChangeId ?? null
 		]);
 	}
-	preparePreview(itemId: string | null) {
+	focusPreview(itemId: string | null) {
 		this.previewItemId = itemId ? (itemId as Id<'playbookItems'>) : undefined;
-		if (itemId) void this.prefetchPreview(itemId);
 	}
-	/** Row/panel pointer and focus intent share one small basis flight and a 32-entry LRU. */
+	/** Clause intent and the focused panel share one request per identity and a 32-entry cache. */
 	prefetchPreview(itemId: string): Promise<void> {
 		const key = this.basisKey(itemId);
 		if (!key || !this.attachments || !this.owner.accessAvailable || this.owner.frozen)
 			return Promise.resolve();
-		const cached = this.previewBases.get(key);
-		if (cached) {
-			this.previewBases.delete(key);
-			this.previewBases.set(key, cached);
+		const state = this.previewStates.get(key);
+		if (state?.kind === 'ready') {
+			this.rememberPreview(key);
 			return Promise.resolve();
 		}
 		const existing = this.basisFlights.get(key);
 		if (existing) return existing.result;
 		const attempt = new ReadAttempt(15_000);
+		this.previewStates.set(key, { kind: 'loading' });
 		const result = queryOnce(
 			this.owner.options.client,
 			api.contractDefinitions.previewBasis,
@@ -406,8 +424,7 @@ export class ContractEditor {
 					!this.alive ||
 					this.basisFlights.get(key)?.attempt !== attempt ||
 					attempt.signal.aborted ||
-					this.basisKey(itemId) !== key ||
-					basis.displayIdentity !== this.approved?.displayIdentity
+					this.basisKey(itemId) !== key
 				)
 					return;
 				const actual = JSON.stringify([
@@ -416,36 +433,46 @@ export class ContractEditor {
 					basis.currentChangeId,
 					basis.appliedChangeId
 				]);
-				if (actual !== key) return;
-				this.previewBases.set(key, basis);
-				while (this.previewBases.size > 32)
-					this.previewBases.delete(this.previewBases.keys().next().value!);
-				if (this.previewFailure?.key === key) this.previewFailure = undefined;
+				if (actual !== key || basis.displayIdentity !== this.approved?.displayIdentity)
+					this.previewStates.set(key, {
+						kind: 'error',
+						error: new Error('The contract changed while preparing this preview. Try again.')
+					});
+				else this.previewStates.set(key, { kind: 'ready', basis });
+				this.rememberPreview(key);
 			})
 			.catch((cause) => {
 				if (
 					this.alive &&
 					this.basisFlights.get(key)?.attempt === attempt &&
 					this.basisKey(itemId) === key
-				)
-					this.previewFailure = { key, error: previewError(cause) };
+				) {
+					this.previewStates.set(key, { kind: 'error', error: previewError(cause) });
+					this.rememberPreview(key);
+				}
 			})
 			.finally(() => {
 				attempt.complete();
-				if (this.basisFlights.get(key)?.attempt === attempt) this.basisFlights.delete(key);
+				if (this.basisFlights.get(key)?.attempt === attempt) {
+					this.basisFlights.delete(key);
+					if (this.previewStates.get(key)?.kind === 'loading') this.previewStates.delete(key);
+				}
 			});
 		this.basisFlights.set(key, { attempt, result });
 		return result;
 	}
 	private stopPreviewReads() {
-		const flights = [...this.basisFlights.values()];
+		const flights = [...this.basisFlights];
 		this.basisFlights.clear();
-		for (const flight of flights) flight.attempt.abort();
+		for (const [key, flight] of flights) {
+			if (this.previewStates.get(key)?.kind === 'loading') this.previewStates.delete(key);
+			flight.attempt.abort();
+		}
 	}
 	private retirePreviews() {
-		this.previewBases.clear();
+		this.previewStates.clear();
+		this.previewRecency.clear();
 		this.stopPreviewReads();
-		this.previewFailure = undefined;
 	}
 
 	constructor(
@@ -484,7 +511,8 @@ export class ContractEditor {
 			const focusedResult = $derived.by(() => {
 				const itemId = this.previewItemId,
 					key = this.basisKey(itemId);
-				const basis = key ? this.previewBases.get(key) : undefined;
+				const state = key ? this.previewStates.get(key) : undefined;
+				const basis = state?.kind === 'ready' ? state.basis : undefined;
 				const item = templateItems.find((item) => item._id === itemId);
 				if (!basis || !item || !this.approved) return { value: null };
 				try {
@@ -612,8 +640,9 @@ export class ContractEditor {
 			});
 			$effect(() => {
 				const itemId = this.previewItemId,
-					key = this.basisKey(itemId);
-				if (itemId && key && !this.previewBases.has(key))
+					key = this.basisKey(itemId),
+					canRead = this.attachments && owner.accessAvailable && !owner.frozen;
+				if (itemId && key && canRead && !this.previewStates.has(key))
 					untrack(() => {
 						void this.prefetchPreview(itemId);
 					});
@@ -1024,7 +1053,11 @@ export class ContractEditor {
 	retry() {
 		this.error = null;
 		this.definitions.retry();
-		this.previewFailure = undefined;
+		for (const [key, state] of this.previewStates) {
+			if (state.kind !== 'error') continue;
+			this.previewStates.delete(key);
+			this.previewRecency.delete(key);
+		}
 		if (this.previewItemId) void this.prefetchPreview(this.previewItemId);
 		void this.initialize().then((ready) => {
 			if (ready && this.alive) this.persistence?.retry();

@@ -186,6 +186,7 @@ export function planReceiptWrite(
 	result: string,
 	ownership?: {
 		contractId: Id<'savedContracts'>;
+		actor?: Doc<'operationReceipts'>['actor'];
 		documentId?: Id<'contractDocuments'>;
 		kind?:
 			| 'output-reservation'

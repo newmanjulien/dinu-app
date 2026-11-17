@@ -11,7 +11,6 @@
 	import { BookmarkSimple } from 'phosphor-svelte';
 	let {
 		options,
-		selectionGroup,
 		gap,
 		interactive,
 		navigationCapable,
@@ -21,7 +20,6 @@
 		onAnnotationSelect
 	}: {
 		options: readonly BoundaryOption[];
-		selectionGroup: number;
 		gap: number;
 		interactive: boolean;
 		navigationCapable: boolean;
@@ -74,9 +72,8 @@
 </script>
 
 <span
-	class="structural-boundary-controls"
+	class="structural-boundary-controls [--boundary-handle-size:24px]"
 	data-document-control
-	data-selection-group={selectionGroup}
 	data-selection-gap={gap}
 	style:--boundary-gap={`${gap}px`}
 	style:--boundary-gutter="calc(-8px - var(--boundary-handle-size))"

@@ -5,7 +5,12 @@ import type { MutationCtx, QueryCtx } from './_generated/server';
 import type { CompanyAccess } from './auth';
 import { patchContract, type Contract, type CurrentContractRoot } from './contractState';
 import type { ContractChange } from '../lib/playbook/model';
-import { reviewGroupKey, type ChangeActor, type ChangeKind, type DecisionCommand } from '../lib/contract/changes';
+import {
+	reviewGroupKey,
+	type ChangeActor,
+	type ChangeKind,
+	type DecisionCommand
+} from '../lib/contract/changes';
 import type { PlaybookState } from '../lib/contract/changes';
 import {
 	assertChangeHead,
@@ -953,6 +958,7 @@ export async function changeSession(
 			? await prepareContractDocument(ctx, {
 					companyId: contract.root.companyId,
 					contractId: contract.root._id,
+					documentRevision: contract.root.documentRevision + 1,
 					document,
 					previousDocumentId: contract.root.documentId
 				})

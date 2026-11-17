@@ -88,13 +88,6 @@
 		const timer = setTimeout(() => (contentLeadElapsed = true), 80);
 		return () => clearTimeout(timer);
 	});
-	let slowSetup = $state(false);
-	let slowResults = $state(false);
-	$effect(() => {
-		if (setup.resolved) return;
-		const timer = setTimeout(() => (slowSetup = true), 2_000);
-		return () => clearTimeout(timer);
-	});
 	const results = loadModule(
 		() => getContracts() ?? loadContracts(),
 		() => true
@@ -104,13 +97,6 @@
 	let fallbackQuery = $state('');
 	const search = $derived(searchState?.value ?? fallbackSearch);
 	const query = $derived(searchState?.query ?? fallbackQuery);
-	$effect(() => {
-		void search;
-		if (!showContent) return;
-		slowResults = false;
-		const timer = setTimeout(() => (slowResults = true), 2_000);
-		return () => clearTimeout(timer);
-	});
 	let searchInput = $state<HTMLInputElement | null>();
 	let resultsReady = $state(false);
 	const settled = $derived(search.trim() === query);
@@ -214,9 +200,7 @@
 	{/snippet}
 	{#snippet children()}
 		{#if setup.progress}<CompanySetupPrompt />{/if}
-		{#if !setup.resolved && slowSetup}
-			<p class="mb-5 text-xs text-ink-muted" role="status">Checking company setup…</p>
-		{:else if setup.error}
+		{#if setup.error}
 			<p class="mb-5 text-xs text-ink-muted" role="alert">
 				We couldn’t check company setup. <button
 					class="cursor-pointer underline"
@@ -235,7 +219,6 @@
 				{firstVisit}
 				{showHeadings}
 				{showContent}
-				{slowResults}
 				onSearch={updateSearch}
 				bind:ready={resultsReady}
 			/>
@@ -248,7 +231,6 @@
 				{firstVisit}
 				{showHeadings}
 				{showContent}
-				{slowResults}
 				role={viewer().membership.role}
 				failed={results.failed}
 				onRetry={() => results.retry()}

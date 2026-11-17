@@ -11,6 +11,7 @@ import { validDiscussionText } from '../lib/discussions/limits';
 import { canonicalJson } from '../lib/document/canonical-json';
 import { validDiscussionAnchor } from '../lib/discussions/anchors';
 import { discussionTape, passageInterval } from '../lib/discussions/tape';
+import { indexedPassage } from '../lib/discussions/passage-index';
 import {
 	ownsDiscussion,
 	liveDiscussionThread,
@@ -33,12 +34,21 @@ import {
 	operation,
 	admitOperation,
 	receipt,
+	remember,
+	planReceiptWrite,
 	sealReceipt,
 	receiptSealWork,
 	actionKey
 } from './operationReceipts';
 import { prepareDiscussionQuota } from './buyerActivityQuota';
 import { documentBytes } from './storageCapacity';
+import { contractDocumentSeal } from './contractDocuments';
+import { scheduleDiscussionMaintenance } from './discussionMaintenance';
+import {
+	currentPassageIndex,
+	plannedPassageIndex,
+	storePassageIndex
+} from './discussionPassageIndex';
 
 export type WriteInput = {
 	token: string;
@@ -225,6 +235,8 @@ export async function writeDiscussion(
 		admitDiscussionWork(ctx, { reads: 1, queries: 1 })
 	);
 	const prior = await priorOperation(ctx, context, actor, 'discussion-write', input, resuming);
+	if (prior?.state === 'complete' && input.command.kind === 'delete')
+		return JSON.parse(prior.result) as Infer<typeof writeResult>;
 	const replay = await discussionReplay(ctx, context, actor, input.operationId, input.command);
 	if (replay) return replay;
 	if (prior?.state === 'complete') throw new ConvexError('This discussion is unavailable.');
@@ -242,6 +254,7 @@ export async function writeDiscussion(
 		let thread: Doc<'discussionThreads'>,
 			message: Doc<'discussionMessages'> | null = null;
 		let tapeLength: number;
+		let pendingPassageIndex: ReturnType<typeof plannedPassageIndex> = null;
 		const creating = command.kind === 'create';
 		if (creating) {
 			if (command.revision !== root.documentRevision || command.contentIdentity !== root.documentId)
@@ -252,20 +265,43 @@ export async function writeDiscussion(
 				throw new ConvexError('Select a shorter passage.');
 			const prepared = resuming?.preparation?.sourcePassage;
 			let interval: { start: number; end: number } | null;
-			if (
+			const preparedMatches =
 				prepared &&
 				prepared.inputHash === fingerprint(JSON.stringify(input)) &&
 				prepared.documentId === root.documentId &&
-				prepared.documentRevision === root.documentRevision
+				prepared.documentRevision === root.documentRevision;
+			const preparedManifest = preparedMatches
+				? await ctx.db.get('contractDocuments', root.documentId)
+				: null;
+			if (
+				preparedMatches &&
+				preparedManifest &&
+				(!preparedManifest.stage || preparedManifest.stage.sealed) &&
+				prepared.manifestSeal === contractDocumentSeal(preparedManifest)
 			) {
 				interval = { start: prepared.start, end: prepared.end };
 				tapeLength = prepared.tapeLength;
 			} else {
-				const tape = discussionTape((await readDiscussionWording(ctx, context)).document);
-				interval = passageInterval(tape, command.anchor);
-				tapeLength = tape.length;
+				const source = {
+					companyId: root.companyId,
+					contractId: root._id,
+					documentId: root.documentId,
+					documentRevision: root.documentRevision
+				};
+				const cached = await currentPassageIndex(ctx, source);
+				if (cached.row) {
+					const result = indexedPassage(cached.row.data, command.anchor);
+					interval = result.interval;
+					tapeLength = result.tapeLength;
+				} else {
+					const tape = discussionTape((await readDiscussionWording(ctx, context)).document);
+					interval = passageInterval(tape, command.anchor);
+					tapeLength = tape.length;
+					pendingPassageIndex = plannedPassageIndex(source, cached.manifestSeal, tape);
+				}
 			}
-			if (!interval) throw new ConvexError('This passage changed. Select the current wording.');
+			if (!interval)
+				throw new ConvexError('This passage changed. Select the current wording to comment.');
 			if (command.type === 'proposal') await admitProposalClaim(ctx, index, interval, tapeLength);
 			thread = {
 				...owner,
@@ -273,8 +309,8 @@ export async function writeDiscussion(
 				_creationTime: 0,
 				anchor: command.anchor,
 				unreadKey: fingerprint(JSON.stringify([actor.key, input.operationId])),
-				contentIdentity: command.contentIdentity,
-				contentRevision: command.revision,
+				contentIdentity: root.documentId,
+				contentRevision: root.documentRevision,
 				indexedDocumentRevision: root.documentRevision,
 				indexedTapeLength: tapeLength,
 				passageStart: interval.start,
@@ -290,6 +326,11 @@ export async function writeDiscussion(
 					throw new ConvexError('Only the author can change this message.');
 				if (message.deleted || message.revision !== command.expectedRevision)
 					throw new ConvexError('This message changed. Refresh before editing it.');
+				if (
+					command.kind === 'delete' &&
+					command.target !== (message.reply ? 'reply' : 'thread')
+				)
+					throw new ConvexError('This discussion changed. Refresh before deleting it.');
 			}
 			const found = await liveDiscussionThread(
 				context,
@@ -305,11 +346,12 @@ export async function writeDiscussion(
 		if (command.kind !== 'delete' && !validDiscussionText(command.text, Boolean(proposalRoot)))
 			throw new ConvexError('Enter a message of 20,000 characters or fewer.');
 		const deletingRoot = command.kind === 'delete' && message && !message.reply;
-		const nextUnread =
-			thread.unreadMessageCount -
-			Number(message?.unreadByTeam ?? false) +
-			Number(command.kind !== 'delete' && !actor.profileId);
-		const excluded = !creating && nextUnread === 0 ? [thread] : [];
+		const nextUnread = deletingRoot
+			? 0
+			: thread.unreadMessageCount -
+				Number(message?.unreadByTeam ?? false) +
+				Number(command.kind !== 'delete' && !actor.profileId);
+		const excluded = !creating && (deletingRoot || nextUnread === 0) ? [thread] : [];
 		plan = commandPlan(
 			context,
 			input,
@@ -328,12 +370,12 @@ export async function writeDiscussion(
 		);
 		let witness = nextUnread > 0 ? thread._id : await proofWitness(context, plan, resuming);
 		const claim =
-			!creating && proposalRoot
+			!creating && proposalRoot && !deletingRoot
 				? await prepareProposalClaim(
 						ctx,
 						index,
 						thread,
-						deletingRoot ? null : await index.interval(thread),
+						await index.interval(thread),
 						tapeLength
 					)
 				: undefined;
@@ -385,22 +427,34 @@ export async function writeDiscussion(
 			deleted: command.kind === 'delete',
 			unreadByTeam: command.kind !== 'delete' && !actor.profileId
 		};
+		const rootReceipt =
+			deletingRoot && !resuming
+				? planReceiptWrite(
+						root.companyId,
+						discussionOperationKey(actor, 'discussion-write', input.operationId),
+						inputs,
+						JSON.stringify(result),
+						{ contractId: root._id, kind: 'discussion-write', actor: actor.preparation }
+					)
+				: null;
 		const tailWork = plus(
 			quota.work,
 			claim?.work ?? {},
+			rootReceipt?.work ?? {},
 			await sealWork(ctx, resuming, inputs, JSON.stringify(result)),
 			{
-				documents: 3 + Number(creating && proposalRoot),
+				documents: 3 + Number(creating && proposalRoot) + Number(deletingRoot),
 				bytes:
 					documentBytes(receiptRow) +
 					documentBytes(messageRow) +
 					documentBytes({ ...thread, ...threadFields }) +
-					8192,
+					8192 +
+					(deletingRoot ? 4096 : 0),
 				queries: 8,
 				readDocuments: 8,
 				readBytes: 32_000,
-				functionsScheduled: 0,
-				scheduledFunctionArgsBytes: 0
+				functionsScheduled: Number(deletingRoot),
+				scheduledFunctionArgsBytes: deletingRoot ? 4096 : 0
 			}
 		);
 		const discussions = discussionTransitionHooks(ctx, context.contract, {
@@ -423,13 +477,25 @@ export async function writeDiscussion(
 			});
 			started = true;
 		} else {
-			await admitTransition(
-				ctx,
-				plus(tailWork, await index.prepareFlush(witness), {
-					documents: 1,
-					bytes: 2048
-				})
-			);
+			const flushWork = await index.prepareFlush(witness);
+			const requiredWork = plus(tailWork, flushWork, { documents: 1, bytes: 2048 });
+			if (pendingPassageIndex) {
+				try {
+					await admitTransition(
+						ctx,
+						plus(requiredWork, {
+							documents: 1,
+							bytes: pendingPassageIndex.bytes,
+							queries: 1,
+							readDocuments: 1
+						})
+					);
+				} catch (error) {
+					if (!(error instanceof DiscussionPreparationRequired)) throw error;
+					pendingPassageIndex = null;
+					await admitTransition(ctx, requiredWork);
+				}
+			} else await admitTransition(ctx, requiredWork);
 			started = true;
 		}
 		await quota.commit();
@@ -451,9 +517,12 @@ export async function writeDiscussion(
 				index.advanceStorageGeneration();
 				index.advanceGeneration();
 			}
-		} else await ctx.db.patch('discussionThreads', thread._id, threadFields);
+		} else if (deletingRoot) await index.tombstone(ctx, thread, true);
+		else await ctx.db.patch('discussionThreads', thread._id, threadFields);
 		await claim?.commit();
-		if (message)
+		if (message && command.kind === 'delete' && message.reply)
+			await ctx.db.delete('discussionMessages', message._id);
+		else if (message)
 			await ctx.db.patch('discussionMessages', message._id, {
 				text: messageRow.text,
 				deleted: messageRow.deleted,
@@ -463,19 +532,37 @@ export async function writeDiscussion(
 		else
 			result.messageId = await ctx.db.insert('discussionMessages', {
 				...messageRow,
+				operationId: input.operationId,
 				threadId: thread._id
 			});
-		await ctx.db.insert('discussionReceipts', {
-			...receiptRow,
-			threadId: result.threadId,
-			messageId: result.messageId
-		});
-		await index.flush(ctx, witness, undefined, !withdrew);
+		if (deletingRoot) {
+			if (rootReceipt)
+				await remember(
+					ctx,
+					root.companyId,
+					discussionOperationKey(actor, 'discussion-write', input.operationId),
+					inputs,
+					JSON.stringify(result),
+					{ contractId: root._id, kind: 'discussion-write', actor: actor.preparation }
+				);
+		} else
+			await ctx.db.insert('discussionReceipts', {
+				...receiptRow,
+				threadId: result.threadId,
+				messageId: result.messageId
+			});
+		await index.flush(
+			ctx,
+			witness,
+			deletingRoot ? await scheduleDiscussionMaintenance(ctx, index) : undefined,
+			!withdrew
+		);
 		if (resuming)
 			await sealReceipt(ctx, resuming, inputs, {
 				state: 'complete',
 				result: JSON.stringify(result)
 			});
+		if (pendingPassageIndex) await storePassageIndex(ctx, pendingPassageIndex.value);
 		return result;
 	} catch (error) {
 		if (!(error instanceof DiscussionPreparationRequired) || started) throw error;
@@ -604,6 +691,13 @@ export async function discussionResult(
 		undefined,
 		true
 	);
+	if (prior?.state === 'complete' && input.command.kind === 'delete')
+		return {
+			status: 'complete' as const,
+			operationId: input.operationId,
+			retryUntil: operation(input.operationId).retryUntil,
+			result: prior.result
+		};
 	const replay = await discussionReplay(ctx, context, actor, input.operationId, input.command);
 	if (replay)
 		return {

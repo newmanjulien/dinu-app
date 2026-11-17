@@ -15,7 +15,7 @@
 	import TeamRowLayout from '$lib/components/workspace/TeamRowLayout.svelte';
 	import TeamRowsSkeleton from '$lib/components/workspace/TeamRowsSkeleton.svelte';
 	import InviteColleaguesModal from '$lib/features/settings/InviteColleaguesModal.svelte';
-	import { Button } from '$lib/ui';
+	import { Button, ConfirmModal } from '$lib/ui';
 	const client = useConvexClient();
 	const session = useViewerSession();
 	const viewer = useViewer();
@@ -156,19 +156,36 @@
 	let modalError = $state<string | null>(null);
 	let leaving = $state(false);
 	let leaveFailed = $state(false);
-	let confirmAction = $state<{ message: string; run: () => Promise<unknown> }>();
+	let leaveError = $state<string | null>(null);
+	let confirmError = $state<string | null>(null);
+	let confirmAction = $state<{
+		title: string;
+		message: string;
+		confirmLabel: string;
+		destructive?: boolean;
+		run: () => Promise<unknown>;
+	}>();
 	let alive = true;
 	onDestroy(() => (alive = false));
-	async function run(action: () => Promise<unknown>) {
+	function requestConfirmation(action: NonNullable<typeof confirmAction>) {
+		confirmError = null;
+		confirmAction = action;
+	}
+	async function run(action: () => Promise<unknown>, confirmation = false) {
 		if (busy || session.blocked) return;
 		busy = true;
-		error = '';
+		if (confirmation) confirmError = null;
+		else error = '';
 		try {
 			await action();
 			reads?.invalidate('colleagues', 'invitations');
-			if (alive) confirmAction = undefined;
+			if (alive && confirmation) confirmAction = undefined;
 		} catch (e) {
-			if (alive) error = e instanceof Error ? e.message : 'Unable to update your company.';
+			if (alive) {
+				const message = e instanceof Error ? e.message : 'Unable to update your company.';
+				if (confirmation) confirmError = message;
+				else error = message;
+			}
 		} finally {
 			if (alive) busy = false;
 		}
@@ -176,7 +193,7 @@
 	async function leave(discard = false) {
 		if (busy) return;
 		busy = true;
-		error = '';
+		leaveError = null;
 		try {
 			await session.exitCompany(
 				() => client.mutation(api.companies.leave, { membershipId }),
@@ -185,7 +202,7 @@
 		} catch (e) {
 			if (alive) {
 				leaveFailed = true;
-				error = e instanceof Error ? e.message : 'Unable to leave your company.';
+				leaveError = e instanceof Error ? e.message : 'Unable to leave your company.';
 			}
 		} finally {
 			if (alive) busy = false;
@@ -293,8 +310,10 @@
 									variant="ghost"
 									disabled={busy || session.blocked || !colleaguesCurrent}
 									onclick={() =>
-										(confirmAction = {
+										requestConfirmation({
+											title: 'Transfer ownership?',
 											message: `Transfer company ownership to ${person.name || person.email}? They will manage company ownership.`,
+											confirmLabel: 'Transfer ownership',
 											run: () =>
 												client.mutation(api.companies.transferOwnership, {
 													membershipId,
@@ -308,8 +327,11 @@
 									variant="ghost"
 									disabled={busy || session.blocked || !colleaguesCurrent}
 									onclick={() =>
-										(confirmAction = {
+										requestConfirmation({
+											title: 'Remove colleague?',
 											message: `Remove ${person.name || person.email} from your company? Their contracts will stay with the company.`,
+											confirmLabel: 'Remove colleague',
+											destructive: true,
 											run: () =>
 												client.mutation(api.companies.removeMember, {
 													membershipId,
@@ -394,20 +416,6 @@
 				>Load more invitations</Button
 			>{/if}
 	{/snippet}
-	{#snippet afterLists()}
-		{#if confirmAction}
-			<div class="rounded-xl border-hairline border-edge bg-surface p-4 shadow-card">
-				<p class="mb-3 text-sm">{confirmAction.message}</p>
-				<div class="flex gap-2">
-					<Button disabled={busy} onclick={() => confirmAction && run(confirmAction.run)}
-						>Confirm</Button
-					><Button variant="ghost" disabled={busy} onclick={() => (confirmAction = undefined)}
-						>Cancel</Button
-					>
-				</div>
-			</div>
-		{/if}
-	{/snippet}
 	{#snippet leaveContent()}
 		{#if isOwner}<p class="mt-2 text-sm text-ink-muted">
 				Transfer ownership to a colleague before leaving or deleting your account.
@@ -416,36 +424,60 @@
 			<p class="mt-2 text-sm text-ink-muted">
 				Your contracts stay with {viewer().company.name}. You’ll need a new invitation to return.
 			</p>
-			{#if leaving}
-				<p class="mt-4 text-sm">
-					Leave {viewer().company.name}? We’ll save your pending changes first.
-				</p>
-				<div class="mt-3 flex flex-wrap gap-2">
-					<Button disabled={busy || session.blocked} onclick={() => leave()}
-						>{busy ? 'Saving and leaving…' : 'Save and leave'}</Button
-					>{#if leaveFailed}<Button variant="secondary" disabled={busy} onclick={() => leave(true)}
-							>Discard changes and leave</Button
-						>{/if}<Button
-						variant="ghost"
-						disabled={busy}
-						onclick={() => {
-							leaving = false;
-							leaveFailed = false;
-							error = '';
-						}}>Cancel</Button
-					>
-				</div>
-			{:else}<Button
-					variant="ghost"
-					disabled={busy || session.blocked}
-					onclick={() => (leaving = true)}>Leave company</Button
-				>{/if}
+			<Button
+				variant="ghost"
+				disabled={busy || session.blocked}
+				onclick={() => {
+					leaveError = null;
+					leaveFailed = false;
+					leaving = true;
+				}}>Leave company</Button
+			>
 		{/if}
 	{/snippet}
 	{#snippet feedback()}
 		{#if error}<p role="alert" class="text-sm text-danger">{error}</p>{/if}
 	{/snippet}
 </TeamLayout>
+{#if confirmAction}
+	<ConfirmModal
+		title={confirmAction.title}
+		message={confirmAction.message}
+		confirmLabel={confirmAction.confirmLabel}
+		destructive={confirmAction.destructive}
+		confirmDisabled={session.blocked}
+		{busy}
+		error={confirmError}
+		onConfirm={() => {
+			if (confirmAction) return run(confirmAction.run, true);
+		}}
+		onCancel={() => {
+			confirmAction = undefined;
+			confirmError = null;
+		}}
+	/>
+{/if}
+{#if leaving && !isOwner}
+	<ConfirmModal
+		title="Leave company?"
+		message={`Leave ${viewer().company.name}? We’ll save your pending changes first.`}
+		confirmLabel="Save and leave"
+		confirmDisabled={session.blocked}
+		pendingLabel="Saving and leaving…"
+		secondaryActionLabel={leaveFailed ? 'Discard changes and leave' : undefined}
+		secondaryPendingLabel="Leaving…"
+		secondaryDestructive
+		{busy}
+		error={leaveError}
+		onConfirm={() => leave()}
+		onSecondaryAction={() => leave(true)}
+		onCancel={() => {
+			leaving = false;
+			leaveFailed = false;
+			leaveError = null;
+		}}
+	/>
+{/if}
 <InviteColleaguesModal
 	open={modalOpen && canManage}
 	value={emailInput}

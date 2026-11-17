@@ -77,7 +77,10 @@
 	import { getDocumentLayoutProfiles } from '$lib/document/runtime/layout-context.svelte';
 	import { getDocumentWorkspace } from '$lib/document/runtime/workspace-context';
 	import { activeConflicts } from '$lib/playbook/selection-conflicts';
-	import { getDocumentViewportMetrics } from '$lib/document/document-viewport';
+	import {
+		getDocumentViewportMetrics,
+		revealInDocumentViewport
+	} from '$lib/document/document-viewport';
 	import type { PaginatedPage } from '$lib/document/pagination/types';
 	import { PAGE_FORMAT } from '$lib/document/pagination/page-format';
 	import {
@@ -85,7 +88,6 @@
 		type LayoutProfileSurface as ProfileSurface
 	} from '$lib/document/pagination/profiler';
 	import DocumentWorkspaceGeometry from './DocumentWorkspaceGeometry.svelte';
-	import type { DocumentLayout } from './workspace-layout';
 	import DocumentPage from './DocumentPage.svelte';
 	import LayoutProfileSurface from './LayoutProfileSurface.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
@@ -95,7 +97,7 @@
 	import type { ReviewTag, ReviewDecision, ReviewNavigation } from '$lib/contract/approval';
 	const annotationRegistry = setAnnotationRegistry();
 	let {
-		layout = 'standard',
+		reserveReviewGutter = false,
 		active = true,
 		interactive = true,
 		annotationsVisible = true,
@@ -109,7 +111,6 @@
 		footerContent,
 		documentActions,
 		reviewTags = [],
-		reviewGutter = 0,
 		reviewNavigation,
 		onReviewDecision,
 		selectedConcessions,
@@ -133,7 +134,7 @@
 		annotationItems,
 		discussions
 	}: {
-		layout?: DocumentLayout;
+		reserveReviewGutter?: boolean;
 		discussions?: DiscussionSession;
 		annotationItems?: readonly import('$lib/playbook/document-overlay').DocumentAnnotationItem[];
 		active?: boolean;
@@ -151,7 +152,6 @@
 			[HTMLElement, HTMLElement, DocumentHighlightController | undefined, unknown, unknown, boolean]
 		>;
 		reviewTags?: readonly ReviewTag[];
-		reviewGutter?: number;
 		reviewNavigation?: ReviewNavigation;
 		onReviewDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
 		selectedConcessions: ConcessionSelection;
@@ -178,7 +178,7 @@
 	} = $props();
 	const { source, renderer, viewer } = getDocumentWorkspace();
 	const loadingViewer = createDocumentLoadingViewerId();
-	restoreDocumentNavigation(viewer);
+	restoreDocumentNavigation(viewer, () => active);
 	const interacting = $derived(active && interactive);
 	const snapshot = $derived(renderer.snapshot);
 	const annotationLabel = getAnnotationLabel();
@@ -508,10 +508,6 @@
 		if (controller && revision) notifyMountedContent(controller, revision);
 	});
 	$effect(() => {
-		void pageScale;
-		highlights?.projectionChanged();
-	});
-	$effect(() => {
 		const report = itemPreload,
 			controller = highlights,
 			annotations = displayedAnnotations,
@@ -765,25 +761,27 @@
 		let scrollVersion = 0;
 		let commitVersion = 0;
 		let cancelled = false;
+		const scroller = getDocumentViewportMetrics(stage).scroller;
+		if (!scroller) return;
 		const onScroll = () => scrollVersion++;
-		window.addEventListener('scroll', onScroll, { passive: true });
+		scroller.addEventListener('scroll', onScroll, { passive: true });
 		const unsubscribe = renderer.beforeCommit(() => {
 			const generation = ++commitVersion;
 			// Editing owns the viewport while a panel is open, including before effects tear down.
 			if (hasPanel || source.renderSource?.sourceIndex !== sourceIndex) return;
-			const viewportTop = getDocumentViewportMetrics().top;
+			const { top: viewportTop, bottom: viewportBottom } = getDocumentViewportMetrics(stage);
 			let token: HTMLElement | undefined;
 			// Search only visible pages; the page margin may contain no source-bearing text.
 			for (const page of stage.querySelectorAll<HTMLElement>('[data-page-number]')) {
 				const bounds = page.getBoundingClientRect();
 				if (bounds.bottom <= viewportTop) continue;
-				if (bounds.top >= window.innerHeight) break;
+				if (bounds.top >= viewportBottom) break;
 				for (const span of page.querySelectorAll<HTMLElement>(
 					'[data-source-start-key]:not([data-generated])'
 				)) {
 					if (span.dataset.revision && span.dataset.revision !== 'removed') continue;
 					const bounds = span.getBoundingClientRect();
-					if (bounds.height && bounds.top >= viewportTop && bounds.top < window.innerHeight) {
+					if (bounds.height && bounds.top >= viewportTop && bounds.top < viewportBottom) {
 						token = span;
 						break;
 					}
@@ -799,7 +797,7 @@
 			if (!point || !token || !stage.contains(token)) return;
 			const occurrence = sourceOccurrence(token);
 			const top = sourcePointBounds(stage, point, true, occurrence)?.top;
-			const scrollY = window.scrollY;
+			const scrollTop = scroller.scrollTop;
 			const capturedScrollVersion = scrollVersion;
 			void tick().then(async () => {
 				const commit = snapshot;
@@ -818,20 +816,20 @@
 					mountedGeneration !== commit.id ||
 					mountedPages.length !== commit.pages.length ||
 					mountedPages.some((page, i) => page !== commit.pages[i]) ||
-					window.scrollY !== scrollY ||
+					scroller.scrollTop !== scrollTop ||
 					scrollVersion !== capturedScrollVersion ||
 					top === undefined
 				)
 					return;
 				const after = sourcePointBounds(stage, point, true, occurrence)?.top;
 				if (after !== undefined && Math.abs(after - top) > 0.5)
-					window.scrollBy({ top: after - top, behavior: 'instant' });
+					scroller.scrollBy({ top: after - top, behavior: 'instant' });
 			});
 		});
 		return () => {
 			cancelled = true;
 			unsubscribe();
-			window.removeEventListener('scroll', onScroll);
+			scroller.removeEventListener('scroll', onScroll);
 		};
 	});
 	const requestedModel = $derived.by(() => {
@@ -962,13 +960,11 @@
 		});
 	});
 	let layoutElement = $state<HTMLDivElement | null>();
-	let displayWidth = $state<number>(PAGE_FORMAT.width);
 	let panelPosition = $state.raw<{
 		target: SourceTarget;
 		top: number;
 		index: SourceIndex;
 		layoutEpoch: string;
-		scale: number;
 		stage: HTMLElement;
 		layout: HTMLDivElement;
 	}>();
@@ -1010,13 +1006,12 @@
 	$effect(() => {
 		if (active) onPresentation?.(presentationOutcome);
 	});
-	const pageScale = $derived(displayWidth / PAGE_FORMAT.width);
+	function pageStackHeight(count: number) {
+		return count * PAGE_FORMAT.height + Math.max(0, count - 1) * PAGE_FORMAT.gap;
+	}
 	const placeholderPages = $derived(Math.max(1, Math.min(3, pages.length)));
 	const displayHeight = $derived(
-		(mountedPages.length * PAGE_FORMAT.height +
-			Math.max(0, mountedPages.length - 1) * PAGE_FORMAT.gap +
-			(incomplete && renderer.error ? 64 : 0)) *
-			pageScale
+		pageStackHeight(mountedPages.length) + (incomplete && renderer.error ? 64 : 0)
 	);
 	function annotationAnchor(
 		annotationId = selectedAnnotationId,
@@ -1097,8 +1092,7 @@
 			commit = pageElementsSnapshot,
 			index = source.renderSource?.sourceIndex,
 			layout = layoutElement,
-			epoch = profiler?.epoch,
-			scale = pageScale;
+			epoch = profiler?.epoch;
 		if (
 			!active ||
 			!hasPanel ||
@@ -1109,8 +1103,6 @@
 			commit !== snapshot ||
 			commit.source.sourceIndex !== index ||
 			commit.layoutEpoch !== epoch ||
-			!Number.isFinite(scale) ||
-			scale <= 0 ||
 			mountedPages.length !== commit.pages.length ||
 			mountedPages.some((page, i) => page !== commit.pages[i])
 		)
@@ -1120,7 +1112,6 @@
 			stage,
 			layout,
 			commit,
-			scale,
 			generation,
 			index: commit.source.sourceIndex,
 			layoutEpoch: commit.layoutEpoch,
@@ -1141,7 +1132,6 @@
 			request.stage.isConnected &&
 			source.renderSource?.sourceIndex === request.index &&
 			profiler?.epoch === request.layoutEpoch &&
-			pageScale === request.scale &&
 			snapshot === request.commit &&
 			pageElementsSnapshot === request.commit &&
 			mountedPages.length === request.commit.pages.length &&
@@ -1161,7 +1151,6 @@
 			sameSourceTarget(held.target, request.target) &&
 			held.index === request.index &&
 			held.layoutEpoch === request.layoutEpoch &&
-			held.scale === request.scale &&
 			held.stage === request.stage &&
 			held.layout === request.layout
 		);
@@ -1201,7 +1190,6 @@
 			top,
 			index: request.index,
 			layoutEpoch: request.layoutEpoch,
-			scale: request.scale,
 			stage: request.stage,
 			layout: request.layout
 		};
@@ -1367,12 +1355,7 @@
 			layoutElement?.querySelector('[data-workspace-panel]') !== panel
 		)
 			return;
-		const rail = panel.parentElement;
-		if (!rail || getComputedStyle(rail).position === 'fixed') return;
-		const viewport = getDocumentViewportMetrics();
-		const top = panel.getBoundingClientRect().top;
-		if (top < viewport.top || top >= window.innerHeight - viewport.gap)
-			window.scrollBy({ top: top - viewport.top, behavior: 'instant' });
+		revealInDocumentViewport(panel, { block: 'start-if-hidden', inline: 'none' });
 	}
 	let wasFollowingScroll = false;
 	$effect(() => {
@@ -1811,11 +1794,8 @@
 		}
 		if (prepared) lastReadySnapshot = snapshot;
 	});
-	const hasWorkspacePanel = $derived(
-		hasPanel ||
-			Boolean(
-				active && discussions?.active && (discussions.threads.length || discussions.visibleComposer)
-			)
+	const hasRightRail = $derived(
+		hasPanel || Boolean(active && discussions?.active && discussions.hasVisibleRail)
 	);
 	onDestroy(() => {
 		panelRequestGeneration++;
@@ -1838,47 +1818,43 @@
 	});
 </script>
 
-{#if hasActiveConflicts && renderer.view === 'effective'}
-	<p
-		role="alert"
-		class="mx-auto max-w-xl rounded-base border-hairline border-edge bg-surface p-4 text-sm"
-	>
-		This contract version is unavailable. Ask your rep for a new link.
-	</p>
-{:else if hasActiveConflicts}
-	<div
-		role="alert"
-		class="mx-auto max-w-xl rounded border-hairline border-edge bg-surface p-3 shadow-card"
-	>
-		These applied concessions conflict with current contract changes. Remove an alternative to
-		continue.
-		{#each requestedModel.conflicts as conflict}
-			{@const item = source.items?.find((item) => item._id === conflict.itemId)}
-			{@const concession = item?.choices.find(
-				(concession) => concession.id === conflict.concession.id
-			)}
-			<button
-				class="ml-2 underline"
-				onclick={interacting ? () => onRemoveConcession(conflict.itemId) : undefined}
-				>Remove “{concession?.description ?? conflict.concession.id}”{item?.origin.kind ===
-					'template' && item.origin.instructions?.summary
-					? ` — ${item.origin.kind === 'template' ? item.origin.instructions?.summary : ''}`
-					: ''}</button
-			>{/each}
-	</div>
-{/if}
 {#if !sharedProfiles}<LayoutProfileSurface bind:surface />{/if}
-<DocumentWorkspaceGeometry
-	{layout}
-	{reviewGutter}
-	hasPanel={hasWorkspacePanel}
-	onPageResize={(width) => (displayWidth = width)}
->
+
+{#snippet conflictNotice()}
+	{#if hasActiveConflicts && renderer.view === 'effective'}
+		<p
+			role="alert"
+			class="mx-auto max-w-xl rounded-base border-hairline border-edge bg-surface p-4 text-sm"
+		>
+			This contract version is unavailable. Ask your rep for help.
+		</p>
+	{:else if hasActiveConflicts}
+		<div
+			role="alert"
+			class="mx-auto max-w-xl rounded border-hairline border-edge bg-surface p-3 shadow-card"
+		>
+			These applied concessions conflict with current contract changes. Remove an alternative to
+			continue.
+			{#each requestedModel.conflicts as conflict}
+				{@const item = source.items?.find((item) => item._id === conflict.itemId)}
+				{@const concession = item?.choices.find(
+					(concession) => concession.id === conflict.concession.id
+				)}
+				<button
+					class="ml-2 underline"
+					onclick={interacting ? () => onRemoveConcession(conflict.itemId) : undefined}
+					>Remove “{concession?.description ?? conflict.concession.id}”{item?.origin.kind ===
+						'template' && item.origin.instructions?.summary
+						? ` — ${item.origin.kind === 'template' ? item.origin.instructions?.summary : ''}`
+						: ''}</button
+				>{/each}
+		</div>
+	{/if}
+{/snippet}
+
+<DocumentWorkspaceGeometry {reserveReviewGutter} {hasRightRail} notice={conflictNotice}>
 	<div
 		class={`viewer-root relative w-full ${active && hasPanel ? '[overflow-anchor:none]' : ''}`}
-		data-document-commit={targetGeneration}
-		data-page-count={mountedPages.length}
-		style:--document-page-width={`${PAGE_FORMAT.width}px`}
 		style:--document-page-height={`${PAGE_FORMAT.height}px`}
 		style:--document-page-horizontal-padding={`${PAGE_FORMAT.horizontalPadding}px`}
 		style:--document-page-top-padding={`${PAGE_FORMAT.topPadding}px`}
@@ -1905,11 +1881,8 @@
 						visible={active && !loading}
 						document={pageElementsSnapshot?.selectionDocument}
 						pages={mountedPages}
-						scale={pageScale}
 					/><div
-						class="page-stack absolute top-0 left-0 z-1 flex w-(--document-page-width) origin-top-left flex-col gap-(--document-page-gap)"
-						style:transform={`scale(${pageScale})`}
-						style:--document-page-scale={pageScale}
+						class="page-stack absolute top-0 left-0 z-1 flex w-(--paper-width) flex-col gap-(--document-page-gap)"
 					>
 						{#each mountedPages as page (page.number)}
 							<DocumentPage
@@ -1954,14 +1927,10 @@
 			{hasPanel}
 			{loading}
 			{placeholderPages}
-			placeholderGap={PAGE_FORMAT.gap * pageScale}
+			placeholderGap={PAGE_FORMAT.gap}
 			interactive={!loading && active && (interactive || allowPlaybookNavigation)}
 			{followScroll}
-			documentHeight={loading
-				? (placeholderPages * PAGE_FORMAT.height +
-						Math.max(0, placeholderPages - 1) * PAGE_FORMAT.gap) *
-					pageScale
-				: displayHeight}
+			documentHeight={loading ? pageStackHeight(placeholderPages) : displayHeight}
 			{panelTop}
 			{panelPositionChange}
 			bind:layoutElement
@@ -1981,18 +1950,27 @@
 			)}
 		{/if}
 		{#if discussions && layoutElement && viewer.documentStageElement}
-			<DiscussionLayer
-				bind:this={discussionLayer}
-				{highlights}
-				session={discussions}
-				documentRoot={viewer.documentStageElement}
-				layout={layoutElement}
-				renderRevision={pageElementsSnapshot}
-				domRevision={viewer.mountedDomRevision}
-				active={active && discussions.active && !loading}
-				obscured={hasPanel}
-				onActivate={() => onDocumentBackground?.()}
-			/>
+			<svelte:boundary
+				onerror={() => console.error('Document discussions failed', { stage: 'panel' })}
+			>
+				<DiscussionLayer
+					bind:this={discussionLayer}
+					{highlights}
+					session={discussions}
+					documentRoot={viewer.documentStageElement}
+					layout={layoutElement}
+					renderRevision={pageElementsSnapshot}
+					domRevision={viewer.mountedDomRevision}
+					active={active && discussions.active && !loading}
+					obscured={hasPanel}
+					onActivate={() => onDocumentBackground?.()}
+				/>
+				{#snippet failed(_error, reset)}
+					<div role="alert" class="px-4 py-2 text-xs text-danger">
+						Discussions are unavailable. <button class="underline" onclick={reset}>Retry</button>
+					</div>
+				{/snippet}
+			</svelte:boundary>
 		{/if}
 	</div>
 </DocumentWorkspaceGeometry>

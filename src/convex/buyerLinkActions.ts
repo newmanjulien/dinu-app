@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { ConvexError, v, type Infer } from 'convex/values';
 import { action } from './_generated/server';
 import { internal } from './_generated/api';
-import { linkPreparation, linkSummary } from './buyerValidators';
+import { linkCapture, linkPreparation } from './buyerValidators';
 import { buyerCodeAlphabet, buyerCodeLength, buyerTokenCollision } from '../lib/buyer/token';
 
 const args = {
@@ -24,8 +24,8 @@ function buyerCode() {
 
 export const ensureLatest = action({
 	args,
-	returns: linkSummary,
-	handler: async (ctx, args): Promise<Infer<typeof linkSummary>> => {
+	returns: linkCapture,
+	handler: async (ctx, args): Promise<Infer<typeof linkCapture>> => {
 		for (let attempt = 0; attempt < 5; attempt++) {
 			try {
 				return await ctx.runMutation(internal.buyerLinks.capture, {

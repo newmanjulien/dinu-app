@@ -348,7 +348,7 @@
 				<div class={creating ? 'invisible absolute inset-x-0 top-0' : ''} aria-hidden={creating}>
 					{#if !creating && !helpPresented && !creationHandoff}
 						<WorkspacePresentationReporter outcome="pending" />
-						<DocumentSkeleton layout="contract" embedded label="Loading contract" />
+						<DocumentSkeleton reserveReviewGutter label="Loading contract" />
 					{:else if SavedContract}{#key data.id}
 							<SavedContract
 								id={data.id}
@@ -379,8 +379,7 @@
 							>
 						</LoadingState>
 					{:else}<WorkspacePresentationReporter outcome="pending" /><DocumentSkeleton
-							layout="contract"
-							embedded
+							reserveReviewGutter
 							label="Loading contract"
 						/>{/if}
 				</div>

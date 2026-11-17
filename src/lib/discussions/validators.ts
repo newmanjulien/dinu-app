@@ -29,7 +29,8 @@ export const discussionCommand = v.union(
 	v.object({
 		kind: v.literal('delete'),
 		messageId: v.id('discussionMessages'),
-		expectedRevision: v.number()
+		expectedRevision: v.number(),
+		target: v.union(v.literal('thread'), v.literal('reply'))
 	})
 );
 export const publicAuthor = v.object({
@@ -44,7 +45,8 @@ export const discussionMessage = v.object({
 	revision: v.number(),
 	deleted: v.boolean(),
 	author: publicAuthor,
-	createdAt: v.number()
+	createdAt: v.number(),
+	operationId: v.union(v.string(), v.null())
 });
 export const discussionThread = v.object({
 	id: v.id('discussionThreads'),

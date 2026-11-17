@@ -24,7 +24,6 @@
 		firstVisit = false,
 		showHeadings = true,
 		showContent = true,
-		slowResults = false,
 		failed = false,
 		onRetry
 	}: {
@@ -36,7 +35,6 @@
 		firstVisit?: boolean;
 		showHeadings?: boolean;
 		showContent?: boolean;
-		slowResults?: boolean;
 		failed?: boolean;
 		onRetry?: () => void;
 	} = $props();
@@ -71,7 +69,7 @@
 	);
 	let gridWidth = $state(0);
 	let visibleRows = $state(4);
-	const columns = $derived(gridWidth >= 1000 ? 4 : gridWidth >= 600 ? 2 : 1);
+	const columns = $derived(gridWidth >= 1000 ? 3 : gridWidth >= 600 ? 2 : 1);
 	const visibleLimit = $derived(visibleRows * columns);
 	let visibleBuyerLinks = $state(10);
 	$effect(() => {
@@ -137,8 +135,6 @@
 				<div class="flex min-h-40 items-center justify-center">
 					<LoadingWheel class="size-5" label="Loading contract results" />
 				</div>
-			{:else if slowResults}
-				<p class="py-2 text-xs text-ink-muted" role="status">Still getting your contracts…</p>
 			{/if}
 		{/if}
 	{/snippet}
@@ -165,11 +161,6 @@
 					onFirstLinkCardReady={!search.trim() ? onFirstLinkCardReady : undefined}
 					showContent={showBuyerContent}
 					links={[]}
-					emptyMessage={search.trim()
-						? 'Searching buyer links…'
-						: slowResults
-							? 'Still getting your buyer links…'
-							: undefined}
 					loading={false}
 					error={false}
 					hasMore={false}

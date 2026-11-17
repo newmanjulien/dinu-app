@@ -25,7 +25,7 @@
 	<svelte:element
 		this={fragment.role === 'title' ? 'h1' : fragment.role === 'heading' ? 'h2' : 'p'}
 		id={profileMode || fragment.interval?.start ? undefined : fragment.anchor}
-		class="document-block scroll-mt-[calc(var(--app-header-height)+var(--document-viewport-gap))] focus:outline-none"
+		class="document-block focus:outline-none"
 		class:document-heading={fragment.role !== 'body'}
 		class:document-paragraph={fragment.role === 'body'}
 		class:is-title={fragment.role === 'title'}

@@ -8,12 +8,11 @@
 	import WorkspaceSaveStatus from '$lib/components/chrome/WorkspaceSaveStatus.svelte';
 	import AppStatus from '$lib/components/chrome/AppStatus.svelte';
 	import WorkspaceStatus from '$lib/components/chrome/WorkspaceStatus.svelte';
-	import CopyConfirmation from '$lib/buyer/CopyConfirmation.svelte';
 	import { setBuyerLinkCopyFeedback } from '$lib/buyer/copy-feedback.svelte';
 	import { setIntegrationFeedback } from '$lib/integration-feedback.svelte';
 	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
-	import StatusBubble from '$lib/components/chrome/StatusBubble.svelte';
 	import { getWorkspaceFeedback } from '$lib/components/chrome/workspace-feedback.svelte';
+	import { getTemplateAuthoringSession } from '$lib/playbook/template-authoring-session.svelte';
 	import { setHeaderContent } from '$lib/components/chrome/header-content.svelte';
 	import { InteractionController, setInteractionController } from '$lib/components/ui/interactions';
 	import { setWorkspacePresentation } from './workspace-presentation.svelte';
@@ -35,6 +34,45 @@
 	const feedback = getWorkspaceFeedback();
 	const copies = setBuyerLinkCopyFeedback();
 	const integrations = setIntegrationFeedback();
+	const authoring = getTemplateAuthoringSession();
+	const buyerAuthoring = getTemplateAuthoringSession('buyer');
+	let completionNotice = $state<string | null>(null);
+	let completionTimer: ReturnType<typeof setTimeout> | undefined;
+	let previousRepCompletion = authoring.completion;
+	let previousBuyerCompletion = buyerAuthoring.completion;
+	$effect(() => {
+		const rep = authoring.completion;
+		const buyer = buyerAuthoring.completion;
+		if (rep === previousRepCompletion && buyer === previousBuyerCompletion) return;
+		const changed =
+			buyer && buyer !== previousBuyerCompletion
+				? { audience: 'buyer' as const, kind: buyer.kind }
+				: rep && rep !== previousRepCompletion
+					? { audience: 'rep' as const, kind: rep.kind }
+					: null;
+		previousRepCompletion = rep;
+		previousBuyerCompletion = buyer;
+		clearTimeout(completionTimer);
+		completionNotice = changed
+			? changed.kind === 'deleted'
+				? 'Box deleted'
+				: changed.audience === 'buyer'
+					? 'Explanation saved'
+					: 'Instructions saved'
+			: null;
+		if (completionNotice) completionTimer = setTimeout(() => (completionNotice = null), 2500);
+	});
+	const saveAttention = $derived(
+		Boolean(feedback.attention.length || authoring.needsAttention || buyerAuthoring.needsAttention)
+	);
+	const saveCompletion = $derived(Boolean(completionNotice && !saveAttention));
+	const statusNotice = $derived(
+		copies.notice
+			? { message: copies.notice.message, urgent: copies.notice.kind === 'error' }
+			: integrations.confirmation
+				? { message: integrations.confirmation.message }
+				: null
+	);
 	const hubspot = useHubSpotDeals().connection;
 	const confirmationAnnouncements = $derived(
 		copies.notice || integrations.confirmation ? [copies.notice, integrations.confirmation] : null
@@ -43,6 +81,7 @@
 		integrations.observe(hubspot.error || hubspot.isLoading ? undefined : hubspot.data);
 	});
 	onDestroy(() => {
+		clearTimeout(completionTimer);
 		copies.destroy();
 		integrations.destroy();
 	});
@@ -159,21 +198,16 @@
 		<div
 			class={`flex w-fit max-w-[min(640px,calc(100vw-32px))] flex-col gap-2 max-[999px]:w-full ${header.content ? 'ml-auto max-w-[calc(100vw-486px)] max-[999px]:max-w-none' : ''}`}
 		>
-			<CopyConfirmation />
-			{#key integrations.confirmation}
-				{#if integrations.confirmation}
-					<div class="-translate-y-2">
-						<StatusBubble>{integrations.confirmation.message}</StatusBubble>
-					</div>
-				{/if}
-			{/key}
 			<AppStatus
+				notice={statusNotice}
+				{saveAttention}
+				{saveCompletion}
 				feedback={feedback.document?.feedback}
 				renderError={feedback.document?.renderError}
 				sourceStale={feedback.document?.sourceStale}
 				onRetryRender={feedback.document?.onRetryRender}
 			>
-				{#snippet saveFeedback()}<WorkspaceSaveStatus />{/snippet}
+				{#snippet saveFeedback()}<WorkspaceSaveStatus {completionNotice} />{/snippet}
 			</AppStatus>
 		</div>
 	</WorkspaceStatus>

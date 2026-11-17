@@ -68,7 +68,7 @@ export class BuyerDownload {
 		} catch {
 			if (this.owns(attempt))
 				this.error =
-					'We couldn’t download the displayed contract. Check your connection or open the latest link, then try again.';
+					'We couldn’t download the displayed contract. Check your connection and try again.';
 		} finally {
 			attempt.complete();
 			if (this.request === attempt) this.request = undefined;

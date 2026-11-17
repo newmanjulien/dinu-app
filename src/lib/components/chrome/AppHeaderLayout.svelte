@@ -50,7 +50,7 @@
 	aria-busy={loading}
 	inert={loading}
 	data-app-header
-	class="sticky top-0 z-40 border-b-[length:var(--surface-border-width)] border-line bg-surface"
+	class="sticky top-0 left-0 z-40 border-b-[length:var(--surface-border-width)] border-line bg-surface"
 >
 	<div
 		class="flex h-[calc(var(--app-nav-height)-var(--surface-border-width))] w-full items-stretch px-[3px] sm:px-[7px] md:px-[13px]"

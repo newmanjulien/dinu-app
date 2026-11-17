@@ -16,8 +16,8 @@
 	}: {
 		review: BuyerChangeReview;
 		session: DiscussionSession;
-		root: HTMLElement;
-		layout: HTMLElement;
+		root: HTMLElement | null;
+		layout: HTMLElement | null;
 		highlights?: DocumentHighlightController;
 		renderRevision: unknown;
 		domRevision: unknown;
@@ -29,8 +29,7 @@
 	>([]);
 	const threads = $derived(
 		session.threads.filter(
-			(thread) =>
-				thread.type === 'proposal' && session.feed.authorized && !thread.root.deleted
+			(thread) => thread.type === 'proposal' && session.feed.authorized && !thread.root.deleted
 		)
 	);
 	let retry = $state(0);
@@ -60,7 +59,9 @@
 		domCache = undefined;
 	});
 	function measure() {
-		if (!ready || !root.isConnected) {
+		const documentRoot = root;
+		const container = layout;
+		if (!ready || !documentRoot?.isConnected || !container?.isConnected) {
 			domCache = undefined;
 			geometries = [];
 			return;
@@ -71,20 +72,20 @@
 		}
 		if (
 			!domCache ||
-			domCache.root !== root ||
+			domCache.root !== documentRoot ||
 			domCache.render !== renderRevision ||
 			domCache.pages !== domRevision
 		)
 			domCache = {
-				root,
+				root: documentRoot,
 				render: renderRevision,
 				pages: domRevision,
-				index: indexDiscussionDom(root)
+				index: indexDiscussionDom(documentRoot)
 			};
 		const index = domCache.index,
-			origin = layout.getBoundingClientRect();
+			origin = container.getBoundingClientRect();
 		geometries = threads.flatMap((thread) => {
-			const range = discussionDomRange(root, thread.anchor, index);
+			const range = discussionDomRange(documentRoot, thread.anchor, index);
 			const rects = range
 				? [...range.getClientRects()]
 						.filter((r) => r.height && r.width)
@@ -117,8 +118,10 @@
 	});
 	$effect(() => {
 		const host = root;
+		const container = layout;
+		if (!host || !container) return;
 		const position = (event: MouseEvent) => {
-			const rect = layout.getBoundingClientRect();
+			const rect = container.getBoundingClientRect();
 			return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 		};
 		const hit = (point: { x: number; y: number }) =>
@@ -166,13 +169,13 @@
 			}
 		};
 		host.addEventListener('click', click, true);
-		layout.addEventListener('pointerleave', leave);
+		container.addEventListener('pointerleave', leave);
 		window.addEventListener('resize', measure);
 		return () => {
 			host.removeEventListener('click', click, true);
 			host.removeEventListener('pointermove', move);
 			host.removeEventListener('pointerdown', tap, true);
-			layout.removeEventListener('pointerleave', leave);
+			container.removeEventListener('pointerleave', leave);
 			window.removeEventListener('resize', measure);
 		};
 	});

@@ -3,7 +3,7 @@
 	let { children, footer }: { children: Snippet; footer?: Snippet } = $props();
 </script>
 
-<div class="ml-(--page-margin-left) mr-(--page-margin-right) w-(--page-width)">
+<div class="ml-(--page-left) w-(--page-width)">
 	<div class="ml-(--review-gutter) w-(--paper-width)">{@render children()}</div>
 	{@render footer?.()}
 </div>

@@ -9,6 +9,9 @@
 	type Props = {
 		open?: boolean;
 		title: string;
+		'aria-describedby'?: string;
+		role?: 'dialog' | 'alertdialog';
+		portal?: boolean;
 		onClose: () => void | Promise<void>;
 		variant?: 'dialog' | 'panel';
 		position?: 'center' | 'right';
@@ -24,6 +27,9 @@
 	let {
 		open = true,
 		title,
+		'aria-describedby': ariaDescribedBy,
+		role,
+		portal = false,
 		onClose,
 		variant = 'dialog',
 		position = 'center',
@@ -59,11 +65,34 @@
 		}
 		pointerStartedOnBackdrop = false;
 	}
+
+	function appendToBody(element: HTMLDialogElement, enabled: boolean) {
+		const marker = document.createComment('');
+		element.before(marker);
+		let portaled = false;
+		function move(next: boolean) {
+			if (next === portaled) return;
+			if (next) document.body.append(element);
+			else marker.after(element);
+			portaled = next;
+		}
+		move(enabled);
+		return {
+			update: move,
+			destroy: () => {
+				if (portaled) marker.after(element);
+				marker.remove();
+			}
+		};
+	}
 </script>
 
 <dialog
+	use:appendToBody={portal}
 	bind:this={modalBehavior.dialogElement}
 	aria-labelledby={titleId}
+	aria-describedby={ariaDescribedBy}
+	{role}
 	class={cn(
 		'fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-hidden border-0 bg-transparent text-ink outline-none open:flex open:items-center',
 		variant === 'panel'

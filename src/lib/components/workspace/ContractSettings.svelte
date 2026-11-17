@@ -10,6 +10,7 @@
 	import SettingsCard from '$lib/features/settings/SettingsCard.svelte';
 	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import ConfirmModal from '$lib/ui/ConfirmModal.svelte';
 	import TextInput from '$lib/ui/TextInput.svelte';
 	import ContractSettingsLayout from './ContractSettingsLayout.svelte';
 	import { contractSettingsFields } from '$lib/features/settings/contract-settings-fields';
@@ -47,6 +48,7 @@
 	let renaming = $state(false);
 	let deleting = $state(false);
 	let deleted = $state(false);
+	let contractToDelete = $state.raw<{ id: Id<'savedContracts'>; title: string } | null>(null);
 	let renameError = $state<string | null>(null);
 	let deleteError = $state<string | null>(null);
 	const disabled = $derived(
@@ -71,20 +73,26 @@
 		}
 	}
 
-	async function remove() {
+	function requestDelete() {
 		if (!alive || !contract || disabled) return;
-		if (
-			!window.confirm(
-				`Delete the contract for “${contract.title}”? This permanently removes its saved choices and document snapshot.`
-			)
-		)
+		deleteError = null;
+		contractToDelete = { id: contract._id, title: contract.title };
+	}
+
+	async function confirmDelete() {
+		const request = contractToDelete;
+		if (!request || !alive) return;
+		if (!contract || contract._id !== request.id || disabled) {
+			deleteError = 'This contract is no longer ready to delete. Close and try again.';
 			return;
+		}
 		deleting = true;
 		deleteError = null;
 		try {
-			await saves.remove(contract._id);
+			await saves.remove(request.id);
 			if (!alive) return;
 			deleted = true;
+			contractToDelete = null;
 		} catch (error) {
 			if (alive) deleteError = saveError(error, 'We couldn’t delete this contract. Try again.');
 		} finally {
@@ -93,6 +101,23 @@
 		if (alive && deleted) void goto('/contracts').catch(() => {});
 	}
 </script>
+
+{#if contractToDelete}
+	<ConfirmModal
+		title="Delete contract?"
+		message={`Delete the contract for “${contractToDelete.title}”? This permanently removes its saved choices and document snapshot.`}
+		confirmLabel="Delete contract"
+		pendingLabel="Deleting…"
+		destructive
+		busy={deleting}
+		error={deleteError}
+		onConfirm={confirmDelete}
+		onCancel={() => {
+			contractToDelete = null;
+			deleteError = null;
+		}}
+	/>
+{/if}
 
 {#if relinking && contract && !session.blocked}
 	<HubSpotRelink
@@ -110,9 +135,7 @@
 	{#if deleted}
 		<p role="status" class="text-sm text-ink-muted">Contract deleted.</p>
 		<div><Button href="/contracts" variant="secondary">Back to Contracts</Button></div>
-	{:else if deleting && !contract}
-		<p role="status" class="text-sm text-ink-muted">Deleting contract…</p>
-	{:else if read.error && !contract}
+	{:else if read.error && !contract && !deleting}
 		<div role="alert" class="text-sm">
 			<p>We couldn’t load the contract settings.</p>
 			<Button variant="secondary" class="mt-4" onclick={read.retry}>Try again</Button>
@@ -168,15 +191,13 @@
 				{#snippet footer()}
 					{#if connection.error}
 						<p role="alert">We couldn’t check your HubSpot installation.</p>
-					{:else if !connection.data || connection.isLoading}
-						<p role="status">Checking HubSpot installation…</p>
-					{:else if connection.data.status !== 'connected'}
+					{:else if connection.data && !connection.isLoading && connection.data.status !== 'connected'}
 						<p>Ask an admin to reconnect HubSpot before choosing a deal.</p>
-					{:else if !connection.data.enabled}
+					{:else if connection.data && !connection.isLoading && !connection.data.enabled}
 						<p>HubSpot is temporarily unavailable.</p>
-					{:else if contract.workBlock}
+					{:else if connection.data && !connection.isLoading && contract.workBlock}
 						<p>{workBlockMessage(contract.workBlock)}</p>
-					{:else}
+					{:else if connection.data && !connection.isLoading}
 						<p>Link a different deal to change this contract’s name.</p>
 					{/if}
 				{/snippet}
@@ -197,15 +218,12 @@
 			title={contractSettingsFields.danger.title}
 			description={contractSettingsFields.danger.description}
 		>
-			{#if deleteError}<p role="alert" class="mt-4 text-[0.74rem] text-danger">
-					{deleteError}
-				</p>{/if}
 			{#snippet footer()}<p>{contractSettingsFields.danger.footerText}</p>{/snippet}
 			{#snippet action()}
 				<Button
 					{disabled}
 					class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
-					onclick={() => void remove()}
+					onclick={requestDelete}
 				>
 					{deleting ? 'Deleting…' : 'Delete contract'}
 				</Button>

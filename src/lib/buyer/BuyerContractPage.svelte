@@ -55,7 +55,14 @@
 			{#if contract.allowed && helpPresented && contract.mountReady && contract.Host && contract.content}
 				<contract.Host {contract} />
 			{/if}
-			{#snippet failed()}{/snippet}
+			{#snippet failed()}
+				{#if !contract.error}
+					<p role="alert" class="p-12 text-center text-sm">
+						We couldn’t display this contract.
+						<button class="underline" onclick={() => contract.retry()}>Retry</button>
+					</p>
+				{/if}
+			{/snippet}
 		</svelte:boundary>
 	{/key}
 </div>

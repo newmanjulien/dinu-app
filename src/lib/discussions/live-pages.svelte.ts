@@ -77,7 +77,12 @@ export class LiveDiscussionPages<Row extends { id: string }> {
 			fail: (error: Error) => void
 		) => NativePageSubscription<Row>,
 		private changed: () => void = () => {},
-		private options: { retention?: DiscussionRetention; reply?: boolean; evicted?: () => void } = {}
+		private options: {
+			retention?: DiscussionRetention;
+			reply?: boolean;
+			evicted?: () => void;
+			autoLoadEmptyPage?: boolean;
+		} = {}
 	) {
 		this.retention = options.retention ?? new DiscussionRetention();
 	}
@@ -132,7 +137,7 @@ export class LiveDiscussionPages<Row extends { id: string }> {
 						this.latestRequest === settled &&
 						!this.pending
 					)
-						this.loadMore();
+						if (this.options.autoLoadEmptyPage !== false) this.loadMore();
 				});
 		};
 		try {
@@ -171,16 +176,18 @@ export class LiveDiscussionPages<Row extends { id: string }> {
 			this.error ||
 			this.pending
 		)
-			return;
+			return false;
 		const value = this.subscription?.getCurrentValue();
-		if (!value || value.status !== 'CanLoadMore') return;
+		if (!value || value.status !== 'CanLoadMore') return false;
 		const previous = this.latestRequest;
 		const request = { baseline: value.results.length };
 		this.pending = this.latestRequest = request;
 		if (!value.loadMore(20)) {
 			if (this.pending === request) this.pending = undefined;
 			if (this.latestRequest === request) this.latestRequest = previous;
+			return false;
 		}
+		return true;
 	}
 	refuse(error: Error) {
 		this.release();

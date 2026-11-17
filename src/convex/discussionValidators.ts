@@ -27,6 +27,7 @@ export const storedMessage = v.object({
 	threadId: v.id('discussionThreads'),
 	reply: v.boolean(),
 	authorKey: v.string(),
+	operationId: v.optional(v.string()),
 	profileId: v.optional(v.id('profiles')),
 	text: v.string(),
 	revision: v.number(),

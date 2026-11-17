@@ -14,7 +14,6 @@
 		invite,
 		colleaguesContent,
 		invitationsContent,
-		afterLists,
 		leaveContent,
 		feedback
 	}: {
@@ -26,7 +25,6 @@
 		invite?: Snippet;
 		colleaguesContent?: Snippet;
 		invitationsContent?: Snippet;
-		afterLists?: Snippet;
 		leaveContent?: Snippet;
 		feedback?: Snippet;
 	} = $props();
@@ -69,7 +67,6 @@
 					/>{/if}
 			</section>
 		{/if}
-		{@render afterLists?.()}
 		{#if role}
 			<section class="border-t-[length:var(--surface-border-width)] border-line pt-6">
 				<h2 class="text-sm font-medium">Leave company</h2>

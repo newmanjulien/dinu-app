@@ -17,7 +17,6 @@ import type { DocumentSourceInput } from './source.svelte';
 import { type ConcessionSelection } from './types';
 import type { DocumentWorkspace } from './workspace-context';
 import type { createDocumentWorkspace } from './workspace-factory';
-import type { DocumentLayout } from '$lib/components/document/workspace-layout';
 
 function appliedOptions(data: ReadyContract): Record<string, string> {
 	return Object.fromEntries(
@@ -35,7 +34,7 @@ function approvedInput(data: ReadyContract): DocumentSourceInput {
 const isTemplateResource = (id: string) => id === 'template' || id === 'template:buyer';
 
 export interface ViewerBindings {
-	layout?: DocumentLayout;
+	reserveReviewGutter?: boolean;
 	onRetry?: () => void;
 	failure?: { message: string };
 	onPresentation?: (
@@ -46,8 +45,6 @@ export interface ViewerBindings {
 	/** Demand only; item bodies and subscriptions belong to the authoring session. */
 	itemPreload?: (ids: readonly string[]) => void;
 	reviewTags?: readonly ReviewTag[];
-	/** Space for compact review controls; desktop reservation follows the layout policy. */
-	reviewGutter?: number;
 	reviewNavigation?: ReviewNavigation;
 	onItemIntent?: (itemId: string) => void;
 	onReviewDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
@@ -99,8 +96,8 @@ export class DocumentResource {
 	readonly priority = () =>
 		this.active || this.opening ? ('foreground' as const) : ('background' as const);
 	id = $state('');
-	get layout(): DocumentLayout {
-		return isTemplateResource(this.id) ? 'standard' : 'contract';
+	get reserveReviewGutter(): boolean {
+		return !isTemplateResource(this.id);
 	}
 	constructor(
 		id: string,

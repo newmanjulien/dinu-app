@@ -16,8 +16,7 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch }) => 
 	const existing = cookies.get('dinu_discussion_browser');
 	let browserId = existing && validTrackingId(existing) ? existing : undefined;
 	if (!browserId) {
-		if (body.kind !== 'viewer')
-			return failure('Reopen the discussion and try again. Your draft is still here.', 409);
+		if (body.kind !== 'viewer') return failure('Reopen the discussion and try again.', 409);
 		const legacy = cookies.get('dinu_buyer_browser');
 		browserId = legacy && validTrackingId(legacy) ? legacy : crypto.randomUUID();
 		cookies.set('dinu_discussion_browser', browserId, {
@@ -38,7 +37,7 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch }) => 
 	const jwt = anonymous ? null : (bearer ?? (await optionalBuyerToken(request, url.origin, fetch)));
 	const hasSession = /(?:^|;\s*)__session(?:_[^=;]+)?=/u.test(request.headers.get('cookie') ?? '');
 	if (!anonymous && hasSession && !jwt)
-		return failure('Reconnect your account before posting. Your draft is still here.', 401);
+		return failure('Reconnect your account before posting.', 401);
 	try {
 		const response = await fetch(`${env.PUBLIC_CONVEX_SITE_URL}/buyer/discussions`, {
 			method: 'POST',
@@ -67,6 +66,6 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch }) => 
 			headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store' }
 		});
 	} catch {
-		return failure('We couldn’t reach this discussion. Your draft is still here. Try again.', 503);
+		return failure('We couldn’t reach this discussion. Try again.', 503);
 	}
 };

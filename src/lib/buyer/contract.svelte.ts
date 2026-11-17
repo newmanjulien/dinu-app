@@ -9,7 +9,6 @@ import { afterPaint, DocumentScheduler, type Priority } from '$lib/document/runt
 import type { PresentationOutcome } from '$lib/auth/workspace-presentation.svelte';
 import { recordColdStart } from '$lib/document/runtime/render-perf';
 import { BuyerDownload } from './download.svelte';
-import { DiscussionRecovery } from '$lib/discussions/recovery.svelte';
 import type { DocumentToolControls } from '$lib/components/document/document-tools';
 
 type Content = FunctionReturnType<typeof api.buyerLinks.currentDocument>;
@@ -58,7 +57,6 @@ export class BuyerContract {
 	private readContent(signal: AbortSignal) {
 		return queryOnce(this.client, api.buyerLinks.currentDocument, { token: this.token }, signal);
 	}
-	readonly discussionRecovery = new DiscussionRecovery();
 	tools = $state.raw<DocumentToolControls>();
 	private toolsOwner?: symbol;
 	private lifetime?: AbortController;
@@ -334,7 +332,6 @@ export class BuyerContract {
 		this.allowed = false;
 		this.release();
 		this.download.destroy();
-		this.discussionRecovery.destroy();
 		this.toolsOwner = undefined;
 		this.scheduler.destroy();
 		this.content = undefined;

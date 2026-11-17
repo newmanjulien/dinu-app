@@ -199,4 +199,4 @@
 		active={interactionAdmitted && !runtime.paused}
 		outcome="pending"
 		revision={opening?.token}
-	/><DocumentSkeleton layout="contract" embedded label="Loading contract" />{/if}
+	/><DocumentSkeleton reserveReviewGutter label="Loading contract" />{/if}

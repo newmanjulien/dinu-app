@@ -5,6 +5,7 @@
 	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
 	import type { TemplateAudience } from '$lib/playbook/model';
 	import DocumentHeading from '$lib/components/document/DocumentHeading.svelte';
+	import DocumentSection from '$lib/components/document/DocumentSection.svelte';
 	import WorkspaceChrome from './WorkspaceChrome.svelte';
 
 	let {
@@ -55,10 +56,18 @@
 		{downloadReason}
 	/>
 {/if}
-<DocumentHeading {kind} {audience} />
-{#if error}<div role="alert" class="mx-auto max-w-3xl px-6 py-3 text-center text-sm text-danger">
-		<p>{error}</p>
-		{#if onRetry}<button type="button" class="mt-2 underline" onclick={onRetry}>Try again</button
-			>{/if}
-	</div>{/if}
-{@render children()}
+<DocumentSection {active}>
+	{#snippet heading()}
+		<DocumentHeading {kind} {audience} />
+		{#if error}<div
+				role="alert"
+				class="mx-auto max-w-3xl px-6 py-3 text-center text-sm text-danger"
+			>
+				<p>{error}</p>
+				{#if onRetry}<button type="button" class="mt-2 underline" onclick={onRetry}
+						>Try again</button
+					>{/if}
+			</div>{/if}
+	{/snippet}
+	{@render children()}
+</DocumentSection>

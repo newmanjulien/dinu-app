@@ -41,6 +41,7 @@ export const linkSummary = v.object({
 	token: v.string(),
 	createdAt: v.number()
 });
+export const linkCapture = linkSummary.extend({ created: v.boolean() });
 export const linkPreparation = v.union(
 	v.object({ kind: v.literal('existing') }),
 	v.object({

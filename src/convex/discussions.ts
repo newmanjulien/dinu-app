@@ -147,11 +147,11 @@ async function buyerOperation(
 ) {
 	const context = await discussionContext(ctx, args),
 		actor = await discussionActor(ctx, context, args.browserId);
-	// This is a draft precondition; access and the receipt key are derived above.
+	// This author precondition uses access and the receipt key derived above.
 	if (actor.key !== args.expectedAuthorKey)
 		throw new ConvexError({
 			code: 'DISCUSSION_IDENTITY_CHANGED',
-			message: 'Reconnect as the original author before retrying. Your draft is still here.'
+			message: 'Reconnect as the original author before retrying.'
 		});
 	return { context, actor };
 }

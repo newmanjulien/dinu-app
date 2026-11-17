@@ -33,7 +33,6 @@
 	import { onMount, onDestroy, type Snippet, untrack } from 'svelte';
 	import { describeRoute } from './routes';
 	import { setWorkspaceRuntime, getWorkspaceDestinations } from './workspace-context.svelte';
-	import { setDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	import { getTemplateAuthoringSession } from '$lib/playbook/template-authoring-session.svelte';
 	let { children }: { children: Snippet } = $props();
 	const session = useViewerSession();
@@ -143,7 +142,6 @@
 			workspaceModule.retry();
 		}
 	});
-	setDocumentNavigation();
 	const template = loadComponent(
 		loadTemplateWorkspace,
 		() => route.document === 'template' && !templatePending && !deletionPending,
@@ -302,7 +300,7 @@
 				</LoadingState>
 			{:else}
 				<WorkspacePresentationReporter outcome="pending" />
-				<DocumentSkeleton template embedded label="Loading template editor" />
+				<DocumentSkeleton template label="Loading template editor" />
 			{/if}
 		</WorkspaceRouteFrame>
 	</div>

@@ -1,4 +1,5 @@
 export { default as Button } from './Button.svelte';
+export { default as ConfirmModal } from './ConfirmModal.svelte';
 export { default as LoadingState } from './LoadingState.svelte';
 export { default as LoadingWheel } from './LoadingWheel.svelte';
 export { default as ModalShell } from './ModalShell.svelte';

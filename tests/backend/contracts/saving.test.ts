@@ -92,6 +92,7 @@ async function fixture(selected = false) {
 		const documentId = await writeContractDocument(ctx, {
 			companyId,
 			contractId: id,
+			documentRevision: 0,
 			document: createContractDocument([block])
 		});
 		await db.patch('savedContracts', id, { documentId });

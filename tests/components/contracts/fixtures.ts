@@ -275,15 +275,16 @@ function fixture({
 		isDeleted: () => false
 	};
 	const feedback: WorkspaceFeedback = new WorkspaceFeedback(() => owner.notices);
+	const onSaved = vi.fn();
 	const owner: ContractEditors = new ContractEditors({
 		userId: 'user',
 		membershipId: 'membership' as Id<'memberships'>,
 		companyId: 'company' as Id<'company'>,
 		client: client as unknown as Options['client'],
 		cache,
-		onSaved: feedback.contractSaved,
-		onDeleted: feedback.contractDeleted,
-		onRenamed: feedback.contractRenamed,
+		onSaved,
+		onDeleted: () => {},
+		onRenamed: () => {},
 		registerEditor: (editor) => {
 			aggregate = editor;
 			if (controller) return controller.registerEditor(editor);
@@ -297,6 +298,7 @@ function fixture({
 	return {
 		owner,
 		feedback,
+		onSaved,
 		cache,
 		client,
 		writes,
@@ -359,7 +361,8 @@ function buyerLinkFixture(owner: ContractEditors, current = () => contract()) {
 	const latest: FunctionReturnType<typeof api.buyerLinkActions.ensureLatest> = {
 		id: 'link' as Id<'buyerLinks'>,
 		token: 'Ab3Cd4Ef5Gh6I',
-		createdAt: 0
+		createdAt: 0,
+		created: true
 	};
 	const query = vi.fn<Client['query']>().mockImplementation(async (ref) => {
 		if (getFunctionName(ref) === 'buyerLinks:latest') return null;

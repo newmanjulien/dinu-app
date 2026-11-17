@@ -47,7 +47,7 @@
 	{@render notice?.()}
 	<div
 		class={hasBuyerLinks
-			? 'grid grid-cols-1 items-start gap-6 min-[1000px]:grid-cols-[minmax(0,1fr)_450px]'
+			? 'grid grid-cols-1 items-start gap-6 min-[1000px]:grid-cols-[minmax(0,1fr)_355px]'
 			: ''}
 	>
 		<section aria-labelledby="contracts-heading" class="min-w-0 @container">
