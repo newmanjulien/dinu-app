@@ -1,10 +1,6 @@
 import type { Id } from '../../src/convex/_generated/dataModel';
 import type { SourceBlock } from '../../src/lib/document/model';
 import type { ReadyContract } from '../../src/lib/contract/saved';
-import {
-	contractDocumentToRenderTransport,
-	createContractDocument
-} from '../../src/lib/document/contract-document';
 import type {
 	RepInstructionDetailRecord,
 	TemplateContentSnapshot,
@@ -37,6 +33,7 @@ export function documentFixture(count = 12) {
 		_creationTime: 1,
 		companyId,
 		contentRevision: 1,
+		currentRevisionId: `rev-${i}` as Id<'playbookItemRevisions'>,
 		renderKey: `render-${i}`,
 		instructions: { summary: `Summary ${i}` },
 		approvalPolicy: { kind: 'none' },
@@ -51,7 +48,23 @@ export function documentFixture(count = 12) {
 			}
 		},
 		concessions: [
-			{ id: 'preferred', tier: 'preferred', description: 'Synthetic choice', changes: [] }
+			{
+				id: 'preferred',
+				tier: 'preferred',
+				description: 'Synthetic choice',
+				changes: [
+					{
+						target: {
+							kind: 'text',
+							range: {
+								start: { sourceKey: `text-${i}`, offset: 0 },
+								end: { sourceKey: `text-${i}`, offset: 6 }
+							}
+						},
+						replacement: [{ kind: 'text', text: 'Updated' }]
+					}
+				]
+			}
 		]
 	}));
 	const structure: StructureSnapshot = {
@@ -82,13 +95,12 @@ export function createdContract(
 			companyId,
 			creatorId: 'profile' as Id<'profiles'>,
 			templateVersionId: 'version' as Id<'templateVersions'>,
-			documentId: 'approved-document' as Id<'contractDocuments'>,
-			documentRevision: 0,
 			stateRevision: 0,
+			metadataRevision: 0,
 			title: 'Synthetic Buyer',
 			savedAt: 1,
-			playbook: [],
-			reviews: { playbook: { identity: 'playbook:0' }, buyerLink: { identity: 'buyer-link:0' } },
+			concessions: [],
+			review: { generation: 0 },
 			lastOperationId: null
 		},
 		snapshot: {
@@ -104,15 +116,5 @@ export function readyContract(
 	snapshot: ReturnType<typeof documentFixture>,
 	id = 'contract-a'
 ): ReadyContract {
-	return {
-		...createdContract(snapshot, id),
-		approved: {
-			documentId: 'approved-document' as Id<'contractDocuments'>,
-			documentRevision: 0,
-			displayIdentity: 'approved:0',
-			document: contractDocumentToRenderTransport(createContractDocument(snapshot.blocks)),
-			hiddenItemIds: [],
-			projectedTargets: []
-		}
-	};
+	return createdContract(snapshot, id);
 }

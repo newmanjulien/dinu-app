@@ -1,10 +1,15 @@
-import type { ContractItemId } from '../contract/item-identity';
 import type { Infer } from 'convex/values';
 import type { Doc, Id } from '../../convex/_generated/dataModel';
 import type * as validators from './validators';
-import { instructions as instructionContent } from './validators';
-export type { SourcePoint, SourceRange, SourceTarget } from '../document/source-model';
+import { PLAYBOOK_INSTRUCTION_KEYS, type PlaybookInstructionKey } from './item-content-predicates';
+export type {
+	SourcePoint,
+	SourceRange,
+	SourceTarget,
+	TextSourceTarget
+} from '../document/source-model';
 export type Trigger = Infer<typeof validators.trigger>;
+export type TextTrigger = Infer<typeof validators.textTrigger>;
 export type Instructions = Infer<typeof validators.instructions>;
 export type ApprovalPolicy = Infer<typeof validators.approvalPolicy>;
 export type ContractChange = Infer<typeof validators.contractChange>;
@@ -18,7 +23,7 @@ export const isRepItem = <T extends { audience: TemplateAudience }>(
 ): item is Extract<T, { audience: 'rep' }> => item.audience === 'rep';
 export type TemplateItemId = Id<'playbookItems'>;
 /** Identity shared by mutable heads and immutable snapshot entries. */
-export type RepInstructionRecord<ItemId extends ContractItemId = Id<'playbookItems'>> = Pick<
+export type RepInstructionRecord<ItemId extends string = Id<'playbookItems'>> = Pick<
 	Doc<'playbookItems'>,
 	'_creationTime' | 'contentRevision'
 > &
@@ -36,7 +41,11 @@ export function sameSelection(a: ConcessionSelection, b: ConcessionSelection): b
 export const newTriggerId = (): string => crypto.randomUUID();
 export const newConcessionId = (): string => crypto.randomUUID();
 
-/** Business fields, independent of their labels or editor presentation. */
-export const instructionKeys = Object.keys(instructionContent.fields) as (keyof Instructions)[];
+type ExactKeyUnion<A extends string, B extends string> =
+	Exclude<A, B> extends never ? (Exclude<B, A> extends never ? true : never) : never;
+const _instructionKeysMatchValidator: ExactKeyUnion<PlaybookInstructionKey, keyof Instructions> =
+	true;
+void _instructionKeysMatchValidator;
 
-export type ContractItemRecord = import('../contract/items').ResolvedContractItem;
+/** Business fields, independent of their labels or editor presentation. */
+export const instructionKeys: readonly (keyof Instructions)[] = PLAYBOOK_INSTRUCTION_KEYS;

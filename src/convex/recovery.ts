@@ -2,7 +2,6 @@ import { getFunctionName } from 'convex/server';
 import { v } from 'convex/values';
 import { internal } from './_generated/api';
 import { internalMutation } from './_generated/server';
-import { PREPARATION_TTL } from './deletionPolicy';
 import { recoveryRows, recoveryStates } from './emailDeliveries';
 
 /** Bounded idle probes; each nonempty family runs in its own scheduled transaction. */
@@ -33,13 +32,6 @@ export const resume = internalMutation({
 				fn: internal.buyerLinkShowingCleanup.resume,
 				args: {}
 			},
-			{
-				rows: ctx.db
-					.query('emailDeliveries')
-					.withIndex('by_disposal_generation', (q) => q.gte('disposal.generation', 1)),
-				fn: internal.emailDisposal.resume,
-				args: {}
-			},
 			...recoveryStates.map((state) => ({
 				rows: recoveryRows(ctx, state),
 				fn: internal.emailDeliveries.resume,
@@ -48,16 +40,7 @@ export const resume = internalMutation({
 			{
 				rows: ctx.db
 					.query('companyDeletions')
-					.withIndex('by_status_and_requestedAt', (q) =>
-						q.eq('status', 'prepared').lte('requestedAt', Date.now() - PREPARATION_TTL)
-					),
-				fn: internal.companyDeletion.expirePreparations,
-				args: {}
-			},
-			{
-				rows: ctx.db
-					.query('companyDeletions')
-					.withIndex('by_status_and_requestedAt', (q) => q.eq('status', 'dispatched')),
+					.withIndex('by_status_and_requestedAt', (q) => q.eq('status', 'deleting')),
 				fn: internal.clerk.reconcileCompanies,
 				args: {}
 			}

@@ -8,7 +8,7 @@ Updated October 21, 2026. This describes the current route and session architect
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Root layout           | Route metadata, Clerk readiness, persistent session controller, startup preparation, lazy authenticated account host   |
 | Authenticated account | Convex transport, live account viewer, missing-profile initialization, recovery, account and membership cache identity |
-| `(entry)`             | Shared login presentation for `/login`, `/join`, and `/invitation`; signed-in identity and account switching           |
+| `(entry)`             | Shared entry presentation for `/login`, `/create-account`, and `/invitation`; signed-in identity and account switching |
 | `(onboarding)`        | Grey full-page presentation for `/onboarding`; account authentication without workspace chrome                         |
 | `(workspace)`         | Membership admission, document and editor resources, app header and workspace routes                                   |
 
@@ -47,8 +47,8 @@ seed a new session. Late results cannot cross identities or overwrite confirmed
 membership. Storage failure leaves in-memory hints usable.
 
 `WorkspaceSkeleton` consumes these hints at every account/workspace/module loading
-boundary. Known unfinished templates use `TemplateSetupLayout`, including the
-calendar skeleton for admins; known ready templates use the document placeholder or
+boundary. `/template/setup` uses `TemplateSetupLayout` / `TemplateSetupBookingFrame`, including the
+calendar skeleton; known ready templates use the document placeholder or
 the creation dialog with a plain preparation message. Role-specific navigation, Settings, Team, and Integrations skeletons and
 the Contracts loading layout use the same context. Presentational components
 receive props and perform no storage access or fetching. Unknown roles never
@@ -67,7 +67,7 @@ never gates the contract list. Skeletons do not fetch or read storage.
 
 `WorkspaceShell` mounts the shared header and interaction dispatcher as soon as membership is admitted, including while workspace or document code is loading or has failed. Document chrome contributes its search and status content through a scoped header registration. `auth/routes.ts` supplies titles, navigation selection, template source requirements, and document classification to both mounted routes and URL-only preload/performance callers. The root is the only title writer; entry flows can register a title override scoped to the current route. Titles therefore update at navigation commit even when an editor cannot mount, which also gives SvelteKit's navigation announcer the destination title.
 
-`DocumentBody` gates initial body mounting on any required template source and, by default, the lazy document host. The contracts layout opts out of the host gate so its skeletons and naming dialog can mount while document code loads; each editor still waits for the host. The persistent template editor owner mounts outside `DocumentBody`, after both its own module and the host are ready. Once mounted, a company deletion hold hides and disables the body while retaining its state. Document resources remain mounted with preparation paused; contract persistence pauses new saves, and document reads stop. Already dispatched writes keep their existing outcome semantics. Settings stays available to finish or cancel deletion, and the contract naming dialog leaves the browser's modal layer during the hold without clearing its input.
+`Workspace` evaluates the shared `resolveWorkspaceRoute` policy from `auth/workspace-admission.ts` against `auth/routes.ts` (`permission`, `template`, `requiresInstructions`, `availableDuringHold`) and redirects unauthorized or unready visits through `WorkspaceRedirect` without loading document or editor bundles. `TemplateEditorHost` owns the persistent template editor lifecycle and Settings detour independently of `Workspace`. The contracts layout delays initial mounting during a company deletion hold so its skeletons and naming dialog only mount when unpaused; each editor still waits for the host. The persistent template editor owner mounts after both its own module and the host are ready. Once mounted, a company deletion hold hides and disables the body while retaining its state. Document resources remain mounted with preparation paused; contract persistence pauses new saves, and document reads stop. Already dispatched writes keep their existing outcome semantics. Settings stays available to finish or cancel deletion, and the contract naming dialog leaves the browser's modal layer during the hold without clearing its input.
 
 Contracts and Team bodies unmount during a hold, releasing their queries, shortcuts, and modals. Their route metadata and shared navigation remain mounted. The route catalog marks Settings as available during the hold.
 
@@ -77,9 +77,9 @@ Deferred template editor and saved-contract navigation captures SvelteKit's inte
 
 ## Entry presentation and onboarding
 
-`(entry)/+layout.svelte` owns the shared `AuthEntryShell` and signed-in footer for login, signup, and invitation. The shell owns the responsive card, content width, footer placement, and testimonial background.
+`(entry)/+layout.svelte` owns the shared `AuthEntryShell` and signed-in footer for log in, account creation, and invitation. The shell owns the responsive card, content width, footer placement, and testimonial background.
 
-`(onboarding)/+layout.svelte` owns onboarding's full-page grey background and blue button variables. The public URL remains `/onboarding`; its server authentication guard and private, uncached responses are preserved. The flow supplies the centered content, create-step Back action, and signed-in footer with Sign out disabled during a pending action or blocked session. `OnboardingStepFrame` supplies the shared heading and description spacing. Selection uses two illustrated white cards side by side on desktop and stacked on mobile. Create uses a narrow centered form; join uses white invitation cards and an empty-inbox invitation box, followed by Create a company instead. Shared entry inputs and buttons remain reusable, without return badges.
+`(onboarding)/+layout.svelte` owns onboarding's full-page grey background and blue button variables. The public URL remains `/onboarding`; its server authentication guard and private, uncached responses are preserved. The flow supplies the centered content, create-step Back action, and signed-in footer with Log out disabled during a pending action or blocked session. `OnboardingStepFrame` supplies the shared heading and description spacing. Selection uses two illustrated white cards side by side on desktop and stacked on mobile. Create uses a narrow centered form; join uses white invitation cards and an empty-inbox invitation box, followed by Create a company instead. Shared entry inputs and buttons remain reusable, without return badges.
 
 `/onboarding` requires an admitted account and mounts `auth/onboarding/OnboardingFlow.svelte`. The flow owns the current step, retained company-name draft, mutation state, stale-session protection, and workspace completion navigation. `ChooseCompanyStep` and `CreateCompanyStep` render their fields and actions through callbacks. `JoinCompanyStep` owns its live inbox subscription, read deadline, and retry UI, so those resources exist only while that step is mounted.
 
@@ -93,7 +93,7 @@ Today, creating or joining a company completes onboarding. Future setup steps, s
 - Signed-in accounts without a company go to `/onboarding`, preserving the requested workspace destination.
 - Company creation or explicit invitation acceptance establishes membership, then opens the workspace.
 - Members visiting onboarding return to the requested workspace destination.
-- `/invitation?invitation=…` stays in the entry shell for all account and membership states. Signed-out invitees verify the fixed invited email without choosing login or signup. Switching accounts returns directly to the invitation.
+- `/invitation?invitation=…` stays in the entry shell for all account and membership states. Signed-out invitees verify the fixed invited email without choosing log in or create account. Switching accounts returns directly to the invitation.
 - A member who needs to leave a different company can open Team with an invitation return destination. Leaving the company returns to the invitation.
 
 Server guards preserve the pathname and query; browser navigation can also preserve fragments. Return destinations reject external URLs, malformed paths, and authentication loops. Entry responses and protected redirects use `Cache-Control: private, no-store`. Invitation pages set a no-referrer policy.
@@ -102,7 +102,7 @@ Server guards preserve the pathname and query; browser navigation can also prese
 
 The server loads a minimal anonymous preview using the random invitation token. An active link reveals only the company name, invited email, and expiry; terminal or unknown links return only their status. The lookup uses an indexed token hash and has a 15-second deadline. The page offers retry after a failed lookup and stops anonymous verification when the preview expires.
 
-The invitation shows the company and invited email, then offers **Continue** to send a code. Clerk signs in an existing account or transfers the verified email into a new account automatically. Both paths remain on the invitation and require a separate **Join [Company]** confirmation before entering the workspace. The CAPTCHA container remains mounted during verification and account creation. Authentication does not accept the invitation or open company setup.
+The invitation shows the company context, then offers **Email me a code** to send a verification code to the invited email. Clerk logs into an existing account or transfers the verified email into a new account automatically. Both paths remain on the invitation and require a separate **Join [Company]** confirmation before entering the workspace. The CAPTCHA container remains mounted during verification and account creation. Authentication does not accept the invitation or open company setup.
 
 Authenticated resolution returns available, wrong-email, other-company, already-member, accepted, expired, revoked, or unavailable states. Matching the verified email is required before invitation IDs, delivery generation, or authenticated company details are returned. Acceptance is an explicit mutation using that resolved generation; rotated invitations cannot be accepted through an older resolution.
 
@@ -114,7 +114,7 @@ Onboarding offers company creation and a live invitation inbox. The inbox subscr
 
 Initial login HTML contains the email form. Anonymous invitation HTML contains a public pending frame; its bounded server preview streams company context, the invited email, and Continue after validation. The anonymous preview uses a server-only Convex HTTP client. The initial static login and anonymous invitation graphs exclude the Convex transport and workspace document/cache modules. Authenticated invitation resolution code loads only for a signed-in account. During email verification, startup preparation warms an unused Convex connection and preloads the authenticated account host plus the requested route's code. Direct protected workspace loads start those independent downloads while Clerk connects. Workspace destinations also preload the workspace, Contracts destinations preload Contracts, and saved-contract destinations preload the document host. Routes requiring a template source leave editor and renderer loading to Workspace's template source-readiness guards. Entry destinations avoid those workspace imports. Preloading does not mount components or start authenticated queries; a verified session takes ownership of the warmed connection once.
 
-Ordinary signup preloads and opens onboarding, preserving any requested workspace destination for joining an existing company. After onboarding paints, it preloads the template setup route without speculatively loading Contracts. Creating a company opens `/template`; its completion destination survives temporary blocking of the same session, while navigation waits for readiness. Joining keeps the requested workspace destination. The template editor and renderer load only after the company's template source is ready.
+Ordinary account creation preloads and opens onboarding, preserving any requested workspace destination for joining an existing company. After onboarding paints, it preloads `/template/setup` without speculatively loading Contracts. Creating a company opens `/template/setup`; its completion destination survives temporary blocking of the same session, while navigation waits for readiness. Joining keeps the requested workspace destination. The template editor and renderer load only after the company's template source is ready.
 
 Account admission, workspace admission, and destination readiness are distinct. AccountSession keeps the public route children in one position and runs AuthenticatedAccount as a sibling driver. AccountContentScope installs its shared client only for admitted content; RepWorkspace reads the one application backend-auth publisher. WorkspaceFrame persists around initial skeletons and admitted workspace content. A delivered viewer rejection hides private display while retaining save owners; a confirmed identity/membership/company replacement tears down the old scope. Workspace chrome appears only after membership admission. Contracts controls do not wait for contract-list results, and document routes load their renderer on demand. Account, workspace, invitation, and deferred workspace component imports share one bounded loader with stale-result protection. Template editor code downloads alongside the document host without admitting the editor early. Saved-contract code loads for direct saved routes or when creation is submitted, overlapping the creation mutation and snapshot preparation; a new visit keeps its creation dialog in a lightweight shell while creation code loads. Optional preview imports, reads, and rendering recover through local retry controls. A session retry clears the account read failure and restarts failed imports through the transport generation. Recovery replaces the transport while retaining admitted editors; logout and leaving a company retain the existing save, cancel, and explicit discard guards.
 
@@ -198,51 +198,35 @@ Responses use no-store, no-referrer and noindex.
 There is no buyer form, autosave, readiness submission, or dirty-departure prompt.
 
 The dashboard contract workspace contains private rep instructions, concessions and
-admin approvals. Shared buyer guidance, comments and proposals live on the buyer link.
+admin approvals. Shared buyer explanations and comments live on the buyer link.
 The dashboard's **Open buyer collaboration** action prepares the same permanent URL
 as copying, preserving saved-state/deal gates without emitting copy feedback.
 Seller view adds an avatar linking to the dashboard, a blue underlined
-**View as buyer** button, proposal handling and the shared support widget.
+**View as buyer** button and the shared support widget.
 Buyer preview hides the avatar and shows muted **You are in buyer view.** text with a
 blue underlined **Back to your view** button, matching the company setup prompts.
 It uses the same
 buyer document and public discussions below it in read-only mode. Stored author
-names replace the seller-relative “You”; authoring, account recovery, private
-proposal facts and seller actions are hidden. Unsent drafts remain private and
-pending submissions retain their original author, payload and operation ID. Mode
-transitions prevent delayed auth/bootstrap/write work from dispatching in preview
+names replace the seller-relative “You”; authoring and seller actions are hidden.
+Mode transitions prevent delayed auth/bootstrap/write work from dispatching in preview
 or becoming valid again after a quick return. Already-dispatched requests settle
-without reopening editors or moving preview focus. Public reading, pagination,
+without reopening editors or moving preview focus. Public reading,
 navigation and downloads remain available. The header's return button restores
 seller view, and seller visits remain excluded from buyer analytics.
 Actual buyers see the original header/layout and no support widget.
-Seller-only reads expose native proposal support, current/applied changes and exact
-review eligibility. These facts never enter public discussion responses and clear
-on preview or access loss.
 
-Supporting a shared proposal creates a native buyer-link change. Permitted work
-applies immediately; restricted work waits for admin approval while the current
-approved wording remains visible. Source and decision expectations fence stale work;
-see [contract change reviews](lifecycle.md#contract-change-reviews) for support,
-approval and source-independent applied undo. Permanent URLs remain stable.
-New proposal work receives the existing fresh HubSpot check. Cancelling before
-dispatch retires that captured action; uncertain dispatched writes retain their exact
-revisions and operation ID for receipt-first retries. Discussion viewer requests also
-belong to an account epoch: a superseded cookie-setting request settles under its
-original lock, while the new account waits for its own viewer result. Drafts and
-original-author recovery identities survive the transition.
-
-Each contract has one permanent buyer link. Document blocks are acquired once per
-opening; its live approved-view pointer updates the title, buyer name and document
-identity while the contract is attached. See the
+Each contract has one permanent buyer link. Its live `currentView` pointer
+auto-syncs approved concessions, title and buyer name whenever the contract is saved
+or approved with zero pending and zero rejected concessions. See the
 [buyer-link model](data-model.md#buyer-links-and-shared-discussions). Pending acquisition is canceled on
 exit. Public status is `current` or `unavailable`; losing access discards the document,
 and recovering access reacquires it. Seller activity refreshes while its panel is open.
 
 Public content and Word downloads independently check access. Downloads also require
-connection and recheck the displayed document identity so an outdated document cannot
-be released after approved wording changes. Activity delivery is independent of document
-access. A separate cookie preserves anonymous discussion ownership. Retired form data has a bounded
+connection and recheck `displayIdentity` (hashing template version, title and sorted
+concessions) so an outdated document cannot be released after approved wording or
+title changes. Activity delivery is independent of document access. A separate cookie
+preserves anonymous discussion ownership.
 [cleanup procedure](buyer-form-removal.md).
 
 The route catalog explicitly classifies loading presentations, including integration details and buyer destinations. Region subscriptions retain accepted data only for the same arguments, fence obsolete callbacks and expose local deadlines/retry. HubSpotDeals owns coalesced request deadlines so Retry can replace a hung shared request. Buyer AnonymousProvider lives in the buyer layout; compatible document opening retries preserve the accepted resource and scheduler. Basic public/Contracts graphs exclude document construction, profiling and authoring-controller implementations; `verify:loading-bundles` checks emitted source-module closures after build.

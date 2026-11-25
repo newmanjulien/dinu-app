@@ -3,18 +3,14 @@
 	import { page } from '$app/state';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { ArrowSquareOutIcon } from 'phosphor-svelte';
-	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { findIntegrationDetails } from '$lib/integrations';
 	import Button from '$lib/ui/Button.svelte';
 	import HubSpotUninstall from './HubSpotUninstall.svelte';
 	import IntegrationDetailsLayout from './IntegrationDetailsLayout.svelte';
 
 	let { slug }: { slug: string } = $props();
-	const viewer = useViewer();
-	const session = useViewerSession();
-	const allowed = $derived(session.workspaceAdmitted && viewer().membership.role === 'admin');
 	const hubspot = useHubSpotDeals().connection;
-	const integration = $derived(allowed ? findIntegrationDetails(slug) : undefined);
+	const integration = $derived(findIntegrationDetails(slug));
 	const removal = $derived(
 		slug === 'hubspot' &&
 			hubspot.data?.status !== 'connected' &&
@@ -30,12 +26,7 @@
 
 <WorkspacePresentationReporter outcome="success" />
 
-<IntegrationDetailsLayout
-	role={allowed ? 'admin' : 'rep'}
-	{integration}
-	loading={false}
-	bind:heading
->
+<IntegrationDetailsLayout {integration} loading={false} bind:heading>
 	{#snippet actions()}
 		{#if slug === 'hubspot'}
 			<form method="POST" action="/api/hubspot/install" target="_blank" rel="noopener">

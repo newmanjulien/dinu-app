@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { repInstruction, buyerExplanation } from '../lib/playbook/validators';
+import { repInstruction, buyerExplanation, templateAudience } from '../lib/playbook/validators';
 export {
 	concession,
 	contractChange,
@@ -22,7 +22,7 @@ export const historicalItem = v.union(historicalRepItem, historicalBuyerItem);
 
 /** Mutable business head; replay identity is absent or complete. */
 const detailFields = {
-	currentRevisionId: v.optional(v.id('playbookItemRevisions')),
+	currentRevisionId: v.id('playbookItemRevisions'),
 	lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') })),
 	renderKey: v.string()
 };
@@ -38,6 +38,7 @@ export const itemHeadFields = {
 };
 export const storedTemplateItem = v.object({
 	...itemHeadFields,
+	audience: templateAudience,
 	format: v.literal(1),
 	renderKey: v.string(),
 	structure: v.bytes()

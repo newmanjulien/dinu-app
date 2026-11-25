@@ -42,6 +42,7 @@
 	>
 		<SquareIconButton
 			bind:element
+			{disabled}
 			{...buttonAttributes}
 			type="button"
 			aria-label={label}

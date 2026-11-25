@@ -1,4 +1,4 @@
-import { contract, headsAfter, settle, fixture, show } from './fixtures';
+import { contract, concessionsAfter, settle, fixture, show } from './fixtures';
 import { getFunctionName } from 'convex/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { Id } from '../../../src/convex/_generated/dataModel';
@@ -6,31 +6,23 @@ import { screen } from '../../support/navigation.svelte';
 import { rendering } from './rendering.svelte';
 
 describe('route and editing lifetimes', () => {
-	it('shares approved-document readiness across consumers and withholds incomplete wording', async () => {
-		const f = fixture({ selectedRead: false });
+	it('shares contract readiness and stable document input across consumers', async () => {
+		const f = fixture();
 		const attachment = f.owner.acquire('contract-a'),
 			second = f.owner.acquire('contract-a');
 		await settle();
 		const editor = attachment.editor;
 		expect(second.editor).toBe(editor);
 		expect(editor.snapshot).toBeDefined();
-		const assertReadiness = (ready: boolean) => {
-			expect(editor.definitionsReady).toBe(ready);
+		try {
+			expect(editor.definitionsReady).toBe(true);
 			const input = editor.documentInput;
 			expect(input.kind).toBe('records');
-			expect(input.items?.data !== undefined).toBe(ready);
+			expect(input.items?.data?.map((item) => item._id)).toEqual(['item-a']);
 			for (let i = 0; i < 5; i++) {
-				expect(editor.definitionsReady).toBe(ready);
+				expect(editor.definitionsReady).toBe(true);
 				expect(editor.documentInput).toBe(input);
 			}
-		};
-		try {
-			assertReadiness(false);
-			expect(f.cache.loadApproved).toHaveBeenCalledOnce();
-			f.publishApproved();
-			await settle();
-			assertReadiness(true);
-			expect(editor.documentInput.items?.data?.map((item) => item._id)).toEqual(['item-a']);
 		} finally {
 			attachment.release();
 			second.release();
@@ -65,7 +57,7 @@ describe('route and editing lifetimes', () => {
 		expect(f.owner.entries).toHaveLength(0);
 		expect(f.active()).toBe(0);
 		expect(f.onSaved).toHaveBeenCalledWith(
-			expect.objectContaining({ id: 'contract-a', status: 'Saved', memoryOnly: false })
+			expect.objectContaining({ id: 'contract-a', status: 'Saved' })
 		);
 		expect(f.feedback.statusFor('contract-a')).toBeUndefined();
 	});
@@ -79,7 +71,7 @@ describe('route and editing lifetimes', () => {
 		const request = f.writes[0].request;
 		f.publish(
 			'contract-a',
-			contract('contract-a', 2, headsAfter([], request.commands), request.operationId)
+			contract('contract-a', 2, concessionsAfter(request.selections), request.operationId)
 		);
 		await settle();
 		expect(a.editor.inFlight).toBe(true);

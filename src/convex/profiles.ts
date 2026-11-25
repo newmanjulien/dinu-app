@@ -21,7 +21,7 @@ export const initialize = mutation({
 				clerkId: identity.subject,
 				email,
 				name: textPrefix((identity.name ?? '').trim(), 32),
-				helpPreferences: { rep: false, buyer: false }
+				helpPreferences: { contract: false, buyerLink: false }
 			});
 		return null;
 	}
@@ -85,7 +85,7 @@ export const setName = mutation({
 
 /** Personal Help choices follow the authenticated profile across links and devices. */
 export const setHelpHidden = mutation({
-	args: { variant: v.union(v.literal('rep'), v.literal('buyer')), hidden: v.boolean() },
+	args: { variant: v.union(v.literal('contract'), v.literal('buyerLink')), hidden: v.boolean() },
 	returns: v.null(),
 	handler: async (ctx, { variant, hidden }) => {
 		const profile = await requireProfile(ctx);

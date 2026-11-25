@@ -1,69 +1,48 @@
 'use node';
+import { createHash } from 'node:crypto';
 import { ConvexError, type Infer } from 'convex/values';
 import type { ActionCtx } from './_generated/server';
 import { internal } from './_generated/api';
-import { wordExportRequest, wordExportResult } from './savedContractValidators';
 import { contractName } from '../lib/contract/filename';
-import { generateWord } from '../lib/server/document/export/word';
 import { composeExport } from '../lib/document/export/content';
-import { contractDocumentFromRenderTransport } from '../lib/document/contract-document';
-import { createHash } from 'node:crypto';
+import { toAppliedOverlayItems } from '../lib/playbook/document-overlay';
+import { generateWord } from '../lib/server/document/export/word';
+import { wordExportRequest } from './exportValidators';
+import { wordExportResult } from './savedContractValidators';
+
 export async function generateWordExport(
 	ctx: ActionCtx,
 	args: Infer<typeof wordExportRequest>
 ): Promise<Infer<typeof wordExportResult>> {
-	const claim = args.claim ?? crypto.randomUUID();
-	let reservation = await ctx.runMutation(internal.contractExports.reserve, { ...args, claim });
-	if (reservation.status === 'preparing') {
-		for (let turn = 0; turn < 24; turn++)
-			if (await ctx.runMutation(internal.outputReservations.progress, { outputId: reservation.outputId })) break;
-		reservation = await ctx.runMutation(internal.contractExports.reserve, { ...args, claim });
+	const prepared = await ctx.runQuery(internal.contractExports.prepare, args);
+	if (prepared.kind === 'existing') {
+		if (prepared.downloadExpiresAt <= Date.now())
+			throw new ConvexError('This download attempt expired. Start a new download.');
+		return { url: prepared.url, filename: prepared.filename };
 	}
-	if (reservation.status === 'preparing')
-		throw new ConvexError({ code: 'OUTPUT_PENDING', message: 'Preparing your Word download…' });
-	const attempt = reservation.attempt;
-	let verified = false;
-	for (let turn = 0; turn < 64 && !verified; turn++)
-		verified = await ctx.runMutation(internal.outputReservations.verify, { outputId: attempt.outputId });
-	if (!verified)
-		throw new ConvexError({ code: 'OUTPUT_PENDING', message: 'Checking your Word download…' });
-	if (attempt.state === 'preparing') {
-		if (attempt.claim !== claim)
-			throw new ConvexError({ code: 'OUTPUT_PENDING', message: 'Preparing your Word download…' });
-		const content = await ctx.runQuery(internal.contractExports.content, {
-			id: attempt._id,
-			claim
+
+	const items = toAppliedOverlayItems(prepared.appliedOverlays);
+	const blob = await generateWord(
+		composeExport({
+			blocks: prepared.blocks,
+			items,
+			concessions: prepared.concessions
+		}),
+		contractName(prepared.title)
+	);
+	const bytes = await blob.arrayBuffer();
+	const fileId = await ctx.storage.store(blob);
+	try {
+		return await ctx.runMutation(internal.contractExports.commit, {
+			...args,
+			fileId,
+			size: bytes.byteLength,
+			sha256: createHash('sha256').update(new Uint8Array(bytes)).digest('hex'),
+			expectedTemplateVersionId: prepared.templateVersionId,
+			expectedStateRevision: prepared.stateRevision,
+			expectedTitle: prepared.title
 		});
-		const blob = await generateWord(
-			composeExport({
-				document: contractDocumentFromRenderTransport(content.document)
-			}),
-			contractName(content.title)
-		);
-		const bytes = await blob.arrayBuffer(),
-			fileId = await ctx.storage.store(blob);
-		try {
-			await ctx.runMutation(internal.contractExports.publish, {
-				id: attempt._id,
-				claim,
-				fileId,
-				size: bytes.byteLength,
-				sha256: createHash('sha256').update(new Uint8Array(bytes)).digest('hex')
-			});
-		} catch (error) {
-			await ctx.runMutation(internal.storageOwnership.discardFile, { fileId });
-			throw error;
-		}
+	} finally {
+		await ctx.runMutation(internal.storageOwnership.discardFile, { fileId });
 	}
-	let release = await ctx.runMutation(internal.contractExports.prepareRelease, {
-		id: attempt._id
-	});
-	if (!release.complete) {
-		for (let turn = 0; turn < 24; turn++)
-			if (await ctx.runMutation(internal.outputReservations.progress, { outputId: release.outputId })) break;
-		release = await ctx.runMutation(internal.contractExports.prepareRelease, { id: attempt._id });
-	}
-	if (!release.complete)
-		throw new ConvexError({ code: 'OUTPUT_PENDING', message: 'Checking your Word download…' });
-	return ctx.runMutation(internal.contractExports.release, { id: attempt._id });
 }

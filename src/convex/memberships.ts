@@ -13,3 +13,15 @@ export const setRole = mutation({
 		return null;
 	}
 });
+
+/** The support widget's size is a personal choice that follows the member across devices. */
+export const setSupportWidgetCollapsed = mutation({
+	args: { membershipId: v.id('memberships'), collapsed: v.boolean() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const { membership, membershipId } = await requireMembership(ctx, args.membershipId);
+		if (membership.supportWidgetCollapsed !== args.collapsed)
+			await ctx.db.patch('memberships', membershipId, { supportWidgetCollapsed: args.collapsed });
+		return null;
+	}
+});

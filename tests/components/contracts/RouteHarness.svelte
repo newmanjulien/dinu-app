@@ -33,7 +33,7 @@
 		() =>
 			({
 				profile: { id: 'profile' },
-				helpPreferences: { rep: true, buyer: true },
+				helpPreferences: { contract: true, buyerLink: true },
 				company: { id: 'company' },
 				membership: { id: 'membership' }
 			}) as Viewer

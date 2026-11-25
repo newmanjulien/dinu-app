@@ -14,9 +14,18 @@
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import ClockIcon from 'phosphor-svelte/lib/ClockIcon';
 	import CircleNotchIcon from 'phosphor-svelte/lib/CircleNotchIcon';
-	import { useCsmPreload, type CsmOwner } from './csm-preload.svelte';
+	import type { CsmOwner } from './csm-owner.svelte';
 	import type { AvailabilitySelection } from './csm-availability';
-	import { dateLabel, groupSlots, slotLabels, localDate, timeLabel, timeZones } from './csm-time';
+	import {
+		dateLabel,
+		groupSlots,
+		slotLabels,
+		localDate,
+		timeLabel,
+		timeZones,
+		untilLabel,
+		untilLabelDelay
+	} from './csm-time';
 
 	type Availability = FunctionReturnType<typeof backend.csmBookings.availability>;
 	type Receipt = NonNullable<FunctionReturnType<typeof backend.csmBookings.attempt>>;
@@ -37,7 +46,6 @@
 		flushTop?: boolean;
 		description?: string;
 	} = $props();
-	const preload = useCsmPreload();
 	const client = useConvexClient();
 	const id = $props.id();
 	const mode = untrack(() => initial.mode);
@@ -115,11 +123,11 @@
 			])
 		)
 	);
+	const nearestUntil = $derived(slots.length ? untilLabel(slots[0].start, now) : undefined);
 	const current = () =>
 		mounted &&
 		!root.signal.aborted &&
 		membershipId === owner.membershipId &&
-		preload.owner === owner &&
 		owner.availability.current();
 	const interactive = () =>
 		current() &&
@@ -374,14 +382,15 @@
 			request.abort();
 		};
 	});
-	// Expire displayed starts at their actual instant, even if the picker stays open.
+	// Repaint at each change of the nearest start's countdown; its final change is its expiry,
+	// so displayed starts also drop at their actual instant while the picker stays open.
 	$effect(() => {
 		if (!mounted || blocked || !slots.length) return;
 		const timer = setTimeout(
 			() => {
 				now = Date.now();
 			},
-			Math.max(1, Date.parse(slots[0].start) - Date.now() + 1)
+			Math.max(1, untilLabelDelay(slots[0].start, Date.now()) + 1)
 		);
 		return () => clearTimeout(timer);
 	});
@@ -539,15 +548,11 @@
 			aria-atomic="true"
 			class="text-[15.5px] leading-6 font-medium text-ink"
 		>
-			{receipt?.state === 'booked' ? 'Your call is booked' : 'Book a call'}
+			{receipt?.state === 'booked' ? 'Your call is booked' : 'Booking your call'}
 		</h2>
 	</div>
 {:else}
-	<CsmBookingLayout
-		description={description}
-		headingId={id + '-heading'}
-		{flushTop}
-	>
+	<CsmBookingLayout {description} headingId={id + '-heading'} {flushTop}>
 		{#snippet duration()}
 			{#if availability?.duration && !blocked}<span
 					class="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-muted"
@@ -585,7 +590,8 @@
 						)} <span class="text-ink-muted">({receipt.timeZone.replaceAll('_', ' ')})</span>
 					</p>{/if}
 				{#if needsRecovery}<p class="mt-2 text-[13px] leading-relaxed text-ink-muted">
-						Your booking is taking longer than expected. Check its status before choosing another time.
+						Your booking is taking longer than expected. Check its status before choosing another
+						time.
 					</p>{/if}
 				{#if needsRecovery && (attemptId || submissionUncertain || mode === 'setup')}<Button
 						variant="secondary"
@@ -632,14 +638,19 @@
 												<button
 													type="button"
 													class={[
-														'slot-button min-h-button-sm min-w-0 flex-1 cursor-pointer rounded-button-lg border-hairline border-line px-2 py-1.5 text-[12.5px] leading-5 text-ink transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:bg-canvas disabled:text-ink-muted motion-reduce:transition-none',
+														'slot-button relative min-h-button-sm min-w-0 flex-1 cursor-pointer rounded-button-lg border-hairline border-line px-2 py-1.5 text-[12.5px] leading-5 text-ink transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:bg-canvas disabled:text-ink-muted motion-reduce:transition-none',
 														selectedSlot === slot.start
 															? 'bg-canvas'
 															: 'enabled:hover:bg-field-hover'
 													]}
 													aria-pressed={selectedSlot === slot.start}
 													disabled={!interactive()}
-													onclick={() => chooseSlot(slot.start)}>{label.display}</button
+													onclick={() => chooseSlot(slot.start)}
+													>{label.display}{#if nearestUntil && slot.start === slots[0].start}<span
+															aria-hidden="true"
+															class="pointer-events-none absolute -top-2 right-2 rounded-full border-hairline border-line bg-surface px-1.5 text-[10.5px] leading-4 text-ink-muted"
+															>In {nearestUntil}</span
+														><span class="sr-only">, in {nearestUntil}</span>{/if}</button
 												>
 												{#if selectedSlot === slot.start}<Button
 														class="h-auto min-h-button-sm min-w-0 flex-1 focus-visible:-outline-offset-2"

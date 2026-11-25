@@ -13,17 +13,13 @@
 		placeholder,
 		submitLabel,
 		closeLabel,
-		allowDeletion = false,
-		deleting = false,
 		pending = false,
-		checkResultId,
 		writeBlocked = false,
+		textLocked = false,
 		errorMessage = '',
 		onTextChange,
-		onDeleteChange,
 		onClose,
 		onSubmit,
-		onCheckResult,
 		author,
 		viewerKey,
 		perspective = 'buyer'
@@ -37,35 +33,25 @@
 		placeholder: string;
 		submitLabel: string;
 		closeLabel?: string;
-		allowDeletion?: boolean;
-		deleting?: boolean;
 		pending?: boolean;
-		checkResultId?: string;
 		writeBlocked?: boolean;
+		textLocked?: boolean;
 		errorMessage?: string;
 		onTextChange: (text: string) => void;
-		onDeleteChange?: (deleting: boolean) => void;
 		onClose?: () => void;
 		onSubmit: () => Promise<void>;
-		onCheckResult?: (operationId: string) => Promise<void>;
 	} = $props();
 
 	const errorId = $props.id();
 	const textareaAttachment = composerTextarea(() => text);
 	let submitting = $state(false);
-	let canSubmit = $derived(
-		!writeBlocked &&
-			(Boolean(checkResultId) ||
-				validDiscussionText(text) ||
-				(allowDeletion && deleting && text.length === 0))
-	);
+	let canSubmit = $derived(!writeBlocked && validDiscussionText(text));
 
 	async function submit() {
 		if (pending || submitting || !canSubmit) return;
 		submitting = true;
 		try {
-			if (checkResultId) await onCheckResult?.(checkResultId);
-			else await onSubmit();
+			await onSubmit();
 		} finally {
 			submitting = false;
 		}
@@ -90,21 +76,12 @@
 	{placeholder}
 	aria-label={title}
 	aria-describedby={errorMessage ? errorId : undefined}
-	disabled={pending || Boolean(checkResultId) || writeBlocked}
+		disabled={pending || writeBlocked || textLocked}
 	oninput={handleInput}
 	onkeydown={shortcut.keydown}
 	oncompositionstart={shortcut.compositionStart}
 	oncompositionend={shortcut.compositionEnd}
 />
-{#if allowDeletion && !text.length}<label
-		class="mt-2 flex items-center gap-2 text-xs text-ink-secondary"
-		><input
-			type="checkbox"
-			checked={deleting}
-			disabled={pending || Boolean(checkResultId) || writeBlocked}
-			onchange={(event) => onDeleteChange?.(event.currentTarget.checked)}
-		/>Delete selected wording</label
-	>{/if}
 {#if errorMessage}
 	<p class="mt-2 mb-0 text-xs leading-[1.35] text-danger" id={errorId} role="alert">
 		{errorMessage}
@@ -112,7 +89,7 @@
 {/if}
 <div class="mt-3 flex flex-wrap justify-end gap-3">
 	{#if closeLabel && onClose}
-		<Button variant="secondary" onclick={onClose}>
+			<Button variant="secondary" disabled={textLocked} onclick={onClose}>
 			{closeLabel}
 		</Button>
 	{/if}
@@ -121,6 +98,6 @@
 		disabled={pending || submitting || !canSubmit}
 		onclick={() => void submit()}
 	>
-		{checkResultId ? 'Check result' : deleting && !text.length ? 'Delete wording' : submitLabel}
+		{submitLabel}
 	</Button>
 </div>

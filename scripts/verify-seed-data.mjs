@@ -38,8 +38,11 @@ try {
 	assert.equal(triggers.length, 55);
 	assert.equal(concessions.length, 21);
 	assert.equal(changes.length, 29);
-	assert.equal(items.filter((i) => i.instructions && !i.concessions.length).length, 42);
-	assert.equal(items.filter((i) => i.instructions && i.concessions.length).length, 13);
+	const hasInstructions = (
+		/** @type {import('../src/lib/playbook/model').RepInstruction} */ item
+	) => Object.values(item.instructions).some((text) => Boolean(text?.trim()));
+	assert.equal(items.filter((i) => hasInstructions(i) && !i.concessions.length).length, 42);
+	assert.equal(items.filter((i) => hasInstructions(i) && i.concessions.length).length, 13);
 	assert.equal(new Set(triggers.map((trigger) => trigger.id)).size, items.length);
 	assert.equal(items.filter((i) => i.concessions.length > 1).length, 6);
 	assert.equal(Math.max(...concessions.map((c) => c.changes.length)), 2);

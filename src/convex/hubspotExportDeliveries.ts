@@ -1,18 +1,21 @@
-import { ConvexError } from 'convex/values';
 import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
+import type { Contract } from './contractState';
 import { activity } from './hubspotRecords';
-import { outputReservation } from './outputProof';
-import { installation, requireContractWork } from './contractPolicy';
-import { EXPORT_HOUR, EXPORT_READ_GRACE, retainedUntil } from './exportRetention';
-import type { Infer } from 'convex/values';
-import type { hubspotExportDelivery } from './hubspotExportDeliveryValidators';
 
-type Attempt = import('./outputLifecycle').FullExportAttempt;
-type Delivery = Infer<typeof hubspotExportDelivery>;
+export const EXPORT_TTL_MS = 60 * 60_000;
+export const EXPORT_READ_GRACE_MS = 15 * 60_000;
+export const EXPORT_ATTACHMENT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
-/** Indexed operational delivery state; immutable destination also lives on its output. */
-export async function exportDelivery(ctx: QueryCtx, attempt: Doc<'hubspotExports'>) {
+export function retainedUntil(
+	attempt: Doc<'wordExports'>,
+	delivery: Doc<'hubspotExportDeliveries'> | null
+) {
+	return Math.max(attempt.createdAt + EXPORT_TTL_MS, delivery?.attachmentUntil ?? 0);
+}
+
+/** Indexed operational delivery state for HubSpot download attachment uploads. */
+export async function exportDelivery(ctx: QueryCtx, attempt: Doc<'wordExports'>) {
 	const row = await ctx.db
 		.query('hubspotExportDeliveries')
 		.withIndex('by_attemptId', (q) => q.eq('attemptId', attempt._id))
@@ -22,102 +25,79 @@ export async function exportDelivery(ctx: QueryCtx, attempt: Doc<'hubspotExports
 	return row;
 }
 
-export async function captureExportDelivery(
+/** Record HubSpot download timeline activity and attachment retention atomically on commit. */
+export async function recordExportDelivery(
 	ctx: MutationCtx,
-	attempt: Attempt,
-	destination: Delivery['destination'] | undefined
-) {
-	if (destination)
-		await ctx.db.insert('hubspotExportDeliveries', {
-			companyId: attempt.companyId,
-			attemptId: attempt._id,
-			destination
-		});
-}
-
-export async function requireExportRelease(
-	ctx: QueryCtx,
-	attempt: Attempt,
-	current: Parameters<typeof requireContractWork>[1]
-) {
-	const delivery = await exportDelivery(ctx, attempt);
-	if (!delivery && (await installation(ctx, attempt.companyId)))
-		throw new ConvexError({
-			code: 'DOWNLOAD_ATTEMPT_RETIRED',
-			message:
-				'HubSpot was installed after this download started. Start a new download after linking a deal.'
-		});
-	const captured = delivery
-		? await ctx.db.get('hubspotConnections', delivery.destination.connectionId)
-		: null;
-	const retired = delivery && (!captured || captured.status === 'retiring');
-	if (!retired) await requireContractWork(ctx, current);
-}
-
-/** Actor and destination were captured before release and remain valid after contract deletion. */
-export async function acknowledgeExportDelivery(
-	ctx: MutationCtx,
-	attempt: Attempt,
-	initiatedAt: number,
+	attempt: Doc<'wordExports'>,
+	contract: Contract,
 	now: number
 ) {
-	const { reservationManifest } = await outputReservation(ctx, attempt);
-	const delivery = await exportDelivery(ctx, attempt);
-	if (!delivery) return attempt.createdAt + EXPORT_HOUR + EXPORT_READ_GRACE;
-	const available = Boolean(attempt.fileId && retainedUntil(attempt, delivery) > now);
+	const baseExpiry = attempt.createdAt + EXPORT_TTL_MS + EXPORT_READ_GRACE_MS;
+	if (!contract.hubspot) return baseExpiry;
+	const { availability: _availability, ...destination } = contract.hubspot;
 	const active = await activity(
 		ctx,
 		{
 			root: {
 				_id: attempt.contractId,
 				companyId: attempt.companyId,
-				title: reservationManifest.title
+				title: attempt.title
 			},
-			hubspot: { ...delivery.destination, availability: 'available' as const }
+			hubspot: contract.hubspot
 		},
-		{ name: reservationManifest.actor.name, email: reservationManifest.actor.email },
+		attempt.actor,
 		attempt.key,
 		'downloaded',
 		JSON.stringify({
-			outputId: attempt.outputId,
-			documentId: attempt.documentId ?? null,
 			filename: attempt.filename,
-			sha256: attempt.sha256 ?? null,
-			attachmentAvailable: Boolean(available || delivery.remoteFileId)
+			sha256: attempt.sha256,
+			attachmentAvailable: Boolean(attempt.fileId)
 		}),
-		initiatedAt,
+		now,
 		attempt._id
 	);
-	const attachmentUntil =
-		active && available && !delivery.remoteFileId ? now + 30 * 24 * EXPORT_HOUR : undefined;
-	await ctx.db.patch('hubspotExportDeliveries', delivery._id, { attachmentUntil });
-	return Math.max(attempt.createdAt + EXPORT_HOUR, attachmentUntil ?? 0) + EXPORT_READ_GRACE;
+	if (!active) return baseExpiry;
+	const attachmentUntil = attempt.fileId ? now + EXPORT_ATTACHMENT_RETENTION_MS : undefined;
+	await ctx.db.insert('hubspotExportDeliveries', {
+		companyId: attempt.companyId,
+		attemptId: attempt._id,
+		destination,
+		...(attachmentUntil !== undefined ? { attachmentUntil } : {})
+	});
+	return Math.max(attempt.createdAt + EXPORT_TTL_MS, attachmentUntil ?? 0) + EXPORT_READ_GRACE_MS;
 }
 
-export async function confirmUpload(ctx: MutationCtx, id: Attempt['_id'], remoteFileId: string) {
-	const attempt = await ctx.db.get('hubspotExports', id);
-	if (!attempt || attempt.format !== 'full') return;
+export async function confirmUpload(
+	ctx: MutationCtx,
+	id: Doc<'wordExports'>['_id'],
+	remoteFileId: string
+) {
+	const attempt = await ctx.db.get('wordExports', id);
+	if (!attempt) return;
 	const delivery = await exportDelivery(ctx, attempt);
 	if (!delivery) return;
 	await ctx.db.patch('hubspotExportDeliveries', delivery._id, {
 		remoteFileId,
 		attachmentUntil: undefined
 	});
-	await ctx.db.patch('hubspotExports', id, {
-		expiresAt: Math.max(attempt.createdAt + EXPORT_HOUR, Date.now()) + EXPORT_READ_GRACE
-	});
+	if (attempt.fileId !== undefined) {
+		await ctx.db.patch('wordExports', id, {
+			expiresAt: Math.max(attempt.createdAt + EXPORT_TTL_MS, Date.now()) + EXPORT_READ_GRACE_MS
+		});
+	}
 }
 
-/** Shared uninstall path retires entitlement while preserving the original local release window. */
+/** Shared uninstall path retires HubSpot attachment retention while preserving local download window. */
 export async function retireExportDelivery(
 	ctx: MutationCtx,
 	delivery: Doc<'hubspotExportDeliveries'>
 ) {
 	if (delivery.attachmentUntil === undefined) return;
 	await ctx.db.patch('hubspotExportDeliveries', delivery._id, { attachmentUntil: undefined });
-	const attempt = await ctx.db.get('hubspotExports', delivery.attemptId);
-	if (attempt?.format === 'full')
-		await ctx.db.patch('hubspotExports', attempt._id, {
-			expiresAt: Math.max(attempt.createdAt + EXPORT_HOUR, Date.now()) + EXPORT_READ_GRACE
+	const attempt = await ctx.db.get('wordExports', delivery.attemptId);
+	if (attempt?.fileId !== undefined) {
+		await ctx.db.patch('wordExports', attempt._id, {
+			expiresAt: Math.max(attempt.createdAt + EXPORT_TTL_MS, Date.now()) + EXPORT_READ_GRACE_MS
 		});
+	}
 }

@@ -9,7 +9,6 @@
 	} from './document-tools';
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
 	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
-	import { helpContent, type HelpVariant } from '$lib/components/ui/modal/help-content';
 	import type { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
 	import {
 		getOptionalDocumentWorkspace,
@@ -19,7 +18,6 @@
 	let {
 		active = true,
 		isAdmin = false,
-		helpVariant,
 		helpReady,
 		help,
 		helpHosted = false,
@@ -33,7 +31,6 @@
 	}: {
 		active?: boolean;
 		isAdmin?: boolean;
-		helpVariant: HelpVariant;
 		helpReady: boolean;
 		help: HelpSession;
 		helpHosted?: boolean;
@@ -139,7 +136,7 @@
 		searchEnabled={controls?.searchEnabled ?? false}
 		onSearchToggle={(button) => controls?.onSearchToggle(button)}
 		{helpEnabled}
-		helpLabel={helpContent[helpVariant].title}
+		helpLabel={help.title}
 		{onDownload}
 		{downloadReason}
 		{settingsHref}
@@ -147,5 +144,5 @@
 	/>
 {/if}
 {#if !helpHosted && helpEnabled && help.open}
-	<HelpModal variant={helpVariant} {isAdmin} {help} onClose={() => help.close()} />
+	<HelpModal {isAdmin} {help} onClose={() => help.close()} />
 {/if}

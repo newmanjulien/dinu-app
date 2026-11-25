@@ -1,17 +1,13 @@
 import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
-import { block } from '../../support/contract-data';
 import {
 	api,
 	internal,
 	fixture,
 	exportDelivery,
 	readyExport,
-	reserveExport,
-	prepareRelease,
-	expectedSource,
-	acknowledge,
+	currentContract,
 	events,
 	integrationClock,
 	NOW,
@@ -19,54 +15,45 @@ import {
 	send,
 	json,
 	bytes,
-	application,
-	playbookState
+	application
 } from '../../support/linked-contract';
 
 integrationClock();
 
-describe('download acknowledgments and file lifetime', () => {
-	it('preserves the original acknowledgment and attachment hold without extending the local retry window', async () => {
-		const f = await fixture(),
-			attempt = await readyExport(f);
-		vi.setSystemTime(NOW + 10_000);
-		await acknowledge(f, attempt, NOW + 1000);
+describe('Word export delivery and file lifetime', () => {
+	it('records one HubSpot download delivery with a 30-day attachment hold and reuses committed exports on retry', async () => {
+		const f = await fixture();
+		const attempt = await readyExport(f, 'download');
 		const first = {
-			attempt: await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)),
+			attempt: await f.t.run(({ db }) => db.get('wordExports', attempt._id)),
 			delivery: await exportDelivery(f, attempt._id)
 		};
-		vi.setSystemTime(NOW + 60_000);
-		await acknowledge(f, attempt, NOW + 60_000);
-		expect({
-			attempt: await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)),
-			delivery: await exportDelivery(f, attempt._id)
-		}).toEqual(first);
 		expect(first).toMatchObject({
-			attempt: { acknowledgedAt: NOW + 1000, acknowledgedOn: NOW + 10_000 },
-			delivery: { attachmentUntil: NOW + 10_000 + 30 * 24 * HOUR }
+			attempt: { createdAt: NOW },
+			delivery: { attachmentUntil: NOW + 30 * 24 * HOUR }
 		});
 		expect((await events(f)).filter((e) => e.kind === 'downloaded')).toMatchObject([
-			{ occurredAt: NOW + 1000 }
+			{ occurredAt: NOW, attemptId: attempt._id }
 		]);
-		vi.setSystemTime(NOW + HOUR - 1);
-		await prepareRelease(f, attempt._id);
-		await f.t.mutation(internal.hubspotExports.release, { id: attempt._id });
-		await acknowledge(f, attempt);
-		expect({
-			attempt: await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)),
-			delivery: await exportDelivery(f, attempt._id)
-		}).toEqual(first);
-		vi.setSystemTime(NOW + HOUR);
-		await expect(
-			f.t.mutation(internal.hubspotExports.release, { id: attempt._id })
-		).rejects.toThrow('expired');
-		expect((await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)))?.releasedAt).toBe(
-			NOW
-		);
+		vi.setSystemTime(NOW + 60_000);
+		const contract = await currentContract(f);
+		const retry = await f.t.mutation(internal.contractExports.commit, {
+			membershipId: f.owner.membershipId,
+			id: f.id,
+			operationId: fixtureOperationId('download'),
+			fileId: attempt.fileId!,
+			sha256: attempt.sha256,
+			size: attempt.size,
+			expectedTemplateVersionId: contract.root.templateVersionId,
+			expectedStateRevision: contract.root.stateRevision,
+			expectedTitle: contract.root.title
+		});
+		expect(retry.filename).toBe(attempt.filename);
+		expect((await events(f)).filter((e) => e.kind === 'downloaded')).toHaveLength(1);
 	});
+
 	it('adds no attachment hold or CRM activity for an unlinked download', async () => {
 		const f = await fixture();
-		// Model a company without an installed integration, retaining the no-CRM guarantee.
 		await f.t.run(({ db }) => db.delete('hubspotConnections', f.connectionId));
 		const created = await f.t.mutation(api.contracts.create, {
 			membershipId: f.owner.membershipId,
@@ -76,17 +63,15 @@ describe('download acknowledgments and file lifetime', () => {
 		if (created.status !== 'created') throw new Error('Manual creation failed');
 		f.id = created.id;
 		const attempt = await readyExport(f);
-		await acknowledge(f, attempt);
-		const stored = await f.t.run(({ db }) => db.get('hubspotExports', attempt._id));
-		if (stored?.format !== 'full') throw new Error('Expected full output evidence');
-		expect((await exportDelivery(f, attempt._id))?.attachmentUntil).toBeUndefined();
-		expect(stored?.expiresAt).toBe(NOW + HOUR + 15 * 60_000);
+		expect(await exportDelivery(f, attempt._id)).toBeNull();
+		expect(attempt.expiresAt).toBe(NOW + HOUR + 15 * 60_000);
 		expect((await events(f)).map((e) => e.kind)).toEqual(['created']);
 	});
+
 	it('ends the attachment hold on File confirmation even when Note creation fails', async () => {
-		const f = await fixture(),
-			attempt = await readyExport(f),
-			download = await acknowledge(f, attempt);
+		const f = await fixture();
+		const attempt = await readyExport(f);
+		const download = (await events(f)).find((e) => e.attemptId === attempt._id)!;
 		const fetcher = vi.fn(async (input: string) => {
 			const p = new URL(input).pathname;
 			if (p === '/files/v3/files') return json({ id: '301', access: 'PRIVATE' });
@@ -100,178 +85,58 @@ describe('download acknowledgments and file lifetime', () => {
 			dispatch: 'note',
 			fileId: '301'
 		});
-		const stored = (await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)))!;
-		if (stored?.format !== 'full') throw new Error('Expected full output evidence');
+		const stored = (await f.t.run(({ db }) => db.get('wordExports', attempt._id)))!;
 		const delivery = await exportDelivery(f, attempt._id);
 		expect(delivery?.remoteFileId).toBe('301');
 		expect(delivery?.attachmentUntil).toBeUndefined();
 		expect(stored.expiresAt).toBe(NOW + HOUR + 15 * 60_000);
-		vi.setSystemTime(stored.expiresAt - 1);
-		await f.t.mutation(internal.hubspotExports.expire, { state: 'ready' });
+		vi.setSystemTime(stored.expiresAt! - 1);
+		await f.t.mutation(internal.contractExports.expire, {});
 		expect(await f.t.run(async ({ storage }) => Boolean(await storage.get(attempt.fileId!)))).toBe(
 			true
 		);
-		vi.setSystemTime(stored.expiresAt);
-		await f.t.mutation(internal.hubspotExports.expire, { state: 'ready' });
+		vi.setSystemTime(stored.expiresAt!);
+		await f.t.mutation(internal.contractExports.expire, {});
 		expect(await f.t.run(({ storage }) => storage.get(attempt.fileId!))).toBeNull();
-		expect(await f.t.run(({ db }) => db.get('hubspotExports', attempt._id))).toMatchObject({
-			state: 'expired',
+		expect(await f.t.run(({ db }) => db.get('wordExports', attempt._id))).toMatchObject({
 			sha256: attempt.sha256
 		});
+		expect((await f.t.run(({ db }) => db.get('wordExports', attempt._id)))?.fileId).toBeUndefined();
 		expect((await exportDelivery(f, attempt._id))?.remoteFileId).toBe('301');
-		expect(stored.outputId).toBe(attempt.outputId);
-		expect(await f.t.run(({ db }) => db.get('contractOutputs', stored.outputId))).toMatchObject({
-			state: 'complete',
-			documentId: attempt.documentId,
-			reservationManifest: {
-				title: f.creation.name,
-				documentId: attempt.documentId,
-				proof: { outputId: attempt.outputId, section: 'output-proof' }
-			}
-		});
 	});
-	it('records a late acknowledgment truthfully after bytes expire without regenerating them', async () => {
-		const f = await fixture(),
-			attempt = await readyExport(f);
-		vi.setSystemTime(NOW + HOUR + 15 * 60_000);
-		await f.t.mutation(internal.hubspotExports.expire, { state: 'ready' });
-		const download = await acknowledge(f, attempt, NOW + 2000);
-		expect(download).toMatchObject({ occurredAt: NOW + 2000, kind: 'downloaded' });
-		expect(JSON.parse(download.detail).attachmentAvailable).toBe(false);
-		const retained = (await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)))!;
-		if (retained?.format !== 'full') throw new Error('Expected full output evidence');
-		expect(retained.fileId).toBeUndefined();
-		expect((await exportDelivery(f, attempt._id))?.attachmentUntil).toBeUndefined();
-		expect(await f.t.run(({ storage }) => storage.get(attempt.fileId!))).toBeNull();
-	});
-	it('requires release first and rejects malformed, too-early and future acknowledgments without activity', async () => {
+
+	it('refuses commit if the saved contract changes between prepare and commit', async () => {
 		const f = await fixture();
-		const reserved = await reserveExport(f, {
+		const prepared = await f.t.query(internal.contractExports.prepare, {
 			membershipId: f.owner.membershipId,
 			id: f.id,
-			expectedSource: await expectedSource(f),
-			operationId: fixtureOperationId('unreleased'),
-			claim: 'claim'
+			operationId: fixtureOperationId('stale-commit'),
+			expectedStateRevision: 0
 		});
-		await expect(acknowledge(f, reserved)).rejects.toThrow('unavailable');
-		const attempt = await readyExport(f);
-		await expect(
-			f.t.mutation(api.hubspotExports.acknowledge, {
-				membershipId: f.owner.membershipId,
-				id: 'bad-id',
-				initiatedAt: NOW
-			})
-		).rejects.toThrow('DOWNLOAD_ACK_TERMINAL');
-		await expect(acknowledge(f, attempt, NOW - 60_001)).rejects.toThrow('DOWNLOAD_ACK_TERMINAL');
-		await expect(acknowledge(f, attempt, NOW + 60_001)).rejects.toThrow('DOWNLOAD_ACK_FUTURE');
-		expect((await events(f)).map((e) => e.kind)).toEqual(['created']);
-	});
-	it('prepares immutable reserved content after working edits but refuses a stale new release', async () => {
-		const f = await fixture();
-		await f.t.mutation(api.contracts.saveChanges, application(f));
-		const released = await readyExport(f, 'already-released');
-		const attempt = await reserveExport(f, {
-			membershipId: f.owner.membershipId,
-			id: f.id,
-			expectedSource: await expectedSource(f),
-			operationId: fixtureOperationId('frozen'),
-			claim: 'claim'
-		});
-		const state = await playbookState(f);
-		await f.t.mutation(api.contracts.saveChanges, {
-			membershipId: f.owner.membershipId,
-			id: f.id,
-			operationId: fixtureOperationId('remove'),
-			commands: [
-				{
-					id: fixtureOperationId('remove'),
-					itemId: f.itemId,
-					expectedCurrentChangeId: state.playbook[0].currentChangeId,
-					action: { kind: 'set', optionId: null },
-					occurredAt: NOW
-				}
-			]
-		});
-		const prepared = await f.t.query(internal.hubspotExports.content, {
-			id: attempt._id,
-			claim: 'claim'
-		});
-		const owner = await f.t.run(({ db }) => db.get('contractOutputs', attempt.outputId));
-		if (owner?.format !== 'full') throw new Error('Expected full output evidence');
-		expect(owner).toMatchObject({
-			state: 'complete',
-			companyId: f.owner.companyId,
-			contractId: f.id,
-			documentId: attempt.documentId,
-			reservationManifest: {
-				documentId: attempt.documentId,
-				membershipId: f.owner.membershipId,
-				actor: { profileId: f.owner.profileId },
-				proof: { outputId: attempt.outputId, section: 'output-proof' }
-			}
-		});
-		const proof = await f.t.run(({ db }) =>
-			db
-				.query('contractOutputChunks')
-				.withIndex('by_outputId_and_section_and_generation_and_order', (q) =>
-					q
-						.eq('outputId', attempt.outputId)
-						.eq('section', 'output-proof')
-						.eq('generation', owner!.reservationManifest!.proof.generation)
-				)
-				.collect()
-		);
-		expect(proof.map((chunk) => JSON.parse(chunk.data))).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					type: 'head',
-					kind: 'playbook',
-					key: f.itemId,
-					changeId: state.playbook[0].currentChangeId,
-					decisionId: state.playbook[0].decisionId
-				})
-			])
-		);
-		const evidence = proof
-			.map((chunk) => JSON.parse(chunk.data))
-			.filter((record) => record.kind === 'change')
-			.map((record) => JSON.parse(record.data));
-		expect(evidence).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					kind: 'playbook',
-					source: expect.objectContaining({ itemId: f.itemId, optionId: 'preferred' })
-				})
-			])
-		);
-		expect(prepared.document.blocks).toEqual([block]);
+		if (prepared.kind !== 'generate') throw new Error('Expected generate');
+		await f.t.mutation(api.contracts.save, application(f));
 		const fileId = await f.t.run(({ storage }) => storage.store(new Blob([bytes])));
-		await f.t.mutation(internal.hubspotExports.publish, {
-			id: attempt._id,
-			claim: 'claim',
-			fileId,
-			sha256: released.sha256!,
-			size: bytes.byteLength
-		});
 		await expect(
-			prepareRelease(f, attempt._id).then(() =>
-				f.t.mutation(internal.hubspotExports.release, { id: attempt._id })
-			)
-		).rejects.toThrow('STALE_SOURCE');
-		const late = await acknowledge(f, released, NOW + 1000);
-		expect(late).toMatchObject({ kind: 'downloaded', occurredAt: NOW + 1000 });
-		vi.setSystemTime(NOW + HOUR);
-		await expect(
-			f.t.query(internal.hubspotExports.content, { id: attempt._id, claim: 'claim' })
-		).rejects.toThrow('unavailable');
+			f.t.mutation(internal.contractExports.commit, {
+				membershipId: f.owner.membershipId,
+				id: f.id,
+				operationId: fixtureOperationId('stale-commit'),
+				fileId,
+				sha256: 'a'.repeat(64),
+				size: bytes.byteLength,
+				expectedTemplateVersionId: prepared.templateVersionId,
+				expectedStateRevision: prepared.stateRevision,
+				expectedTitle: prepared.title
+			})
+		).rejects.toThrow('The saved contract changed.');
 	});
 });
 
 describe('private File reconciliation', () => {
 	it('rejects a public file, wrong name, wrong size and wrong bytes while reaching a valid later candidate', async () => {
-		const f = await fixture(),
-			attempt = await readyExport(f),
-			download = await acknowledge(f, attempt);
+		const f = await fixture();
+		const attempt = await readyExport(f);
+		const download = (await events(f)).find((e) => e.attemptId === attempt._id)!;
 		await f.t.run(({ db }) =>
 			db.patch('hubspotEvents', download._id, {
 				status: 'uncertain',

@@ -1,12 +1,8 @@
 <script lang="ts">
 	import IntegrationCatalogLayout from './IntegrationCatalogLayout.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
-	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { useIntegrationCatalog } from '$lib/integration-catalog.svelte';
 
-	const viewer = useViewer();
-	const session = useViewerSession();
-	const allowed = $derived(session.workspaceAdmitted && viewer().membership.role === 'admin');
 	const catalog = useIntegrationCatalog();
 	let search = $state('');
 	const query = $derived(search.trim().toLowerCase());
@@ -19,7 +15,7 @@
 
 <WorkspacePresentationReporter outcome="success" />
 
-<IntegrationCatalogLayout role={allowed ? 'admin' : 'rep'} {entries} loading={false} bind:search>
+<IntegrationCatalogLayout {entries} loading={false} bind:search>
 	{#snippet notice()}
 		{#if catalog.error}
 			<p role="alert" class="mb-3 text-xs">

@@ -92,7 +92,8 @@ export class SelectionSurface {
 	#reversedPrefix: number[] = [0];
 	constructor(
 		readonly root: HTMLElement,
-		readonly snapshot: RenderSnapshot
+		readonly snapshot: RenderSnapshot,
+		readonly allowBoundarySelection = true
 	) {
 		this.document = snapshot.selectionDocument;
 		this.index = this.document.index;
@@ -454,6 +455,7 @@ export class SelectionSurface {
 			return null;
 		const { low, high, backward } = this.#ordered(extent);
 		const pureBreak = low.occurrence === high.occurrence && this.entry(low).kind === 'break';
+		if (pureBreak && !this.allowBoundarySelection) return null;
 		if (!pureBreak && comparePositions(low, high) >= 0) return null;
 		const a = this.endpoint(low, false),
 			b = this.endpoint(high, true);

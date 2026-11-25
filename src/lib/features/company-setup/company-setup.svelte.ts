@@ -20,7 +20,7 @@ export function setCompanySetup(canStart: () => boolean = () => true) {
 		session.workspaceAdmitted &&
 		!session.blocked &&
 		!session.closing &&
-		!viewer().company.deletionPending
+		!viewer().company.deletion
 			? { membershipId: viewer().membership.id }
 			: 'skip'
 	);

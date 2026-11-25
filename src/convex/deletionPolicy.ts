@@ -1,5 +1,5 @@
-export const PREPARATION_TTL = 15 * 60_000;
-export const DELETION_ATTEMPT_MAX_LENGTH = 128;
+export const DELETING_RECOVERY_DELAY = 60_000;
+export const REVERIFICATION_MAX_AGE_MINUTES = 10;
 export const MEMBERSHIP_ELIGIBILITY_SCAN_LIMIT = 100;
 
 // Discovery targets and provider/write limits have separate owners.

@@ -2,11 +2,17 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/state';
 	import { describeRoute } from '$lib/auth/routes';
+	import {
+		permissionsForRole,
+		type Permission,
+		type Permissions
+	} from '../../../convex/permissions';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
 	let {
 		role,
+		permissions,
 		templateReady = false,
 		loading = true,
 		element = $bindable(),
@@ -22,6 +28,7 @@
 		children
 	}: {
 		role?: 'admin' | 'rep';
+		permissions?: Permissions;
 		templateReady?: boolean;
 		loading?: boolean;
 		element?: HTMLElement;
@@ -36,13 +43,18 @@
 		notice?: Snippet;
 		children?: Snippet;
 	} = $props();
-	const navItems = [
-		{ label: 'Contracts', href: '/contracts', adminOnly: false },
-		{ label: 'Template', href: '/template', adminOnly: true },
-		{ label: 'Integrations', href: '/integrations', adminOnly: true },
-		{ label: 'Guides', href: '/guides', adminOnly: false }
+	const effectivePermissions = $derived(
+		permissions ?? (role ? permissionsForRole(role) : undefined)
+	);
+	const navItems: { label: string; href: string; permission?: Permission }[] = [
+		{ label: 'Contracts', href: '/contracts' },
+		{ label: 'Template', href: '/template', permission: 'manageTemplate' },
+		{ label: 'Integrations', href: '/integrations', permission: 'manageIntegrations' },
+		{ label: 'Guides', href: '/guides' }
 	];
-	const visibleNavItems = $derived(navItems.filter((item) => !item.adminOnly || role === 'admin'));
+	const visibleNavItems = $derived(
+		navItems.filter((item) => !item.permission || Boolean(effectivePermissions?.[item.permission]))
+	);
 </script>
 
 <header
@@ -68,7 +80,7 @@
 								aria-current={active ? 'page' : undefined}
 								onpointerenter={onWarmTemplate}
 								onfocus={onWarmTemplate}
-								href={item.href}>{item.label}</a
+								href={templateReady ? '/template' : '/template/setup'}>{item.label}</a
 							>
 							{#if templateReady}
 								<button

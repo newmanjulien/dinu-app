@@ -3,11 +3,13 @@
 	let {
 		owner,
 		active,
+		dismissOnOutsidePointer = true,
 		onDismiss,
 		deferEscape
 	}: {
 		owner: symbol;
 		active: boolean;
+		dismissOnOutsidePointer?: boolean;
 		onDismiss: (restoreFocus: boolean) => void;
 		deferEscape?: () => boolean;
 	} = $props();
@@ -19,7 +21,10 @@
 			kind: 'panel',
 			deferEscape: () => deferEscape?.() ?? false,
 			elements: () => [],
-			close: (reason) => onDismiss(reason === 'escape')
+			close: (reason) => {
+				if (reason === 'outside-pointer' && !dismissOnOutsidePointer) return;
+				onDismiss(reason === 'escape');
+			}
 		});
 	});
 </script>

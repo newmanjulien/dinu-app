@@ -11,6 +11,7 @@
 	import AccountLoading from '$lib/auth/AccountLoading.svelte';
 	import { loadComponent } from '$lib/auth/component-loader.svelte';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
+	import { LOGIN_PATH } from '$lib/auth/navigation';
 	import AuthStepFrame from '$lib/auth/components/AuthStepFrame.svelte';
 
 	import type { PageData } from './$types';
@@ -87,7 +88,7 @@
 		title="Invitation unavailable"
 		description="Open the invitation link from your email, or ask a colleague for a new invitation."
 	>
-		<a href="/login" class="block text-center text-sm underline">Log in to Dinu</a>
+		<a href={LOGIN_PATH} class="block text-center text-sm underline">Log in to Dinu</a>
 	</AuthStepFrame>
 {:else if signedIn}
 	<RequireAccount inline>
@@ -117,7 +118,7 @@
 		entry={clerk.isLoaded && preview?.status === 'available' && !expired ? 'signed-out' : 'unknown'}
 	/>
 {:else if preview?.status === 'available' && !expired}
-	{#key data.token}<EmailCodeFlow invitation={preview} />{/key}
+	{#key data.token}<EmailCodeFlow mode="invitation" invitation={preview} />{/key}
 {:else if !preview}
 	<AuthStepFrame title="Company invitation">
 		<div class="grid justify-items-center gap-4">
@@ -140,6 +141,6 @@
 			? 'This invitation has already been used. Log in to open your workspace, or ask a colleague for a new invitation.'
 			: 'Open the latest invitation email, or ask a colleague for a new invitation.'}
 	>
-		<a href="/login" class="block text-center text-sm underline">Log in to Dinu</a>
+		<a href={LOGIN_PATH} class="block text-center text-sm underline">Log in to Dinu</a>
 	</AuthStepFrame>
 {/if}

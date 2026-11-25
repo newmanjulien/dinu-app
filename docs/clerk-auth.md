@@ -1,11 +1,11 @@
 # Clerk authentication and rollout
 
-The custom `/login`, `/join`, Settings, and deletion components adapt Overbase
-revision `61c97882e42a2b3cbb4fccbb7448a954e147367d`. Signup ends after email
-verification. Anyone can sign up; company membership requires explicit company
+The custom `/login`, `/create-account`, Settings, and deletion components adapt Overbase
+revision `61c97882e42a2b3cbb4fccbb7448a954e147367d`. Account creation ends after email
+verification. Anyone can create an account; company membership requires explicit company
 creation or acceptance of a colleague's invitation. Companies are private, with
 no discovery or email-domain matching. Accounts belong to one company at a time.
-Clerk owns identity and verified sign-in email. Convex owns profiles, memberships,
+Clerk owns identity and verified log-in email. Convex owns profiles, memberships,
 roles, company settings, and invitation records. Settings never updates another
 user's profile or Clerk's name. See [the company schema and rollout
 runbook](private-companies-rollout.md) and [production releases](deployment.md).
@@ -19,11 +19,11 @@ instance at `https://clerk.dinu.juliennewman.com` with backend
 `befitting-lyrebird-846`. Never use live Clerk keys in local development or previews.
 
 Create a Dinu **development** application in Clerk. Enable email verification
-codes for signup and sign-in, open signup, self-deletion, and reverification for
+codes for account creation and log-in, open account creation, self-deletion, and reverification for
 sensitive actions. Disable required passwords, names, and legal acceptance so the
-custom signup can finish with an email and code. Clerk Organizations are
-unnecessary; Dinu supplies its own company onboarding and invitation acceptance. Configure `/login` and `/join` as the custom auth routes, `/` as the
-fallback destination, and the frontend development origin as an allowed redirect.
+custom Create account flow can finish with an email and code. Clerk Organizations are
+unnecessary; Dinu supplies its own company onboarding and invitation acceptance. Configure `/login` and `/create-account` as the custom auth routes, `/contracts` and `/onboarding` as the
+fallback destinations, and the frontend development origin as an allowed redirect.
 
 Copy `.env.example` to `.env.local`, keeping the existing Convex deployment values.
 Set `PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` from this application.
@@ -72,12 +72,12 @@ scoped to profile and membership and cleared on logout, deletion, account change
 or membership changes. Server
 snapshot reads forward an authenticated token and return `private, no-store`.
 
-## Signup CAPTCHA
+## Create account CAPTCHA
 
-Join and anonymous invitations share one stable `#clerk-captcha` host in
+Create account and anonymous invitations share one stable `#clerk-captcha` host in
 `EmailCodeFlow.svelte`. It stays mounted outside the loading, email, and code
-branches, including while Clerk waits for a challenge. Ordinary Login does not
-mount it. Keep the host present before signup calls; without it, Clerk's legacy
+branches, including while Clerk waits for a challenge. Ordinary Log in does not
+mount it. Keep the host present before account-creation calls; without it, Clerk's legacy
 Smart protection falls back to an invisible check that cannot offer a falsely
 flagged person an interactive challenge.
 
@@ -98,19 +98,19 @@ requirements.
 
 After `npm run build` checks types and production bundling, manually verify:
 
-- Normal Join completes without an unnecessary interactive task or empty panel;
-  a challenged signup can complete the visible widget while the form is sending.
+- Normal Create account completes without an unnecessary interactive task or empty panel;
+  a challenged account creation can complete the visible widget while the form is sending.
 - Challenge expiry or loading failure shows useful feedback and allows recovery;
   retry, resend, change-email, and leaving/reopening the flow still work.
 - Keyboard access, zoom, and narrow mobile layouts keep the challenge usable.
-- Ordinary Login, invitations for existing and new accounts, and Clerk tickets
+- Ordinary Log in, invitations for existing and new accounts, and Clerk tickets
   still work without duplicate hosts or stale updates.
 
 Development and production use separate Clerk instances and may have different
 protection settings. [Testing Tokens bypass protection](https://clerk.com/docs/guides/development/testing/overview#testing-tokens),
 so they cannot prove the challenged path. Record any unavailable challenge,
 failure, or abandoned-request path as unverified; a successful unchallenged local
-signup does not establish production behavior or eliminate the reported delay.
+account creation does not establish production behavior or eliminate the reported delay.
 
 ## Preparing an account for a user
 
@@ -123,12 +123,12 @@ configured `/login` route with a one-time `__clerk_ticket`. The login flow consu
 that sign-in ticket, activates the impersonated session, and opens normal onboarding
 or the existing workspace without asking for an email code. Clerk continues to
 control who can issue impersonation links; Dinu only consumes the issued ticket.
-The `/join` route handles Clerk signup tickets separately.
+The `/create-account` route handles Clerk account-creation tickets separately.
 
 Complete onboarding and Settings as the user. Creating a company makes them its
 owner and Admin. To join an existing company, invite their email from that company's
-Team page, then open and accept the invitation while impersonating them. Sign out
-when finished. The user can later sign in with their normal email code and use the
+Team page, then open and accept the invitation while impersonating them. Log out
+when finished. The user can later log in with their normal email code and use the
 prepared account. If the link expires or has already been used, open a fresh
 impersonation link from Clerk.
 
@@ -136,10 +136,10 @@ See [Clerk's impersonation guide](https://clerk.com/docs/guides/users/impersonat
 
 ## Roles and permissions
 
-`src/convex/permissions.ts` defines personal roles and capabilities. Profiles store
-required `rep` / `admin` roles; memberships store only profile and company identity.
-Any authenticated user can select either role for themselves in Settings, without
-approval. `settings.savePersonalRole({ role })` resolves the caller from identity,
+`src/convex/permissions.ts` defines personal roles and capabilities. Memberships store
+profile, company identity, and the required `rep` / `admin` role.
+Any authenticated company member can select either role for themselves in Settings, without
+approval. `memberships.setRole({ role })` resolves the caller from identity,
 accepts no target profile ID, and returns `null`. There is no operator or team role
 assignment API.
 
@@ -157,16 +157,17 @@ Every public company operation supplies its stable `membershipId`. Convex resolv
 membership from authenticated identity and rejects stale or foreign IDs. Company
 avatar uploads authorize before storage and again in the committing mutation;
 switching to Rep during upload prevents commit and rejected uploads are cleaned up.
-The viewer reacts to profile role changes. Session, editor, cache, and draft
+The viewer reacts to membership role changes. Session, editor, cache, and draft
 identity remain profile plus membership, so role changes preserve mounted drafts.
 
-New profiles default to Rep. Creating a company atomically sets its creator to
-Admin and owner. Accepting an invitation preserves the chosen personal role, which
-also persists when leaving or joining a company.
+Creating a company atomically sets its creator to
+Admin and owner. Accepting an invitation starts the new membership as Rep. Accounts
+without a company have no stored role; leaving a company does not carry its role into
+another membership.
 
 Company invitations have a dedicated `/invitation` flow. A valid random link
-shows the company and fixed invited email before authentication. Continue sends
-an email code; Clerk signs in an existing account or automatically creates an
+shows the company before authentication. **Email me a code** sends
+an email code to the invited address; Clerk logs into an existing account or automatically creates an
 account using the verified email. Invitees then explicitly choose Join [Company]
 and enter the workspace without company setup. Account switching returns directly
 to the invitation. The anonymous preview exposes no invitation ID or acceptance
@@ -277,17 +278,18 @@ If its outcome is still uncertain, it retains the draft and reports failure.
 An owner with another live colleague must transfer ownership before account
 deletion. Other members use **delete my account** and retain company data. The last
 live member uses **delete my account and company** to delete both. Invitations and
-members already marked deleted do not count as live colleagues. The server checks
-current identity, membership, eligibility, and the exact phrase before every Clerk
-deletion attempt, including retries after reverification.
+members already marked deleted do not count as live colleagues.
 
-Combined deletion first prepares a durable request, then dispatches that exact
-request before the existing client `user.delete()` call. A preparation can be
-cancelled and expires after 15 minutes. Dispatch preserves consent across Clerk
-errors, reverification, modal replacement, and retries; it cannot be cancelled or
-expired. Neither preparation nor dispatch deletes company data. Only a verified
-deletion webhook or a complete, successful Clerk lookup establishing the account's
-absence starts cleanup. Account-only deletion creates no company request.
+Deletion verifies Clerk session freshness *before* writing any deletion hold to Convex.
+Once the user confirms the phrase and passes Clerk reverification if needed, the client calls
+`accountDeletionActions.execute` with a fresh default Clerk session token. Convex verifies the
+session JWT and `fva` freshness server-side, rejects impersonation (`act`), re-validates
+eligibility and phrase, acquires a short-lived `deleting` company hold only for combined deletion,
+and deletes the user via Clerk’s Backend API (`clerkClient.users.deleteUser`). On success (or 404),
+Convex immediately records `deletedUsers` and advances `companyDeletions` to `cleaning`; on a
+definitive 4xx refusal it immediately releases the hold; on an ambiguous timeout/5xx error, a
+60-second scheduled check (and Settings Retry/Cancel actions) checks Clerk live and either
+completes cleanup or releases the hold automatically. Account-only deletion creates no company hold.
 
 Successful deletion clears local state and redirects directly to `/login`
 from the persistent auth bridge, even if session loss has already removed the
@@ -339,7 +341,7 @@ See the [automated guarantee reference](performance-checks.md) for their scope a
 
 Live configuration and browser checks need development Clerk keys and Loops setup.
 Use accounts in two companies plus an unaffiliated account. Verify email codes,
-signup/login, explicit invitation acceptance, wrong-email and rotated/revoked links,
+Create account/Log in, explicit invitation acceptance, wrong-email and rotated/revoked links,
 create/wait onboarding, role and ownership changes, company/personal avatar saves,
 and owner deletion eligibility. Confirm companies never appear from domain matching.
 

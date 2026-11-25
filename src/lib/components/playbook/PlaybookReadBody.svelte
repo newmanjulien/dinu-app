@@ -9,7 +9,7 @@
 
 {#if isRepItem(item)}
 	{#each instructionsFields as field}
-		{#if item.instructions?.[field.key]}
+		{#if item.instructions[field.key]}
 			<section class="grid gap-1">
 				<h3 class="text-xs font-medium text-ink-muted">{field.label}</h3>
 				<PlaybookText text={item.instructions[field.key] ?? ''} />

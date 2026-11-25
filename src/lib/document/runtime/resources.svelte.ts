@@ -3,12 +3,16 @@ import type {
 	AnnotationAdmission,
 	AuthoringSelectionRequest
 } from '$lib/playbook/authoring-selection';
-import { approvedDocumentInput } from '$lib/contract/document-preview';
+import { concessionSelectionMap } from '$lib/contract/changes';
 import type { ReviewDecision, ReviewNavigation, ReviewTag } from '$lib/contract/approval';
 import type { ReadyContract } from '$lib/contract/saved';
 import { getContractOpenings } from '$lib/contract/snapshot-cache';
-import type { ContractChange, SourceTarget } from '$lib/playbook/model';
-import { sameSelection } from '$lib/playbook/model';
+import {
+	isRepItem,
+	sameSelection,
+	type ContractChange,
+	type SourceTarget
+} from '$lib/playbook/model';
 import type { Snippet } from 'svelte';
 import { getContext, setContext, untrack } from 'svelte';
 import type { DocumentLayoutProfiles } from './layout-context.svelte';
@@ -19,17 +23,16 @@ import { type ConcessionSelection } from './types';
 import type { DocumentWorkspace } from './workspace-context';
 import type { createDocumentWorkspace } from './workspace-factory';
 
-function appliedOptions(data: ReadyContract): Record<string, string> {
-	return Object.fromEntries(
-		data.contract.playbook
-			.filter((item) => item.appliedOptionId !== null)
-			.map((item) => [item.itemId, item.appliedOptionId!])
-	);
+function selectedOptions(data: ReadyContract): Record<string, string> {
+	return concessionSelectionMap(data.contract.concessions);
 }
-function approvedInput(data: ReadyContract): DocumentSourceInput {
-	return data.approved
-		? approvedDocumentInput(data.snapshot, data.approved)
-		: { kind: 'records', contract: true, materialized: {}, items: {} };
+function contractInput(data: ReadyContract): DocumentSourceInput {
+	return {
+		kind: 'records',
+		contract: true,
+		blocks: { data: data.snapshot.blocks },
+		items: { data: data.snapshot.items.filter(isRepItem) }
+	};
 }
 
 const isTemplateResource = (id: string) => id === 'template' || id === 'template:buyer';
@@ -68,9 +71,10 @@ export interface ViewerBindings {
 	/** Whether this document offers playbook navigation, independent of temporary readiness. */
 	allowPlaybookNavigation?: boolean;
 	sourceSelectionEnabled?: boolean;
+	allowBoundarySelection?: boolean;
 	/** Additional action guard; does not remove mounted button semantics or focus. */
 	playbookNavigationReady?: boolean;
-	onRemoveConcession: (itemId: string) => void;
+	onRemoveConcession?: (itemId: string) => void;
 	onSelect: (itemId: string, annotationId: string) => AnnotationAdmission | boolean | void;
 	/** A resolved click on ordinary document content, after selection/drag classification. */
 	onDocumentBackground?: () => void;
@@ -167,7 +171,6 @@ export class DocumentResources {
 	#rank: readonly string[] = [];
 	#preparationBudget = 0;
 	#failed = new Set<string>();
-	#incomplete = new Set<string>();
 	#clock = 0;
 	#destroyed = false;
 	#attachments = new Map<DocumentResource, DocumentAttachment>();
@@ -305,9 +308,9 @@ export class DocumentResources {
 		entry.lastUsed = ++this.#clock;
 		return entry;
 	}
-	acquireContract(data: ReadyContract, input: DocumentSourceInput = approvedInput(data)) {
+	acquireContract(data: ReadyContract, input: DocumentSourceInput = contractInput(data)) {
 		const entry = this.acquire(data.id, input);
-		entry.confirmedChoices = appliedOptions(data);
+		entry.confirmedChoices = selectedOptions(data);
 		if (!entry.active) this.update(entry, entry.confirmedChoices);
 		return entry;
 	}
@@ -461,12 +464,7 @@ export class DocumentResources {
 			)
 			.map((entry) => entry.id);
 		const ids = ranked
-			.filter(
-				(id) =>
-					!this.#failed.has(id) &&
-					!this.#incomplete.has(id) &&
-					(reserved.includes(id) || reserved.length < 4)
-			)
+			.filter((id) => !this.#failed.has(id) && (reserved.includes(id) || reserved.length < 4))
 			.slice(0, budget);
 		if (!sameOrder(this.#candidates, ids)) this.#candidates = [...ids];
 		const pending = this.#pending.filter(
@@ -475,7 +473,6 @@ export class DocumentResources {
 		if (!sameOrder(this.#pending, pending)) this.#pending = pending;
 		for (const id of this.#failed)
 			if (!isTemplateResource(id) && !ranked.includes(id)) this.#failed.delete(id);
-		for (const id of this.#incomplete) if (!ranked.includes(id)) this.#incomplete.delete(id);
 		for (const entry of this.entries)
 			if (
 				!isTemplateResource(entry.id) &&
@@ -500,22 +497,14 @@ export class DocumentResources {
 	prepare(
 		data: ReadyContract,
 		input?: DocumentSourceInput,
-		choices: ConcessionSelection = appliedOptions(data)
+		choices: ConcessionSelection = selectedOptions(data)
 	) {
 		if (this.#destroyed) return;
 		const entry = this.entries.find((entry) => entry.id === data.id);
-		if (entry) entry.confirmedChoices = appliedOptions(data);
-		if (!data.approved) {
-			if (entry?.active || entry?.opening || this.#leases.has(data.id)) return;
-			this.#incomplete.add(data.id);
-			this.#pending = this.#pending.filter(({ data: pending }) => pending.id !== data.id);
-			this.candidates(this.#rank);
-			return;
-		}
-		if (this.#incomplete.delete(data.id)) this.candidates(this.#rank);
+		if (entry) entry.confirmedChoices = selectedOptions(data);
 		if (entry) {
 			if (!entry.active) {
-				entry.workspace.accept(input ?? approvedInput(data));
+				entry.workspace.accept(input ?? contractInput(data));
 				this.update(entry, choices);
 			}
 			return;
@@ -532,7 +521,7 @@ export class DocumentResources {
 			sameSelection(pending.choices, choices)
 		)
 			return;
-		const next = { data, input: input ?? approvedInput(data), choices };
+		const next = { data, input: input ?? contractInput(data), choices };
 		if (pending) this.#pending = this.#pending.map((value) => (value === pending ? next : value));
 		else this.#pending = [...this.#pending, next];
 	}
@@ -546,7 +535,6 @@ export class DocumentResources {
 		const leases = new Map(this.#leases);
 		leases.delete(id);
 		this.#leases = leases;
-		this.#incomplete.delete(id);
 		this.evict(id);
 		this.candidates(this.#rank.filter((candidate) => candidate !== id));
 	}

@@ -2,17 +2,17 @@
 	import type { Snippet } from 'svelte';
 	import AuthPatternLayer from './AuthPatternLayer.svelte';
 	import AuthQuotePanel from './AuthQuotePanel.svelte';
-	import AuthProgressDots from './AuthProgressDots.svelte';
+	import ProgressDots from '$lib/ui/ProgressDots.svelte';
 	import type { AuthQuote } from './types';
 
 	type Props = {
 		children: Snippet;
 		footer?: Snippet;
 		showFooter?: boolean;
-		signupStep?: 1 | 2 | 3;
+		createAccountStep?: 1 | 2;
 	};
 
-	let { children, footer, showFooter = Boolean(footer), signupStep }: Props = $props();
+	let { children, footer, showFooter = Boolean(footer), createAccountStep }: Props = $props();
 
 	const quote = {
 		text: 'Dinu cut our sales cycle by 30% and improved rep productivity by 10%.',
@@ -35,8 +35,8 @@
 			class="relative box-border flex min-h-dvh flex-col bg-white px-6 pt-12 pb-8 sm:min-h-[calc(100dvh-8px)] sm:rounded-xl sm:border-hairline sm:border-edge lg:px-[clamp(40px,8.55vw,248px)] lg:pt-[clamp(56px,8.6vh,138px)] lg:pb-7"
 			aria-label="Dinu account entry"
 		>
-			{#if signupStep}
-				<AuthProgressDots step={signupStep} />
+			{#if createAccountStep}
+				<ProgressDots step={createAccountStep} />
 			{/if}
 			<div class="m-auto w-full max-w-[340px]">
 				{@render children()}

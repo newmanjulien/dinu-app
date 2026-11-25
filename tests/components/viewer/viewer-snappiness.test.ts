@@ -103,8 +103,9 @@ it('instruction updates and reactivation preserve mounted pages without new rend
 		details: [updated]
 	});
 	await pump();
-	const origin = workspace.source.lookup(updated._id)?.record.origin;
-	expect(origin?.kind === 'template' && origin.instructions?.summary).toBe('Updated guidance');
+	expect(workspace.source.lookup(updated._id)?.record.instructions?.summary).toBe(
+		'Updated guidance'
+	);
 	const expectRetainedPages = () => {
 		expect(workspace.renderer.snapshot).toBe(f.snapshot);
 		const currentPages = [...document.querySelectorAll('.document-page')];

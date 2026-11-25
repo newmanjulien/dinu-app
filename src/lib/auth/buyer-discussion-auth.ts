@@ -1,16 +1,20 @@
 import { env } from '$env/dynamic/public';
 import { waitForClerkScript } from './clerk-script';
+import { CLERK_AUTH_URLS } from './navigation';
 import { ReadAttempt, waitForRead } from './attempt';
 
 type Clerk = NonNullable<Window['Clerk']>;
 type AccountSession = NonNullable<Clerk['session']>;
 let pending: { attempt: ReadAttempt; promise: Promise<Clerk> } | undefined;
 let sdkLoad: { clerk: Clerk; promise: Promise<void> } | undefined;
-let preparedToken:
-	| { session: AccountSession; token: string; expiresAt: number }
-	| undefined;
+let preparedToken: { session: AccountSession; token: string; expiresAt: number } | undefined;
 let tokenLoad:
-	| { session: AccountSession; generation: number; startedAt: number; promise: Promise<string | null> }
+	| {
+			session: AccountSession;
+			generation: number;
+			startedAt: number;
+			promise: Promise<string | null>;
+	  }
 	| undefined;
 let tokenGeneration = 0;
 
@@ -28,7 +32,7 @@ function initialize(publishableKey: string) {
 				if (!load) {
 					load = sdkLoad = {
 						clerk,
-						promise: clerk.load({ telemetry: false, signInUrl: '/login', signUpUrl: '/join' })
+						promise: clerk.load({ telemetry: false, ...CLERK_AUTH_URLS })
 					};
 					const owned = load;
 					const release = () => {
@@ -37,7 +41,7 @@ function initialize(publishableKey: string) {
 					void load.promise.then(release, release);
 				}
 				await waitForRead(load.promise, attempt.signal);
-				if (load.clerk !== clerk) throw new Error('Account sign-in changed. Please try again.');
+				if (load.clerk !== clerk) throw new Error('Account session changed. Please try again.');
 			}
 			attempt.signal.throwIfAborted();
 			return clerk;
@@ -49,10 +53,10 @@ function initialize(publishableKey: string) {
 	return owner;
 }
 
-/** Reuse an existing dashboard session without opening a sign-in flow. */
+/** Reuse an existing dashboard session without opening a log-in flow. */
 export async function existingBuyerAccount(signal: AbortSignal) {
 	const publishableKey = env.PUBLIC_CLERK_PUBLISHABLE_KEY;
-	if (!publishableKey) throw new Error('Account sign-in is unavailable.');
+	if (!publishableKey) throw new Error('Account log-in is unavailable.');
 	pending ??= initialize(publishableKey);
 	return waitForRead(pending.promise, signal);
 }
@@ -62,7 +66,9 @@ function tokenExpiresAt(token: string) {
 		const payload: unknown = JSON.parse(
 			atob(token.split('.')[1].replace(/-/gu, '+').replace(/_/gu, '/'))
 		);
-		return payload && typeof payload === 'object' && 'exp' in payload &&
+		return payload &&
+			typeof payload === 'object' &&
+			'exp' in payload &&
 			typeof payload.exp === 'number'
 			? payload.exp * 1000
 			: 0;

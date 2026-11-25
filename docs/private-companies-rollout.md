@@ -2,7 +2,7 @@
 
 Current architecture: [data model](data-model.md). Release mechanics: [production releases](deployment.md).
 
-Dinu supports many private companies and one company per account. Signup verifies
+Dinu supports many private companies and one company per account. Account creation verifies
 identity; it does not create or join a company. An account without membership sees
 its invitations, can create a company, or can wait for a colleague's invitation.
 There is no company search, discovery, domain matching, or automatic email-domain
@@ -152,7 +152,7 @@ The runner uses the native internal function HTTP protocol/public value codec an
 ## Manual release checks
 
 Use disposable nonproduction accounts in two companies and one unaffiliated
-account. Check verified signup and waiting, create versus invite, wrong-email links,
+account. Check verified account creation and waiting, create versus invite, wrong-email links,
 expired/revoked/rotated links, concurrent acceptance/create, explicit acceptance,
 and being invited while already in a company. Confirm a company is never listed or
 suggested solely from an email domain.

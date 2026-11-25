@@ -55,7 +55,7 @@ export const hubspotEvent = v.object({
 	actor: v.object({ name: v.string(), email: v.string() }),
 	occurredAt: v.number(),
 	detail: v.string(),
-	attemptId: v.optional(v.id('hubspotExports')),
+	attemptId: v.optional(v.id('wordExports')),
 	status: v.union(
 		v.literal('pending'),
 		v.literal('working'),

@@ -1,10 +1,11 @@
 # CSM setup and support calls
 
 One Lifebuoy **support** widget appears for admins on the Contracts cards page,
-Template and buyer-template pages, the new-contract page, and Integrations
-(including detail pages). Reps have no support widget or booking access. Support
-is hidden inside saved contract editors, on public buyer links, Settings, Manage
-team, and contract settings. Admins can book support immediately, before uploading
+the new-contract page, Integrations (including detail pages), and the
+template setup route (`/template/setup`). Reps have no support widget or booking access. Support is hidden
+inside template editors (`/template` and `/template/buyers`), saved
+contract editors, on public buyer links, Settings, Manage team, and contract
+settings. Admins can book support immediately, before uploading
 a template or booking any earlier call. Ordinary help uses `support`; initial
 required booking uses `setup` in the inline setup calendar. Exact-target
 rescheduling opens the setup-replacement modal. A support booking never qualifies
@@ -16,9 +17,9 @@ The instructional document Help walkthrough remains available to reps and buyers
 
 During setup, the launcher, temporary embedded video, and scheduling explanation
 differ by section. `supportSection` in `csm-support.ts`
-maps every unreleased route requiring a template (`/template`, `/template/buyers`,
-and `/contracts/new`) to upload help. After release, the template routes use
-template help and `/contracts/new` retains contract help. Videos show an
+maps `/template/setup` to `template-setup` help. `/template` and
+`/template/buyers` hide the support widget, while `/contracts/new` uses
+contract help. Videos show an
 app-controlled poster until Play is activated, then load a player with controls
 and request playback. `csm-support.ts` owns this content and section resolution.
 `WorkspaceShell` owns the single dialog host. Opening freezes its content; route

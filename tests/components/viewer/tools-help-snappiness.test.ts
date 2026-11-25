@@ -53,9 +53,9 @@ afterEach(async () => {
 	dom.destroy();
 	vi.useRealTimers();
 });
-function fixture(variant: 'rep' | 'template' | 'buyer-template' | 'buyer' = 'rep') {
+function fixture(variant: 'contract' | 'template' | 'buyer-template' | 'buyer' = 'contract') {
 	const state = csmState();
-	state.viewer.helpPreferences.rep = true;
+	state.viewer.helpPreferences.contract = true;
 	const network = controlledClient((read) => {
 		if (read.name === 'hubspotConnections:status') context.starts.push('policy');
 	});
@@ -69,7 +69,13 @@ function fixture(variant: 'rep' | 'template' | 'buyer-template' | 'buyer' = 'rep
 	}
 	component = mount(Harness, {
 		target: document.body,
-		props: { state, workspace, variant: variant === 'buyer' ? 'rep' : variant, buyer, download }
+		props: {
+			state,
+			workspace,
+			variant: variant === 'buyer' ? 'contract' : variant,
+			buyer,
+			download
+		}
 	});
 	return { network, download };
 }
@@ -244,26 +250,29 @@ it('reconciles every readiness combination as an ordered applicable prefix', () 
 			}
 });
 
-it.each(['preference', 'preview'] as const)(
-	'preserves public buyer %s policy with the shared search adapter and page-owned rail',
+it.each(['preference', 'manual'] as const)(
+	'preserves public buyer link %s policy with the shared search adapter and page-owned rail',
 	async (kind) => {
 		const search =
 			deferred<typeof import('../../../src/lib/components/document/DocumentSearchTools.svelte')>();
 		context.search = search.promise;
 		fixture('buyer');
-		const save = vi.fn(async () => null);
-		buyer!.help.configure(
-			kind === 'preview'
-				? { kind: 'preview', identity: 'profile' }
-				: {
-						kind: 'preference',
-						identity: 'buyer',
-						confirmation: 'save',
-						hidden: false,
-						save,
-						current: () => true
-					}
-		);
+		const configurePreference = (hidden: boolean) =>
+			buyer!.help.configure({
+				kind: 'preference',
+				variant: 'buyer-link-seller',
+				identity: 'profile',
+				hidden,
+				save,
+				current: () => true
+			});
+		const save = vi.fn(async (hidden: boolean) => {
+			configurePreference(hidden);
+			return null;
+		});
+		if (kind === 'manual')
+			buyer!.help.configure({ kind: 'manual', variant: 'buyer-link-buyer', identity: 'buyer' });
+		else configurePreference(false);
 		await settle();
 		expect(names()).toEqual([
 			['Search', 'Download', 'Help'],
@@ -281,7 +290,7 @@ it.each(['preference', 'preview'] as const)(
 		expect(document.querySelector('dialog')).toBeNull();
 		workspace.viewer.interactionEnabled = true;
 		await settle();
-		if (kind === 'preview') {
+		if (kind === 'manual') {
 			expect(document.querySelector('dialog')).toBeNull();
 			document
 				.querySelector<HTMLButtonElement>('[aria-label="How to review this contract"]')!

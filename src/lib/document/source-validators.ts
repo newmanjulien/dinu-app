@@ -16,10 +16,12 @@ const numberPattern = v.array(
 export const sourcePoint = v.object({ sourceKey: v.string(), offset: v.number() });
 export const sourceRange = v.object({ start: sourcePoint, end: sourcePoint });
 // Source text and the structural edge after a block have distinct targets.
-export const sourceTarget = v.union(
-	v.object({ kind: v.literal('text'), range: sourceRange }),
-	v.object({ kind: v.literal('boundary'), afterBlockKey: v.string() })
-);
+export const textSourceTarget = v.object({ kind: v.literal('text'), range: sourceRange });
+export const boundarySourceTarget = v.object({
+	kind: v.literal('boundary'),
+	afterBlockKey: v.string()
+});
+export const sourceTarget = v.union(textSourceTarget, boundarySourceTarget);
 const referenceFields = {
 	kind: v.literal('reference'),
 	targetItemKey: v.string(),

@@ -1,15 +1,11 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { useConvexClient } from 'convex-svelte';
-	import type { FunctionReturnType } from 'convex/server';
-	import type { api } from '../../convex/_generated/api';
 	import { DiscussionSession } from '$lib/discussions/session.svelte';
-	import { getDiscussionRecovery } from '$lib/discussions/recovery.svelte';
 	import type { DiscussionAccess } from '$lib/discussions/validators';
 	import { getBuyerSeller } from './seller.svelte';
-	import { getBuyerContract } from './contract.svelte';
+	import { getBuyerContract, type BuyerDocumentContent } from './contract.svelte';
 
-	type Content = FunctionReturnType<typeof api.buyerLinks.currentDocument>;
 	let {
 		content,
 		token,
@@ -17,7 +13,7 @@
 		prepare,
 		onSession
 	}: {
-		content: Content;
+		content: BuyerDocumentContent;
 		token: string;
 		active: boolean;
 		prepare: boolean;
@@ -26,44 +22,48 @@
 	const publicClient = useConvexClient();
 	const publicContract = getBuyerContract();
 	const seller = getBuyerSeller();
-	const recovery = getDiscussionRecovery();
 	const contentRevision = $derived(content.contentRevision);
-	const discussionIdentity = $derived(seller?.identity);
-	const discussionAccount = $derived(seller?.accountIdentity);
-	const discussionMembership = $derived(seller?.viewer?.membershipId);
-	const discussionContract = $derived(seller?.viewer?.contractId);
-	const discussionPrivate = $derived(Boolean(seller?.visible));
 	let session = $state.raw<DiscussionSession>();
-	$effect(() => {
-		// A different document may no longer contain these passages.
-		void content.contentIdentity;
-		const identity = discussionIdentity,
-			accountIdentity = discussionAccount,
-			privateClient = seller?.client,
-			membershipId = discussionMembership,
-			id = discussionContract,
-			sellerAccessEnabled = discussionPrivate;
+	function currentActor() {
+		const identity = seller?.identity;
+		const accountIdentity = seller?.accountIdentity;
+		const sellerClient = seller?.client;
+		const membershipId = seller?.viewer?.membershipId;
+		const id = seller?.viewer?.contractId;
 		const privateAccess =
-			sellerAccessEnabled && privateClient && membershipId && id ? { membershipId, id } : undefined;
+			seller?.visible && sellerClient && membershipId && id ? { membershipId, id } : undefined;
+		const mode = seller?.preview ? 'preview' : privateAccess ? 'seller' : 'buyer';
+		return {
+			key: JSON.stringify([
+				mode,
+				mode === 'seller' ? identity : null,
+				mode === 'seller' ? accountIdentity : null,
+				mode === 'seller' ? membershipId : null,
+				mode === 'seller' ? id : null
+			]),
+			client: privateAccess ? sellerClient! : publicClient,
+			privateAccess
+		};
+	}
+	$effect(() => {
+		void content.templateVersionId;
 		const access: DiscussionAccess = { token };
 		const current = untrack(
 			() =>
 				new DiscussionSession(
-					privateAccess ? privateClient! : publicClient,
+					publicClient,
 					access,
 					() => contentRevision,
-					() => content.contentIdentity,
-					() => ({
-						readOnly:
-							identity !== seller?.identity ||
-							accountIdentity !== seller?.accountIdentity ||
-							Boolean(seller?.discussionPolicy.readOnly),
-						generation: seller?.discussionPolicy.generation ?? 0
-					}),
+					() => seller?.discussionPolicy ?? { readOnly: false, generation: 0 },
 					() => publicContract.buyerName,
-					privateAccess,
-					recovery,
-					() => (seller?.presentation === 'seller' ? 'seller' : 'buyer')
+					undefined,
+					() => (seller?.presentation === 'seller' ? 'seller' : 'buyer'),
+					() =>
+						Boolean(
+							seller?.presentation === 'seller' &&
+							seller.viewer &&
+							!seller.viewer.profile.name.trim()
+						)
 				)
 		);
 		session = current;
@@ -79,46 +79,44 @@
 	$effect(() => {
 		const current = session;
 		if (!current) return;
-		const { generation } = current.policy();
-		untrack(() => current.synchronizePolicy(generation));
+		const actor = currentActor();
+		untrack(() =>
+			current.transitionActor(actor.key, actor.client, actor.privateAccess, () => {
+				const live = currentActor();
+				return live.key === actor.key && live.client === actor.client;
+			})
+		);
 	});
 	$effect(() => session?.setActive(active && prepare));
-	$effect(() => session?.reconcileOperations());
-	$effect(() => session?.persistOperations());
-	$effect(() => {
-		const current = session;
-		if (!current?.active || !current.feed.authorized || !current.feed.firstPageAccepted) return;
-		void [...current.work.created];
-		untrack(() => current.reconcileCreateOutcomes());
-	});
 	$effect(() => {
 		const current = session;
 		if (!current) return;
 		const identity = seller?.identity;
 		const accountIdentity = seller?.accountIdentity;
+		const actorVersion = current.transitionVersion;
+		const previewVersion = seller?.discussionPolicy.generation;
+		const canSend = current.captureWriteAccess();
 		const eligible =
 			active &&
 			prepare &&
-			current.feed.authorized &&
-			current.feed.firstPageAccepted &&
+			canSend() &&
+			current.privateAccess &&
 			seller?.visible &&
 			identity &&
 			accountIdentity &&
 			seller?.client;
 		untrack(() =>
 			current.reads.configure(
-				eligible ? JSON.stringify([identity, accountIdentity, token]) : undefined,
 				eligible
-					? (messages) => seller!.markMessagesSeen(identity!, accountIdentity!, messages)
+					? JSON.stringify([identity, accountIdentity, token, actorVersion, previewVersion])
+					: undefined,
+				eligible
+					? (messages) =>
+						canSend()
+							? seller!.markMessagesSeen(identity!, accountIdentity!, messages)
+							: Promise.resolve(false)
 					: undefined
 			)
 		);
-	});
-	$effect(() => {
-		const current = session;
-		if (!current) return;
-		const identity = seller?.identity;
-		const accountIdentity = seller?.accountIdentity;
-		untrack(() => current.recognizeSeller(identity, accountIdentity));
 	});
 </script>

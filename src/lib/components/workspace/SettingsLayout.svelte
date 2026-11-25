@@ -11,11 +11,13 @@
 		role,
 		editCompanyProfile = role === 'admin',
 		presentation,
+		notice,
 		field
 	}: {
 		role?: Role;
 		editCompanyProfile?: boolean;
 		presentation?: WorkspacePresentation;
+		notice?: Snippet;
 		field?: Snippet<[SettingsField]>;
 	} = $props();
 	const cards = $derived([
@@ -39,6 +41,7 @@
 >
 	<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 md:gap-7">
 		<h1 class="text-lg font-medium">Settings</h1>
+		{#if notice}{@render notice()}{/if}
 		{#each cards as card (card.id)}
 			{#if field}{@render field(card)}{:else}<SettingsCardPlaceholder
 					{card}

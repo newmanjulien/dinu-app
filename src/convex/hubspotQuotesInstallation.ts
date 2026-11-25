@@ -1,7 +1,7 @@
 import { ConvexError, v } from 'convex/values';
 import { mutation, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Id } from './_generated/dataModel';
-import { requireMembership } from './auth';
+import { requirePermission } from './auth';
 
 export function quoteInstallationFor(ctx: QueryCtx, companyId: Id<'company'>) {
 	return ctx.db
@@ -28,9 +28,7 @@ export const uninstall = mutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
-		if (access.membership.role !== 'admin')
-			throw new ConvexError('Only admins can uninstall HubSpot Quotes.');
+		const access = await requirePermission(ctx, 'manageIntegrations', args.membershipId);
 		const row = await quoteInstallationFor(ctx, access.companyId);
 		if (!row || row._id !== args.installationId || row.epoch !== args.epoch) {
 			if (row && !row.enabled && row._id === args.installationId) return null;

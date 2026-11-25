@@ -129,30 +129,13 @@ Integration content ships with the website from `src/lib/integrations.ts`; no ca
 
 <a id="backend-ownership-conversion"></a>
 
-## Preserved data and matching client cutover
+## Clean Playbook-only schema and client cutover
 
-The local model has one authoritative contract root and approved document, canonical `playbook | buyer-link` changes with exact current/applied heads, independent review groups, explicit template audiences, bounded operation replay and independent output evidence. Retired publication/terminology converters and old callbacks are absent from the application. Historical runbooks describe superseded models.
+The local model stores flat Playbook `concessions[]` and single `review` state directly on `savedContracts`, auto-syncs `buyerLinks.currentView`, stores anchored buyer-link comments in `discussionThreads`/`discussionMessages`, and uses 2-step `prepare`/`commit` for `wordExports` and `hubspotQuotePushes` with flat 24-hour `operationReceipts`. Materialized contract documents, native change chains, buyer change proposals, `approvalRequests`, `contractOutputs`, and download-acknowledgement journals are removed with no backwards compatibility; deploying to an existing environment requires a clean database reset/re-seed and client reload. Browser storage uses disposable cache `dinu:v9` (IndexedDB 17) and tab-scoped draft journal `dinu:drafts:v7` (envelope version 1).
 
-Use the [preservation-first release procedure](backend-preservation-cutover.md) and its exact outside-repository offline bundle/runbook. For a populated current-schema target, preserve and convert original owners/history without command replay or template recapture. Older/unknown schemas stop release for an actual-schema preservation/disposition plan. A mid-terminology target finishes with its preserved old bundle first. Empty targets still require verified emptiness, external obligations, component keys and old job/client fences. Reset requires its own explicit authorization and coherent recovery/disposition record.
+Manual acceptance after database reset and re-seed includes: creating a contract, applying/removing Playbook concessions via `Apply option` / `Remove option`, requesting approval as a rep, approving/declining from left-margin `ReviewTags` as an admin, verifying buyer link auto-sync on zero pending/rejected concessions and contract rename, posting/replying/deleting comments on base text and applied concession text, confirming overlapping concessions silently remove affected comments while unrelated comments survive renumbering, Word download (seller + buyer), and HubSpot Quotes push. Local type/build/tests cannot certify visual/native provider behavior or browser rendering.
 
-All G01–G25 remain UNVERIFIED. Old callback signatures, current-activity catch-up for advanced company/account markers, real witness/refill deadlines, output/seal/native/cleanup mappings and exact provider/canonical/CSM obligations are mandatory release evidence. No target action occurred locally. Browser namespaces are disposable `dinu:v8` (IndexedDB 16), `dinu:drafts:v6` envelope 12 and independent `dinu:download-acks:v2`. Old envelope 10/11 and malformed originals stay blocked/recoverable for review/export; they are never retimestamped or replayed. Cache invalidation is not intent retirement. New deliberate requests receive `op1` IDs; retry preserves the original ID/input and its seven-day deadline.
-
-Manual acceptance includes the same approved document in all audiences, permitted immediate changes beside unrelated pending work, exact review/support/undo and context requests, logically removed discussions with immediate unread cancellation, output-owned evidence, current displayed-byte buyer downloads, concurrent command/retry/account boundaries, warm navigation and shared copy feedback. Local type/build/tests cannot certify visual/native provider behavior or old running jobs. Preservation conversion and deployment remain separately authorized release steps; reset requires its own explicit decision.
-
-Template authoring and external integration maintenance have independent live procedures:
-
-Before changing generation resolution on a target, inventory current manifests,
-pointer clocks, acknowledged watermarks and active `authoringMigrations` captures.
-Present manifest clocks now own observations, readiness, saves and repair; only
-genuinely missing historical fields fall back to the corresponding pointer clock.
-Classify divergences against retained capture/watermark history and reconcile
-deliberately so acknowledged company clocks never decrease. Do not take a runtime
-maximum or reset clocks. An older active capture whose clock semantics differ must
-restart through `authoringMigration:begin` and complete certification; version,
-source and fingerprint fences remain. Pointer clocks remain output mirrors during
-compatibility. Remove their fields/writes only after historical missing-clock
-manifests and older captures are proven retired; this local implementation does
-not establish those population gates or remove the mirrors.
+Template authoring stores required `authoringGeneration`, `structuralGeneration`, and `validation` directly on `templateVersions`, with `currentTemplate` as a pure `{ companyId, versionId }` pointer; legacy `authoringMigrations` and pointer-clock fallbacks are removed. External integration maintenance retains its own live procedures:
 
 - Cal booking rollout uses the bounded `csmMaintenance:normalize` dry-run/apply
   populations (`attempts`, `appointments`, `companies`), retaining every unresolved

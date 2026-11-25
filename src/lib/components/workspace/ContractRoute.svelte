@@ -118,7 +118,7 @@
 		const opening = helpOpening;
 		const account = accountViewer();
 		const generation = session.transportGeneration;
-		const hidden = account.helpPreferences?.rep;
+		const hidden = account.helpPreferences?.contract;
 		const active = !runtime.paused;
 		if (!opening) return;
 		untrack(() => {
@@ -128,11 +128,11 @@
 					? { kind: 'pending' }
 					: {
 							kind: 'preference',
-							confirmation: 'subscription',
+							variant: 'contract',
 							identity: opening.identity,
 							hidden,
 							save: (hidden) =>
-								client.mutation(api.profiles.setHelpHidden, { variant: 'rep', hidden }),
+								client.mutation(api.profiles.setHelpHidden, { variant: 'contract', hidden }),
 							current: () =>
 								helpOpening === opening &&
 								data.kind === 'saved' &&
@@ -319,7 +319,6 @@
 
 {#if data.kind === 'saved' && !creating && !runtime.paused && helpOpening?.help.open}
 	<HelpModal
-		variant="rep"
 		help={helpOpening.help}
 		isAdmin={accountViewer().membership.role === 'admin'}
 		onClose={() => helpOpening?.help.close()}
@@ -328,7 +327,6 @@
 <div inert={creating} aria-hidden={creating}>
 	<WorkspaceRouteFrame
 		kind="saved"
-		helpVariant="rep"
 		help={helpOpening?.help ?? creationHelp}
 		helpHosted
 		active={!runtime.paused && (creating || Boolean(helpOpening?.help.admitted))}

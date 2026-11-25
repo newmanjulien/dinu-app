@@ -17,7 +17,7 @@ export async function prepareActivity(
 	kind: Infer<typeof hubspotKind>,
 	detail = '',
 	occurredAt = Date.now(),
-	attemptId?: Doc<'hubspotExports'>['_id']
+	attemptId?: Doc<'wordExports'>['_id']
 ) {
 	if (
 		!contract.hubspot ||

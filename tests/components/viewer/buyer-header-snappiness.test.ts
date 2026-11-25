@@ -91,7 +91,7 @@ it('shows seller copy and a reserved avatar circle before the avatar read resolv
 	seller.viewer = {
 		profile: { id: 'profile', name: 'Seller', email: 'seller@example.com' },
 		role: 'admin',
-		helpPreferences: { buyer: true }
+		helpPreferences: { contract: true, buyerLink: true }
 	} as BuyerSeller['viewer'];
 	seller.phase = 'seller';
 	await settle();

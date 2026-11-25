@@ -17,9 +17,7 @@ export class WorkspaceFeedback {
 	private live = $derived.by(() => this.liveNotices());
 	notices = $derived(this.live);
 	attention = $derived(
-		this.live.filter(
-			(notice) => ['Save failed', 'Conflict', 'Paused'].includes(notice.status) || notice.memoryOnly
-		)
+		this.live.filter((notice) => ['Save failed', 'Conflict', 'Paused'].includes(notice.status))
 	);
 	label = $derived(
 		this.attention.length

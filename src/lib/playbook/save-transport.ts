@@ -23,7 +23,7 @@ export const convexSaveTransport =
 	(
 		client: Pick<ConvexClient, 'mutation'>,
 		membershipId: Id<'memberships'>,
-		audience: TemplateAudience = 'rep'
+		audience: TemplateAudience
 	): SaveTransport =>
 	async (operation) => {
 		try {

@@ -117,7 +117,6 @@
 		followScroll = false,
 		panelContent,
 		footerContent,
-		documentActions,
 		reviewTags = [],
 		reviewNavigation,
 		onReviewDecision,
@@ -131,6 +130,7 @@
 		picking = false,
 		allowPlaybookNavigation = true,
 		sourceSelectionEnabled = false,
+		allowBoundarySelection = true,
 		playbookNavigationReady = true,
 		onSelect,
 		onItemIntent,
@@ -160,14 +160,11 @@
 		followScroll?: boolean;
 		panelContent: Snippet;
 		footerContent?: Snippet;
-		documentActions?: Snippet<
-			[HTMLElement, HTMLElement, DocumentHighlightController | undefined, unknown, unknown, boolean]
-		>;
 		reviewTags?: readonly ReviewTag[];
 		reviewNavigation?: ReviewNavigation;
 		onReviewDecision?: (tag: ReviewTag, status: ReviewDecision) => void;
 		selectedConcessions: ConcessionSelection;
-		onRemoveConcession: (itemId: string) => void;
+		onRemoveConcession?: (itemId: string) => void;
 		selectedAnnotationId?: string | null;
 		selectionRequest?: AuthoringSelectionRequest | null;
 		selectedRanges?: readonly SourceTarget[];
@@ -177,6 +174,7 @@
 		picking?: boolean;
 		allowPlaybookNavigation?: boolean;
 		sourceSelectionEnabled?: boolean;
+		allowBoundarySelection?: boolean;
 		playbookNavigationReady?: boolean;
 		onItemIntent?: (itemId: string) => void;
 		onSelect: (itemId: string, annotationId: string) => AnnotationAdmission | boolean | void;
@@ -487,7 +485,8 @@
 	$effect(() => {
 		const stage = viewer.documentStageElement,
 			commit = pageElementsSnapshot,
-			controller = highlights;
+			controller = highlights,
+			boundaries = allowBoundarySelection;
 		if (
 			!active ||
 			!sourceSelectionEnabled ||
@@ -503,7 +502,8 @@
 		let cancelled = false;
 		let selection: DocumentSelectionController | undefined;
 		void tick().then(() => {
-			if (!cancelled) selection = new DocumentSelectionController(stage, commit, controller);
+			if (!cancelled)
+				selection = new DocumentSelectionController(stage, commit, controller, boundaries);
 		});
 		return () => {
 			cancelled = true;
@@ -1202,12 +1202,15 @@
 		const bounds = panelTargetBounds(request.stage, request.target, request.commit);
 		if (perf) {
 			perf.lookupMs = performance.now() - lookupStarted;
-			perf.preparedSourceFacts = request.commit.panelSourceFacts ? 1 : 0;
 			perf.effective = request.commit.view === 'effective' ? 1 : 0;
 		}
 		// Keep the editor mounted through switches, missing DOM and invalid dirty-draft targets.
 		// Only initial opening waits without a fallback position.
-		if (!bounds) return;
+		if (!bounds) {
+			holdFollowUntilPositioned = false;
+			revealPending = false;
+			return;
+		}
 		const geometryStarted = perf ? performance.now() : 0;
 		const top = Math.max(0, bounds.top - request.layout.getBoundingClientRect().top);
 		if (perf) perf.geometryMs = performance.now() - geometryStarted;
@@ -1219,8 +1222,10 @@
 			stage: request.stage,
 			layout: request.layout
 		};
+		holdFollowUntilPositioned = false;
 		if (perf) perf.resolvedAt = performance.now();
 		finishPanelSwitch(request.target);
+		revealIfPending();
 	}
 	function selectAnnotation(
 		itemId: string,
@@ -1325,6 +1330,8 @@
 					recordPanelContentMounted(request.perf);
 				}
 				finishPanelSwitch(request.target);
+				holdFollowUntilPositioned = false;
+				revealIfPending();
 				return;
 			}
 			// Committed pages retry unresolved/reanchoring targets. Same-target previews do no lookup.
@@ -1368,6 +1375,19 @@
 				recordPanelContentMounted(perf);
 			});
 	});
+	// While exiting followScroll to a new target (e.g. a picked secondary passage), keep the panel
+	// sticky for the single tick until panelPosition resolves so it doesn't flash back to its old anchor.
+	let holdFollowUntilPositioned = $state(false);
+	const panelPositionStale = $derived(
+		Boolean(
+			panelPosition &&
+			positioningTarget &&
+			!sameSourceTarget(panelPosition.target, positioningTarget)
+		)
+	);
+	const effectiveFollowScroll = $derived(
+		followScroll || (holdFollowUntilPositioned && panelPositionStale)
+	);
 	async function keepPanelVisible() {
 		const panel = layoutElement?.querySelector<HTMLElement>('[data-workspace-panel]');
 		const held = panelPosition;
@@ -1377,17 +1397,58 @@
 			!active ||
 			!hasPanel ||
 			panelPosition !== held ||
-			followScroll ||
+			effectiveFollowScroll ||
 			layoutElement?.querySelector('[data-workspace-panel]') !== panel
 		)
 			return;
 		revealInDocumentViewport(panel, { block: 'start-if-hidden', inline: 'none' });
 	}
-	let wasFollowingScroll = false;
+	// Leaving scroll-follow, or moving the open editor to another target of the same item
+	// (picking or clearing a concession's other passage), reveals it once repositioned.
+	let revealPending = false;
+	function revealOncePositioned() {
+		const held = panelPosition,
+			target = positioningTarget;
+		if (held && target && sameSourceTarget(held.target, target)) {
+			revealPending = false;
+			void keepPanelVisible();
+		} else revealPending = true;
+	}
+	function revealIfPending() {
+		if (!revealPending) return;
+		revealPending = false;
+		void keepPanelVisible();
+	}
+	let previousPanel: {
+		target: SourceTarget | undefined;
+		annotationId: string | null | undefined;
+		following: boolean;
+	} | null = null;
 	$effect(() => {
-		const following = followScroll;
-		if (active && wasFollowingScroll && !following) untrack(() => void keepPanelVisible());
-		wasFollowingScroll = following;
+		const open = active && hasPanel,
+			target = positioningTarget,
+			annotationId = selectedAnnotationId,
+			following = followScroll;
+		untrack(() => {
+			const previous = previousPanel;
+			previousPanel = open ? { target, annotationId, following } : null;
+			if (!open) {
+				holdFollowUntilPositioned = false;
+				revealPending = false;
+				return;
+			}
+			if (following) {
+				holdFollowUntilPositioned = true;
+				revealPending = false;
+				return;
+			}
+			if (!panelPositionStale) holdFollowUntilPositioned = false;
+			if (!previous) return;
+			const movedWithinItem =
+				previous.annotationId === annotationId &&
+				Boolean(previous.target && target && !sameSourceTarget(previous.target, target));
+			if (previous.following || movedWithinItem) revealOncePositioned();
+		});
 	});
 	function retryRender() {
 		if (onRetry) return onRetry();
@@ -1495,7 +1556,7 @@
 		)
 			return;
 		const artifacts = renderer.artifacts;
-		if (!artifacts?.compatible(commit.source) || commit.source.materialized) return;
+		if (!artifacts?.compatible(commit.source)) return;
 		const focusedItemId = hasPanel
 			? displayedAnnotations.find((item) =>
 					item.annotations.some((annotation) => annotation.id === selectedAnnotationId)
@@ -1863,15 +1924,16 @@
 			continue.
 			{#each requestedModel.conflicts as conflict}
 				{@const item = source.items?.find((item) => item._id === conflict.itemId)}
-				{@const concession = item?.choices.find(
+				{@const concession = item?.concessions.find(
 					(concession) => concession.id === conflict.concession.id
 				)}
 				<button
 					class="ml-2 underline"
-					onclick={interacting ? () => onRemoveConcession(conflict.itemId) : undefined}
-					>Remove “{concession?.description ?? conflict.concession.id}”{item?.origin.kind ===
-						'template' && item.origin.instructions?.summary
-						? ` — ${item.origin.kind === 'template' ? item.origin.instructions?.summary : ''}`
+					onclick={interacting && onRemoveConcession
+						? () => onRemoveConcession(conflict.itemId)
+						: undefined}
+					>Remove “{concession?.description ?? conflict.concession.id}”{item?.instructions.summary
+						? ` — ${item.instructions.summary}`
 						: ''}</button
 				>{/each}
 		</div>
@@ -1955,7 +2017,7 @@
 			{placeholderPages}
 			placeholderGap={PAGE_FORMAT.gap}
 			interactive={!loading && active && (interactive || allowPlaybookNavigation)}
-			{followScroll}
+			followScroll={effectiveFollowScroll}
 			documentHeight={loading ? pageStackHeight(placeholderPages) : displayHeight}
 			{panelTop}
 			{panelPositionChange}
@@ -1965,16 +2027,6 @@
 			{panelContent}
 			{footerContent}
 		/>
-		{#if documentActions && layoutElement && viewer.documentStageElement}
-			{@render documentActions(
-				viewer.documentStageElement,
-				layoutElement,
-				highlights,
-				pageElementsSnapshot,
-				viewer.mountedDomRevision,
-				active && interactive && !loading && viewer.interactionEnabled
-			)}
-		{/if}
 		{#if discussions && layoutElement && viewer.documentStageElement}
 			<svelte:boundary
 				onerror={() => console.error('Document discussions failed', { stage: 'panel' })}

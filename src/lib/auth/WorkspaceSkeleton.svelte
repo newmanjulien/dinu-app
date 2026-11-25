@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import type { Snippet } from 'svelte';
 	import { describeRoute } from './routes';
+	import { permissionsForState, resolveWorkspaceRoute } from './workspace-admission';
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import IntegrationCatalogLayout from '$lib/components/workspace/IntegrationCatalogLayout.svelte';
 	import ContractsLayout from '$lib/components/workspace/ContractsLayout.svelte';
@@ -15,6 +16,7 @@
 	import DocumentSection from '$lib/components/document/DocumentSection.svelte';
 	import UtilityRail from '$lib/components/chrome/UtilityRail.svelte';
 	import type { ToolStates } from '$lib/components/document/document-tools';
+	import TemplateSetupBookingFrame from '$lib/components/template/TemplateSetupBookingFrame.svelte';
 	import TemplateSetupLayout from '$lib/components/template/TemplateSetupLayout.svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
 	import IntegrationDetailsLayout from '$lib/components/workspace/IntegrationDetailsLayout.svelte';
@@ -62,9 +64,19 @@
 				: hints.presentation
 	);
 	const role = $derived(viewer?.membership?.role ?? hints.role);
+	const permissions = $derived(permissionsForState({ permissions: viewer?.permissions, role }));
 	const templateReady = $derived(viewer?.membership ? viewer.templateReady : hints.templateReady);
+	const instructionsReady = $derived(
+		viewer?.membership ? viewer.instructionsReady : presentation?.instructionsReady
+	);
+	const admission = $derived(
+		resolveWorkspaceRoute(route, { permissions, role, templateReady, instructionsReady })
+	);
+	const routeAllowed = $derived(
+		admission.kind === 'allow' && (!route.permission || Boolean(permissions?.[route.permission]))
+	);
 	const integration = $derived(findIntegrationDetails(page.params.slug ?? ''));
-	const creationPending = $derived(route.document === 'new' && templateReady !== false);
+	const creationPending = $derived(route.document === 'new' && routeAllowed);
 	const creationTools: ToolStates = {
 		search: { applicability: 'present', display: 'ready', enabled: false },
 		download: { applicability: 'absent', display: 'ready' },
@@ -77,14 +89,26 @@
 {#if header}
 	<AppHeaderLayout
 		{role}
+		{permissions}
 		templateReady={templateReady ?? false}
 		profile={presentation?.name !== undefined
 			? { name: presentation.name, avatarUrl: presentation.avatarUrl ?? null }
 			: undefined}
 	/>
 {/if}
-{#if route.requiresTemplate && templateReady === false}
-	<TemplateSetupLayout {role} />
+{#if !routeAllowed}
+	<div aria-hidden="true" class="mx-auto grid max-w-md gap-5 px-6 py-16">
+		<SkeletonBlock class="h-7 w-48" />
+		<SkeletonBlock class="h-5 w-full" />
+		<SkeletonBlock class="h-11 w-full rounded-lg" />
+		<SkeletonBlock class="h-11 w-full rounded-lg" />
+	</div>
+{:else if route.presentation === 'template-setup'}
+	{#if viewer?.company?.setupCall?.state === 'scheduled'}
+		<TemplateSetupLayout title="Set up your template" />
+	{:else}
+		<TemplateSetupBookingFrame videoInteractive={false} />
+	{/if}
 {:else if route.document === 'new'}
 	<div inert aria-hidden="true" class="pointer-events-none">
 		<UtilityRail states={creationTools} />
@@ -146,11 +170,11 @@
 		canManage={viewer?.permissions.manageMembers ?? false}
 	/>
 {:else if route.presentation === 'integrations'}
-	<IntegrationCatalogLayout {role} />
+	<IntegrationCatalogLayout />
 {:else if route.presentation === 'guides'}
 	<GuidesLayout {role} />
 {:else if route.presentation === 'integration'}
-	<IntegrationDetailsLayout {role} {integration} />
+	<IntegrationDetailsLayout {integration} />
 {:else}
 	<div aria-hidden="true" class="mx-auto grid max-w-md gap-5 px-6 py-16">
 		<SkeletonBlock class="h-7 w-48" />

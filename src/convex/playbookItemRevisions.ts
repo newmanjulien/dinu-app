@@ -9,6 +9,9 @@ import type { historicalItem } from './playbookValidators';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 
 export type HistoricalItem = Infer<typeof historicalItem>;
+export type UnrevisedDetailRecord = HistoricalItem &
+	Pick<TemplateDetailRecord, 'renderKey'> &
+	Partial<Pick<TemplateDetailRecord, 'lastOperation'>>;
 
 /** Re-read the authoritative owner at every mutable-body write boundary. */
 async function currentMutableVersion(
@@ -43,7 +46,7 @@ export function businessItem(item: TemplateItem): TemplateItem {
 		audience: 'rep',
 		approvalPolicy,
 		trigger,
-		...(instructions === undefined ? {} : { instructions }),
+		instructions,
 		concessions
 	};
 }
@@ -56,9 +59,7 @@ export function snapshotItem(item: HistoricalItem): HistoricalItem {
 		contentRevision: item.contentRevision
 	};
 }
-export function itemRevision(
-	saved: HistoricalItem & Partial<Pick<TemplateDetailRecord, 'lastOperation' | 'renderKey'>>
-) {
+export function itemRevision(saved: UnrevisedDetailRecord) {
 	return {
 		companyId: saved.companyId,
 		itemId: saved._id,
@@ -66,7 +67,7 @@ export function itemRevision(
 		contentRevision: saved.contentRevision,
 		body: businessItem(saved),
 		...(saved.lastOperation ? { lastOperation: saved.lastOperation } : {}),
-		...(saved.renderKey ? { renderKey: saved.renderKey } : {})
+		renderKey: saved.renderKey
 	};
 }
 export function historicalRevision(saved: Doc<'playbookItemRevisions'>): HistoricalItem {
@@ -80,7 +81,7 @@ export function historicalRevision(saved: Doc<'playbookItemRevisions'>): Histori
 }
 export async function storeItemRevision(
 	ctx: MutationCtx,
-	saved: HistoricalItem & Partial<Pick<TemplateDetailRecord, 'lastOperation' | 'renderKey'>>,
+	saved: UnrevisedDetailRecord,
 	mutableVersionId?: Id<'templateVersions'>
 ) {
 	if (mutableVersionId) await currentMutableVersion(ctx, saved.companyId, mutableVersionId);
@@ -93,7 +94,7 @@ export async function storeItemRevision(
 export async function replaceDraftItemRevision(
 	ctx: MutationCtx,
 	revisionId: Id<'playbookItemRevisions'>,
-	saved: HistoricalItem & Partial<Pick<TemplateDetailRecord, 'lastOperation' | 'renderKey'>>,
+	saved: UnrevisedDetailRecord,
 	mutableVersionId: Id<'templateVersions'>
 ) {
 	const [version, previous] = await Promise.all([
@@ -148,6 +149,7 @@ export function compactHead(saved: TemplateDetailRecord) {
 	return {
 		format: 1 as const,
 		companyId: saved.companyId,
+		audience: saved.audience,
 		contentRevision: saved.contentRevision,
 		currentRevisionId: saved.currentRevisionId,
 		...(saved.lastOperation ? { lastOperation: saved.lastOperation } : {}),
@@ -156,14 +158,17 @@ export function compactHead(saved: TemplateDetailRecord) {
 	};
 }
 export function headStructure(head: Doc<'playbookItems'>) {
-	return decodeStructure(head.structure);
+	const structure = decodeStructure(head.structure);
+	if (structure.audience !== head.audience)
+		throw new Error('The stored template item audience does not match its structure.');
+	return structure;
 }
 export function liveRevision(revision: Doc<'playbookItemRevisions'>): TemplateDetailRecord {
 	return {
 		...historicalRevision(revision),
 		currentRevisionId: revision._id,
 		...(revision.lastOperation ? { lastOperation: revision.lastOperation } : {}),
-		renderKey: revision.renderKey ?? revision.itemId
+		renderKey: revision.renderKey
 	};
 }
 export async function hydrateHead(
@@ -182,7 +187,8 @@ export async function hydrateHead(
 		revision.companyId !== head.companyId ||
 		revision.itemId !== head._id ||
 		revision.itemCreatedAt !== head._creationTime ||
-		revision.contentRevision !== head.contentRevision
+		revision.contentRevision !== head.contentRevision ||
+		revision.body.audience !== head.audience
 	)
 		throw new Error('The saved rule revision is missing.');
 	return {
@@ -198,11 +204,13 @@ export async function createAuthoringItem(
 		companyId: Id<'company'>;
 		lastOperation?: TemplateDetailRecord['lastOperation'];
 		renderKey?: string;
+		mutableVersionId?: Id<'templateVersions'>;
 	}
 ): Promise<TemplateDetailRecord> {
 	const initial = {
 		format: 1 as const,
 		companyId: content.companyId,
+		audience: content.audience,
 		contentRevision: 1,
 		...(content.lastOperation ? { lastOperation: content.lastOperation } : {}),
 		renderKey: content.renderKey ?? content.lastOperation?.id ?? '',
@@ -216,7 +224,7 @@ export async function createAuthoringItem(
 	});
 	const id = await ctx.db.insert('playbookItems', initial);
 	const head = (await ctx.db.get('playbookItems', id))!;
-	const saved: TemplateDetailRecord = {
+	const saved: UnrevisedDetailRecord = {
 		...businessItem(content),
 		_id: id,
 		_creationTime: head._creationTime,
@@ -225,8 +233,8 @@ export async function createAuthoringItem(
 		...(content.lastOperation ? { lastOperation: content.lastOperation } : {}),
 		renderKey: initial.renderKey || id
 	};
-	const currentRevisionId = await storeItemRevision(ctx, saved);
-	const next = { ...saved, currentRevisionId };
+	const currentRevisionId = await storeItemRevision(ctx, saved, content.mutableVersionId);
+	const next: TemplateDetailRecord = { ...saved, currentRevisionId };
 	const packedHead = compactHead(next);
 	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(packedHead) });
 	await ctx.db.replace('playbookItems', id, packedHead);

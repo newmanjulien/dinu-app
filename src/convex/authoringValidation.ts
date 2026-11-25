@@ -111,12 +111,12 @@ export function validationCertified(
 		Number.isSafeInteger(facts.readBytes) &&
 		facts.readBytes > 0 &&
 		(!version ||
-			(version.validation?.format === VALIDATION_CODEC_VERSION &&
+			(version.validation.format === VALIDATION_CODEC_VERSION &&
 				version.validation.fingerprint === templateSource.fingerprint &&
 				Number.isSafeInteger(version.headReadBytes) &&
-				version.headReadBytes! >= 0 &&
+				version.headReadBytes >= 0 &&
 				Number.isSafeInteger(version.structureResultBytes) &&
-				version.structureResultBytes! >= 0))
+				version.structureResultBytes >= 0))
 	);
 }
 
@@ -124,27 +124,23 @@ export function validationCertified(
 export async function readValidationFacts(
 	ctx: QueryCtx,
 	templateSource: Doc<'templateSources'>,
-	knownCertificate?: Doc<'templateSourceCertificates'>
+	certificate: Doc<'templateSourceCertificates'>
 ) {
-	const certificate =
-		knownCertificate ??
-		(await readValidationCertificate(ctx, templateSource.companyId, templateSource._id));
 	if (!validationCertified(templateSource, certificate))
 		throw templateRejected('The template source needs authoring certification.');
-	const facts = certificate!;
 	const rows = await ctx.db
 		.query('templateSourceValidationChunks')
 		.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
 			q.eq('companyId', templateSource.companyId).eq('templateSourceId', templateSource._id)
 		)
-		.take(facts.chunkCount + 1);
-	const bytes = new Uint8Array(facts.dataBytes);
+		.take(certificate.chunkCount + 1);
+	const bytes = new Uint8Array(certificate.dataBytes);
 	let cursor = 0,
 		readBytes = 0;
 	for (const [order, row] of rows.entries()) {
 		if (
 			row.order !== order ||
-			row._id !== facts.chunkIds[order] ||
+			row._id !== certificate.chunkIds[order] ||
 			row.templateSourceId !== templateSource._id ||
 			row.companyId !== templateSource.companyId ||
 			cursor + row.data.byteLength > bytes.length
@@ -154,7 +150,11 @@ export async function readValidationFacts(
 		cursor += row.data.byteLength;
 		readBytes += documentBytes(row);
 	}
-	if (rows.length !== facts.chunkCount || cursor !== bytes.length || readBytes !== facts.readBytes)
+	if (
+		rows.length !== certificate.chunkCount ||
+		cursor !== bytes.length ||
+		readBytes !== certificate.readBytes
+	)
 		throw templateRejected('Source validation storage is incomplete.');
 	const decoded = decodeValidationFacts(bytes.buffer);
 	if (decoded.index.orderedBlocks.length !== templateSource.blockCount)
@@ -173,8 +173,7 @@ export const certify = internalMutation({
 	handler: async (ctx, { companyId, versionId }) => {
 		const company = await requireCompany(ctx, companyId),
 			pointer = await currentPointer(ctx, companyId);
-		if (company.authoringMigration || pointer?.versionId !== versionId || !company.templateSourceId)
-			return null;
+		if (pointer?.versionId !== versionId || !company.templateSourceId) return null;
 		const version = await ctx.db.get('templateVersions', versionId),
 			templateSource = await ctx.db.get('templateSources', company.templateSourceId);
 		if (
@@ -189,9 +188,8 @@ export const certify = internalMutation({
 		let certificate = await readValidationCertificate(ctx, companyId, templateSource._id);
 		if (validationCertified(templateSource, certificate, version)) return null;
 		// Only the canonical bulk writer supplies this full-source/body audit proof.
-		// Legacy/repair data must pass the complete scoped migration instead.
 		if (
-			version.validation?.format !== 0 ||
+			version.validation.format !== 0 ||
 			version.validation.fingerprint !== templateSource.fingerprint
 		)
 			return null;
@@ -206,12 +204,13 @@ export const certify = internalMutation({
 		}
 		authoringReadCapacity(version, templateSource, certificate);
 		templateReadCapacity(version, templateSource);
-		const next = {
-			...version,
-			validation: { format: VALIDATION_CODEC_VERSION, fingerprint: templateSource.fingerprint }
-		};
+		const validation = {
+			format: VALIDATION_CODEC_VERSION,
+			fingerprint: templateSource.fingerprint
+		} as const;
+		const next = { ...version, validation };
 		await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(next) });
-		await ctx.db.patch('templateVersions', versionId, { validation: next.validation });
+		await ctx.db.patch('templateVersions', versionId, { validation });
 		return null;
 	}
 });

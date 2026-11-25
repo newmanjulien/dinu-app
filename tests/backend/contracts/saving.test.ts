@@ -5,20 +5,22 @@ import { convexToJson, jsonToConvex } from 'convex/values';
 import type { FunctionArgs, FunctionReturnType } from 'convex/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../../src/convex/_generated/api';
+import type { Id } from '../../../src/convex/_generated/dataModel';
 import type { MutationCtx } from '../../../src/convex/_generated/server';
+import { writeValidationFacts } from '../../../src/convex/authoringValidation';
 import {
 	templateSourceIntegrity,
 	writeTemplateSourceChunks
 } from '../../../src/convex/templateSourceStorage';
 import { writeDirectory } from '../../../src/convex/contractDirectory';
 import { readContract } from '../../../src/convex/contractState';
-import { saveChanges } from '../../../src/convex/contracts';
+import { save } from '../../../src/convex/contracts';
 import { createAuthoringItem } from '../../../src/convex/playbookItemRevisions';
-import { writeContractDocument } from '../../../src/convex/contractDocuments';
-import { createContractDocument } from '../../../src/lib/document/contract-document';
 import schema from '../../../src/convex/schema';
+import { concessionSelectionMap } from '../../../src/lib/contract/changes';
 import { CompiledDocument } from '../../../src/lib/document/compiled-document';
-import { block, commandsFor, identity, initializeViewer, item } from '../../support/contract-data';
+import { VALIDATION_CODEC_VERSION } from '../../../src/lib/document/validation-codec';
+import { block, identity, initializeViewer, item } from '../../support/contract-data';
 
 // Spy at the real compiler boundary, retaining its implementation.
 vi.mock('../../../src/lib/document/compiled-document', { spy: true });
@@ -29,11 +31,12 @@ async function fixture(selected = false) {
 	const { profileId, companyId, membershipId } = await t.run(initializeViewer);
 	const ids = await t.run(async (ctx) => {
 		const { db } = ctx;
+		const integrity = templateSourceIntegrity([block]);
 		const templateSourceId = await db.insert('templateSources', {
 			companyId,
 			state: 'active',
 			source: 'seed',
-			...templateSourceIntegrity([block]),
+			...integrity,
 			issues: [],
 			blockCount: 1,
 			bootstrapKey: 'a'.repeat(64),
@@ -46,17 +49,59 @@ async function fixture(selected = false) {
 			templateSourceId,
 			await writeTemplateSourceChunks(ctx, { companyId, templateSourceId, blocks: [block] })
 		);
+		await writeValidationFacts(ctx, {
+			companyId,
+			templateSourceId,
+			fingerprint: integrity.fingerprint,
+			blocks: [block]
+		});
 		await db.patch('company', companyId, { templateSourceId });
 		const firstItem = await createAuthoringItem(ctx, { ...item, companyId });
-		const secondItem = await createAuthoringItem(ctx, { ...item, companyId });
+		const secondItem = await createAuthoringItem(ctx, {
+			...item,
+			trigger: {
+				id: 'trigger-2',
+				target: {
+					kind: 'text',
+					range: {
+						start: { sourceKey: 'text-1', offset: 10 },
+						end: { sourceKey: 'text-1', offset: 18 }
+					}
+				}
+			},
+			concessions: [
+				{
+					id: 'preferred',
+					tier: 'preferred',
+					description: 'Second synthetic choice.',
+					changes: [
+						{
+							target: {
+								kind: 'text',
+								range: {
+									start: { sourceKey: 'text-1', offset: 10 },
+									end: { sourceKey: 'text-1', offset: 18 }
+								}
+							},
+							replacement: [{ kind: 'text', text: 'agreement' }]
+						}
+					]
+				}
+			],
+			companyId
+		});
 		const foreignItem = await createAuthoringItem(ctx, { ...item, companyId });
 		const first = firstItem._id,
 			second = secondItem._id,
 			foreign = foreignItem._id;
-		const choices = { [first]: 'preferred', [second]: 'preferred' };
+		const choices = { [first]: 'preferred', [second]: 'preferred' } as Record<
+			Id<'playbookItems'>,
+			string
+		>;
 		const references = [firstItem, secondItem].map((saved) => ({
 			itemId: saved._id,
-			revisionId: saved.currentRevisionId!
+			revisionId: saved.currentRevisionId,
+			audience: 'rep' as const
 		}));
 		const templateVersionId = await db.insert('templateVersions', {
 			mutability: 'frozen',
@@ -66,6 +111,11 @@ async function fixture(selected = false) {
 			itemCount: 2,
 			snapshotBytes: 0,
 			contentReadBytes: 0,
+			headReadBytes: 0,
+			structureResultBytes: 0,
+			authoringGeneration: 1,
+			structuralGeneration: 1,
+			validation: { format: VALIDATION_CODEC_VERSION, fingerprint: integrity.fingerprint },
 			items: references,
 			templateSourceId
 		});
@@ -75,37 +125,24 @@ async function fixture(selected = false) {
 			companyId,
 			creatorId: profileId,
 			templateVersionId,
-			documentId: null,
-			documentRevision: 0,
 			stateRevision: 7,
-			playbookSelectionCount: 0,
-			playbookReviewCount: 0,
-			playbookPendingCount: 0,
-			playbookDeclinedCount: 0,
-			reviews: {
-				playbook: { identity: 'initial-playbook' },
-				buyerLink: { identity: 'initial-buyer-link' }
-			},
+			metadataRevision: 7,
+			concessions: [],
+			review: { generation: 0 },
 			savedAt: 123,
 			lastOperation: { id: 'previous-operation', callerId: profileId }
 		});
-		const documentId = await writeContractDocument(ctx, {
-			companyId,
-			contractId: id,
-			documentRevision: 0,
-			document: createContractDocument([block])
-		});
-		await db.patch('savedContracts', id, { documentId });
 		const contract = await readContract(ctx, (await db.get('savedContracts', id))!);
 		await writeDirectory(ctx, contract);
 		return { id, first, second, foreign, choices };
 	});
 	if (selected)
-		await t.mutation(api.contracts.saveChanges, {
+		await t.mutation(api.contracts.save, {
 			membershipId,
 			id: ids.id,
-			operationId: fixtureOperationId('fixture-selection'),
-			commands: commandsFor([], ids.choices, 'fixture-selection')
+			selections: ids.choices,
+			expectedStateRevision: 7,
+			operationId: fixtureOperationId('fixture-selection')
 		});
 	return { t, membershipId, ...ids };
 }
@@ -117,14 +154,13 @@ async function persisted(t: Awaited<ReturnType<typeof fixture>>['t'], id: SaveAr
 	});
 }
 
-type SaveArgs = FunctionArgs<typeof api.contracts.saveChanges>;
-// Convex retains the handler at runtime; its public RegisteredMutation type hides it.
+type SaveArgs = FunctionArgs<typeof api.contracts.save>;
 const handler = (
-	saveChanges as unknown as {
+	save as unknown as {
 		_handler: (
 			ctx: MutationCtx,
 			args: SaveArgs
-		) => Promise<FunctionReturnType<typeof api.contracts.saveChanges>>;
+		) => Promise<FunctionReturnType<typeof api.contracts.save>>;
 	}
 )._handler;
 function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs) {
@@ -134,12 +170,9 @@ function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs
 		writes: 0,
 		receiptWrites: 0,
 		directoryWrites: 0,
-		rootWrites: 0,
-		changeWrites: 0,
-		documentWrites: 0
+		rootWrites: 0
 	};
 	const result = t.run((ctx) => {
-		// Delegate every operation to convex-test; only count this handler's DB calls.
 		const db = new Proxy(ctx.db, {
 			get(target, key, receiver) {
 				if (key === 'query')
@@ -152,28 +185,15 @@ function observeSave(t: Awaited<ReturnType<typeof fixture>>['t'], args: SaveArgs
 				return (...values: unknown[]) => {
 					if (key === 'get' && values[0] === 'playbookItemRevisions') counts.snapshotItems++;
 					if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
-						if (values[0] === 'contractDocuments' || values[0] === 'contractDocumentChunks')
-							counts.documentWrites++;
-						else if (
-							[
-								'contractChanges',
-								'contractChangeContents',
-								'contractChangeHeads',
-								'contractChangeDecisions'
-							].includes(String(values[0]))
-						)
-							counts.changeWrites++;
-						else if (values[0] === 'savedContracts') counts.rootWrites++;
+						if (values[0] === 'savedContracts') counts.rootWrites++;
 						else if (values[0] === 'contractDirectory') counts.directoryWrites++;
-						else if (values[0] === 'operationReceipts' || values[0] === 'operationReceiptChunks')
-							counts.receiptWrites++;
+						else if (values[0] === 'operationReceipts') counts.receiptWrites++;
 						else counts.writes++;
 					}
 					return value.apply(target, values);
 				};
 			}
 		});
-		// Match Convex’s wire normalization while observing the real handler.
 		return handler({ ...ctx, db }, jsonToConvex(convexToJson(args)) as SaveArgs);
 	});
 	return { result, counts };
@@ -189,15 +209,16 @@ describe('saving work', () => {
 	it('acknowledges no-ops and replays without work, but rejects stale competing saves', async () => {
 		const { t, id, choices, membershipId } = await fixture(true);
 		const before = await persisted(t, id);
+		const beforeState = await t.query(api.contracts.state, { membershipId, id });
+		if (!beforeState) throw new Error('Fixture state missing');
 		const args = {
 			membershipId,
 			id,
-			operationId: fixtureOperationId('unchanged-operation'),
-			commands: []
+			selections: choices,
+			expectedStateRevision: beforeState.stateRevision,
+			operationId: fixtureOperationId('unchanged-operation')
 		};
 		const { result, counts } = observeSave(t, args);
-		const beforeState = await t.query(api.contracts.state, { membershipId, id });
-		if (!beforeState) throw new Error('Fixture state missing');
 		const {
 			_id,
 			_creationTime,
@@ -206,6 +227,7 @@ describe('saving work', () => {
 			templateVersionId,
 			savedAt,
 			buyerName,
+			requestDelivery,
 			workBlock,
 			...state
 		} = beforeState;
@@ -216,27 +238,27 @@ describe('saving work', () => {
 			writes: 0,
 			receiptWrites: 0,
 			directoryWrites: 0,
-			rootWrites: 0,
-			changeWrites: 0,
-			documentWrites: 0
+			rootWrites: 0
 		});
 		expect(CompiledDocument).not.toHaveBeenCalled();
-		// Public call and retry preserve the whole persisted document, including savedAt.
-		expect(await t.mutation(api.contracts.saveChanges, args)).toEqual(await result);
+		expect(await t.mutation(api.contracts.save, args)).toEqual(await result);
 		expect(await persisted(t, id)).toEqual(before);
+
 		const changed = {
-			...args,
-			operationId: fixtureOperationId('intervening-operation'),
-			commands: commandsFor(beforeState.playbook, {}, 'intervening-operation')
+			membershipId,
+			id,
+			selections: {},
+			expectedStateRevision: beforeState.stateRevision,
+			operationId: fixtureOperationId('intervening-operation')
 		};
-		const saved = await t.mutation(api.contracts.saveChanges, changed);
+		const saved = await t.mutation(api.contracts.save, changed);
 		const persistedAfterSave = await persisted(t, id);
 		const replay = observeSave(t, changed);
 		expect(await replay.result).toEqual(saved);
 		expect(replay.counts).toEqual(counts);
-		expect(await t.mutation(api.contracts.saveChanges, changed)).toEqual(saved);
+		expect(await t.mutation(api.contracts.save, changed)).toEqual(saved);
 		expect(
-			await t.mutation(api.contracts.saveChanges, {
+			await t.mutation(api.contracts.save, {
 				...changed,
 				operationId: fixtureOperationId('stale')
 			})
@@ -245,36 +267,23 @@ describe('saving work', () => {
 			state: { stateRevision: beforeState.stateRevision + 1 }
 		});
 		expect(await persisted(t, id)).toEqual(persistedAfterSave);
-		expect(await t.mutation(api.contracts.saveChanges, args)).toMatchObject({
-			status: 'saved',
-			state: {
-				stateRevision: beforeState.stateRevision + 1,
-				playbook: expect.arrayContaining(
-					beforeState.playbook.map((head) =>
-						expect.objectContaining({
-							itemId: head.itemId,
-							currentOptionId: null,
-							appliedOptionId: null
-						})
-					)
-				),
-				lastOperationId: fixtureOperationId('intervening-operation')
-			}
-		});
 	});
 
 	it('saves two, zero and one selections without frozen-source reads or compilation', async () => {
 		const { t, id, first, choices, membershipId } = await fixture();
-		let previous: import('../../../src/lib/contract/changes').PlaybookState[] = [];
-		for (const [index, selected] of [choices, {}, { [first]: 'preferred' }].entries()) {
-			const options = selected;
+		for (const [index, selected] of [
+			choices,
+			{} as Record<Id<'playbookItems'>, string>,
+			{ [first]: 'preferred' } as Record<Id<'playbookItems'>, string>
+		].entries()) {
 			const operationId = fixtureOperationId(`changed-operation-${index}`);
-			const changedItems = index === 2 ? 1 : 2;
+			const expectedReads = Object.keys(selected).length;
 			const { result, counts } = observeSave(t, {
 				membershipId,
 				id,
-				operationId,
-				commands: commandsFor(previous, options, operationId)
+				selections: selected,
+				expectedStateRevision: 7 + index,
+				operationId
 			});
 			const saved = await result;
 			expect(saved).toMatchObject({
@@ -282,27 +291,15 @@ describe('saving work', () => {
 				state: { stateRevision: 8 + index, lastOperationId: operationId }
 			});
 			if (saved.status !== 'saved') throw new Error('Save failed');
-			expect(
-				Object.fromEntries(
-					saved.state.playbook
-						.filter((head) => head.currentOptionId !== null)
-						.map((head) => [head.itemId, head.currentOptionId])
-				)
-			).toEqual(options);
-			expect(
-				saved.state.playbook.every(
-					(head) => head.currentChangeId === head.appliedChangeId && head.status === 'approved'
-				)
-			).toBe(true);
+			expect(concessionSelectionMap(saved.state.concessions)).toEqual(selected);
+			expect(saved.state.concessions.every((entry) => entry.status === 'approved')).toBe(true);
 			expect(counts).toEqual({
-				snapshotItems: changedItems,
+				snapshotItems: expectedReads,
 				snapshotBlocks: 0,
 				writes: 0,
-				receiptWrites: changedItems + 1,
+				receiptWrites: 1,
 				directoryWrites: 1,
-				rootWrites: 1,
-				changeWrites: changedItems * 3,
-				documentWrites: 0
+				rootWrites: 1
 			});
 			expect(CompiledDocument).not.toHaveBeenCalled();
 			const stored = await persisted(t, id);
@@ -311,20 +308,23 @@ describe('saving work', () => {
 				lastOperation: { id: operationId }
 			});
 			expect(stored!.root.savedAt).toBeGreaterThan(123);
-			previous = saved.state.playbook;
 		}
 	});
 
 	it('public saves reject foreign items and invalid concessions without changing state', async () => {
 		const { t, id, first, foreign, membershipId } = await fixture();
 		const before = await persisted(t, id);
-		for (const selectedConcessions of [{ [foreign]: 'preferred' }, { [first]: 'invalid' }]) {
+		for (const selections of [
+			{ [foreign]: 'preferred' } as Record<Id<'playbookItems'>, string>,
+			{ [first]: 'invalid' } as Record<Id<'playbookItems'>, string>
+		]) {
 			await expect(
-				t.mutation(api.contracts.saveChanges, {
+				t.mutation(api.contracts.save, {
 					membershipId,
 					id,
-					operationId: fixtureOperationId('invalid-choice'),
-					commands: commandsFor([], selectedConcessions, 'invalid-choice')
+					selections,
+					expectedStateRevision: 7,
+					operationId: fixtureOperationId('invalid-choice')
 				})
 			).rejects.toThrow('This Playbook option is unavailable.');
 		}
@@ -337,19 +337,20 @@ describe('saving work', () => {
 		const args = {
 			membershipId,
 			id,
-			operationId: fixtureOperationId('noop'),
-			commands: []
+			selections: {},
+			expectedStateRevision: 7,
+			operationId: fixtureOperationId('noop')
 		};
 		for (const operationId of ['', '   ', 'x'.repeat(201)])
-			await expect(t.mutation(api.contracts.saveChanges, { ...args, operationId })).rejects.toThrow(
+			await expect(t.mutation(api.contracts.save, { ...args, operationId })).rejects.toThrow(
 				'Invalid operation identity.'
 			);
 		await expect(
-			t.mutation(api.contracts.saveChanges, { ...args, expectedEditRevision: -1 } as never)
+			t.mutation(api.contracts.save, { ...args, expectedEditRevision: -1 } as never)
 		).rejects.toThrow('Unexpected field `expectedEditRevision`');
 		await t.run(async ({ db }) => {
 			await db.delete('savedContracts', id);
 		});
-		expect(await t.mutation(api.contracts.saveChanges, args)).toEqual({ status: 'deleted' });
+		expect(await t.mutation(api.contracts.save, args)).toEqual({ status: 'deleted' });
 	});
 });

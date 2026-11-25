@@ -66,8 +66,7 @@ opening title group. Same-role merges retain that role; mixed-role merges become
 body. Clause-number inheritance is separate. Numbered headings retain their role
 through composition. The optional `numbering.continueSequence: false` marks a
 section number that cannot be inherited by inserted/split body paragraphs. This
-editing policy is independent of presentation roles. Migration preserves the old
-number-inheritance behavior, including newly recognized subsection headings. Every non-table paragraph boundary is eligible for structural
+editing policy is independent of presentation roles. Every non-table paragraph boundary is eligible for structural
 editing, including boundaries between headings.
 
 Word headings use styles based on Heading 2 and titles use a style based on Heading 1.
@@ -99,54 +98,9 @@ Structural title membership is reconciled after merges, transfers and insertions
 Only the surviving opening prefix retains title roles; removed redline sources
 do not determine that prefix.
 
-## Existing templateSources: controlled migration
+## Strict paragraph-role schema
 
-Role repairs affect every view using the permanent template source, including historical
-contracts. Wording, saved concessions, approvals, and source targets remain fixed.
-A repair manifest records previous and proposed roles, the source fingerprint,
-and expected/result fingerprints. Rollback restores roles in the canonical
-paragraph representation; it does not restore the retired schema.
-
-No migration runs from ordinary reads. `templateSourceFormatting` provides scoped
-internal inspection, repair, shape normalization, detached-chunk conversion, and
-version-accounting functions. Mutations refuse the normal strict schema. DOCX
-proposals reanalyze the retained original and require an exact source projection
-match, including order, identities, text, tables, numbering, and references.
-A mismatch or missing original requires an explicitly reviewed manual role map.
-Seed proposals require the checked-in seed to match that same source projection.
-
-Use the reviewed release procedure with normal application activity stopped:
-
-1. Run `node scripts/paragraph-role-transition.mjs prepare` locally. It saves the
-   strict schema and prepares a temporary schema admitting existing records.
-   Deploy that transition through the selected release procedure. The script
-   itself does not deploy or connect to a backend.
-2. For each explicit company/template source, generate a private manifest:
-   `node scripts/template-source-roles.mjs plan --company-id ID --template-source-id ID --deployment dev:EXACT_NAME --file /private/path/roles.json`.
-   Review its `assignments` and paragraph excerpts. `--manual` produces an explicit
-   review starting from existing roles instead of automatic reanalysis.
-3. Apply the reviewed file with
-   `node scripts/template-source-roles.mjs apply --company-id ID --deployment dev:EXACT_NAME --file /private/path/roles.json`.
-   The runner records the intended result before writing, checks stale/source
-   fingerprints, converts remaining prepared templateSources and detached chunks, then
-   recounts historical version byte totals. Each page is bounded and replayable.
-   Seed conversion also verifies the original bootstrap digest; `--seed-items`
-   can supply its original business-item JSONL. Source and chunk IDs stay fixed.
-4. If needed, run the same command with `rollback` while activity remains stopped.
-   The manifest retains the previous roles; writes outside its expected history
-   are rejected. Recounting runs after either operation.
-5. Complete every affected company before restoring the global strict schema.
-   Run `node scripts/paragraph-role-transition.mjs restore`, deploy the strict
-   schema and application, and reload clients before resuming activity.
-
-The runner permits explicitly named development/local writes. Production uses the
-same internal functions through the reviewed production release procedure; the
-runner refuses production writes. No tool resets, seeds, replaces a template source, or
-silently selects a company/deployment.
-
-Confirmed IndexedDB format 11 retires the old source representation. The separate
-version-4 pending-edit journal remains intact. The controlled rollout and reload
-are required because saved version IDs remain unchanged after presentation repair.
+The strict schema stores canonical `role: 'title' | 'heading' | 'body'` paragraphs directly on all `templateSources` chunks. The one-off `templateSourceFormatting` backend module and legacy role-transition scripts (`scripts/template-source-roles.mjs`, `scripts/paragraph-role-transition.mjs`) are removed.
 
 ## Verification
 

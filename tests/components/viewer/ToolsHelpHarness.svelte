@@ -11,50 +11,79 @@
 	import type { DocumentWorkspace } from '../../../src/lib/document/runtime/workspace-context';
 	import SnappinessContext from './SnappinessContext.svelte';
 	import WorkspaceChrome from '../../../src/lib/components/workspace/WorkspaceChrome.svelte';
-	import type { HelpVariant } from '../../../src/lib/components/ui/modal/help-content';
+	import { HelpSession } from '../../../src/lib/components/ui/modal/help-session.svelte';
+	import type { WorkspaceHelpVariant } from '../../../src/lib/components/ui/modal/help-content';
 	let {
 		state,
 		workspace,
-		variant = 'rep',
+		variant = 'contract',
 		buyer,
 		download
 	}: {
 		state: CsmState;
 		workspace: DocumentWorkspace;
-		variant?: Exclude<HelpVariant, 'buyer'>;
+		variant?: WorkspaceHelpVariant;
 		buyer?: BuyerContract;
 		download: () => void;
 	} = $props();
 	untrack(() => {
 		if (buyer) setBuyerContract(buyer);
 	});
-	const connection = createReadQuery(useConvexClient(), api.hubspotConnections.status, {
+	const client = useConvexClient();
+	const contractHelp = new HelpSession();
+	$effect(() => {
+		if (buyer || variant !== 'contract') return;
+		const identity = state.viewer.profile.id;
+		const hidden = state.viewer.helpPreferences.contract;
+		untrack(() =>
+			contractHelp.configure({
+				kind: 'preference',
+				variant: 'contract',
+				identity,
+				hidden,
+				save: (next) =>
+					client.mutation(api.profiles.setHelpHidden, { variant: 'contract', hidden: next }),
+				current: () => true
+			})
+		);
+	});
+	const connection = createReadQuery(client, api.hubspotConnections.status, {
 		membershipId: untrack(() => state.viewer.membership.id)
 	});
 	const deals = new HubSpotDeals({
-		client: useConvexClient(),
+		client,
 		membershipId: untrack(() => state.viewer.membership.id),
 		connection,
 		identity: () => 'fixture'
 	});
-	onDestroy(() => deals.destroy());
+	onDestroy(() => {
+		contractHelp.destroy();
+		deals.destroy();
+	});
 </script>
 
 <SnappinessContext {state} {workspace} {deals}>
 	{#if buyer}
 		<BuyerUtilityRail />
 		<DocumentTools
-			helpVariant="buyer"
 			helpReady={workspace.viewer.interactionEnabled}
 			help={buyer.help}
 			onTools={(tools) => buyer!.bindTools(buyer!.generation, tools)}
 		/>
+	{:else if variant === 'contract'}
+		<WorkspaceChrome
+			kind="saved"
+			help={contractHelp}
+			helpReady={false}
+			settingsHref="/contracts/a/settings"
+			onDownload={download}
+			downloadReason="Preparing document"
+		/>
 	{:else}
 		<WorkspaceChrome
+			kind="template"
 			helpVariant={variant}
 			helpReady={false}
-			settingsHref={variant === 'rep' ? '/contracts/a/settings' : undefined}
-			onDownload={variant === 'rep' ? download : undefined}
 			downloadReason="Preparing document"
 		/>
 	{/if}

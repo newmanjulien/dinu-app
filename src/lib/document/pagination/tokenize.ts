@@ -63,14 +63,6 @@ export function* iterateInlineTokens(
 				...(metadata.generatedOffset !== undefined
 					? { generatedOffset: metadata.generatedOffset + offset }
 					: {}),
-				...(metadata.sourceOrigin && metadata.sourceKind === 'text'
-					? {
-							sourceOrigin: {
-								start: { ...metadata.sourceOrigin.start, offset: metadata.sourceOrigin.start.offset + offset },
-								end: { ...metadata.sourceOrigin.end, offset: metadata.sourceOrigin.start.offset + offset + value.length }
-							}
-						}
-					: {}),
 				...(source && metadata.sourceKind === 'text'
 					? {
 							source: {

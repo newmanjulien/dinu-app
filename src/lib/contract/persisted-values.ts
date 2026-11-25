@@ -1,8 +1,78 @@
-import type { ApprovedContractDocument } from './document-preview';
+import type { SourceBlock } from '../document/model';
+import type { Concession } from '../playbook/model';
 import type { TemplateContent } from '../template/model';
 import { MAX_DOCUMENT_BLOCKS, MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
+import {
+	hasMeaningfulReplacement,
+	hasRepItemContent,
+	isNonBlankText,
+	isValidPlaybookId,
+	isValidSourceOffset,
+	PLAYBOOK_INSTRUCTION_KEYS
+} from '../playbook/item-content-predicates';
 import type { ContractState, ReadyContract } from './saved';
+import type { ContractWorkBlock } from './work-policy';
 import { MAX_STORAGE_ARRAY_ENTRIES } from '../document/storage-limits';
+
+// Compile-time exhaustive mirrors of Convex literal unions, with zero runtime validator imports.
+const WORK_BLOCKS: Record<ContractWorkBlock, true> = {
+	'association-required': true,
+	'deal-unavailable': true
+};
+const HUBSPOT_AVAILABILITIES: Record<NonNullable<ContractState['hubspot']>['availability'], true> =
+	{
+		available: true,
+		unavailable: true
+	};
+const CONCESSION_STATUSES: Record<ContractState['concessions'][number]['status'], true> = {
+	pending: true,
+	approved: true,
+	rejected: true
+};
+const CONCESSION_TIERS: Record<Concession['tier'], true> = {
+	preferred: true,
+	rare: true
+};
+const PARAGRAPH_ROLES: Record<Extract<SourceBlock, { kind: 'paragraph' }>['role'], true> = {
+	title: true,
+	heading: true,
+	body: true
+};
+const TABLE_VARIANTS: Record<
+	NonNullable<Extract<SourceBlock, { kind: 'table' }>['variant']>,
+	true
+> = {
+	signature: true
+};
+const NUMBERING_STYLES: Record<NonNullable<SourceBlock['numbering']>['style'], true> = {
+	decimal: true,
+	'lower-alpha': true,
+	'lower-roman': true,
+	'upper-alpha': true,
+	'upper-roman': true
+};
+const ALPHABETIC_STYLES: Record<
+	NonNullable<NonNullable<SourceBlock['numbering']>['alphabeticStyle']>,
+	true
+> = {
+	sequential: true,
+	repeated: true
+};
+const PATTERN_CASES: Record<
+	NonNullable<
+		Extract<
+			NonNullable<SourceBlock['numbering']>['labelPattern'][number],
+			{ level: number }
+		>['case']
+	>,
+	true
+> = {
+	upper: true,
+	lower: true
+};
+function hasEnumKey<K extends string>(table: Record<K, true>, value: unknown): value is K {
+	return typeof value === 'string' && Object.hasOwn(table, value);
+}
 
 // Disk data is unknown even though network data is validated by Convex. These
 // checks describe the persisted domain, without interpreting a schema language
@@ -22,39 +92,36 @@ function array(
 	max = MAX_STORAGE_ARRAY_ENTRIES
 ) {
 	if (!Array.isArray(value) || value.length > max) return false;
-	// Visit holes as undefined too: a sparse disk array is not valid content.
 	for (const entry of value) if (!check(entry)) return false;
 	return true;
 }
-function validCompletion(value: unknown) {
+function validReviewRequest(value: unknown) {
 	return (
 		value === undefined ||
 		(object(value) &&
-			Object.keys(value).length === 2 &&
-			text(value.reviewIdentity) &&
-			object(value.completion) &&
-			((Object.keys(value.completion).length === 2 &&
-				value.completion.kind === 'awaitingConfirmation' &&
-				text(value.completion.reviewerId)) ||
-				(Object.keys(value.completion).length === 2 &&
-					value.completion.kind === 'queued' &&
-					text(value.completion.deliveryId))))
+			natural(value.generation) &&
+			text(value.deliveryId) &&
+			text(value.requesterId) &&
+			finite(value.requestedAt))
 	);
 }
-function validReviewGroup(value: unknown) {
+function validReviewCompletion(value: unknown) {
 	return (
-		object(value) &&
-		text(value.identity) &&
-		Object.keys(value).every((key) => key === 'identity' || key === 'completion') &&
-		validCompletion(value.completion)
+		value === undefined ||
+		(object(value) &&
+			natural(value.generation) &&
+			((value.kind === 'awaitingConfirmation' &&
+				text(value.reviewerId) &&
+				finite(value.decidedAt)) ||
+				(value.kind === 'queued' && text(value.deliveryId))))
 	);
 }
-function validReviews(value: unknown) {
+function validReview(value: unknown) {
 	return (
 		object(value) &&
-		Object.keys(value).length === 2 &&
-		validReviewGroup(value.playbook) &&
-		validReviewGroup(value.buyerLink)
+		natural(value.generation) &&
+		validReviewRequest(value.request) &&
+		validReviewCompletion(value.completion)
 	);
 }
 function validHubSpot(value: unknown) {
@@ -66,34 +133,30 @@ function validHubSpot(value: unknown) {
 			text(value.dealId) &&
 			natural(value.generation) &&
 			value.generation > 0 &&
-			(value.availability === 'available' || value.availability === 'unavailable'))
+			hasEnumKey(HUBSPOT_AVAILABILITIES, value.availability))
 	);
 }
 export function validContractState(value: unknown): value is ContractState {
 	return (
 		object(value) &&
 		text(value.title) &&
-		text(value.documentId) &&
-		validReviews(value.reviews) &&
-		natural(value.documentRevision) &&
+		validReview(value.review) &&
 		natural(value.stateRevision) &&
+		natural(value.metadataRevision) &&
 		validHubSpot(value.hubspot) &&
 		(value.workBlock === undefined ||
 			value.workBlock === null ||
-			value.workBlock === 'association-required' ||
-			value.workBlock === 'deal-unavailable') &&
+			hasEnumKey(WORK_BLOCKS, value.workBlock)) &&
 		(value.lastOperationId === null || text(value.lastOperationId)) &&
 		array(
-			value.playbook,
+			value.concessions,
 			(entry) =>
 				object(entry) &&
 				text(entry.itemId) &&
-				(entry.currentChangeId === null || text(entry.currentChangeId)) &&
-				(entry.appliedChangeId === null || text(entry.appliedChangeId)) &&
-				(entry.currentOptionId === null || text(entry.currentOptionId)) &&
-				(entry.appliedOptionId === null || text(entry.appliedOptionId)) &&
-				(entry.decisionId === null || text(entry.decisionId)) &&
-				(entry.status === 'pending' || entry.status === 'approved' || entry.status === 'rejected'),
+				text(entry.optionId) &&
+				hasEnumKey(CONCESSION_STATUSES, entry.status) &&
+				(entry.reviewedBy === undefined || text(entry.reviewedBy)) &&
+				(entry.reviewedAt === undefined || finite(entry.reviewedAt)),
 			MAX_PLAYBOOK_ITEMS
 		)
 	);
@@ -114,7 +177,12 @@ export function validContractMetadata(value: unknown, id: string): value is Meta
 }
 
 function point(value: unknown) {
-	return object(value) && text(value.sourceKey) && finite(value.offset);
+	return (
+		object(value) &&
+		text(value.sourceKey) &&
+		typeof value.offset === 'number' &&
+		isValidSourceOffset(value.offset)
+	);
 }
 function range(value: unknown) {
 	return object(value) && point(value.start) && point(value.end);
@@ -135,7 +203,7 @@ function pattern(value: unknown) {
 				? Object.keys(part).every((key) => key === 'text') && text(part.text)
 				: Object.keys(part).every((key) => ['level', 'case', 'minimumDigits'].includes(key)) &&
 					finite(part.level) &&
-					(part.case === undefined || part.case === 'upper' || part.case === 'lower') &&
+					(part.case === undefined || hasEnumKey(PATTERN_CASES, part.case)) &&
 					(part.minimumDigits === undefined || finite(part.minimumDigits)))
 	);
 }
@@ -176,14 +244,8 @@ function numbering(value: unknown) {
 		pattern(value.labelPattern) &&
 		(value.referencePattern === undefined || pattern(value.referencePattern)) &&
 		(value.minimumDigits === undefined || finite(value.minimumDigits)) &&
-		(value.alphabeticStyle === undefined ||
-			value.alphabeticStyle === 'sequential' ||
-			value.alphabeticStyle === 'repeated') &&
-		(value.style === 'decimal' ||
-			value.style === 'lower-alpha' ||
-			value.style === 'lower-roman' ||
-			value.style === 'upper-alpha' ||
-			value.style === 'upper-roman')
+		(value.alphabeticStyle === undefined || hasEnumKey(ALPHABETIC_STYLES, value.alphabeticStyle)) &&
+		hasEnumKey(NUMBERING_STYLES, value.style)
 	);
 }
 function block(value: unknown) {
@@ -199,7 +261,7 @@ function block(value: unknown) {
 	switch (value.kind) {
 		case 'paragraph':
 			return (
-				(value.role === 'title' || value.role === 'heading' || value.role === 'body') &&
+				hasEnumKey(PARAGRAPH_ROLES, value.role) &&
 				(value.anchor === undefined || text(value.anchor)) &&
 				value.level === undefined &&
 				array(value.content, inline)
@@ -207,7 +269,7 @@ function block(value: unknown) {
 		case 'table':
 			return (
 				value.numbering === undefined &&
-				(value.variant === undefined || value.variant === 'signature') &&
+				(value.variant === undefined || hasEnumKey(TABLE_VARIANTS, value.variant)) &&
 				natural(value.headerRowCount) &&
 				array(value.rows, (row) => array(row, (cell) => typeof cell === 'string'))
 			);
@@ -215,11 +277,11 @@ function block(value: unknown) {
 			return false;
 	}
 }
-function instructions(value: unknown) {
+function instructions(value: unknown): value is Record<string, string | undefined> {
 	return (
 		object(value) &&
-		['summary', 'howToExplainToBuyers', 'commonObjections', 'negotiation'].every(
-			(key) => value[key] === undefined || text(value[key])
+		PLAYBOOK_INSTRUCTION_KEYS.every(
+			(key) => value[key] === undefined || (text(value[key]) && isNonBlankText(value[key]))
 		)
 	);
 }
@@ -232,36 +294,48 @@ function item(value: unknown, companyId: string) {
 		natural(value.contentRevision) &&
 		object(value.trigger) &&
 		text(value.trigger.id) &&
+		isValidPlaybookId(value.trigger.id) &&
 		sourceTarget(value.trigger.target) &&
 		(value.audience === 'buyer'
 			? object(value.trigger.target) &&
 				value.trigger.target.kind === 'text' &&
 				text(value.explanation) &&
-				Boolean(value.explanation.trim())
+				isNonBlankText(value.explanation)
 			: value.audience === 'rep' &&
 				object(value.approvalPolicy) &&
 				(value.approvalPolicy.kind === 'none' ||
 					(value.approvalPolicy.kind === 'required' &&
 						text(value.approvalPolicy.instructions) &&
-						Boolean(value.approvalPolicy.instructions.trim()))) &&
-				sourceTarget(value.trigger.target) &&
-				(value.instructions === undefined || instructions(value.instructions)) &&
+						isNonBlankText(value.approvalPolicy.instructions))) &&
+				instructions(value.instructions) &&
 				array(
 					value.concessions,
 					(concession) =>
 						object(concession) &&
 						text(concession.id) &&
+						isValidPlaybookId(concession.id) &&
 						text(concession.description) &&
-						(concession.tier === 'preferred' || concession.tier === 'rare') &&
+						isNonBlankText(concession.description) &&
+						hasEnumKey(CONCESSION_TIERS, concession.tier) &&
 						array(
 							concession.changes,
 							(change) =>
 								object(change) &&
 								sourceTarget(change.target) &&
-								array(change.replacement, replacement),
+								array(change.replacement, replacement) &&
+								((change.target as { kind: string }).kind !== 'boundary' ||
+									hasMeaningfulReplacement(
+										change.replacement as Parameters<typeof hasMeaningfulReplacement>[0]
+									)),
 							2
-						)
-				))
+						) &&
+						(concession.changes as unknown[]).length > 0
+				) &&
+				hasRepItemContent({
+					instructions: value.instructions,
+					approvalPolicy: value.approvalPolicy as { kind: 'none' | 'required' },
+					concessions: value.concessions as unknown[]
+				}))
 	);
 }
 
@@ -297,60 +371,5 @@ export function validSnapshot(value: unknown, id: string): value is ReadyContrac
 		value.id === id &&
 		validContractMetadata(value.contract, id) &&
 		validTemplate(value.snapshot, value.contract.companyId)
-	);
-}
-
-/** Immutable approved transport remains disposable and cannot authorize access or commands. */
-export function validApprovedDocument(
-	value: unknown,
-	documentId: string
-): value is ApprovedContractDocument {
-	if (
-		!object(value) ||
-		value.documentId !== documentId ||
-		!natural(value.documentRevision) ||
-		!text(value.displayIdentity) ||
-		!object(value.document)
-	)
-		return false;
-	const doc = value.document;
-	const interval = (value: unknown) =>
-		object(value) &&
-		text(value.sourceKey) &&
-		natural(value.start) &&
-		natural(value.end) &&
-		value.end >= value.start;
-	return (
-		array(doc.blocks, block, MAX_DOCUMENT_BLOCKS) &&
-		array(doc.pieceGroups, (group) =>
-			array(
-				group,
-				(piece) =>
-					object(piece) &&
-					text(piece.sourceKey) &&
-					interval(piece.origin) &&
-					(piece.originalRangeGroups === undefined ||
-						array(piece.originalRangeGroups, (ranges) => array(ranges, interval)))
-			)
-		) &&
-		array(doc.aliasGroups, (group) =>
-			array(group, (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(text))
-		) &&
-		array(doc.removedBlockGroups, (group) => array(group, text)) &&
-		Array.isArray(doc.blocks) &&
-		Array.isArray(doc.pieceGroups) &&
-		doc.blocks.length === doc.pieceGroups.length &&
-		array(value.hiddenItemIds, text) &&
-		array(
-			value.projectedTargets,
-			(entry) =>
-				object(entry) &&
-				text(entry.itemId) &&
-				sourceTarget(entry.trigger) &&
-				array(
-					entry.choices,
-					(choice) => object(choice) && text(choice.id) && array(choice.targets, sourceTarget)
-				)
-		)
 	);
 }

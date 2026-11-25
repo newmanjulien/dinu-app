@@ -22,13 +22,11 @@ export async function retireCompanyHubSpot(
 				.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
 			{
 				beforeDelete: async (row) => {
-					if (row.format === 'full' && row.workId) await pool.cancel(ctx, row.workId as WorkId);
-					return row.format === 'compact' || quoteRunningUntil(row) <= Date.now();
+					if (row.workId) await pool.cancel(ctx, row.workId as WorkId);
+					return quoteRunningUntil(row) <= Date.now();
 				},
 				afterDelete: async (row) => {
-					if (row.format === 'full')
-						for (const fileId of [row.fileId, row.deletingFileId])
-							if (fileId) await deleteUnownedFile(ctx, fileId);
+					if (row.fileId) await deleteUnownedFile(ctx, row.fileId);
 				}
 			}
 		))

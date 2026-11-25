@@ -1,16 +1,19 @@
 import { v } from 'convex/values';
 import { hubspotDestination } from './hubspotValidators';
-import { reservationManifest } from './outputValidators';
-import { exportRequest } from './savedContractValidators';
-
-export const quoteRequest = exportRequest.extend({ destination: hubspotDestination });
-/** The immutable source/actor/destination request lives in its durable output. */
-export const quoteReservation = reservationManifest;
 
 export const quoteScopes = ['crm.objects.quotes.read', 'crm.objects.quotes.write'] as const;
 export const hasQuoteScopes = (scopes: readonly string[]) =>
 	quoteScopes.every((scope) => scopes.includes(scope));
 export const oauthPurpose = v.union(v.literal('base'), v.literal('quotes'));
+
+export const quoteRequest = v.object({
+	membershipId: v.id('memberships'),
+	id: v.id('savedContracts'),
+	operationId: v.string(),
+	expectedStateRevision: v.number(),
+	destination: hubspotDestination
+});
+
 export const quoteInstallation = v.object({
 	companyId: v.id('company'),
 	connectionId: v.id('hubspotConnections'),
@@ -20,6 +23,7 @@ export const quoteInstallation = v.object({
 	installedAt: v.number(),
 	installerId: v.id('profiles')
 });
+
 export const quoteState = v.union(
 	v.literal('queued'),
 	v.literal('dispatched'),
@@ -30,6 +34,7 @@ export const quoteState = v.union(
 	v.literal('attention'),
 	v.literal('retired')
 );
+
 export const quoteProviderFailure = v.object({
 	capturedAt: v.number(),
 	expiresAt: v.number(),
@@ -47,13 +52,18 @@ export const quoteProviderFailure = v.object({
 	code: v.optional(v.string()),
 	correlationId: v.optional(v.string())
 });
-export const fullQuotePush = v.object({
-	format: v.literal('full'),
+
+export const quotePush = v.object({
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
-	outputId: v.id('contractOutputs'),
-	documentId: v.id('contractDocuments'),
-	// Indexed provider destination stays operational; immutable source/actor lives on the output.
+	templateVersionId: v.id('templateVersions'),
+	stateRevision: v.number(),
+	title: v.string(),
+	membershipId: v.id('memberships'),
+	profileId: v.id('profiles'),
+	actor: v.object({ name: v.string(), email: v.string() }),
+	installationId: v.id('hubspotQuoteInstallations'),
+	installationEpoch: v.number(),
 	destination: hubspotDestination,
 	canonicalKey: v.string(),
 	fingerprint: v.string(),
@@ -63,7 +73,6 @@ export const fullQuotePush = v.object({
 	settledAt: v.optional(v.number()),
 	dispatchedAt: v.optional(v.number()),
 	fileId: v.optional(v.id('_storage')),
-	deletingFileId: v.optional(v.id('_storage')),
 	payloadExpiresAt: v.optional(v.number()),
 	dueAt: v.optional(v.number()),
 	claim: v.optional(v.string()),
@@ -77,29 +86,7 @@ export const fullQuotePush = v.object({
 	providerFailure: v.optional(quoteProviderFailure),
 	recoveryEvidence: v.optional(v.string())
 });
-export const compactQuotePush = fullQuotePush
-	.pick(
-		'companyId',
-		'contractId',
-		'outputId',
-		'destination',
-		'canonicalKey',
-		'fingerprint',
-		'payloadHash',
-		'settledAt',
-		'updatedAt',
-		'dispatchedAt',
-		'quoteId',
-		'previousQuoteId',
-		'url',
-		'message'
-	)
-	.extend({
-		format: v.literal('compact'),
-		settledAt: v.number(),
-		state: v.union(v.literal('verified'), v.literal('rejected'), v.literal('retired'))
-	});
-export const quotePush = v.union(fullQuotePush, compactQuotePush);
+
 export const quoteSummary = v.object({
 	id: v.id('hubspotQuotePushes'),
 	state: quoteState,

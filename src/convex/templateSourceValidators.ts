@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { issue } from './templateUploadValidators';
+import { issue } from './templateSetupValidators';
 
 const common = v.object({
 	companyId: v.id('company'),

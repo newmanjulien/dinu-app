@@ -1,18 +1,16 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
-	import { useConvexClient } from 'convex-svelte';
-	import { api } from '../../../convex/_generated/api';
-	import { HelpSession, type HelpPolicy } from '$lib/components/ui/modal/help-session.svelte';
+	import { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
 	import DocumentTools from '$lib/components/document/DocumentTools.svelte';
 	import type { DocumentWorkspace } from '$lib/document/runtime/workspace-context';
-	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
+	import type { TemplateHelpVariant } from '$lib/components/ui/modal/help-content';
 	import { useHubSpotDeals } from '$lib/hubspot-deals.svelte';
 	import type { ToolState } from '$lib/components/document/document-tools';
 	let {
+		kind,
 		helpVariant,
 		helpReady,
-		help = new HelpSession(),
+		help,
 		helpHosted = false,
 		onDownload,
 		downloadReason = null,
@@ -20,7 +18,8 @@
 		workspace,
 		interactionOwner
 	}: {
-		helpVariant: Exclude<HelpVariant, 'buyer'>;
+		kind: 'saved' | 'template';
+		helpVariant?: TemplateHelpVariant;
 		helpReady: boolean;
 		help?: HelpSession;
 		helpHosted?: boolean;
@@ -30,12 +29,9 @@
 		workspace?: DocumentWorkspace;
 		interactionOwner?: symbol;
 	} = $props();
-	const accountViewer = useViewer();
-	const session = useViewerSession();
-	const client = useConvexClient();
 	const connection = useHubSpotDeals()?.connection;
 	const downloadState = $derived<ToolState | undefined>(
-		helpVariant !== 'rep'
+		kind !== 'saved'
 			? undefined
 			: connection?.error
 				? {
@@ -52,36 +48,19 @@
 							enabled: Boolean(onDownload) && !downloadReason
 						}
 	);
-	onDestroy(() => {
-		if (!helpHosted) help.destroy();
-	});
+	const ownedHelp = new HelpSession();
+	const activeHelp = $derived(help ?? ownedHelp);
+	onDestroy(() => ownedHelp.destroy());
 	$effect(() => {
-		if (helpHosted) return;
-		let policy: HelpPolicy = { kind: 'manual' };
-		if (helpVariant === 'rep') {
-			const account = accountViewer();
-			const identity = account.profile.id;
-			const generation = session.transportGeneration;
-			policy = {
-				kind: 'preference',
-				confirmation: 'subscription',
-				identity,
-				hidden: account.helpPreferences.rep,
-				save: (hidden) => client.mutation(api.profiles.setHelpHidden, { variant: 'rep', hidden }),
-				current: () =>
-					accountViewer().profile.id === identity &&
-					session.transportGeneration === generation &&
-					!session.closing
-			};
-		}
-		untrack(() => help.configure(policy));
+		if (help || !helpVariant) return;
+		const variant = helpVariant;
+		untrack(() => ownedHelp.configure({ kind: 'manual', variant }));
 	});
 </script>
 
 <DocumentTools
-	{helpVariant}
 	{helpReady}
-	{help}
+	help={activeHelp}
 	{helpHosted}
 	{downloadState}
 	{onDownload}
@@ -89,5 +68,4 @@
 	{settingsHref}
 	{workspace}
 	{interactionOwner}
-	isAdmin={helpVariant === 'rep' && accountViewer().membership.role === 'admin'}
 />

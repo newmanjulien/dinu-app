@@ -122,6 +122,8 @@ export class TemplateAuthoringSession {
 	private disposed = false;
 	private source: (() => AuthoringSource) | null = null;
 	private editor = $state.raw<AuthoringController | null>(null);
+	// The controller outlives the route that first reads it, so its deriveds need a session-owned root.
+	private releaseEditor?: () => void;
 	private trackedEntry: object | null = null;
 	private entrySource: AuthoringSourceIdentity | null = null;
 	private selectedId = $state<string | null>(null);
@@ -146,7 +148,7 @@ export class TemplateAuthoringSession {
 			client: SnapshotClient & Pick<ConvexClient, 'mutation'>;
 			membershipId: Id<'memberships'>;
 			companyId: Id<'company'>;
-			audience?: TemplateAudience;
+			audience: TemplateAudience;
 			templateSource: TemplateSource;
 			registerEditor: (editor: SessionEditor) => () => void;
 		}
@@ -210,7 +212,7 @@ export class TemplateAuthoringSession {
 			for (const id of this.details.keys()) this.releaseDetail(id, true);
 			this.writtenView = undefined;
 			this.writtenDetails.clear();
-			this.sourceRead.storage?.clearTemplates(this.options.audience ?? 'rep');
+			this.sourceRead.storage?.clearTemplates(this.options.audience);
 		}
 		this.available = available;
 		this.frozen = frozen;
@@ -239,27 +241,32 @@ export class TemplateAuthoringSession {
 	get controller() {
 		if (!this.editor) {
 			const owner = this;
-			if (!this.Controller)
+			const Controller = this.Controller;
+			if (!Controller)
 				throw new Error('Open the template editor before creating a template draft.');
-			this.editor = new this.Controller(
-				() => this.source?.() ?? unavailable,
-				{
-					get available() {
-						return owner.canSubmit;
+			let editor!: AuthoringController;
+			this.releaseEditor = $effect.root(() => {
+				editor = new Controller(
+					() => this.source?.() ?? unavailable,
+					{
+						get available() {
+							return owner.canSubmit;
+						},
+						get reason() {
+							if (!owner.available) return owner.copy.unavailable;
+							if (owner.frozen || owner.suspended) return 'Waiting for your account to be ready…';
+							if (owner.slot?.phase === 'recovery')
+								return 'Restore or discard the retained draft before saving another draft.';
+							if (owner.slot)
+								return 'Wait for the submitted save to finish before saving another draft.';
+							return owner.structureError || owner.copy.refreshing;
+						},
+						submit: (operation, recovery) => this.submit(operation, recovery)
 					},
-					get reason() {
-						if (!owner.available) return owner.copy.unavailable;
-						if (owner.frozen || owner.suspended) return 'Waiting for your account to be ready…';
-						if (owner.slot?.phase === 'recovery')
-							return 'Restore or discard the retained draft before saving another draft.';
-						if (owner.slot)
-							return 'Wait for the submitted save to finish before saving another draft.';
-						return owner.structureError || owner.copy.refreshing;
-					},
-					submit: (operation, recovery) => this.submit(operation, recovery)
-				},
-				this.options.audience
-			);
+					this.options.audience
+				);
+			});
+			this.editor = editor;
 		}
 		return this.editor;
 	}
@@ -433,7 +440,7 @@ export class TemplateAuthoringSession {
 						contentRevision: operation.request.expectedContentRevision + 1,
 						renderKey: old?.renderKey ?? operation.request.operationId
 					};
-		const projected = this.projectItemStructure(record, record.renderKey ?? old?.renderKey);
+		const projected = this.projectItemStructure(record, record.renderKey);
 		return {
 			...base,
 			items: old
@@ -958,7 +965,7 @@ export class TemplateAuthoringSession {
 					this.storageEpoch++;
 					this.structure = null;
 					for (const id of this.details.keys()) this.releaseDetail(id, true);
-					this.sourceRead.storage?.clearTemplates(this.options.audience ?? 'rep');
+					this.sourceRead.storage?.clearTemplates(this.options.audience);
 					this.structureRejected = true;
 					this.structureError = this.copy.refreshFailed;
 					this.syncSubscriptions();
@@ -1097,11 +1104,7 @@ export class TemplateAuthoringSession {
 				entry.observed = false;
 				this.rejectedDetails.add(id);
 				if (this.structure)
-					this.sourceRead.storage?.forgetTemplateDetail(
-						this.options.audience ?? 'rep',
-						this.structure,
-						id
-					);
+					this.sourceRead.storage?.forgetTemplateDetail(this.options.audience, this.structure, id);
 				entry.snapshot = undefined;
 				entry.bytes = 0;
 				if (this.pinnedIds().has(id)) {
@@ -1124,7 +1127,7 @@ export class TemplateAuthoringSession {
 		if (!storage || this.hydrated || !this.available) return;
 		this.hydrated = true;
 		const epoch = this.storageEpoch;
-		void storage.readTemplateView(this.options.audience ?? 'rep').then((pair) => {
+		void storage.readTemplateView(this.options.audience).then((pair) => {
 			if (
 				!pair ||
 				this.disposed ||
@@ -1147,7 +1150,7 @@ export class TemplateAuthoringSession {
 		const requested = this.requestedSelection,
 			retained = this.details.get(id),
 			token = retained?.token;
-		void storage.readTemplateDetail(this.options.audience ?? 'rep', base, id).then((snapshot) => {
+		void storage.readTemplateDetail(this.options.audience, base, id).then((snapshot) => {
 			if (
 				!snapshot ||
 				this.disposed ||
@@ -1182,32 +1185,29 @@ export class TemplateAuthoringSession {
 		if (!this.available || !this.sourceRead.storage || this.writtenView === structure) return;
 		this.scheduledView?.();
 		const epoch = this.storageEpoch;
-		this.scheduledView = this.sourceRead.scheduleStorage(
-			'view:' + (this.options.audience ?? 'rep'),
-			() => {
-				this.scheduledView = undefined;
-				if (
-					this.disposed ||
-					epoch !== this.storageEpoch ||
-					!this.current ||
-					this.structure !== structure ||
-					this.templateSource.data !== prose
-				)
-					return;
-				this.writtenView = structure;
-				this.sourceRead.storage!.writeTemplateView(
-					this.options.audience ?? 'rep',
-					prose,
-					structure,
-					() =>
-						!this.disposed &&
-						this.available &&
-						epoch === this.storageEpoch &&
-						this.structure === structure
-				);
-				for (const id of this.recentIds) this.scheduleDetail(id);
-			}
-		);
+		this.scheduledView = this.sourceRead.scheduleStorage('view:' + this.options.audience, () => {
+			this.scheduledView = undefined;
+			if (
+				this.disposed ||
+				epoch !== this.storageEpoch ||
+				!this.current ||
+				this.structure !== structure ||
+				this.templateSource.data !== prose
+			)
+				return;
+			this.writtenView = structure;
+			this.sourceRead.storage!.writeTemplateView(
+				this.options.audience,
+				prose,
+				structure,
+				() =>
+					!this.disposed &&
+					this.available &&
+					epoch === this.storageEpoch &&
+					this.structure === structure
+			);
+			for (const id of this.recentIds) this.scheduleDetail(id);
+		});
 	}
 	private scheduleDetail(id: string) {
 		const storage = this.sourceRead.storage,
@@ -1228,36 +1228,33 @@ export class TemplateAuthoringSession {
 		const epoch = this.storageEpoch;
 		this.scheduledDetails.set(
 			id,
-			this.sourceRead.scheduleStorage(
-				'detail:' + (this.options.audience ?? 'rep') + ':' + id,
-				() => {
-					this.scheduledDetails.delete(id);
-					if (
-						this.disposed ||
-						epoch !== this.storageEpoch ||
-						!this.available ||
-						this.structure !== base ||
-						this.details.get(id)?.snapshot !== snapshot ||
-						this.rejectedDetails.has(id) ||
-						!this.recentIds.includes(id)
-					)
-						return;
-					this.writtenDetails.set(id, snapshot);
-					storage.writeTemplateDetail(
-						this.options.audience ?? 'rep',
-						base,
-						snapshot,
-						this.openedAt.get(id) ?? Date.now(),
-						() =>
-							!this.disposed &&
-							this.available &&
-							epoch === this.storageEpoch &&
-							this.structure === base &&
-							this.details.get(id)?.snapshot === snapshot &&
-							!this.rejectedDetails.has(id)
-					);
-				}
-			)
+			this.sourceRead.scheduleStorage('detail:' + this.options.audience + ':' + id, () => {
+				this.scheduledDetails.delete(id);
+				if (
+					this.disposed ||
+					epoch !== this.storageEpoch ||
+					!this.available ||
+					this.structure !== base ||
+					this.details.get(id)?.snapshot !== snapshot ||
+					this.rejectedDetails.has(id) ||
+					!this.recentIds.includes(id)
+				)
+					return;
+				this.writtenDetails.set(id, snapshot);
+				storage.writeTemplateDetail(
+					this.options.audience,
+					base,
+					snapshot,
+					this.openedAt.get(id) ?? Date.now(),
+					() =>
+						!this.disposed &&
+						this.available &&
+						epoch === this.storageEpoch &&
+						this.structure === base &&
+						this.details.get(id)?.snapshot === snapshot &&
+						!this.rejectedDetails.has(id)
+				);
+			})
 		);
 	}
 
@@ -1404,6 +1401,7 @@ export class TemplateAuthoringSession {
 		for (const cancel of this.scheduledDetails.values()) cancel();
 		this.scheduledDetails.clear();
 		this.discard();
+		this.releaseEditor?.();
 		this.releaseSubscriptions();
 		this.unregister?.();
 		this.source = null;
@@ -1414,8 +1412,8 @@ export class TemplateAuthoringSession {
 const key = Symbol('template-authoring-session');
 export const setTemplateAuthoringSession = (
 	session: TemplateAuthoringSession,
-	audience: TemplateAudience = 'rep'
+	audience: TemplateAudience
 ) => setContext(audience === 'buyer' ? buyerKey : key, session);
 const buyerKey = Symbol('buyer-template-authoring-session');
-export const getTemplateAuthoringSession = (audience: TemplateAudience = 'rep') =>
+export const getTemplateAuthoringSession = (audience: TemplateAudience) =>
 	getContext<TemplateAuthoringSession>(audience === 'buyer' ? buyerKey : key);

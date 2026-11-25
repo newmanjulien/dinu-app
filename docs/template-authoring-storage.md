@@ -1,8 +1,8 @@
 # Template authoring storage and cutover
 
 `/template` reads compact structure independently of source prose and item
-bodies. This document describes the implemented storage boundary and the source-only
-conversion tools. It does not record a deployment or a completed live-data migration.
+bodies. This document describes the implemented storage boundary. It does not
+record a deployment or a completed live-data migration.
 
 ## Authorities and read surfaces
 
@@ -70,11 +70,6 @@ Release/retry/restart invalidates observations: a recreated listener must respon
 body can satisfy authority, recovery or new acknowledgment checks. Global-generation and
 exact head-revision checks remain mandatory even for retained bodies. A cold selection uses
 the existing anchored editor rail/sheet while waiting, with no normal-flow loading row.
-
-The compatibility `playbookItems.current` list follows the ordered revision manifest
-directly. It does not scan all heads before reading every body. Revision wrappers
-carry the replay/render metadata required by this adapter; historical snapshots
-continue projecting only the original business fields and identities.
 
 `templateSourceCertificates` contains one small indexed certificate per template source: fingerprint,
 codec version, ordered fact-chunk IDs, counts and exact native bytes. Keeping this
@@ -163,7 +158,6 @@ The implementation maintains these independent envelopes:
 | Wording-only save         | Metadata and one changed head/body, with exact deltas; no fact chunks or unrelated heads/bodies.                                                                                                    |
 | Structure result          | Exact sum of projected native item sizes, maintained by changed-item delta, plus 64 KiB result reserve.                                                                                             |
 | Content / mutation result | One admitted revision and head, checked ownership/revision identity; content carries source scope, mutation results carry the global watermark.                                                     |
-| Compatibility list        | Revision total minus template source chunk reads, manifest/metadata, conservative 128 bytes per live projection and 64 KiB reserve; no source chunks or heads.                                      |
 | Historical full snapshot  | Actual referenced revision wrappers + source chunks + manifest/template source metadata + 64 KiB; at most 4,000 revision gets plus metadata and 64-query reserve.                                   |
 
 Arrays remain at most 8,192 entries; blocks/manifest/result membership stay below this.
@@ -174,55 +168,31 @@ transaction metrics. Assigned ID lengths, adversarial parent/access metadata and
 native platform enforcement still require an authorized deployment rehearsal; local
 checks are not a native-boundary certification.
 
-## Repair, recertification and release sequence
+## Certification and strict schema
 
-The strict schema accepts compact canonical heads only. Legacy full rep heads and their conversion branch are removed locally; G19 requires a separate all-company population/capture/writer proof under the preserved old bundle before release. Active source repair/recount/recertification remains. Uncertified/migrating companies return `ready:false` and cannot
-submit ordinary authoring writes. There is no ordinary-save full-audit fallback.
+The strict schema accepts compact canonical heads and required `templateVersions.validation` only. Legacy full heads, `authoringMigrations`, `src/convex/authoringMigration.ts`, and `scripts/migrate-authoring.mjs` are removed. Uncertified companies return `ready: false` and cannot submit ordinary authoring writes; there is no ordinary-save full-audit fallback.
 
-The internal `authoringMigration` API is resumable:
-
-1. `begin` captures template source fingerprint/version/generation, audits source and all
-   manifest bodies, certifies source facts and raises the company authoring barrier.
-2. `step` repairs/recounts at most eight canonical head/revision pairs per transaction, checks exact company/item/revision/business identity, preserves replay metadata and immutable revision content, and accumulates exact compact/read/result totals. It cannot convert a legacy full head.
-3. Further `step` calls recount one historical version per transaction, because adding
-   compatibility metadata to a shared revision wrapper changes its native read size.
-   Historical business JSON, item IDs/timestamps, manifests and captured versions persist.
-4. `finish` checks complete compact membership, unchanged capture, source certification
-   and all read envelopes, advances generations, certifies the current version and
-   releases the barrier atomically. Repeated completed calls acknowledge completion.
-
-The existing development-only runner drives canonical repair after its target and indexes have been separately verified:
-
-```sh
-node scripts/migrate-authoring.mjs --company-id COMPANY_ID --deployment EXACT_NAME
-```
-
-The runner validates the exact configured target, refuses production, does not deploy
-or seed, stops on a failed transaction and resumes durable progress on explicit rerun.
-Target operations require their own authorization and coherent recovery record. The [preservation kit](backend-preservation-cutover.md) covers the incompatible release; this repair runner is not that converter.
-
-DOCX activation and operator bootstrap fully audit canonical heads/bodies, atomically
-commit the template source/manifest and schedule source certification. The format-0 pending
-proof is private to that canonical writer; it cannot certify arbitrary legacy data.
-Reviewed template source repairs invalidate current version certification; rebuild facts in the
-separate migration transaction and recount/recertify before reopening authoring. Prepared-template source expiry and bounded
-company deletion drain certificates, fact chunks and migration state. Company-final
-cleanup also catches deletion workers that had already passed newly added phases.
-
-The local legacy full-head branch has been removed in advance; this is **not deployable to an unverified populated target**. G19 must be cleared under preserved old code. G20 separately adds explicit rep audience to original captured revision bodies and recounts every referencing frozen/mutable version without recapture. Normalized heads contain no duplicate wording. All G01–G25 remain UNVERIFIED and no live conversion/schema tightening occurred.
+DOCX activation and operator bootstrap fully audit canonical heads/bodies, atomically commit the template source/manifest with a format-0 pending proof, and schedule `authoringValidation.certify` to encode/verify compact source facts and upgrade the version to format 1 before authoring becomes ready. Prepared-template source expiry and bounded company deletion drain certificates and fact chunks.
 
 ## Rep instructions and buyer explanations
 
 The Rep (`/template`) and Buyers (`/template/buyers`) editors share one source and
-one version manifest. Every business body and transported structure has an explicit
-`audience: 'rep' | 'buyer'` discriminator. Rep bodies hold `instructions`,
-`approvalPolicy` and concessions; buyer bodies contain only `audience: 'buyer'`, a
-text trigger and `explanation`. Compact geometry retains tag 1 for reps and tag 2 for
-buyers; decoding returns the explicit audience. The packed bytes contain no wording,
-and the audience is immutable for an existing item ID.
-All overlap/ownership audits partition by audience, so buyer ranges can overlap rep
-ranges without changing concession ownership. Snapshot byte/read accounting and
-cleanup cover both audiences through the existing revision and manifest machinery.
+one version manifest (`currentTemplate` is a pure `{ companyId, versionId }` pointer;
+`templateVersions` owns `authoringGeneration` and `structuralGeneration`, so mutable
+in-place saves do not rewrite `currentTemplate`). Every business body, stored
+`playbookItems` head (indexed by `by_companyId_and_audience`), and transported structure
+carries an explicit `audience: 'rep' | 'buyer'` discriminator, and all authoring endpoints
+require an explicit `audience` argument. Rep bodies hold required `instructions`,
+`approvalPolicy`, and concessions; buyer bodies contain only `audience: 'buyer'`, a
+text-only `textTrigger`, and `explanation`. Compact geometry retains tag 1 for reps
+and tag 2 for buyers; decoding validates that it matches `head.audience`. The packed
+bytes contain no wording, and the audience is immutable for an existing item ID.
+All overlap/ownership audits partition by audience via `by_companyId_and_audience`,
+so buyer ranges can overlap rep ranges without changing concession ownership and
+neither audience reads or decodes the other's heads. `readValidationFacts` and `templateSourceValidationChunks` are write-path-only (structural authoring saves, multi-concession conflict checks in `contracts.save`, and comment invalidation in `discussionInvalidation.ts`), never read by interactive queries. Snapshot byte/read accounting and cleanup cover
+both audiences through the existing revision and manifest machinery, with required
+`headReadBytes`, `structureResultBytes`, `authoringGeneration`, `structuralGeneration`,
+`renderKey`, and `currentRevisionId` fields across live version/revision/receipt rows.
 
 Each audience has its own instance of the shared membership-scoped authoring session,
 including drafts, selection, preloads, retries and retained recovery. The shared editor
@@ -230,46 +200,34 @@ keeps `RepInstruction` and `BuyerExplanation` as a `TemplateItem` union througho
 drafts, dirty checking, save payloads/results, conflicts and retained recovery. Buyer
 drafts use `explanation` directly; rep drafts use the same canonical `instructions`,
 `approvalPolicy` and concessions as saved bodies. The four ordinary instruction fields
-preserve exact strings, including empty strings versus absent fields. Approval guidance
-is rendered separately after those fields, under **Changes need to be approved**.
-Nonblank guidance sets `{ kind: 'required', instructions: exactText }`; clearing or
-whitespace-only guidance sets `{ kind: 'none' }`. Dirty checks, saved/remote adoption,
-retained recovery and read-only panels all read the canonical policy directly.
+retain exact nonblank strings and omit blank/whitespace-only entries (enforced both by
+normalization and `validateTemplateItemContent`), matching approval guidance. Every rep
+item requires at least one nonblank instruction field, required approval guidance, or
+concession. Approval guidance is rendered separately after those fields, under
+**Changes need to be approved**. Nonblank guidance sets `{ kind: 'required', instructions: exactText }`;
+clearing or whitespace-only guidance sets `{ kind: 'none' }`. Dirty checks, saved/remote
+adoption, retained recovery and read-only panels all read the canonical policy directly.
 Shared lifecycle code uses `TemplateAudience` and neutral item names.
-The shared save transport emits the matching business body without an audience adapter. Buyer queries require template
-management permission and reject IDs from the other audience.
+The shared save transport emits the matching business body without an audience adapter.
+Buyer queries require template management permission and reject IDs from the other audience.
 
-`Copy rep summary` calls the admin-only targeted `playbookItems.repSummary` query. It requires a selection wholly
-contained in exactly one rep text trigger with a nonempty saved Summary, and checks
-the source fingerprint. The selection and saved source are checked again on click;
-the full Summary enters an editable buyer draft and is saved normally. It creates
-no ongoing link between rep instructions and buyer explanations. Existing snapshots receive no fallback,
-backfill or retroactive edits.
-
-The explicit rep literal changes decoded response and revision-body sizes without
-changing packed geometry bytes, item IDs, revision IDs, content revisions or captured
-template/version membership. A populated release must convert original immutable bodies
-in place, recount each frozen version from its own captured source and revision references,
-and recertify authoring structure accounting before enabling reads or writes. Never build
-old contract captures from the current template. Normal writers count actual canonical
-revision wrappers, historical snapshot JSON and decoded structures; wording-only saves
-continue to leave structural generations independent from content revisions.
+Never build old contract captures from the current template. Normal writers count actual
+canonical revision wrappers, historical snapshot JSON and decoded structures; wording-only
+saves continue to leave structural generations independent from content revisions.
 
 The terminology change preserves stored field names, table names, IDs, revision bodies,
-frozen versions and both binary codecs. It needs no backfill. New saves/deletes use
-`playbookItems.saveTemplateItem` and `deleteTemplateItem`; the previous exports remain
-as temporary aliases for open clients. `repExplanation` likewise aliases `repSummary`.
+frozen versions and both binary codecs. Saves and deletes use
+`playbookItems.saveTemplateItem` and `deleteTemplateItem`.
 User copy, including recovery/error/loading/accessibility text, calls rep content
 instructions and buyer content explanations. Rep coaching such as
 `howToExplainToBuyers` remains part of rep instructions.
 
 ## Disposable frontend read storage
 
-The existing scoped workspace-read database remains
-`dinu:workspace-read:v1:<deployment>:<profile>:<membership>:<company>`. IndexedDB schema 2
-preserves its `projections` store and adds `templateSources`, `templateViews`,
-`templateDetails` and small `templateMetadata` budget/reference records. No backend schema,
-source codec, journal or mutation transport changes are involved.
+The scoped workspace-read database uses
+`dinu:workspace-read:v2:<deployment>:<profile>:<membership>:<company>`. IndexedDB schema 3
+preserves its `projections`, `contractDirectory`, `buyerLinkDirectory`, and `directoryMetadata` stores alongside `templateSources`, `templateViews`,
+`templateDetails`, and small `templateMetadata` budget/reference records.
 
 `templateSources` stores prose once per fingerprint. A `templateViews` entry is the latest
 complete ready structure for one audience, including the **actual** source ID (valid null

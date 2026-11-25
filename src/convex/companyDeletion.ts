@@ -1,108 +1,308 @@
-import { cancelPreparationJobs } from './csmMeetingPreparation';
 import { paginationResultValidator } from 'convex/server';
 import { v } from 'convex/values';
 import { internal } from './_generated/api';
-import type { Doc } from './_generated/dataModel';
-import type { MutationCtx } from './_generated/server';
-import { internalMutation, internalQuery } from './_generated/server';
+import type { Doc, Id } from './_generated/dataModel';
+import { internalMutation, internalQuery, type MutationCtx } from './_generated/server';
+import { resetQuota } from './buyerActivityQuota';
 import { CLEANUP_DISCOVERY_PAGE_SIZE, cleanupBudget } from './cleanup';
-import { PREPARATION_TTL, RECONCILIATION_PAGE_SIZE } from './deletionPolicy';
-import { retireCompanyHubSpot } from './hubspotCleanup';
-import { deletionIdentity, companyCleanupPhases as phases } from './deletionValidators';
+import { cleanupCompanyExports } from './contractExports';
+import { cancelPreparationJobs } from './csmMeetingPreparation';
 import { cancelAppointmentJobs } from './csmSetupAppointments';
 import { clearSetupAppointment } from './csmSetupState';
-import { activeJob, cancelJob, RETIRED_DELIVERY_RECHECK } from './emailDeliveries';
-import { retireDelivery } from './emailDisposal';
-import { deleteUnownedFile } from './storageOwnership';
-import { resetQuota } from './buyerActivityQuota';
+import { DELETING_RECOVERY_DELAY, RECONCILIATION_PAGE_SIZE } from './deletionPolicy';
+import { companyCleanupPhases as phases, deletingCompanyRecord } from './deletionValidators';
+import { activeJob, cancelJob, RETIRED_DELIVERY_RECHECK, retireDelivery } from './emailDeliveries';
+import { retireCompanyHubSpot } from './hubspotCleanup';
 import { cleanupCompanyOperations } from './operationReceipts';
-import { cleanupCompanyOutputs } from './outputProofCleanup';
-import { cleanupCompanyExports } from './contractExports';
+import { deleteUnownedFile } from './storageOwnership';
 
-async function cleanupCompanyContractState(
+type Budget = ReturnType<typeof cleanupBudget>;
+type Phase = (typeof phases)[number];
+type PhaseResult = { drained: boolean; retryDelay?: number };
+
+async function drainByCompany(
 	ctx: MutationCtx,
-	companyId: Doc<'company'>['_id'],
-	budget: ReturnType<typeof cleanupBudget>
+	companyId: Id<'company'>,
+	budget: Budget,
+	tables: readonly (
+		| 'buyerActivityReceipts'
+		| 'buyerActivityOpenings'
+		| 'buyerActivityCounters'
+		| 'buyerLinks'
+		| 'buyerLinkBarShowings'
+		| 'discussionMessages'
+		| 'discussionThreads'
+		| 'savedContracts'
+		| 'contractHubspotAssociations'
+		| 'contractBuyerRefreshes'
+		| 'playbookItems'
+		| 'playbookItemCreationReceipts'
+		| 'templateVersions'
+		| 'currentTemplate'
+		| 'playbookItemRevisions'
+		| 'memberships'
+	)[]
 ) {
-	const { drain } = budget;
-	// Company erasure ends all local evidence ownership under the same transaction budget.
-	if (!(await cleanupCompanyExports(ctx, companyId, budget))) return false;
-	for (const table of [
-		'contractChangeHeads',
-		'contractChangeDecisions',
-		'hubspotLinkBlocks',
-		'contractChangeContents',
-		'contractChanges',
-		'contractDocuments',
-		'contractDocumentChunks',
-		'contractHubspotAssociations',
-		'contractBuyerRefreshes'
-	] as const)
+	for (const table of tables) {
 		if (
-			!(await drain(
+			!(await budget.drain(
 				table,
 				ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 			))
 		)
 			return false;
+	}
 	return true;
 }
 
-async function cleanupCompanyBuyerLinkShowings(
-	ctx: MutationCtx,
-	companyId: Doc<'company'>['_id'],
-	budget: ReturnType<typeof cleanupBudget>
-) {
-	if (
-		!(await budget.drain(
-			'buyerLinkBarShowings',
+/**
+ * Complete ordered company-erasure phases matching `deletionValidators.companyCleanupPhases`.
+ * Covers all 44 company-scoped tables (9 HubSpot tables via `retireCompanyHubSpot` + 35 below);
+ * only global/user-scoped tables (`profiles`, `deletedUsers`, `companyDeletions`, `fileSweeps`,
+ * `hubspotJournal`, `hubspotPortalLifecycle`, `hubspotAccountRemovals`) are excluded.
+ */
+const phaseHandlers: Record<
+	Exclude<Phase, 'company'>,
+	(ctx: MutationCtx, companyId: Id<'company'>, budget: Budget) => Promise<PhaseResult>
+> = {
+	invitations: async (ctx, companyId, budget) => ({
+		drained: await budget.drain(
+			'companyInvitations',
 			ctx.db
-				.query('buyerLinkBarShowings')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-		))
-	)
-		return false;
-	return budget.drain(
-		'buyerLinkShowingCleanups',
-		ctx.db
-			.query('buyerLinkShowingCleanups')
-			.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-		{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
-	);
-}
+				.query('companyInvitations')
+				.withIndex('by_companyId_and_status', (q) => q.eq('companyId', companyId)),
+			{ beforeDelete: (row) => cancelJob(ctx, row.expiryJobId) }
+		)
+	}),
+	hubspot: async (ctx, companyId, budget) => {
+		const drained = await retireCompanyHubSpot(ctx, companyId, budget);
+		return { drained, ...(drained ? {} : { retryDelay: 60_000 }) };
+	},
+	deliveries: async (ctx, companyId, budget) => {
+		let retryDelay = 0;
+		const drained = await budget.drain(
+			'emailDeliveries',
+			ctx.db
+				.query('emailDeliveries')
+				.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+			{
+				beforeDelete: async (row) => {
+					if ((await retireDelivery(ctx, row)) === 'ready') return true;
+					retryDelay = RETIRED_DELIVERY_RECHECK;
+					return false;
+				}
+			}
+		);
+		return { drained, ...(retryDelay ? { retryDelay } : {}) };
+	},
+	contractCleanups: async (ctx, companyId, budget) => ({
+		drained: await budget.drain(
+			'contractCleanups',
+			ctx.db
+				.query('contractCleanups')
+				.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+			{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+		)
+	}),
+	operationReceipts: async (ctx, companyId, budget) => ({
+		drained: await cleanupCompanyOperations(ctx, companyId, budget)
+	}),
+	exports: async (ctx, companyId, budget) => ({
+		drained: await cleanupCompanyExports(ctx, companyId, budget)
+	}),
+	buyerActivity: async (ctx, companyId, budget) => ({
+		drained:
+			(await drainByCompany(ctx, companyId, budget, [
+				'buyerActivityReceipts',
+				'buyerActivityOpenings',
+				'buyerActivityCounters'
+			])) &&
+			(await budget.drain(
+				'buyerActivityQuotaKeys',
+				ctx.db
+					.query('buyerActivityQuotaKeys')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+				{ beforeDelete: (owner) => resetQuota(ctx, owner) }
+			))
+	}),
+	buyerLinks: async (ctx, companyId, budget) => ({
+		drained:
+			(await drainByCompany(ctx, companyId, budget, ['buyerLinks', 'buyerLinkBarShowings'])) &&
+			(await budget.drain(
+				'buyerLinkShowingCleanups',
+				ctx.db
+					.query('buyerLinkShowingCleanups')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+				{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+			))
+	}),
+	discussions: async (ctx, companyId, budget) => ({
+		drained:
+			(await budget.drain(
+				'discussionQuotaKeys',
+				ctx.db
+					.query('discussionQuotaKeys')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+				{ beforeDelete: (owner) => resetQuota(ctx, owner) }
+			)) &&
+			(await drainByCompany(ctx, companyId, budget, ['discussionMessages', 'discussionThreads']))
+	}),
+	contracts: async (ctx, companyId, budget) => ({
+		drained:
+			(await drainByCompany(ctx, companyId, budget, [
+				'savedContracts',
+				'contractHubspotAssociations',
+				'contractBuyerRefreshes'
+			])) &&
+			(await budget.drain(
+				'contractDirectory',
+				ctx.db
+					.query('contractDirectory')
+					.withIndex('by_companyId_and_savedAt_and_createdAt', (q) => q.eq('companyId', companyId))
+			))
+	}),
+	templateData: async (ctx, companyId, budget) => ({
+		drained:
+			(await budget.drain(
+				'templateSourceCertificates',
+				ctx.db
+					.query('templateSourceCertificates')
+					.withIndex('by_companyId_and_templateSourceId', (q) => q.eq('companyId', companyId))
+			)) &&
+			(await budget.drain(
+				'templateSourceValidationChunks',
+				ctx.db
+					.query('templateSourceValidationChunks')
+					.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
+						q.eq('companyId', companyId)
+					)
+			)) &&
+			(await budget.drain(
+				'templateSourceChunks',
+				ctx.db
+					.query('templateSourceChunks')
+					.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
+						q.eq('companyId', companyId)
+					)
+			)) &&
+			(await drainByCompany(ctx, companyId, budget, [
+				'playbookItems',
+				'playbookItemCreationReceipts',
+				'templateVersions',
+				'currentTemplate'
+			])) &&
+			(await budget.drain(
+				'templateSources',
+				ctx.db
+					.query('templateSources')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+				{
+					afterDelete: async (row) => {
+						const company = await ctx.db.get('company', companyId);
+						if (company?.pendingTemplateSourceId === row._id)
+							await ctx.db.patch('company', companyId, { pendingTemplateSourceId: undefined });
+						if (row.source === 'docx') await deleteUnownedFile(ctx, row.originalFileId);
+					}
+				}
+			)) &&
+			(await drainByCompany(ctx, companyId, budget, ['playbookItemRevisions']))
+	}),
+	csmBookings: async (ctx, companyId, budget) => ({
+		drained:
+			(await budget.drain(
+				'csmMeetingPreparations',
+				ctx.db
+					.query('csmMeetingPreparations')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+				{ beforeDelete: (row) => cancelPreparationJobs(ctx, row) }
+			)) &&
+			(await budget.drain(
+				'csmWebhookEvidence',
+				ctx.db
+					.query('csmWebhookEvidence')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+				{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
+			)) &&
+			(await budget.drain(
+				'csmErasedInitialGuards',
+				ctx.db
+					.query('csmErasedInitialGuards')
+					.withIndex('by_companyId_and_blocking', (q) => q.eq('companyId', companyId))
+			)) &&
+			(await budget.drain(
+				'csmSetupAppointments',
+				ctx.db
+					.query('csmSetupAppointments')
+					.withIndex('by_companyId_and_selection_and_sortAt_and_anchorUid', (q) =>
+						q.eq('companyId', companyId)
+					),
+				{
+					beforeDelete: async (row) => {
+						await cancelAppointmentJobs(ctx, row);
+						await clearSetupAppointment(ctx, row);
+					}
+				}
+			)) &&
+			(await budget.drain(
+				'csmBookingAttempts',
+				ctx.db
+					.query('csmBookingAttempts')
+					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+				{
+					beforeDelete: async (row) => {
+						await cancelJob(ctx, row.sendJobId);
+						await cancelJob(ctx, row.watchdogJobId);
+						await cancelJob(ctx, row.recoveryJobId);
+					}
+				}
+			))
+	}),
+	memberships: async (ctx, companyId, budget) => ({
+		drained: await drainByCompany(ctx, companyId, budget, ['memberships'])
+	})
+};
 
-async function scheduleCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>, delay = 0) {
+async function scheduleCleanup(
+	ctx: MutationCtx,
+	marker: Doc<'companyDeletions'>,
+	delay = 0,
+	nextPhase?: Phase
+) {
 	const generation = marker.cleanupGeneration + 1;
 	const jobId = await ctx.scheduler.runAfter(delay, internal.companyDeletion.clean, {
 		markerId: marker._id,
 		generation
 	});
 	await ctx.db.patch('companyDeletions', marker._id, {
+		...(nextPhase !== undefined && nextPhase !== marker.phase ? { phase: nextPhase } : {}),
 		cleanupJobId: jobId,
 		cleanupGeneration: generation
 	});
 }
+
 async function ensureCleanup(ctx: MutationCtx, marker: Doc<'companyDeletions'>) {
 	if (marker.status !== 'cleaning') return;
 	if (!(await activeJob(ctx, marker.cleanupJobId))) await scheduleCleanup(ctx, marker);
 }
-// Only a dispatched request authorizes company cleanup. An external account deletion
-// during preparation expires the preparation and, if it was the sole owner, stops for
-// an explicit operator handoff instead of silently orphaning company data.
+
+// Only an explicit server-executed deletion hold authorizes company cleanup.
+// External sole-owner account deletion without a hold stops for operator recovery.
 export async function confirmAccountDeletion(ctx: MutationCtx, issuer: string, clerkId: string) {
 	const marker = await ctx.db
 		.query('companyDeletions')
 		.withIndex('by_issuer_and_clerkId', (q) => q.eq('issuer', issuer).eq('clerkId', clerkId))
 		.unique();
 	if (!marker || marker.status === 'complete') return;
-	if (marker.status === 'prepared') {
-		await ctx.db.delete('companyDeletions', marker._id);
+	if (marker.status === 'deleting') {
+		const { _id, _creationTime, inFlight: _inFlight, ...base } = marker;
+		const next = { ...base, status: 'cleaning' as const };
+		await ctx.db.replace('companyDeletions', _id, next);
+		await ensureCleanup(ctx, { _id, _creationTime, ...next });
 		return;
 	}
-	if (marker.status !== 'cleaning')
-		await ctx.db.patch('companyDeletions', marker._id, { status: 'cleaning' });
-	await ensureCleanup(ctx, { ...marker, status: 'cleaning' });
+	await ensureCleanup(ctx, marker);
 }
+
 export const resumeOne = internalMutation({
 	args: { markerId: v.id('companyDeletions') },
 	returns: v.null(),
@@ -112,6 +312,7 @@ export const resumeOne = internalMutation({
 		return null;
 	}
 });
+
 export const resume = internalMutation({
 	args: { cursor: v.optional(v.union(v.string(), v.null())) },
 	returns: v.null(),
@@ -134,13 +335,14 @@ export const resume = internalMutation({
 		return null;
 	}
 });
+
 export const pending = internalQuery({
 	args: { cursor: v.union(v.string(), v.null()) },
-	returns: paginationResultValidator(deletionIdentity),
+	returns: paginationResultValidator(deletingCompanyRecord),
 	handler: async (ctx, { cursor }) => {
 		const result = await ctx.db
 			.query('companyDeletions')
-			.withIndex('by_status_and_requestedAt', (q) => q.eq('status', 'dispatched'))
+			.withIndex('by_status_and_requestedAt', (q) => q.eq('status', 'deleting'))
 			.paginate({
 				cursor,
 				numItems: RECONCILIATION_PAGE_SIZE,
@@ -149,52 +351,50 @@ export const pending = internalQuery({
 			});
 		return {
 			...result,
-			page: result.page.map(({ issuer, clerkId }) => ({ issuer, clerkId }))
+			page: result.page.map(({ _id, executionId, requestedAt, issuer, clerkId }) => ({
+				id: _id,
+				executionId,
+				requestedAt,
+				issuer,
+				clerkId
+			}))
 		};
 	}
 });
-export const expirePreparation = internalMutation({
-	args: { id: v.id('companyDeletions'), attemptId: v.string(), requestedAt: v.number() },
+
+export const getDeleting = internalQuery({
+	args: { id: v.id('companyDeletions') },
+	returns: v.union(deletingCompanyRecord, v.null()),
+	handler: async (ctx, { id }) => {
+		const marker = await ctx.db.get('companyDeletions', id);
+		if (!marker || marker.status !== 'deleting') return null;
+		return {
+			id: marker._id,
+			executionId: marker.executionId,
+			requestedAt: marker.requestedAt,
+			issuer: marker.issuer,
+			clerkId: marker.clerkId
+		};
+	}
+});
+
+export const releaseStaleDeleting = internalMutation({
+	args: { id: v.id('companyDeletions'), executionId: v.string() },
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const marker = await ctx.db.get('companyDeletions', args.id);
 		if (
 			!marker ||
-			marker.status !== 'prepared' ||
-			marker.attemptId !== args.attemptId ||
-			marker.requestedAt !== args.requestedAt ||
-			marker.requestedAt + PREPARATION_TTL > Date.now()
+			marker.status !== 'deleting' ||
+			marker.executionId !== args.executionId ||
+			marker.requestedAt + DELETING_RECOVERY_DELAY > Date.now()
 		)
 			return false;
 		await ctx.db.delete('companyDeletions', marker._id);
 		return true;
 	}
 });
-// Recover failed expiry jobs without any external lookup. Each conditional
-// mutation checks the attempt and deadline again, so dispatch always wins safely.
-export const expirePreparations = internalMutation({
-	args: { cursor: v.optional(v.union(v.string(), v.null())) },
-	returns: v.null(),
-	handler: async (ctx, { cursor }) => {
-		const result = await ctx.db
-			.query('companyDeletions')
-			.withIndex('by_status_and_requestedAt', (q) =>
-				q.eq('status', 'prepared').lte('requestedAt', Date.now() - PREPARATION_TTL)
-			)
-			.paginate({
-				cursor: cursor ?? null,
-				numItems: 25,
-				maximumRowsRead: 25,
-				maximumBytesRead: 2 * 1024 * 1024
-			});
-		for (const marker of result.page) await ctx.db.delete('companyDeletions', marker._id);
-		if (!result.isDone)
-			await ctx.scheduler.runAfter(0, internal.companyDeletion.expirePreparations, {
-				cursor: result.continueCursor
-			});
-		return null;
-	}
-});
+
 export const clean = internalMutation({
 	args: { markerId: v.id('companyDeletions'), generation: v.number() },
 	returns: v.null(),
@@ -204,469 +404,32 @@ export const clean = internalMutation({
 			return null;
 		const companyId = marker.companyId;
 		const budget = cleanupBudget(ctx);
-		const { exhausted, drain } = budget;
-		let phase = marker.phase;
+		let phase: Phase = marker.phase;
 		let retryDelay = 0;
-		while (!(await exhausted())) {
-			let drained: boolean;
-			switch (phase) {
-				case 'invitations':
-					drained = await drain(
-						'companyInvitations',
-						ctx.db
-							.query('companyInvitations')
-							.withIndex('by_companyId_and_status', (q) => q.eq('companyId', companyId)),
-						{ beforeDelete: (row) => cancelJob(ctx, row.expiryJobId) }
-					);
-					break;
-				case 'hubspot':
-					drained = await retireCompanyHubSpot(ctx, companyId, budget);
-					if (!drained) retryDelay = 60_000;
-					break;
-				case 'operationReceipts':
-					drained = await drain(
-						'contractCleanups',
-						ctx.db
-							.query('contractCleanups')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
-					);
-					if (drained) drained = await cleanupCompanyOperations(ctx, companyId, budget);
-					break;
-				case 'outputs':
-					drained = await cleanupCompanyOutputs(ctx, companyId, budget);
-					break;
-				case 'exports':
-					drained = await cleanupCompanyExports(ctx, companyId, budget);
-					break;
-				case 'approvals':
-					drained = await drain(
-						'approvalRequests',
-						ctx.db
-							.query('approvalRequests')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'deliveries':
-					drained = await drain(
-						'emailDeliveries',
-						ctx.db
-							.query('emailDeliveries')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						{
-							beforeDelete: async (row) => {
-								const retirement = await retireDelivery(ctx, row);
-								if (retirement === 'ready') return true;
-								if (retirement === 'inFlight') retryDelay = RETIRED_DELIVERY_RECHECK;
-								return false;
-							}
-						}
-					);
-					break;
-				case 'emailSelectionChunks':
-					drained = await drain(
-						'emailSelectionChunks',
-						ctx.db
-							.query('emailSelectionChunks')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'decisions':
-					drained = await drain(
-						'contractChangeDecisions',
-						ctx.db
-							.query('contractChangeDecisions')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'buyerActivity':
-					drained = true;
-					for (const table of [
-						'buyerActivityReceipts',
-						'buyerActivityOpenings',
-						'buyerActivityCounters'
-					] as const) {
-						if (
-							!(await drain(
-								table,
-								ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-							))
-						) {
-							drained = false;
-							break;
-						}
-					}
-					break;
-				case 'buyerActivityQuotaKeys':
-					drained = await drain(
-						'buyerActivityQuotaKeys',
-						ctx.db
-							.query('buyerActivityQuotaKeys')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						{
-							beforeDelete: (owner) => resetQuota(ctx, owner)
-						}
-					);
-					break;
-				case 'buyerLinks':
-					drained = await drain(
-						'buyerLinks',
-						ctx.db
-							.query('buyerLinks')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'buyerLinkShowings':
-					drained = await cleanupCompanyBuyerLinkShowings(ctx, companyId, budget);
-					break;
-				case 'discussions':
-					drained = await drain(
-						'discussionUnreadControls',
-						ctx.db
-							.query('discussionUnreadControls')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
-					);
-					if (!drained) break;
-					drained = await drain(
-						'discussionQuotaKeys',
-						ctx.db
-							.query('discussionQuotaKeys')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						{ beforeDelete: (owner) => resetQuota(ctx, owner) }
-					);
-					if (!drained) break;
-					for (const table of [
-						'discussionInvalidations',
-						'discussionTransitionMapChunks',
-						'discussionUnreadNodes',
-						'discussionPassageClaims',
-						'discussionPassageIndexes',
-						'discussionMessages',
-						'discussionThreads',
-						'discussionReceipts'
-					] as const) {
-						if (
-							!(await drain(
-								table,
-								ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-							))
-						) {
-							drained = false;
-							break;
-						}
-					}
-					break;
-				case 'contracts':
-					drained = await drain(
-						'savedContracts',
-						ctx.db
-							.query('savedContracts')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'contractState':
-					drained = await cleanupCompanyContractState(ctx, companyId, budget);
-					break;
-				case 'contractDirectory':
-					drained = await drain(
-						'contractDirectory',
-						ctx.db
-							.query('contractDirectory')
-							.withIndex('by_companyId_and_savedAt_and_createdAt', (q) =>
-								q.eq('companyId', companyId)
-							)
-					);
-					break;
-				case 'contractCleanups':
-					drained = await drain(
-						'contractCleanups',
-						ctx.db
-							.query('contractCleanups')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
-					);
-					break;
-				case 'validationCertificates':
-					drained = await drain(
-						'templateSourceCertificates',
-						ctx.db
-							.query('templateSourceCertificates')
-							.withIndex('by_companyId_and_templateSourceId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'validationFacts':
-					drained = await drain(
-						'templateSourceValidationChunks',
-						ctx.db
-							.query('templateSourceValidationChunks')
-							.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
-								q.eq('companyId', companyId)
-							)
-					);
-					break;
-				case 'authoringMigrations':
-					drained = await drain(
-						'authoringMigrations',
-						ctx.db
-							.query('authoringMigrations')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'blocks':
-					drained = await drain(
-						'templateSourceChunks',
-						ctx.db
-							.query('templateSourceChunks')
-							.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
-								q.eq('companyId', companyId)
-							)
-					);
-					break;
-				case 'items':
-					drained = await drain(
-						'playbookItems',
-						ctx.db
-							.query('playbookItems')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'itemReceipts':
-					drained = await drain(
-						'playbookItemCreationReceipts',
-						ctx.db
-							.query('playbookItemCreationReceipts')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'contractReceipts':
-					drained = await drain(
-						'contractCreationReceipts',
-						ctx.db
-							.query('contractCreationReceipts')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'versions':
-					drained = await drain(
-						'templateVersions',
-						ctx.db
-							.query('templateVersions')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'pointer':
-					drained = await drain(
-						'currentTemplate',
-						ctx.db
-							.query('currentTemplate')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'templateSources':
-					drained = await drain(
-						'templateSources',
-						ctx.db
-							.query('templateSources')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-						{
-							afterDelete: async (row) => {
-								const company = await ctx.db.get('company', companyId);
-								if (company?.pendingTemplateSourceId === row._id)
-									await ctx.db.patch('company', companyId, { pendingTemplateSourceId: undefined });
-								if (row.source === 'docx') await deleteUnownedFile(ctx, row.originalFileId);
-							}
-						}
-					);
-					break;
-				case 'itemRevisions':
-					drained = await drain(
-						'playbookItemRevisions',
-						ctx.db
-							.query('playbookItemRevisions')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'csmBookings':
-					drained =
-						(await drain(
-							'csmMeetingPreparations',
-							ctx.db
-								.query('csmMeetingPreparations')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-							{ beforeDelete: (row) => cancelPreparationJobs(ctx, row) }
-						)) &&
-						(await drain(
-							'csmWebhookEvidence',
-							ctx.db
-								.query('csmWebhookEvidence')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-							{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
-						)) &&
-						(await drain(
-							'csmErasedInitialGuards',
-							ctx.db
-								.query('csmErasedInitialGuards')
-								.withIndex('by_companyId_and_blocking', (q) => q.eq('companyId', companyId))
-						)) &&
-						(await drain(
-							'csmSetupAppointments',
-							ctx.db
-								.query('csmSetupAppointments')
-								.withIndex('by_companyId_and_selection_and_sortAt_and_anchorUid', (q) =>
-									q.eq('companyId', companyId)
-								),
-							{
-								beforeDelete: async (row) => {
-									await cancelAppointmentJobs(ctx, row);
-									await clearSetupAppointment(ctx, row);
-								}
-							}
-						)) &&
-						(await drain(
-							'csmBookingAttempts',
-							ctx.db
-								.query('csmBookingAttempts')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-							{
-								beforeDelete: async (row) => {
-									await cancelJob(ctx, row.sendJobId);
-									await cancelJob(ctx, row.watchdogJobId);
-									await cancelJob(ctx, row.recoveryJobId);
-								}
-							}
-						));
-					break;
-				case 'memberships':
-					drained = await drain(
-						'memberships',
-						ctx.db
-							.query('memberships')
-							.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-					);
-					break;
-				case 'company': {
-					if (!(await retireCompanyHubSpot(ctx, companyId, budget))) {
-						drained = false;
-						retryDelay = 60_000;
-						break;
-					}
-					// Workers already beyond a newly added phase must still drain its children.
-					if (
-						!(await drain(
-							'csmMeetingPreparations',
-							ctx.db
-								.query('csmMeetingPreparations')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-							{ beforeDelete: (row) => cancelPreparationJobs(ctx, row) }
-						))
-					) {
-						drained = false;
-						break;
-					}
 
-					if (
-						!(await drain(
-							'contractCleanups',
-							ctx.db
-								.query('contractCleanups')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-							{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
-						)) ||
-						!(await cleanupCompanyOperations(ctx, companyId, budget)) ||
-						!(await cleanupCompanyOutputs(ctx, companyId, budget)) ||
-						!(await cleanupCompanyExports(ctx, companyId, budget))
-					) {
-						drained = false;
-						break;
-					}
-					if (!(await cleanupCompanyContractState(ctx, companyId, budget))) {
-						drained = false;
-						break;
-					}
-					if (!(await cleanupCompanyBuyerLinkShowings(ctx, companyId, budget))) {
-						drained = false;
-						break;
-					}
-					if (
-						!(await drain(
-							'csmSetupAppointments',
-							ctx.db
-								.query('csmSetupAppointments')
-								.withIndex('by_companyId_and_selection_and_sortAt_and_anchorUid', (q) =>
-									q.eq('companyId', companyId)
-								),
-							{
-								beforeDelete: async (row) => {
-									await cancelAppointmentJobs(ctx, row);
-									await clearSetupAppointment(ctx, row);
-								}
-							}
-						))
-					) {
-						drained = false;
-						break;
-					}
-					if (
-						!(await drain(
-							'csmBookingAttempts',
-							ctx.db
-								.query('csmBookingAttempts')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-							{
-								beforeDelete: async (row) => {
-									await cancelJob(ctx, row.sendJobId);
-									await cancelJob(ctx, row.watchdogJobId);
-								}
-							}
-						))
-					) {
-						drained = false;
-						break;
-					}
-					const authoringRowsDrained =
-						(await drain(
-							'templateSourceCertificates',
-							ctx.db
-								.query('templateSourceCertificates')
-								.withIndex('by_companyId_and_templateSourceId', (q) => q.eq('companyId', companyId))
-						)) &&
-						(await drain(
-							'templateSourceValidationChunks',
-							ctx.db
-								.query('templateSourceValidationChunks')
-								.withIndex('by_companyId_and_templateSourceId_and_order', (q) =>
-									q.eq('companyId', companyId)
-								)
-						)) &&
-						(await drain(
-							'authoringMigrations',
-							ctx.db
-								.query('authoringMigrations')
-								.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-						));
-					if (!authoringRowsDrained) {
-						drained = false;
-						break;
-					}
-					const company = await ctx.db.get('company', companyId);
-					if (company) await ctx.db.delete('company', companyId);
-					if (company?.avatarId) await deleteUnownedFile(ctx, company.avatarId);
-					// Membership validation rejects stale creation retries before receipt lookup.
-					// The company tombstone remains permanently to reject delayed internal work.
-					await ctx.db.patch('companyDeletions', markerId, {
-						status: 'complete',
-						phase,
-						cleanupJobId: undefined
-					});
-					return null;
-				}
+		while (!(await budget.exhausted())) {
+			if (phase === 'company') {
+				const company = await ctx.db.get('company', companyId);
+				if (company) await ctx.db.delete('company', companyId);
+				if (company?.avatarId) await deleteUnownedFile(ctx, company.avatarId);
+				// Membership validation rejects stale creation retries before receipt lookup.
+				// The company tombstone remains permanently to reject delayed internal work.
+				await ctx.db.patch('companyDeletions', markerId, {
+					status: 'complete',
+					phase,
+					cleanupJobId: undefined
+				});
+				return null;
 			}
-			if (!drained) break;
+			const result = await phaseHandlers[phase](ctx, companyId, budget);
+			if (!result.drained) {
+				retryDelay = result.retryDelay ?? 0;
+				break;
+			}
 			phase = phases[phases.indexOf(phase) + 1];
 		}
-		if (phase !== marker.phase) await ctx.db.patch('companyDeletions', markerId, { phase });
-		await scheduleCleanup(ctx, marker, retryDelay);
+
+		await scheduleCleanup(ctx, marker, retryDelay, phase);
 		return null;
 	}
 });

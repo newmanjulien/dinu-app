@@ -6,7 +6,6 @@ import {
 	fixture,
 	integrationClock,
 	readyExport,
-	acknowledge,
 	events,
 	currentContract,
 	exportDelivery,
@@ -41,7 +40,6 @@ describe('HubSpot removal and reinstallation', () => {
 		await installQuotes(f);
 		const push = await pushQuote(f);
 		const output = await readyExport(f);
-		await acknowledge(f, output);
 		const contract = await currentContract(f);
 		const hash = await sha256('in-flight-oauth');
 		await f.t.mutation(internal.hubspotOAuth.reserve, { hash });
@@ -71,7 +69,7 @@ describe('HubSpot removal and reinstallation', () => {
 		vi.stubGlobal('fetch', fetcher);
 		expect((await advance(f, removalId)).done).toBe(true);
 		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toBeNull();
-		expect((await currentContract(f)).root.documentId).toBe(contract.root.documentId);
+		expect((await currentContract(f)).root.templateVersionId).toBe(contract.root.templateVersionId);
 		expect((await events(f)).every((e) => e.status === 'retired')).toBe(true);
 		expect(await f.t.run(({ db }) => db.get('hubspotQuotePushes', push.id))).toMatchObject({
 			state: 'retired'
@@ -132,7 +130,7 @@ describe('HubSpot removal and reinstallation', () => {
 				membershipId: f.rep.membershipId,
 				connectionId: f.connectionId
 			})
-		).rejects.toThrow('Only admins');
+		).rejects.toThrow('You do not have permission to perform this action.');
 		expect(await f.t.run(({ db }) => db.query('hubspotRemovals').collect())).toEqual([]);
 		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
 			status: 'connected'

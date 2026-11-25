@@ -10,10 +10,6 @@ import type { PaginatedPage } from '../pagination/types';
 export type { ConcessionSelection } from '$lib/playbook/model';
 export const EMPTY_PREVIEW_CHANGES: DeepReadonly<ContractChange[]> = Object.freeze([]);
 export interface DocumentRenderSource {
-	readonly materialized?: {
-		document: import('../contract-document').ContractDocument;
-		baseline: readonly SourceBlock[];
-	};
 	readonly revision: number;
 	readonly blocks: readonly SourceBlock[];
 	readonly items: readonly DocumentOverlayItem[];
@@ -23,7 +19,6 @@ export interface DocumentRenderSource {
 export interface RenderSnapshot {
 	readonly view: import('$lib/document/model').DocumentView;
 	readonly selectionDocument: import('../selection/selection-model').SelectionDocument;
-	readonly panelSourceFacts?: import('../panel-source-facts').PanelSourceFacts;
 	readonly id: number;
 	readonly layoutEpoch: string;
 	readonly changedPages: readonly number[];

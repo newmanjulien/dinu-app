@@ -28,7 +28,7 @@
 			{/if}
 		</div>
 		{#if children}{@render children()}{:else}
-			<ContractsResultsLayout {role} showContent={false} />
+			<ContractsResultsLayout {role} showContent={false} loading />
 		{/if}
 	</div>
 </main>

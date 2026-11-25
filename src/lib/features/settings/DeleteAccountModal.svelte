@@ -3,17 +3,16 @@
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { onDestroy } from 'svelte';
-	import type { SessionResource, UserResource } from '@clerk/shared/types';
+	import type { SessionResource } from '@clerk/shared/types';
 	import { useClerkContext } from 'svelte-clerk';
 	import { useConvexClient } from 'convex-svelte';
-	import type { FunctionReturnType } from 'convex/server';
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';
+	import { getErrorMessage, isAccountDeletedError } from '$lib/auth/account-errors';
 	import {
 		createClerkSessionVerification,
 		type ClerkSessionVerificationFactor,
-		getErrorMessage,
-		isReverificationRequiredError
+		needsStrictReverification
 	} from '$lib/auth/clerk-session-verification.svelte';
 	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { Button, ModalShell } from '$lib/ui';
@@ -22,19 +21,67 @@
 
 	type Props = {
 		open: boolean;
+		retryHold?: boolean;
 		onClose: () => void;
 	};
 
-	let { open, onClose }: Props = $props();
+	let { open, retryHold = false, onClose }: Props = $props();
 	const clerk = useClerkContext();
 	const client = useConvexClient();
 	const viewerSession = useViewerSession();
+	let step = $state<ModalStep>('confirmDeletion');
+	let confirmationText = $state('');
+	let deleteErrorText = $state<string | null>(null);
+	let deleting = $state(false);
+	let lastOpen = false;
+
 	const options = useReadQuery(api.accountDeletion.options, () => (open ? {} : 'skip'));
-	const combined = $derived(options.data?.mode === 'accountAndCompany');
+	type Attempt = {
+		session: SessionResource;
+		userId: string;
+		sessionId: string;
+		generation: number;
+		mode: 'account' | 'accountAndCompany';
+		companyId: Id<'company'>;
+		companyName: string;
+		confirmation: string;
+		retryHold: boolean;
+	};
+	let attempt = $state.raw<Attempt | null>(null);
+	const activeOptions = $derived(
+		options.data ??
+			(deleting && attempt
+				? {
+						mode: attempt.mode,
+						companyId: attempt.companyId,
+						companyName: attempt.companyName,
+						hold: attempt.retryHold ? ('deleting' as const) : ('none' as const)
+					}
+				: undefined)
+	);
+	const optionsError = $derived(
+		deleting ||
+			viewerSession.phase === 'completing-deletion' ||
+			viewerSession.closing ||
+			isAccountDeletedError(options.error)
+			? undefined
+			: options.error
+	);
+	const combined = $derived(activeOptions?.mode === 'accountAndCompany');
+	const cleaning = $derived(
+		activeOptions?.hold === 'cleaning' || (!deleting && activeOptions?.hold === 'inProgress')
+	);
+	const retryingHold = $derived(Boolean(retryHold && activeOptions?.hold === 'deleting'));
 	const confirmationPhrase = $derived(
 		combined ? 'delete my account and company' : 'delete my account'
 	);
-	const deletionTitle = $derived(combined ? 'Delete account and company' : 'Delete account');
+	const deletionTitle = $derived(
+		retryingHold
+			? 'Retry account and company deletion'
+			: combined
+				? 'Delete account and company'
+				: 'Delete account'
+	);
 	const verification = createClerkSessionVerification({
 		isCurrent: (session) =>
 			attempt !== null && attempt.sessionId === session.id && isCurrent(attempt),
@@ -43,19 +90,6 @@
 			if (a) await executeDeletion(a, true);
 		}
 	});
-	type Attempt = {
-		user: UserResource;
-		session: SessionResource;
-		userId: string;
-		sessionId: string;
-		generation: number;
-		mode: 'account' | 'accountAndCompany';
-		companyId: Id<'company'> | null;
-		confirmation: string;
-		attemptId: string;
-		request: FunctionReturnType<typeof api.accountDeletion.prepare>;
-	};
-	let attempt: Attempt | null = null;
 	let generation = 0;
 	let alive = true;
 	let contextKey = '';
@@ -64,22 +98,17 @@
 		resetModalState();
 	});
 
-	let step = $state<ModalStep>('confirmDeletion');
-	let confirmationText = $state('');
-	let deleteErrorText = $state<string | null>(null);
-	let deleting = $state(false);
-	let lastOpen = $state(false);
-
 	const trimmedConfirmationText = $derived(confirmationText.trim());
+	const blockedByOwnership = $derived(activeOptions?.mode === 'transferOwnership');
 	const canDeleteAccount = $derived(
-		Boolean(options.data && options.data.mode !== 'transferOwnership') &&
-			trimmedConfirmationText === confirmationPhrase
+		Boolean(activeOptions && !blockedByOwnership && !cleaning) &&
+			(retryingHold || trimmedConfirmationText === confirmationPhrase)
 	);
 	const errorText = $derived(
 		step === 'confirmDeletion'
 			? (deleteErrorText ??
-					(options.error
-						? getErrorMessage(options.error, 'Unable to check company membership.')
+					(optionsError
+						? getErrorMessage(optionsError, 'Unable to check company membership.')
 						: null))
 			: verification.errorText
 	);
@@ -100,6 +129,13 @@
 		verification.factor?.strategy === 'passkey' && verification.status === 'awaitingInput'
 	);
 	const verificationActionText = $derived(getVerificationActionText());
+	const canRestartVerification = $derived(
+		step === 'verifyIdentity' &&
+			verification.status === 'idle' &&
+			verification.factor === null &&
+			!deleting &&
+			attempt !== null
+	);
 
 	$effect(() => {
 		const key = `${clerk.user?.id ?? ''}:${clerk.session?.id ?? ''}`;
@@ -111,8 +147,6 @@
 	});
 
 	function resetModalState() {
-		const old = attempt;
-		if (old?.request?.status === 'prepared') void cancelPreparation(old).catch(() => {});
 		generation++;
 		attempt = null;
 		confirmationText = '';
@@ -122,35 +156,8 @@
 		verification.reset();
 	}
 
-	async function closeDeleteModal() {
-		if (deleting) {
-			return;
-		}
-
-		const context = {
-			generation,
-			userId: clerk.user?.id ?? '',
-			sessionId: clerk.session?.id ?? ''
-		};
-		if (options.data?.pending || attempt?.request) {
-			deleting = true;
-			try {
-				// Explicit cancellation revokes the current preparation across tabs.
-				const outcome = await client.mutation(api.accountDeletion.cancel, {});
-				if (!isCurrent(context)) return;
-				if (outcome === 'dispatched')
-					throw new Error(
-						'Account deletion has already been dispatched. Retry deletion to finish.'
-					);
-			} catch (error) {
-				if (!isCurrent(context)) return;
-				returnToConfirmationWithError(
-					getErrorMessage(error, 'Unable to cancel company deletion. Try again.')
-				);
-				deleting = false;
-				return;
-			}
-		}
+	function closeDeleteModal() {
+		if (deleting) return;
 		onClose();
 		resetModalState();
 	}
@@ -242,16 +249,15 @@
 			} as const;
 		}
 
-		if (!clerk.user.deleteSelfEnabled) {
+		if (clerk.session.actor) {
 			return {
 				ok: false,
-				errorText: 'Account deletion is unavailable right now. Please try again later.'
+				errorText: 'Account deletion is unavailable while impersonating a user.'
 			} as const;
 		}
 
 		return {
 			ok: true,
-			user: clerk.user,
 			session: clerk.session,
 			userId: clerk.user.id,
 			sessionId: clerk.session.id,
@@ -264,13 +270,11 @@
 		verification.reset();
 		deleteErrorText = message;
 	}
-	async function cancelPreparation(a: Attempt) {
-		const request = a.request;
-		if (request?.status !== 'prepared') return;
-		const outcome = await client.mutation(api.accountDeletion.cancel, {
-			request: { id: request.id, attemptId: request.attemptId }
-		});
-		if (outcome === 'cancelled' || outcome === 'none') a.request = null;
+
+	async function startVerification(a: Attempt) {
+		if (!isCurrent(a)) return;
+		step = 'verifyIdentity';
+		await verification.start(a.session);
 	}
 
 	async function executeDeletion(a: Attempt, afterVerification = false) {
@@ -278,53 +282,48 @@
 		deleteErrorText = null;
 		deleting = true;
 		try {
-			if (a.mode === 'accountAndCompany')
-				a.request = await client.mutation(api.accountDeletion.prepare, {
-					protocol: 'dispatch',
-					mode: a.mode,
-					companyId: a.companyId,
-					confirmation: a.confirmation,
-					attemptId: a.request?.attemptId ?? a.attemptId
-				});
-			if (!isCurrent(a)) {
-				await cancelPreparation(a);
+			const sessionToken = await a.session.getToken({ skipCache: true });
+			if (!isCurrent(a)) return;
+			if (!sessionToken) {
+				deleting = false;
+				if (!afterVerification) {
+					await startVerification(a);
+					return;
+				}
+				returnToConfirmationWithError('Unable to verify your session. Please try again.');
 				return;
 			}
-			a.request = await client.mutation(api.accountDeletion.dispatch, {
+			const result = await client.action(api.accountDeletionActions.execute, {
 				mode: a.mode,
 				companyId: a.companyId,
 				confirmation: a.confirmation,
-				attemptId: a.request?.attemptId ?? a.attemptId,
-				requestId: a.request?.id ?? null
+				sessionToken,
+				retryHold: a.retryHold || undefined
 			});
 			if (!isCurrent(a)) return;
-			await a.user.delete();
-			viewerSession.completeAccountDeletion({ sessionId: a.sessionId, userId: a.userId });
+			if (result.status === 'reverificationRequired') {
+				deleting = false;
+				if (!afterVerification) {
+					await startVerification(a);
+					return;
+				}
+				returnToConfirmationWithError(
+					'Identity verification is still required before deleting this account. Please try again.'
+				);
+				return;
+			}
+			await viewerSession.completeAccountDeletion({
+				sessionId: a.sessionId,
+				userId: a.userId
+			});
 			if (!isCurrent(a)) return;
 			onClose();
 			resetModalState();
 		} catch (error) {
-			const needsVerification = isReverificationRequiredError(error);
-			// Conditional cancellation cannot revoke a dispatch whose reply was lost.
-			// Verification and uncertain Clerk failures retain dispatched consent.
-			try {
-				await cancelPreparation(a);
-			} catch {
-				/* Unused preparations expire. */
-			}
-			if (!isCurrent(a)) return;
+			if (!isCurrent(a) || viewerSession.phase === 'completing-deletion' || viewerSession.closing)
+				return;
 			deleting = false;
-			if (needsVerification && !afterVerification) {
-				step = 'verifyIdentity';
-				await verification.start(a.session);
-				if (!isCurrent(a)) return;
-			} else {
-				returnToConfirmationWithError(
-					needsVerification
-						? 'Identity verification is still required before deleting this account. Please try again.'
-						: getErrorMessage(error, 'Unable to delete your account.')
-				);
-			}
+			returnToConfirmationWithError(getErrorMessage(error, 'Unable to delete your account.'));
 		}
 	}
 
@@ -337,76 +336,98 @@
 			return;
 		}
 		const selection = options.data;
-		if (!selection || selection.mode === 'transferOwnership') return;
+		if (
+			!selection ||
+			selection.mode === 'transferOwnership' ||
+			selection.hold === 'cleaning' ||
+			selection.hold === 'inProgress'
+		)
+			return;
 		attempt = {
 			...context,
 			mode: selection.mode,
 			companyId: selection.companyId,
-			confirmation: trimmedConfirmationText,
-			attemptId: crypto.randomUUID(),
-			request: null
+			companyName: selection.companyName,
+			confirmation: retryingHold ? '' : trimmedConfirmationText,
+			retryHold: retryingHold
 		};
-		await executeDeletion(attempt);
+		if (needsStrictReverification(attempt.session)) {
+			await startVerification(attempt);
+			return;
+		}
+		await executeDeletion(attempt, false);
 	}
 </script>
 
 <ModalShell {open} title={deletionTitle} dismissible={!deleting} onClose={closeDeleteModal}>
 	<div class="space-y-4">
 		{#if step === 'confirmDeletion'}
-			{#if !options.data && !options.error}
+			{#if !activeOptions && !optionsError}
 				<span role="status" class="sr-only">Checking company membership</span>
 				<div aria-hidden="true" class="grid gap-2 py-1">
 					<SkeletonBlock class="h-4 w-full" />
 					<SkeletonBlock class="h-4 w-full" />
 					<SkeletonBlock class="h-4 w-3/4" />
 				</div>
-			{:else if options.error}
+			{:else if optionsError}
 				<p role="alert" class="text-sm">
 					We couldn’t check company membership. <button
 						class="underline"
 						onclick={() => options.retry()}>Try again</button
 					>
 				</p>
-			{:else if options.data?.mode === 'transferOwnership'}
+			{:else if blockedByOwnership && activeOptions}
 				<p class="text-sm leading-6 text-ink-secondary">
-					Transfer ownership of {options.data.companyName ?? 'your company'} to a colleague before deleting
-					your account.
-					<a href="/team" class="underline" onclick={() => onClose()}>Open the team page</a>
+					Transfer ownership of {activeOptions.companyName} to a colleague before deleting your account.
+					<a href="/team" class="underline" onclick={() => closeDeleteModal()}>Open the team page</a
+					>
 				</p>
-			{:else if options.data}
+			{:else if cleaning}
 				<p class="text-sm leading-6 text-ink-secondary">
-					{#if combined}
-						You are the last member of <strong>{options.data.companyName}</strong>. This permanently
-						deletes your account and company, including all contracts, your company’s template, rep
-						instructions, buyer explanations, their history, approval records, invitations, and the
-						company avatar. This cannot be undone.
+					Company deletion is already in progress. Workspace activity is paused while cleanup
+					finishes.
+				</p>
+			{:else if activeOptions}
+				<p class="text-sm leading-6 text-ink-secondary">
+					{#if retryingHold}
+						Your previous deletion attempt for <strong class="font-medium text-ink"
+							>{activeOptions.companyName}</strong
+						> could not be confirmed. Continue below to permanently delete your account and company.
+					{:else if combined}
+						You are the last member of <strong class="font-medium text-ink"
+							>{activeOptions.companyName}</strong
+						>. This permanently deletes your account and company, including all contracts, your
+						company’s template, rep instructions, buyer explanations, their history, approval
+						records, invitations, and the company avatar. This cannot be undone.
 					{:else}
 						This permanently deletes your account. Company contracts and other shared data remain
 						available to your colleagues.
 					{/if}
 				</p>
-				{#if options.data.pending}
-					<p class="text-sm leading-6 text-ink-secondary">
-						Company activity is paused while account deletion is confirmed. You can retry deletion
-						or cancel it here.
-					</p>
+				{#if !retryingHold}
+					<div>
+						<label for="delete-account-confirmation" class="block text-xs text-ink">
+							Type <strong class="font-semibold">"{confirmationPhrase}"</strong> to continue
+						</label>
+						<TextInput
+							id="delete-account-confirmation"
+							type="text"
+							bind:value={confirmationText}
+							autocomplete="off"
+							class="mt-2"
+							disabled={deleting}
+							oninput={() => {
+								deleteErrorText = null;
+							}}
+							onkeydown={(event) => {
+								if (event.key === 'Enter' && canDeleteAccount && !deleting && !verification.busy) {
+									event.preventDefault();
+									void deleteAccount();
+								}
+							}}
+						/>
+					</div>
 				{/if}
-				<div>
-					<label for="delete-account-confirmation" class="block text-xs text-ink">
-						Type <strong>"{confirmationPhrase}"</strong> to continue
-					</label>
-					<TextInput
-						id="delete-account-confirmation"
-						type="text"
-						bind:value={confirmationText}
-						autocomplete="off"
-						class="mt-2"
-						disabled={deleting}
-						oninput={() => {
-							deleteErrorText = null;
-						}}
-					/>
-				</div>
 			{/if}
 		{:else}
 			<div>
@@ -439,7 +460,31 @@
 						oninput={() => {
 							verification.clearError();
 						}}
+						onkeydown={(event) => {
+							if (
+								event.key === 'Enter' &&
+								verification.canSubmit &&
+								!deleting &&
+								!verification.busy
+							) {
+								event.preventDefault();
+								void verification.submit();
+							}
+						}}
 					/>
+					{#if verification.canResend || verification.resending}
+						<div class="mt-2 flex items-center justify-between gap-2 text-xs text-ink-muted">
+							<span>{verification.resendNotice ?? 'Didn’t receive a code?'}</span>
+							<button
+								type="button"
+								class="cursor-pointer underline underline-offset-2 hover:text-ink disabled:cursor-default disabled:text-ink-muted"
+								disabled={!verification.canResend}
+								onclick={() => void verification.resend()}
+							>
+								{verification.resending ? 'Sending...' : 'Resend code'}
+							</button>
+						</div>
+					{/if}
 				</div>
 			{:else if showPasskeyPrompt}
 				<p class="text-[0.72rem] leading-5 text-ink-muted">
@@ -449,29 +494,42 @@
 		{/if}
 
 		{#if errorText}
-			<p class="text-[0.72rem] leading-5 text-danger">{errorText}</p>
+			<p role="alert" class="text-[0.72rem] leading-5 text-danger">{errorText}</p>
 		{/if}
 	</div>
 
 	{#snippet footer()}
 		{#if step === 'confirmDeletion'}
-			<Button variant="secondary" disabled={deleting} onclick={closeDeleteModal}>Cancel</Button>
-			<Button
-				disabled={!canDeleteAccount || deleting || verification.busy}
-				class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
-				onclick={deleteAccount}
-			>
-				{deleting ? 'Deleting...' : deletionTitle}
-			</Button>
+			{#if blockedByOwnership || cleaning}
+				<Button variant="secondary" disabled={deleting} onclick={closeDeleteModal}>Close</Button>
+			{:else}
+				<Button variant="secondary" disabled={deleting} onclick={closeDeleteModal}>Cancel</Button>
+				<Button
+					disabled={!canDeleteAccount || deleting || verification.busy}
+					class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
+					onclick={deleteAccount}
+				>
+					{deleting ? 'Deleting...' : retryingHold ? 'Retry deletion' : deletionTitle}
+				</Button>
+			{/if}
 		{:else}
 			<Button variant="secondary" disabled={deleting} onclick={closeDeleteModal}>Cancel</Button>
-			<Button
-				disabled={!verification.canSubmit || deleting || verification.busy}
-				class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
-				onclick={verification.submit}
-			>
-				{deleting ? 'Deleting...' : verificationActionText}
-			</Button>
+			{#if canRestartVerification}
+				<Button
+					class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
+					onclick={() => attempt && void startVerification(attempt)}
+				>
+					Try again
+				</Button>
+			{:else}
+				<Button
+					disabled={!verification.canSubmit || deleting || verification.busy}
+					class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
+					onclick={verification.submit}
+				>
+					{deleting ? 'Deleting...' : verificationActionText}
+				</Button>
+			{/if}
 		{/if}
 	{/snippet}
 </ModalShell>

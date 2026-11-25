@@ -6,7 +6,6 @@
 	import type { Id } from '../../convex/_generated/dataModel';
 	import MessageByline from './MessageByline.svelte';
 	import MessageComposer from './MessageComposer.svelte';
-	import OperationStatus from './OperationStatus.svelte';
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import Menu from '$lib/components/ui/Menu.svelte';
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
@@ -35,21 +34,15 @@
 		reply?: boolean;
 	} = $props();
 	const composer = $derived(session.editComposer(message.id));
-	const pendingSource = $derived(
-		[...session.work.operations.values()].find(
-			(operation) =>
-				(operation.command.kind === 'edit' || operation.command.kind === 'delete') &&
-				operation.command.messageId === message.id
-		)?.source ?? null
-	);
-	$effect(() => {
-		if (pendingSource && composer && composer.threadId !== threadId)
-			session.associateEditComposer(message.id, threadId);
-	});
+	const deleting = $derived(session.isDeleting(message.id));
 	let menuOpen = $state(false),
 		trigger = $state<HTMLButtonElement>(),
 		textElement = $state<HTMLParagraphElement>(),
 		confirmationPanel = $state<HTMLDivElement>();
+	$effect(() => {
+		void session.transitionVersion;
+		menuOpen = false;
+	});
 	const deletionRequest = $derived.by(() => {
 		const current = deletion.current;
 		return current?.messageId === message.id && !current.abandoned ? current : null;
@@ -64,16 +57,16 @@
 			identity = session.reads.identity;
 		const id = message.id,
 			revision = message.revision;
-		if (!element || !identity || !canRead || !message.author.buyer || message.deleted) return;
+		const actorCurrent = session.captureWriteAccess();
+		if (!element || !identity || !canRead || !message.author.buyer || !actorCurrent()) return;
 		const current = () =>
+			actorCurrent() &&
 			canRead &&
 			session.active &&
-			session.feed.authorized &&
-			session.feed.firstPageAccepted &&
+			session.authorized &&
 			session.reads.identity === identity &&
 			message.id === id &&
-			message.revision === revision &&
-			!message.deleted;
+			message.revision === revision;
 		return observeVisibleMessage(element, current, (stillVisible) =>
 			session.reads.seen({ messageId: id, revision }, stillVisible)
 		);
@@ -85,26 +78,14 @@
 		if (
 			deletionRequest &&
 			!deletionRequest.busy &&
-			(message.deleted || message.revision !== deletionRequest.revision || !own)
+			(message.revision !== deletionRequest.revision || !own)
 		)
 			deletion.cancel(deletionRequest.token);
 	});
 	function edit() {
-		if (session.readOnly || composer?.busy || pendingSource) return;
+		if (session.readOnly || composer?.busy || deleting) return;
 		onEdit();
-		const editComposer = session.ensureEditComposer(message.id, threadId);
-		if (!editComposer.initialized) {
-			editComposer.text = message.text;
-			editComposer.deleteSelectedWording = false;
-			editComposer.expected = message.revision;
-			editComposer.authorKey = message.author.key;
-			editComposer.account = session.account;
-			editComposer.error = null;
-			editComposer.initialized = true;
-		}
-		session.associateEditComposer(message.id, threadId);
-		session.replyingTo = null;
-		session.editingMessage = message.id;
+		session.openEdit(message, threadId);
 		menuOpen = false;
 	}
 	function restoreEditFocus() {
@@ -127,7 +108,7 @@
 		if (restoreFocus) restoreEditFocus();
 	}
 	function requestDelete() {
-		if (!own || message.deleted || composer?.busy || pendingSource) return;
+		if (!own || composer?.busy || deleting) return;
 		const token = deletion.open(message.id, message.revision);
 		if (token === null) return;
 		menuOpen = false;
@@ -138,35 +119,44 @@
 	}
 	function cancelDelete() {
 		const request = deletionRequest;
-		if (!request || composer?.busy || !deletion.cancel(request.token)) return;
+		if (!request || composer?.busy || deleting || !deletion.cancel(request.token)) return;
+		const current = session.captureWriteAccess();
 		void tick().then(() => {
-			if (!deletion.current && trigger?.isConnected) trigger.focus({ preventScroll: true });
+			if (current() && !deletion.current && trigger?.isConnected)
+				trigger.focus({ preventScroll: true });
 		});
 	}
 	async function confirmDelete() {
 		const request = deletionRequest;
-		if (!request || request.busy || composer?.busy || pendingSource) return;
-		if (!own || message.deleted || message.revision !== request.revision) {
+		if (!request || request.busy || composer?.busy || deleting) return;
+		if (!own || message.revision !== request.revision) {
 			deletion.cancel(request.token);
 			return;
 		}
 		if (!deletion.start(request.token)) return;
-		const deletionResult = session.deleteMessage(message, threadId, reply);
+		const current = session.captureWriteAccess();
+		const deletionResult = session.deleteMessage(message, threadId, reply, request.operationId);
 		await tick();
-		if (deletion.current?.token === request.token && confirmationPanel?.isConnected)
+		if (current() && deletion.current?.token === request.token && confirmationPanel?.isConnected)
 			confirmationPanel.focus({ preventScroll: true });
-		const error = await deletionResult;
-		if (deletion.current?.token !== request.token) return;
-		deletion.finish(request.token, error);
-		if (error) {
+		const result = await deletionResult;
+		if (!current() || deletion.current?.token !== request.token) return;
+		if (result.status === 'ignored') {
+			deletion.restore(request.token);
+			return;
+		}
+		if (result.status === 'error') {
+			deletion.finish(request.token, result.message, result.definite);
 			await tick();
-			if (deletion.current?.token === request.token)
+			if (current() && deletion.current?.token === request.token)
 				confirmationPanel
 					?.querySelector<HTMLButtonElement>('button:not(:disabled)')
 					?.focus({ preventScroll: true });
 		} else {
+			deletion.finish(request.token);
 			await tick();
-			if (!deletion.current && trigger?.isConnected) trigger.focus({ preventScroll: true });
+			if (current() && !deletion.current && trigger?.isConnected)
+				trigger.focus({ preventScroll: true });
 		}
 	}
 </script>
@@ -178,29 +168,23 @@
 		deletionRequest && 'min-h-28'
 	]}
 >
-	{#if canRead && session.active && session.feed.authorized && session.feed.firstPageAccepted && !session.readOnly && session.selected === threadId && session.editingMessage === message.id && composer && !deletionRequest}
+	{#if canRead && session.active && session.authorized && !session.readOnly && session.selected === threadId && composer && !deletionRequest}
 		<div use:composerBoundary={closeEdit} data-discussion-composer class="p-3.5">
 			<MessageComposer
-				allowDeletion={!reply &&
-					session.threads.some((t) => t.type === 'proposal' && t.root.id === message.id)}
-				deleting={composer.deleteSelectedWording}
 				text={composer.text}
 				author={session.viewer}
 				viewerKey={session.viewer?.key}
 				perspective={session.perspective()}
 				title="Edit message"
 				placeholder="Write a message…"
-				submitLabel="Save"
+					submitLabel={composer.awaitingConfirmation ? 'Retry' : 'Save'}
 				closeLabel="Cancel"
 				pending={composer.busy}
-				checkResultId={session.checkableOperationId(composer.id)}
-				writeBlocked={Boolean(pendingSource && pendingSource !== composer.id)}
+					textLocked={composer.awaitingConfirmation}
 				errorMessage={composer.error ?? ''}
-				onTextChange={(value) => session.work.setText(composer, value)}
-				onDeleteChange={(deleting) => session.work.setDeletion(composer, deleting)}
+				onTextChange={(value) => session.updateComposerText(value)}
 				onClose={() => closeEdit(true)}
 				onSubmit={() => session.submitEdit(message.id)}
-				onCheckResult={(operationId) => session.submitEdit(message.id, operationId)}
 			/>
 		</div>
 	{:else}
@@ -221,10 +205,10 @@
 				bind:this={textElement}
 				class="mt-2.5 mb-0 whitespace-pre-wrap text-ink-secondary [overflow-wrap:anywhere]"
 			>
-				{message.deleted ? 'Message deleted' : message.text || 'Delete selected wording'}
+				{message.text}
 			</p>
 		</button>
-		{#if own && !message.deleted && !deletionRequest}
+		{#if own && !deletionRequest}
 			<SquareIconButton
 				bind:element={trigger}
 				type="button"
@@ -242,13 +226,13 @@
 				label={reply ? 'Reply actions' : 'Message actions'}
 			>
 				{#snippet children(close)}<MenuItem
-						disabled={Boolean(composer?.busy || pendingSource)}
+						disabled={Boolean(composer?.busy || deleting)}
 						onclick={() => {
 							close();
 							edit();
 						}}>Edit</MenuItem
 					><MenuItem
-						disabled={Boolean(composer?.busy || pendingSource || deletion.current?.busy)}
+						disabled={Boolean(composer?.busy || deleting || deletion.current?.busy)}
 						danger
 						onclick={() => {
 							close();
@@ -302,25 +286,20 @@
 			</div>
 			<div class="flex flex-wrap gap-2" aria-busy={deletionRequest.busy}>
 				<Button
-					disabled={Boolean(deletionRequest.busy || composer?.busy || pendingSource)}
+					disabled={Boolean(deletionRequest.busy || composer?.busy || deleting)}
 					class="bg-danger text-white not-disabled:not-aria-disabled:hover:bg-danger-hover"
 					onclick={() => void confirmDelete()}
 					>{deletionRequest.busy ? 'Deleting…' : 'Delete'}</Button
 				>
 				<Button
 					variant="secondary"
-					disabled={Boolean(deletionRequest.busy || composer?.busy)}
+					disabled={Boolean(deletionRequest.busy || composer?.busy || deleting)}
 					onclick={cancelDelete}>Cancel</Button
 				>
 			</div>
 			{#if deletionRequest.error}
 				<p role="alert" class="m-0 text-xs text-danger">{deletionRequest.error}</p>
 			{/if}
-		</div>
-	{/if}
-	{#if !session.readOnly && !reply && !composer?.open && pendingSource && session.hasOperationStatus(pendingSource)}
-		<div class="px-3.5 pb-3.5">
-			<OperationStatus {session} source={pendingSource} label="message change" />
 		</div>
 	{/if}
 </div>

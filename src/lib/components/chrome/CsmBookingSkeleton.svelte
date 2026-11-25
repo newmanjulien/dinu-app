@@ -1,15 +1,14 @@
 <script lang="ts">
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
-	import type { AvailabilitySelection } from './csm-availability';
 	import CsmBookingLayout from './CsmBookingLayout.svelte';
 	import CsmTimeListLayout from './CsmTimeListLayout.svelte';
 	let {
 		description,
-		initial,
+		timeZone,
 		flushTop = false
 	}: {
 		description: string;
-		initial: AvailabilitySelection;
+		timeZone: string;
 		flushTop?: boolean;
 	} = $props();
 	const id = $props.id();
@@ -30,7 +29,7 @@
 				id={id + '-zone'}
 				class="flex min-h-9 items-center text-[12.5px] text-ink-muted"
 			>
-				{initial.timeZone.replaceAll('_', ' ')}
+				{timeZone.replaceAll('_', ' ')}
 			</p>{/snippet}
 	</CsmTimeListLayout>
 </CsmBookingLayout>

@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { createOperationId } from '$lib/contract/operation-identity';
-	import { assertOperationRetryable, isOperationRecovery } from '$lib/contract/operation-recovery';
 	import { onDestroy } from 'svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import { useConvexClient } from 'convex-svelte';
@@ -65,12 +63,11 @@
 		try {
 			if (!createdId) {
 				creationRequest ??= {
-					args: { ...input!, operationId: createOperationId() },
+					args: { ...input!, operationId: crypto.randomUUID() },
 					uncertain: false
 				};
 				locked = true;
 				const frozen = creationRequest.args;
-				assertOperationRetryable(frozen.operationId);
 				const result =
 					frozen.kind === 'deal'
 						? await client.action(api.hubspotDeals.link, {
@@ -119,7 +116,6 @@
 				} else if (
 					creationRequest.args.kind === 'manual' &&
 					cause instanceof ConvexError &&
-					!isOperationRecovery(cause) &&
 					!creationRequest.uncertain
 				) {
 					// A later generic rejection cannot resolve an earlier uncertain attempt.

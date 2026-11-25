@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import AuthProgressDots from '../components/AuthProgressDots.svelte';
+	import ProgressDots from '$lib/ui/ProgressDots.svelte';
 	let {
 		showProgress = true,
 		children,
@@ -12,7 +12,7 @@
 	} = $props();
 </script>
 
-{#if showProgress}<AuthProgressDots step={3} />{/if}
+{#if showProgress}<ProgressDots step={3} />{/if}
 <div class="m-auto w-full max-w-190 pt-7 pb-15 text-center">
 	{@render children()}
 </div>

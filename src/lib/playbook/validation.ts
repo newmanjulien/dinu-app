@@ -6,13 +6,26 @@ export { PlaybookValidationError } from './validation-error';
 
 import type { CompiledDocument } from '../document/compiled-document';
 import { targetContainers } from '../document/ranges';
-import { hasMeaningfulReplacement } from '../document/replacement-content';
 import type { ValidationSourceFacts } from '../document/validation-source';
 import { createChangeConflictChecker } from './conflicts';
 import type { ChangeStructure } from './structure';
 import { equalConcession } from './content';
 import { changeTriggerOwner, triggersIntersect, validateTriggerRange } from './geometry';
-import type { Concession, ContractChange, RepInstruction, TemplateItem, Trigger } from './model';
+import {
+	hasMeaningfulReplacement,
+	hasRepItemContent,
+	isNonBlankText,
+	isValidPlaybookId,
+	isValidSourceOffset
+} from './item-content-predicates';
+import {
+	instructionKeys,
+	type Concession,
+	type ContractChange,
+	type RepInstruction,
+	type TemplateItem,
+	type Trigger
+} from './model';
 
 import { MAX_PLAYBOOK_ITEM_BYTES } from './limits';
 
@@ -38,7 +51,7 @@ export function validateConcessionUpdate(
 }
 
 function unique(seen: Set<string>, id: string, label: string): void {
-	if (!id.trim() || id !== id.trim()) throw new PlaybookValidationError(`Invalid ${label}`);
+	if (!isValidPlaybookId(id)) throw new PlaybookValidationError(`Invalid ${label}`);
 	if (seen.has(id)) throw new PlaybookValidationError(`Duplicate ${label}: ${id}`);
 	seen.add(id);
 }
@@ -80,22 +93,13 @@ export function validateChangeGeometry(
 }
 
 /** Final items cannot reserve a structural location without changing the contract. */
-export function validateStructuralReplacementContent(
-	item: {
-		concessions: DeepReadonly<{ changes: DeepReadonly<ContractChange>[] }[]>;
-	},
-	allowBoundaryDeletion = false
-): void {
+export function validateStructuralReplacementContent(item: {
+	concessions: DeepReadonly<{ changes: DeepReadonly<ContractChange>[] }[]>;
+}): void {
 	for (const concession of item.concessions)
 		for (const change of concession.changes)
-			if (
-				change.target.kind === 'boundary' &&
-				!hasMeaningfulReplacement(change.replacement) &&
-				!allowBoundaryDeletion
-			)
-				throw new PlaybookValidationError(
-					'A structural concession needs text or a reference before it can be saved.'
-				);
+			if (change.target.kind === 'boundary' && !hasMeaningfulReplacement(change.replacement))
+				throw new PlaybookValidationError('A structural concession needs text or a reference.');
 }
 
 /** Source-independent checks shared by structural validation and wording-only saves. */
@@ -104,7 +108,7 @@ export function validateTemplateItemContent(item: DeepReadonly<TemplateItem>): v
 	if (
 		item.audience === 'rep' &&
 		item.approvalPolicy.kind === 'required' &&
-		!item.approvalPolicy.instructions.trim()
+		!isNonBlankText(item.approvalPolicy.instructions)
 	)
 		throw new PlaybookValidationError('Approval instructions cannot be blank');
 	if (new TextEncoder().encode(JSON.stringify(item)).byteLength > MAX_PLAYBOOK_ITEM_BYTES)
@@ -119,25 +123,39 @@ export function validateTemplateItemContent(item: DeepReadonly<TemplateItem>): v
 	]) {
 		if (target.kind !== 'text') continue;
 		for (const point of [target.range.start, target.range.end])
-			if (!Number.isSafeInteger(point.offset) || point.offset < 0)
+			if (!isValidSourceOffset(point.offset))
 				throw new PlaybookValidationError(
 					`Invalid source point: ${point.sourceKey}@${point.offset}`
 				);
 	}
 	unique(new Set(), item.trigger.id, 'Trigger ID');
 	if (item.audience === 'buyer') {
-		if (item.trigger.target.kind !== 'text')
-			throw new PlaybookValidationError('Buyer explanations require selected text');
-		if (!item.explanation.trim()) throw new PlaybookValidationError('Explanation cannot be blank');
+		if (!isNonBlankText(item.explanation))
+			throw new PlaybookValidationError('Explanation cannot be blank');
 		return;
 	}
+	validateStructuralReplacementContent(item);
 	validateConcessions(item.concessions);
 	const concessionIds = new Set<string>();
 	for (const concession of item.concessions) {
 		unique(concessionIds, concession.id, 'concession ID');
+		if (!isNonBlankText(concession.description))
+			throw new PlaybookValidationError('Concession description cannot be blank');
+		if (concession.changes.length === 0)
+			throw new PlaybookValidationError('Each concession must include at least one change.');
 		if (concession.tier !== 'preferred' && concession.tier !== 'rare')
 			throw new PlaybookValidationError('Invalid concession tier');
 	}
+	for (const key of instructionKeys) {
+		const text = item.instructions[key];
+		if (text === undefined) continue;
+		if (!isNonBlankText(text))
+			throw new PlaybookValidationError('Instruction fields cannot be blank');
+	}
+	if (!hasRepItemContent(item))
+		throw new PlaybookValidationError(
+			'Add instructions, approval guidance, or a concession before saving.'
+		);
 }
 
 /** Reference checks are independent of cross-item geometry and safe on every keystroke. */

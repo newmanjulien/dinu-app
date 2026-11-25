@@ -1,82 +1,82 @@
 <script lang="ts">
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import ModalShell from '$lib/ui/ModalShell.svelte';
-	import { helpContent, type HelpVariant } from './help-content';
 	import type { HelpSession } from './help-session.svelte';
 	import { recordDocumentLoadingMilestone } from '$lib/document/runtime/render-perf';
 
 	let {
-		variant,
 		isAdmin = false,
 		help,
 		onClose
 	}: {
-		variant: HelpVariant;
 		isAdmin?: boolean;
 		help: HelpSession;
 		onClose: () => void;
 	} = $props();
-	const content = $derived(helpContent[variant]);
+	const content = $derived(help.content);
 </script>
 
-<ModalShell
-	variant="panel"
-	title={content.title}
-	{onClose}
-	onOpen={() => recordDocumentLoadingMilestone('help-modal-open', { opening: help.loadingOpening })}
->
-	<div class="flex min-h-full flex-col justify-between gap-6 pt-1">
-		<div class="space-y-6">
-			<p class="text-[14px] leading-[1.5] text-ink-muted">
-				{content.intro}
-			</p>
+{#if content}
+	<ModalShell
+		variant="panel"
+		title={content.title}
+		{onClose}
+		onOpen={() =>
+			recordDocumentLoadingMilestone('help-modal-open', { opening: help.loadingOpening })}
+	>
+		<div class="flex min-h-full flex-col justify-between gap-6 pt-1">
+			<div class="space-y-6">
+				<p class="text-[14px] leading-[1.5] text-ink-muted">
+					{content.intro}
+				</p>
 
-			<div>
-				<ol class="m-0 list-none p-0" role="list">
-					{#each content.steps as step, index}
-						{@const highlight = 'highlight' in step ? step.highlight : undefined}
-						{@const highlightStart = highlight ? step.description.indexOf(highlight.text) : -1}
-						<li
-							class="relative grid grid-cols-[1.5rem_1fr] gap-x-3 after:absolute after:top-6 after:bottom-0 after:left-[calc(0.75rem-0.5px)] after:w-px after:bg-line after:content-[''] last:after:hidden"
-						>
-							<span
-								class="z-1 flex size-6 items-center justify-center rounded-full border border-line bg-canvas text-[12px] leading-none font-light text-ink-muted"
-								aria-hidden="true">{index + 1}</span
+				<div>
+					<ol class="m-0 list-none p-0" role="list">
+						{#each content.steps as step, index}
+							{@const highlight = 'highlight' in step ? step.highlight : undefined}
+							{@const highlightStart = highlight ? step.description.indexOf(highlight.text) : -1}
+							<li
+								class="relative grid grid-cols-[1.5rem_1fr] gap-x-3 after:absolute after:top-6 after:bottom-0 after:left-[calc(0.75rem-0.5px)] after:w-px after:bg-line after:content-[''] last:after:hidden"
 							>
+								<span
+									class="z-1 flex size-6 items-center justify-center rounded-full border border-line bg-canvas text-[12px] leading-none font-light text-ink-muted"
+									aria-hidden="true">{index + 1}</span
+								>
 
-							<div class:pb-7={index < content.steps.length - 1}>
-								<h3 class="text-[14px] leading-tight font-medium text-ink">{step.title}</h3>
+								<div class:pb-7={index < content.steps.length - 1}>
+									<h3 class="text-[14px] leading-tight font-medium text-ink">{step.title}</h3>
 
-								<p class="mt-1.5 text-[14px] leading-[1.6] text-ink-muted">
-									{#if highlight && highlightStart >= 0}
-										{step.description.slice(0, highlightStart)}<span
-											class={`rounded-[3px] [box-decoration-break:clone] [-webkit-box-decoration-break:clone] ${highlight.color === 'blue' ? 'bg-[var(--document-highlight-selection,var(--color-accent-soft))]' : 'bg-[var(--document-highlight-buyer,color-mix(in_srgb,var(--color-success)_16%,transparent))]'}`}
-										>
-											{highlight.text}
-										</span>{step.description.slice(highlightStart + highlight.text.length)}
-									{:else}
-										{step.description}
-									{/if}
-									{#if isAdmin && 'adminNote' in step}{' '}{step.adminNote}{/if}
-								</p>
-							</div>
-						</li>
-					{/each}
-				</ol>
+									<p class="mt-1.5 text-[14px] leading-[1.6] text-ink-muted">
+										{#if highlight && highlightStart >= 0}
+											{step.description.slice(0, highlightStart)}<span
+												class={`rounded-[3px] [box-decoration-break:clone] [-webkit-box-decoration-break:clone] ${highlight.color === 'blue' ? 'bg-[var(--document-highlight-selection,var(--color-accent-soft))]' : 'bg-[var(--document-highlight-buyer,color-mix(in_srgb,var(--color-success)_16%,transparent))]'}`}
+											>
+												{highlight.text}
+											</span>{step.description.slice(highlightStart + highlight.text.length)}
+										{:else}
+											{step.description}
+										{/if}
+										{#if isAdmin && 'adminNote' in step}{' '}{step.adminNote}{/if}
+									</p>
+								</div>
+							</li>
+						{/each}
+					</ol>
 
-				{#if help.showCheckbox}
-					<Checkbox
-						label="Don't show this again"
-						checked={help.hidden}
-						disabled={help.checkboxDisabled}
-						onCheckedChange={(hidden) => void help.setHidden(hidden)}
-						class="mt-6"
-					/>
-				{/if}
-				{#if help.error}
-					<p class="mt-2 text-sm text-danger" role="alert">{help.error}</p>
-				{/if}
+					{#if help.showCheckbox}
+						<Checkbox
+							label="Don't show this again"
+							checked={help.hidden}
+							disabled={help.checkboxDisabled}
+							onCheckedChange={(hidden) => void help.setHidden(hidden)}
+							class="mt-6"
+						/>
+					{/if}
+					{#if help.error}
+						<p class="mt-2 text-sm text-danger" role="alert">{help.error}</p>
+					{/if}
+				</div>
 			</div>
 		</div>
-	</div>
-</ModalShell>
+	</ModalShell>
+{/if}

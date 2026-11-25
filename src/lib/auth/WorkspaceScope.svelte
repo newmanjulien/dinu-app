@@ -40,7 +40,7 @@
 				)
 		)
 	);
-	untrack(() => reads.configure(viewer.permissions.manageMembers, !viewer.company.deletionPending));
+	untrack(() => reads.configure(viewer.permissions.manageMembers, !viewer.company.deletion));
 	// Start scoped disk reads as soon as the verified workspace exists. None gate rendering.
 	if (typeof indexedDB !== 'undefined') {
 		void reads.hydrate('contracts');
@@ -50,16 +50,13 @@
 	}
 	$effect(() => {
 		const manageMembers = viewer.permissions.manageMembers;
-		const deleting = viewer.company.deletionPending;
+		const deleting = Boolean(viewer.company.deletion);
 		untrack(() => reads.configure(manageMembers, !deleting));
 	});
 	const hubspotConnection = useReadQuery(
 		api.hubspotConnections.status,
 		() =>
-			account.workspaceAdmitted &&
-			!account.blocked &&
-			!account.closing &&
-			!viewer.company.deletionPending
+			account.workspaceAdmitted && !account.blocked && !account.closing && !viewer.company.deletion
 				? { membershipId: viewer.membership.id }
 				: 'skip',
 		() => account.transportGeneration
@@ -74,7 +71,7 @@
 				account.workspaceAdmitted &&
 				!account.blocked &&
 				!account.closing &&
-				!viewer.company.deletionPending
+				!viewer.company.deletion
 					? JSON.stringify([
 							account.preparedSessionId,
 							account.userId,
@@ -137,9 +134,11 @@
 					client,
 					membershipId: viewer.membership.id,
 					companyId: viewer.company.id,
+					audience: 'rep',
 					registerEditor: account.registerEditor
 				})
-		)
+		),
+		'rep'
 	);
 	const buyerAuthoring = setTemplateAuthoringSession(
 		untrack(
@@ -161,7 +160,7 @@
 				account.workspaceAdmitted &&
 				!account.blocked &&
 				!account.closing &&
-				!viewer.company.deletionPending,
+				!viewer.company.deletion,
 			acquire: (path) => {
 				const saved = /^\/contracts\/([^/]+)(?:\/settings)?$/.exec(path);
 				if (saved && saved[1] !== 'new') {
@@ -183,7 +182,7 @@
 				if (
 					(path === '/template' || path === '/template/buyers') &&
 					viewer.templateReady &&
-					viewer.membership.role === 'admin'
+					viewer.permissions.manageTemplate
 				) {
 					void preloadDestination(path).catch(() => {});
 					warmDocumentDestination('template');
@@ -210,15 +209,15 @@
 		sessions.destroy();
 	});
 	$effect(() => {
-		const available = !viewer.company.deletionPending;
-		const admin = viewer.membership.role === 'admin';
+		const available = !viewer.company.deletion;
+		const manageTemplate = viewer.permissions.manageTemplate;
 		const frozen = account.blocked;
 		const generation = account.transportGeneration;
 		untrack(() => {
 			sessions.configure(available, frozen, generation);
 			templateSource.configure(available && !frozen && !account.closing, generation);
-			authoring.configure(available && admin, frozen, generation);
-			buyerAuthoring.configure(available && admin, frozen, generation);
+			authoring.configure(available && manageTemplate, frozen, generation);
+			buyerAuthoring.configure(available && manageTemplate, frozen, generation);
 		});
 	});
 	beforeNavigate((navigation) => {

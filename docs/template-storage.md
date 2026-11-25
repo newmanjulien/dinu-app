@@ -17,19 +17,14 @@ Every mutable body writer rechecks the company's current pointer and the owning
 manifest's `mutable` state. Replacement also verifies exact item/revision ownership
 and the next content revision. A stale `mutableVersionId` on a body grants no write
 authority after capture. Captured-contract readers require a frozen manifest.
-Manifest generations are authoritative; pointer generation fields are compatibility
-projections and fallback values for older manifests.
-Observation, authoring validation, migration captures and source repair use the same
-safe nonnegative integer resolution. A present clock never depends on mirror equality.
-Ordinary writes mirror manifest clocks for compatibility; field removal waits for the
-[clock/capture population gate](deployment.md#backend-ownership-conversion).
+Manifest generations on `templateVersions` are the sole authoring/structural clock authority; `currentTemplate` is a pure `{ companyId, versionId }` pointer with no mirrored clocks.
 
 Ordinary create/update/delete uses changed-content validation and exact deltas. Structural
 changes additionally validate against certified compact source facts and heads. Ordinary
 saving reads no template source prose, hydrates no unrelated template item bodies, and performs
-no full-playbook compilation or snapshot serialization. Bulk acceptance and migration
-retain full audits. See [template authoring storage](template-authoring-storage.md) for the
-private codec, admission reasoning, read APIs and required conversion sequence.
+no full-playbook compilation or snapshot serialization. Bulk acceptance
+retains full audits. See [template authoring storage](template-authoring-storage.md) for the
+private codec, admission reasoning, and read APIs.
 
 `contracts.state` returns compact current metadata and the captured version ID.
 `templates.current` returns only the current pointer's version ID.
@@ -52,13 +47,9 @@ The in-memory `SourceIndex` contains source units/coordinates/containers/gaps, o
 
 An open editing session establishes fresh contract metadata and current access before admitting cached content. Speculative warming can reuse disposable cached metadata; it does not authorize opening or confirm edits. Shared frozen-version flights and object identity serve creation handoff, opening and warming. Live previews stay outside this cache; creation reads the captured frozen content before adopting its prepared document resource. Cancellation of one consumer preserves other consumers' shared read.
 
-Confirmed namespace `dinu:v8` retains memory/disk 24-contract/24-version and combined 32 MiB bounds, optional-storage fallback, bounded deadlines, malformed repair and metadata-only updates. Confirmed IndexedDB format **16** ([runtime](../src/lib/contract/snapshot-storage.ts)) deletes and recreates obsolete snapshot/metadata stores on upgrade. These caches are disposable; upgrades never clear the separate sessionStorage intent journal. Explicit bounded persisted checks share saved-state validation with draft recovery. Confirmed metadata updates include complete reviews while retaining immutable identity and metadata-only disk writes. Desktop Chrome/Edge and Safari are primary.
+Confirmed namespace `dinu:v9` retains memory/disk 24-contract/24-version and combined 32 MiB bounds, optional-storage fallback, bounded deadlines, malformed repair and metadata-only updates. Confirmed IndexedDB format **17** ([runtime](../src/lib/contract/snapshot-storage.ts)) deletes and recreates obsolete snapshot/metadata stores on upgrade. These caches are disposable; upgrades never clear the separate sessionStorage intent journal. Confirmed metadata updates retain immutable identity and metadata-only disk writes. Desktop Chrome/Edge and Safari are primary.
 
-The tab-scoped intent journal uses `dinu:drafts:v6`, scoped to deployment, Clerk user, membership and contract. The [parser](../src/lib/contract/draft-values.ts) and [writer](../src/lib/contract/persistence.svelte.ts) write envelope **12**, with independent confirmed `base`, ordered native Playbook `commands`, immutable in-flight `request`, `conflict` and `blocked` state. Every command captures its exact expected current change ID and set/withdraw action. Recovery preserves exact submitted IDs/input and refuses conflicts on touched items; unrelated changes can merge. Old envelope 10/11 and malformed bytes remain raw, blocked and exportable in the same journal namespace. The immutable retry deadline is original identity time plus seven days; server rejection or local expiry blocks automatic recovery without deleting original intent. An explicit saved-state review precedes a new deliberate request. Live buyer names stay outside journal state.
-
-Old executable protocols are fenced under the [preservation cutover](backend-preservation-cutover.md). Envelope 10 and malformed originals in the same journal namespace remain blocked for review/export; no automatic translator, fresh timestamp or replay exists. Disposable cache retirement never clears intent. Current-schema malformed or conflicting intent remains recoverable, with memory fallback and exact original request bytes. An apparent choice match alone is not acknowledgment of a submitted operation. Download acknowledgment has its independent `dinu:download-acks:v2` namespace.
-
-Draft queues are bounded to **250** commands and each retained request to **25**. Commands have unique `op1:<original milliseconds>:<UUIDv4>` identities within each array, valid item/change identities, finite occurrence times and no unexpected fields. Complete queues must preserve latest intent before and after acknowledgment; bounded overflow retains its full authoritative target. Both transport and live-last-operation acknowledgment preserve newer work. Explicit contract, user or membership discard clears the current checkpoint; deletion prevents late transport outcomes from recreating it. Disposable confirmed-cache eviction never clears pending intent. Real historical corpus and browser storage behavior still require cutover validation.
+The tab-scoped draft journal uses `dinu:drafts:v7`, scoped to deployment, Clerk user, membership and contract. The [parser](../src/lib/contract/draft-values.ts) and [writer](../src/lib/contract/persistence.svelte.ts) write envelope **1** (`{ version: 1, baseStateRevision, selections, request, conflict }`). Recovery preserves exact submitted operation IDs and selections across reloads and surfaces conflicts when another editor advances `stateRevision`. Live buyer names stay outside journal state. Explicit contract, user or membership discard clears the current checkpoint; deletion prevents late transport outcomes from recreating it. Disposable confirmed-cache eviction never clears pending intent.
 
 ## Capacity and lifecycle
 
@@ -95,11 +86,11 @@ and explanation saves then update the current template automatically. See the
 Operator bootstrap uses the
 same canonical writers and refuses changed/incomplete state; `operator.readSeed`
 provides the live business projection and a `snapshot` projection for independent
-reconciliation. New business data commits atomically and source facts are certified in a scheduled readiness step; active repair/recount/recertification uses `authoringMigration.begin/step/finish`. Legacy full heads are rejected by the strict schema and require separate G19 old-bundle clearance before release.
+reconciliation. New business data commits atomically with a format-0 pending validation proof and `authoringValidation.certify` certifies compact source facts in a scheduled readiness step. Legacy full heads and `authoringMigration` are removed.
 
-Live rule/contract deletion retains referenced immutable history. Company deletion drains source/fact chunks, private certificates, migration state, rules, receipts, versions, revisions and retained originals through its bounded worker. Cleanup includes durable bounded child deletion and all-kind orphan recovery. Native failure, concurrency, storage and sweep-frontier behavior require separate verification.
+Live rule/contract deletion retains referenced immutable history. Company deletion drains source/fact chunks, private certificates, rules, receipts, versions, revisions and retained originals through its bounded worker. Cleanup includes durable bounded child deletion and all-kind orphan recovery. Native failure, concurrency, storage and sweep-frontier behavior require separate verification.
 
-Seller Word and HubSpot preparation reserve the ready approved document under an independent `contractOutputs` owner. Its manifest owns separately paged immutable dependency/decision/actor proof; bounded retry receipts retain references and private preparation only until transfer/disposal. Authorization, exact readiness, canonical source identity, destination and eligibility are checked at preparation and before each new URL release or dispatch. Approved joined newline semantics are independent of unused highlights. Native file retirement, browser behavior and Word visuals require separate verification.
+`contracts.save` checks multi-concession conflicts against compact `readValidationFacts` rather than reading full template source chunks (falling back to source blocks only if uncertified). Seller Word (`wordExports`) and HubSpot Quotes (`hubspotQuotePushes`) use a 2-step `prepare` → Node generation/storage → `commit` pipeline against the contract's frozen template and approved concessions, rechecking authorization, readiness, `templateVersionId`, `stateRevision`, and `title` (`expectedTitle`) on commit. Native file retirement, browser behavior and Word visuals require separate verification.
 
 ## Verification
 
@@ -115,9 +106,8 @@ live references and historical cell edits are unsupported. Target shape/populati
 ## Retired conversion tools
 
 Retired contract conversion/recovery runners and their dated runbooks describe superseded models. The strict application has no permanent retained-contract translator. The separately preserved one-off [current-schema preservation kit](backend-preservation-cutover.md) retains original history; older/unknown targets stop for their actual-schema plan. Local implementation performs no conversion/reset/deployment.
-Active authoring migration, source/paragraph repair, seed transport and the independent
-historical reconciliation oracle remain available; their own release procedures still apply.
+Seed transport and the independent historical reconciliation oracle remain available; their own release procedures still apply.
 
-Buyer current views reuse the contract's frozen original template and the same approved document as the seller. Public rendering receives actual structured wording and allowlisted piece origins, discussion anchors and explanation geometry. It never replays pending template choices. Template guidance remains private. Approved buyer wording checks the complete annotation footprint; invalid widgets and explanations are hidden together.
+Buyer current views compose directly from the contract's frozen `templateVersions` snapshot and `buyerLinks.currentView.concessions`. Public rendering receives frozen template blocks, applied Playbook overlays, and non-overlapped buyer explanations — never private Playbook guidance or pending review state.
 
-Buyer rendering shows current wording; dashboard redlines compare that wording with the frozen original. The same actual document drives DOCX generation. Buyer downloads independently recheck live link/company access and the displayed current identity before final release. Static tables are rendered and exported unchanged and cannot be editing targets.
+Buyer rendering shows effective wording; dashboard redlines compare active concessions with the frozen template. The same composition (`composeExport`) drives DOCX generation and HubSpot Quotes HTML. Buyer downloads independently recheck live link/company access and `displayIdentity` before and after generation. Static tables are rendered and exported unchanged and cannot be editing targets.

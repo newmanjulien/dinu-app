@@ -4,11 +4,11 @@ import type { Address } from '../document/numbering';
 import { targetContainers } from '../document/ranges';
 import { createReferenceCatalog, type ReferenceCatalog } from '../document/reference-catalog';
 import { hasMeaningfulReplacement } from '../document/replacement-content';
-import { sameSourceTarget, type ReplacementAtom } from '../document/source-model';
+import type { ReplacementAtom } from '../document/source-model';
 import { countStartupWork } from '../document/runtime/render-perf';
 import { immutable, type DeepReadonly } from '../immutable';
-import { AuthoringContext, type Workflow } from './authoring-context.svelte';
-import { semanticConcession } from './content';
+import { AuthoringContext } from './authoring-context.svelte';
+import { semanticConcession, semanticTarget } from './content';
 import { triggerAnnotationId } from './document-overlay';
 import { newTemplateDraft, templateDraft, type TemplateDraft } from './draft';
 import type { PlaybookGeometryIndex } from './geometry-index';
@@ -17,6 +17,7 @@ import {
 	type Instructions,
 	type Concession,
 	isRepItem,
+	type TemplateAudience,
 	type TemplateItem,
 	type SourceTarget
 } from './model';
@@ -28,7 +29,6 @@ import {
 	evaluateInitialSelection,
 	evaluateSecondarySelection,
 	selectionIssueMessage,
-	type AuthoringMode,
 	type SelectionAvailability,
 	type SelectionEligibility,
 	type SelectionIssue
@@ -58,7 +58,6 @@ export type AuthoringTransition =
 	| { kind: 'start' }
 	| { kind: 'attach-secondary' }
 	| { kind: 'start-addition' }
-	| { kind: 'cancel' }
 	| { kind: 'leave' };
 export type TransitionDecision =
 	| { kind: 'allowed' }
@@ -66,10 +65,13 @@ export type TransitionDecision =
 	| { kind: 'confirm-discard'; message: string };
 export type AuthoringOutcome = 'retained' | 'closed';
 export type TextSelectionPurpose = 'new-item' | 'secondary-location';
+const SECONDARY_BLOCKED =
+	'Tick "This concession affects another part of the template" before selecting another passage.';
 
 /** Route-attached draft commands and source validation. The workspace owns submitted work. */
 export class AuthoringController {
 	private context = $state.raw<AuthoringContext | null>(null);
+	private releaseContext?: () => void;
 	private issue = $state<SelectionIssue | null>(null);
 	private warning = $state('');
 	private referenceCatalogCache:
@@ -86,7 +88,7 @@ export class AuthoringController {
 			readonly reason: string;
 			submit(operation: DeepReadonly<Operation>, recovery: AuthoringRecovery): boolean;
 		},
-		readonly audience: import('./model').TemplateAudience = 'rep'
+		readonly audience: TemplateAudience
 	) {}
 	get copy() {
 		return templateCopy(this.audience);
@@ -97,22 +99,14 @@ export class AuthoringController {
 	get draft() {
 		return this.context?.draft ?? null;
 	}
-	private get workflow() {
-		return this.context?.workflow;
-	}
-	get creating() {
-		return Boolean(this.workflow && this.workflow.kind !== 'editing');
+	get concessionComposer(): DeepReadonly<Concession> | undefined {
+		return this.context?.concessionDraft?.concession;
 	}
 	get addingConcession() {
-		return this.workflow?.kind === 'adding-concession';
-	}
-	get step() {
-		return this.workflow && 'step' in this.workflow ? this.workflow.step : 'concession';
+		return Boolean(this.context?.concessionDraft);
 	}
 	get affectsOtherParts() {
-		return this.workflow && 'affectsOtherParts' in this.workflow
-			? this.workflow.affectsOtherParts
-			: false;
+		return this.context?.concessionDraft?.affectsOtherParts ?? false;
 	}
 	get selectedAnnotationId() {
 		return this.context?.selectedAnnotationId ?? null;
@@ -120,10 +114,7 @@ export class AuthoringController {
 	get previewConcessionId() {
 		return this.context?.previewConcessionId ?? null;
 	}
-	private get composing() {
-		return this.workflow?.kind !== 'editing' && Boolean(this.context);
-	}
-	get dirty() {
+	private get dirty() {
 		return this.context?.dirty ?? false;
 	}
 	get hasUnsavedWork() {
@@ -136,7 +127,7 @@ export class AuthoringController {
 			context.operation.kind !== 'missing' &&
 			context.remote &&
 			(!context.confirmed || context.remote.contentRevision > context.confirmed.contentRevision) &&
-			(this.dirty || this.composing)
+			(this.dirty || this.addingConcession)
 		)
 			return { kind: 'conflict' as const, remote: context.remote };
 		return context.operation;
@@ -167,12 +158,9 @@ export class AuthoringController {
 		}
 		return this.copy.unavailable;
 	}
-	get canCancel() {
-		return Boolean(this.context);
-	}
 	get canDelete() {
 		return (
-			!this.creating &&
+			!this.addingConcession &&
 			Boolean(this.context?.confirmed) &&
 			this.canEdit &&
 			this.submission.available
@@ -189,30 +177,20 @@ export class AuthoringController {
 				return '';
 		}
 	}
-	get creationConcession(): DeepReadonly<Concession> | undefined {
-		return this.context?.composer;
+	private get secondarySelection() {
+		return this.concessionComposer?.changes[1]?.target;
 	}
-	get stagedCreation() {
-		return this.creating && Boolean(this.creationConcession);
+	/** Once the other passage is picked, the editor rests beside it instead of returning to the clause. */
+	get panelTarget() {
+		return this.secondarySelection ?? this.draft?.trigger.target;
 	}
-	get secondarySelection() {
-		return this.creationConcession?.changes[1]?.target;
-	}
-	get otherClauseActive() {
-		return this.stagedCreation && this.step === 'other-part';
-	}
+	/** The only mode in which the editor follows scroll and the document picks a second passage. */
 	get pickingSecondaryLocation() {
 		return (
-			this.otherClauseActive &&
-			this.canEdit &&
-			!this.additionTargetReason &&
-			!this.secondarySelection
+			this.addingConcession && this.canEdit && this.affectsOtherParts && !this.secondarySelection
 		);
 	}
-	get locationPicking() {
-		return this.pickingSecondaryLocation;
-	}
-	get textSelectionPurpose(): TextSelectionPurpose | null {
+	private get textSelectionPurpose(): TextSelectionPurpose | null {
 		if (!this.source().available) return null;
 		if (this.pickingSecondaryLocation) return 'secondary-location';
 		if (!this.context) return 'new-item';
@@ -239,72 +217,79 @@ export class AuthoringController {
 			(range): range is SourceTarget => Boolean(range)
 		);
 	}
-	get additionTargetReason() {
-		const workflow = this.workflow;
-		if (workflow?.kind !== 'adding-concession') return '';
-		const context = this.context!;
-		const reason = !context.confirmed
-			? 'These instructions are no longer available'
-			: !this.canEdit
-				? this.statusMessage
-				: '';
-		if (reason) return reason;
-		const range = context.trigger.id === workflow.triggerId ? context.trigger.target : undefined;
-		const captured = workflow.concession.changes[0].target;
-		if (!range || !sameSourceTarget(range, captured))
-			return 'These instructions or their selected text changed. Cancel and start the addition again.';
-		return '';
+	private selectionSource() {
+		const { document, items, available, geometry, selectionContext } = this.source();
+		if (
+			!available ||
+			!document ||
+			!items ||
+			!geometry ||
+			!selectionContext ||
+			selectionContext.index !== document.index
+		)
+			return null;
+		return { document, geometry, selectionContext };
+	}
+	private currentConcessionAdditionReason = $derived.by(() => {
+		const context = this.context;
+		if (this.audience !== 'rep' || !context || this.addingConcession) return '';
+		const ready = this.selectionSource();
+		if (!ready) return this.canEdit ? 'Wait for the current template' : '';
+		void context.geometryVersion;
+		const permission = evaluateConcessionAddition(
+			ready.document.index,
+			context.trigger,
+			context.confirmed?._id,
+			ready.geometry,
+			ready.selectionContext
+		);
+		return permission.allowed ? '' : selectionIssueMessage(permission.issue, this.audience);
+	});
+	get concessionAdditionReason() {
+		return this.currentConcessionAdditionReason;
 	}
 	get feedback() {
 		return this.warning || (this.issue ? selectionIssueMessage(this.issue, this.audience) : '');
 	}
-	get lastStep() {
-		return this.step === 'other-part' || !this.affectsOtherParts;
-	}
-	get canCancelLocation() {
-		return this.canEdit && this.stagedCreation && this.step === 'other-part';
-	}
-	get creationIncomplete() {
-		return Boolean(this.creationIncompleteReason);
-	}
-	private get creationIncompleteReason() {
-		const concession = this.creationConcession;
+	private get primaryIncompleteReason() {
+		const concession = this.concessionComposer;
 		if (!concession) return '';
-		if (!concession.description.trim()) return 'Describe the concession before continuing.';
 		if (!hasMeaningfulReplacement(concession.changes[0].replacement))
 			return 'Add replacement text before continuing.';
-		if (this.otherClauseActive && !this.secondarySelection)
-			return 'Select the other part of the template before saving.';
+		if (!concession.description.trim()) return 'Describe the concession before continuing.';
+		return '';
+	}
+	/** Ticking requires both primary fields; unticking is always allowed. */
+	get affectedPartAvailable() {
+		return this.canEdit && (this.affectsOtherParts || !this.primaryIncompleteReason);
+	}
+	private get concessionIncompleteReason() {
+		const concession = this.concessionComposer;
+		if (!concession) return '';
+		if (this.primaryIncompleteReason) return this.primaryIncompleteReason;
+		if (this.affectsOtherParts && !this.secondarySelection)
+			return 'Select the other part of the template before adding.';
 		return '';
 	}
 	private currentPrimaryAction = $derived.by(() => {
 		const context = this.context;
-		const action =
-			this.stagedCreation && !this.lastStep ? 'advance' : this.addingConcession ? 'add' : 'save';
-		const validation =
-			!context || !this.canEdit
-				? ''
-				: this.additionTargetReason ||
-					(this.addingConcession ? context.additionValidation : context.validation);
+		const action = this.addingConcession ? 'add' : 'save';
 		const reason = !context
 			? ''
 			: !this.canEdit
 				? this.editingUnavailableReason
-				: validation ||
-					(action === 'save' && !this.submission.available ? this.submission.reason : '') ||
-					this.creationIncompleteReason;
-		const label = action === 'advance' ? 'Add the other part' : action === 'add' ? 'Add' : 'Save';
+				: this.addingConcession
+					? this.concessionIncompleteReason || context.concessionValidation
+					: context.validation || (!this.submission.available ? this.submission.reason : '');
+		const label = action === 'add' ? 'Add' : 'Save';
 		return {
 			action,
 			label,
 			reason,
-			isError: Boolean(validation || this.statusMessage),
 			disabled:
 				!this.canEdit ||
-				(action === 'save' && !this.submission.available) ||
-				this.creationIncomplete ||
-				Boolean(reason) ||
-				(action === 'save' && !this.creating && !this.dirty)
+				(action === 'save' && (!this.submission.available || !this.dirty)) ||
+				Boolean(reason)
 		};
 	});
 	get primaryAction(): Readonly<typeof this.currentPrimaryAction> {
@@ -329,21 +314,19 @@ export class AuthoringController {
 	assess(action: AuthoringTransition): TransitionDecision {
 		if (action.kind === 'switch-item' && this.draft?.persistedId === action.itemId)
 			return { kind: 'allowed' };
-		if (action.kind === 'cancel') return { kind: 'allowed' };
 		if (action.kind === 'attach-secondary')
 			return this.pickingSecondaryLocation
 				? { kind: 'allowed' }
 				: {
 						kind: 'blocked',
-						message: 'Choose the other-part step before selecting another passage.'
+						message: SECONDARY_BLOCKED
 					};
 		if (action.kind === 'start-addition')
-			return !this.creating && this.context?.confirmed && this.canEdit
+			return !this.addingConcession && this.context && this.canEdit
 				? { kind: 'allowed' }
 				: {
 						kind: 'blocked',
-						message:
-							'Finish or cancel the current operation or creation before adding a concession.'
+						message: 'Finish or cancel the current edit before adding a concession.'
 					};
 		if (action.kind === 'leave')
 			return this.hasUnsavedWork
@@ -367,14 +350,7 @@ export class AuthoringController {
 				? this.copy.startUnsaved
 				: 'Save or cancel your changes first.';
 		}
-		if (context?.hasCompositionChanges) {
-			if (this.primaryAction.action === 'advance')
-				return 'Finish the new concession or Cancel to discard it.';
-			return this.addingConcession
-				? 'Your new concession has changes. Select Add to include it, or Cancel to discard it.'
-				: 'Your new concession has changes. Select Save to keep it, or Cancel to discard it.';
-		}
-		return 'Resolve the current operation before continuing.';
+		return 'Your new concession has changes. Select Add to include it, or Cancel to discard it.';
 	}
 	private permit(action: AuthoringTransition) {
 		const decision = this.assess(action);
@@ -388,7 +364,6 @@ export class AuthoringController {
 		const { document, geometry, items, itemsCurrent, lookup, detailStatus } = this.source();
 		const context = this.context;
 		if (!context || !document || !geometry || !items) return;
-		if (context.geometry !== geometry) context.validateGeometry = geometry.createDraftValidator();
 		context.document = document;
 		context.geometry = geometry;
 		context.geometryVersion = geometry.version;
@@ -435,7 +410,7 @@ export class AuthoringController {
 		if (
 			context.remote &&
 			!this.dirty &&
-			!this.composing &&
+			!this.addingConcession &&
 			(!context.confirmed || context.remote.contentRevision > context.confirmed.contentRevision)
 		)
 			this.adopt(context.remote);
@@ -446,18 +421,21 @@ export class AuthoringController {
 		context.adoptContent(record);
 		context.trigger = record.trigger;
 		context.concessions = isRepItem(record) ? record.concessions : [];
-		context.workflow = { kind: 'editing' };
+		context.concessionDraft = null;
 		context.operation = { kind: 'editing' };
 		context.previewConcessionId = null;
 		this.reconcileSelection();
 	}
 	private begin(
 		draft: DeepReadonly<TemplateDraft>,
-		confirmed: DeepReadonly<TemplateItemRecord> | null,
-		workflow: Workflow
+		confirmed: DeepReadonly<TemplateItemRecord> | null
 	) {
 		this.release();
-		const context = new AuthoringContext(draft, confirmed, workflow, this.audience);
+		// Callers may run inside short-lived effects; the context's deriveds must live as long as the draft.
+		let context!: AuthoringContext;
+		this.releaseContext = $effect.root(() => {
+			context = new AuthoringContext(draft, confirmed, this.audience);
+		});
 		this.context = context;
 		context.selectedAnnotationId = draft.persistedId
 			? triggerAnnotationId(confirmed?.renderKey ?? draft.persistedId)
@@ -467,26 +445,23 @@ export class AuthoringController {
 	}
 	private release() {
 		this.context = null;
+		this.releaseContext?.();
+		this.releaseContext = undefined;
 		this.clearFeedback();
 	}
 	setInstruction(key: keyof Instructions, text: string) {
 		const context = this.context;
 		if (!context || context.content.audience !== 'rep' || !this.canEdit) return;
-		const saved =
-			context.confirmed && isRepItem(context.confirmed)
-				? context.confirmed.instructions?.[key]
-				: undefined;
-		if (text === '' && saved === undefined) delete context.content.instructions?.[key];
-		else (context.content.instructions ??= {})[key] = text;
+		if (text === '') delete context.content.instructions[key];
+		else context.content.instructions[key] = text;
 		this.clearFeedback();
 		this.reconcile();
 	}
 	setApprovalGuidance(text: string) {
 		const context = this.context;
 		if (!context || context.content.audience !== 'rep' || !this.canEdit) return;
-		context.content.approvalPolicy = text.trim()
-			? { kind: 'required', instructions: text }
-			: { kind: 'none' };
+		context.content.approvalPolicy =
+			text === '' ? { kind: 'none' } : { kind: 'required', instructions: text };
 		this.clearFeedback();
 		this.reconcile();
 	}
@@ -498,23 +473,19 @@ export class AuthoringController {
 		this.reconcile();
 	}
 	setConcessionDescription(text: string) {
-		if (!this.canEdit || !this.context?.composer) return;
-		this.context.composer.description = text;
-		this.clearFeedback();
-	}
-	setConcessionTier(tier: Concession['tier']) {
-		if (!this.canEdit || !this.context?.composer) return;
-		this.context.composer.tier = tier;
+		const draft = this.context?.concessionDraft;
+		if (!this.canEdit || !draft) return;
+		draft.concession.description = text;
 		this.clearFeedback();
 	}
 	setReplacement(index: 0 | 1, atoms: ReplacementAtom[]) {
-		const change = this.context?.composer?.changes[index];
+		const change = this.context?.concessionDraft?.concession.changes[index];
 		if (!this.canEdit || !change) return;
 		change.replacement = atoms;
 		this.clearFeedback();
 	}
 	replacementUsesParagraphs(index: 0 | 1) {
-		const change = this.context?.composer?.changes[index];
+		const change = this.context?.concessionDraft?.concession.changes[index];
 		const document = this.source().document;
 		if (!change || !document) return true;
 		return (
@@ -525,39 +496,29 @@ export class AuthoringController {
 		);
 	}
 	private initialSelectionEligibility(range: SourceTarget): SelectionEligibility {
-		const { document, items, available, geometry, selectionContext } = this.source();
-		if (
-			!available ||
-			!document ||
-			!items ||
-			!geometry ||
-			!selectionContext ||
-			selectionContext.index !== document.index
-		)
-			return { allowed: false, issue: { kind: 'unavailable' } };
-		return evaluateInitialSelection(document.index, range, geometry, selectionContext);
+		const ready = this.selectionSource();
+		if (!ready) return { allowed: false, issue: { kind: 'unavailable' } };
+		return evaluateInitialSelection(
+			ready.document.index,
+			range,
+			ready.geometry,
+			ready.selectionContext,
+			this.audience
+		);
 	}
 	private secondarySelectionEligibility(range: SourceTarget): SelectionEligibility {
-		const { document, items, available, geometry, selectionContext } = this.source();
+		const ready = this.selectionSource();
 		const context = this.context;
-		if (
-			!available ||
-			!document ||
-			!items ||
-			!geometry ||
-			!selectionContext ||
-			selectionContext.index !== document.index ||
-			!context?.composer ||
-			!isRepItem(context.draft)
-		)
+		if (!ready || !context?.concessionDraft || context.content.audience !== 'rep')
 			return { allowed: false, issue: { kind: 'unavailable' } };
 		return evaluateSecondarySelection(
-			document.index,
+			ready.document.index,
 			range,
-			context.draft,
-			geometry,
-			selectionContext,
-			context.composer
+			context.trigger,
+			context.confirmed?._id,
+			ready.geometry,
+			ready.selectionContext,
+			context.concessionDraft.concession
 		);
 	}
 	selectionEligibility(candidate: SelectionCandidate): SelectionAvailability {
@@ -599,71 +560,47 @@ export class AuthoringController {
 		if ('reason' in permission) this.reportBlocked(permission.reason);
 		else this.reportIssue(permission.issue);
 	}
-	private requireSelectionAction(
-		candidate: SelectionCandidate,
-		mode: AuthoringMode
-	): SelectionEligibility | null {
+	private requireSelection(candidate: SelectionCandidate): boolean {
 		const permission = this.selectionEligibility(candidate);
 		if (!permission.allowed) {
 			this.reportSelectionFailure(permission);
-			return null;
+			return false;
 		}
-		const action = permission.actions[mode];
-		if (!action.enabled) {
-			this.reportBlocked(action.reason);
-			return null;
-		}
-		return permission;
+		return true;
 	}
-	startItemFromSelection(candidate: SelectionCandidate) {
+	confirmSelection(candidate: SelectionCandidate) {
+		return this.textSelectionPurpose === 'secondary-location'
+			? this.attachSecondaryLocation(candidate)
+			: this.startItemFromSelection(candidate);
+	}
+	private startItemFromSelection(candidate: SelectionCandidate) {
 		const range = candidate.target;
 		if (this.textSelectionPurpose !== 'new-item') {
 			this.reportBlocked(this.copy.startBlocked);
 			return false;
 		}
-		if (!this.requireSelectionAction(candidate, 'add-item')) return false;
-		this.begin(newTemplateDraft(range, this.audience), null, { kind: 'creating-item' });
+		if (!this.requireSelection(candidate)) return false;
+		if (this.audience === 'buyer') {
+			if (range.kind !== 'text') return false;
+			this.begin(newTemplateDraft(range, 'buyer'), null);
+		} else {
+			this.begin(newTemplateDraft(range, 'rep'), null);
+		}
 		return true;
 	}
-	startConcessionFromSelection(candidate: SelectionCandidate) {
-		if (this.audience === 'buyer') return false;
+	private attachSecondaryLocation(candidate: SelectionCandidate) {
 		const range = candidate.target;
-		const purpose = this.textSelectionPurpose;
-		if (purpose !== 'new-item') {
-			this.reportBlocked('Finish or cancel the current authoring task before adding a concession.');
+		const draft = this.context?.concessionDraft;
+		if (this.textSelectionPurpose !== 'secondary-location' || !draft) {
+			this.reportBlocked(SECONDARY_BLOCKED);
 			return false;
 		}
-		if (!this.requireSelectionAction(candidate, 'concession')) return false;
-		return this.beginNewConcessionAt(range);
-	}
-	attachSecondaryLocation(candidate: SelectionCandidate) {
-		const range = candidate.target;
-		if (this.textSelectionPurpose !== 'secondary-location' || !this.context?.composer) {
-			this.reportBlocked('Choose the other-part step before selecting another passage.');
-			return false;
-		}
-		if (!this.requireSelectionAction(candidate, 'concession')) return false;
-		this.context.composer.changes = [
-			this.context.composer.changes[0],
+		if (!this.requireSelection(candidate)) return false;
+		draft.concession.changes = [
+			draft.concession.changes[0],
 			{ target: range, replacement: [{ kind: 'text', text: '' }] }
 		];
 		this.clearFeedback();
-		return true;
-	}
-	private beginNewConcessionAt(range: SourceTarget) {
-		const concession: Concession = {
-			id: newConcessionId(),
-			tier: 'preferred',
-			description: '',
-			changes: [{ target: range, replacement: [{ kind: 'text', text: '' }] }]
-		};
-		this.begin(newTemplateDraft(range), null, {
-			kind: 'creating-concession',
-			step: 'concession',
-			affectsOtherParts: false,
-			originalConcession: immutable(semanticConcession(concession)),
-			concession
-		});
 		return true;
 	}
 	requestItemSwitch(itemId: string, annotationId: string) {
@@ -671,10 +608,7 @@ export class AuthoringController {
 		const item = retained?.record;
 		const annotation = retained?.annotations.find((annotation) => annotation.id === annotationId);
 		if (!item || !annotation || !this.permit({ kind: 'switch-item', itemId })) return false;
-		if (this.draft?.persistedId !== itemId)
-			this.begin(templateDraft(item, item._id), item, {
-				kind: 'editing'
-			});
+		if (this.draft?.persistedId !== itemId) this.begin(templateDraft(item, item._id), item);
 		else this.clearFeedback();
 		const context = this.context!;
 		context.selectedAnnotationId = annotationId;
@@ -683,59 +617,22 @@ export class AuthoringController {
 	addConcession(tier: Concession['tier']) {
 		if (this.audience !== 'rep') return false;
 		if (!this.permit({ kind: 'start-addition' })) return false;
-		const { document, items, available, geometry, selectionContext } = this.source();
-		if (
-			!available ||
-			!document ||
-			!items ||
-			!geometry ||
-			!selectionContext ||
-			selectionContext.index !== document.index
-		) {
-			this.reportBlocked('Wait for the current template');
-			return false;
-		}
 		const context = this.context!;
-		const draft = context.draft;
-		if (!isRepItem(draft)) return false;
-		const trigger = draft.trigger;
-		const range: SourceTarget =
-			trigger.target.kind === 'boundary'
-				? { kind: 'boundary', afterBlockKey: trigger.target.afterBlockKey }
-				: {
-						kind: 'text',
-						range: {
-							start: { ...trigger.target.range.start },
-							end: { ...trigger.target.range.end }
-						}
-					};
-		const permission = evaluateConcessionAddition(
-			document.index,
-			range,
-			draft,
-			geometry,
-			selectionContext
-		);
-		if (!permission.allowed) {
-			this.reportBlocked(selectionIssueMessage(permission.issue));
+		if (context.content.audience !== 'rep') return false;
+		const reason = this.concessionAdditionReason;
+		if (reason) {
+			this.reportBlocked(reason);
 			return false;
 		}
-		const concessionAction = permission.actions.concession;
-		if (!concessionAction.enabled) {
-			this.reportBlocked(concessionAction.reason);
-			return false;
-		}
+		const range = semanticTarget(context.trigger.target);
 		const concession: Concession = {
 			id: newConcessionId(),
 			tier,
 			description: '',
 			changes: [{ target: range, replacement: [{ kind: 'text', text: '' }] }]
 		};
-		context.workflow = {
-			kind: 'adding-concession',
-			step: 'concession',
+		context.concessionDraft = {
 			affectsOtherParts: false,
-			triggerId: trigger.id,
 			concession,
 			originalConcession: immutable(semanticConcession(concession))
 		};
@@ -745,10 +642,8 @@ export class AuthoringController {
 	}
 	removeConcession(id: string) {
 		const context = this.context;
-		if (this.creating || !context?.confirmed || !this.canEdit) {
-			this.reportBlocked(
-				'Finish or cancel the current operation or creation before updating these instructions'
-			);
+		if (this.addingConcession || !context || context.content.audience !== 'rep' || !this.canEdit) {
+			this.reportBlocked('Finish or cancel the current edit before updating these instructions');
 			return false;
 		}
 		if (!context.concessions.some((concession) => concession.id === id)) {
@@ -765,35 +660,23 @@ export class AuthoringController {
 	}
 	private cancelAddition() {
 		if (!this.context || !this.addingConcession) return;
-		this.context.workflow = { kind: 'editing' };
+		this.context.concessionDraft = null;
 		this.clearFeedback();
 		this.reconcile();
 	}
 	setAffectedPart(value: boolean) {
-		const workflow = this.workflow;
-		if (!this.canEdit || !workflow || !('step' in workflow)) return;
-		workflow.affectsOtherParts = value;
-		if (!value) workflow.concession.changes = workflow.concession.changes.slice(0, 1);
-		this.clearFeedback();
-	}
-	cancelSecondaryLocationChoice() {
-		const workflow = this.workflow;
-		if (!this.canCancelLocation || !workflow || !('step' in workflow)) return;
-		workflow.step = 'concession';
-		workflow.concession.changes = workflow.concession.changes.slice(0, 1);
+		const draft = this.context?.concessionDraft;
+		if (!draft || value === draft.affectsOtherParts || !this.affectedPartAvailable) return;
+		draft.affectsOtherParts = value;
+		if (!value) draft.concession.changes = draft.concession.changes.slice(0, 1);
 		this.clearFeedback();
 	}
 	primary(): AuthoringOutcome {
 		const context = this.context;
 		const { action, disabled } = this.primaryAction;
 		if (disabled || !context) return 'retained';
-		if (action === 'advance' && 'step' in context.workflow) {
-			context.workflow.step = 'other-part';
-			this.clearFeedback();
-			return 'retained';
-		}
-		if (action === 'add' && context.workflow.kind === 'adding-concession') {
-			const concession = immutable(semanticConcession(context.workflow.concession));
+		if (action === 'add' && context.concessionDraft) {
+			const concession = immutable(semanticConcession(context.concessionDraft.concession));
 			context.concessions = immutable([...context.concessions, concession]);
 			this.cancelAddition();
 			context.previewConcessionId = concession.id;
@@ -834,27 +717,17 @@ export class AuthoringController {
 	}
 	/** Recovery is a new editing attempt; submitting it captures a fresh operation/revision. */
 	restore(recovery: AuthoringRecovery, current: DeepReadonly<TemplateItemRecord> | null) {
-		const context = this.begin(templateDraft(recovery.item, current?._id), current, {
-			kind: current ? 'editing' : 'creating-item'
-		});
+		const context = this.begin(templateDraft(recovery.item, current?._id), current);
 		context.adoptContent(recovery.item);
 		context.trigger = immutable(recovery.item.trigger);
 		context.concessions = immutable(isRepItem(recovery.item) ? recovery.item.concessions : []);
 	}
 	cancel(): AuthoringOutcome {
-		if (!this.permit({ kind: 'cancel' })) return 'retained';
 		if (!this.context) return 'retained';
 		if (this.addingConcession) {
 			this.cancelAddition();
 			return 'retained';
 		}
-		this.release();
-		return 'closed';
-	}
-	/** A completed click-away closes a clean editor, but cancels work that would be discarded. */
-	dismissFromOutside(): AuthoringOutcome {
-		if (!this.context) return 'retained';
-		if (this.dirty) return this.cancel();
 		this.release();
 		return 'closed';
 	}

@@ -447,10 +447,10 @@ Skeleton visibility does not make a primary presentation ready. Optional CSM and
 
 Saved source admission shares one editor-root definition-readiness calculation. Required
 local wording must be complete before preparation; a cold read failure uses the existing
-viewer Retry and the saved opening's reset. Final view detachment replaces the editor's
-materialized template-item, combined-item and atomic-input caches with empty values even
-when pending or failed saving retains the editor. This does not evict caller-owned data
-or the document resource cache, and no heap or latency improvement has been measured.
+viewer Retry and the saved opening's reset. Final view detachment releases caller-owned
+derived caches when pending or failed saving retains the editor. This does not evict
+cached frozen template snapshots or the document resource cache, and no heap or latency
+improvement has been measured.
 
 ## Template prose and canonical saved creation
 

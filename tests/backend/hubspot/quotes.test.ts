@@ -122,33 +122,27 @@ describe('HubSpot Quotes workflow', () => {
 		}
 	);
 
-	it('requires approval before admission and retires a queued push if a required removal is pending before dispatch', async () => {
+	it('requires approval before admission and retires a queued push if the saved contract changes before dispatch', async () => {
 		const f = await fixture();
 		await installQuotes(f);
-		await f.repClient.mutation(api.contracts.saveChanges, {
+		await f.repClient.mutation(api.contracts.save, {
 			...application(f),
 			membershipId: f.rep.membershipId
 		});
-		await expect(pushQuote(f)).rejects.toThrow('APPROVAL_REQUIRED');
-		await f.t.mutation(api.contractApprovals.decideChange, await decision(f, 'decline', 'decline'));
-		await expect(pushQuote(f, 'declined')).rejects.toThrow('APPROVAL_REQUIRED');
+		await expect(pushQuote(f)).rejects.toThrow('pending concessions');
+		await f.t.mutation(api.approvals.decide, await decision(f, 'decline', 'decline'));
+		await expect(pushQuote(f, 'declined')).rejects.toThrow('pending concessions');
 		expect(await f.t.run(({ db }) => db.query('hubspotQuotePushes').collect())).toEqual([]);
-		await f.t.mutation(api.contractApprovals.decideChange, await decision(f, 'approve', 'approve'));
+		await f.t.mutation(api.approvals.decide, await decision(f, 'approve', 'approve'));
 		const push = await pushQuote(f, 'approved-push');
-		await f.repClient.mutation(api.contracts.saveChanges, {
+		const current = await playbookState(f);
+		await f.repClient.mutation(api.contracts.save, {
 			membershipId: f.rep.membershipId,
 			id: f.id,
-			operationId: fixtureOperationId('pending-removal'),
-			commands: [
-				{
-					...application(f).commands[0],
-					id: fixtureOperationId('remove'),
-					expectedCurrentChangeId: (await playbookState(f)).playbook[0].currentChangeId,
-					action: { kind: 'set', optionId: null }
-				}
-			]
+			selections: {},
+			expectedStateRevision: current.stateRevision,
+			operationId: fixtureOperationId('removed-after-queue')
 		});
-		expect((await playbookState(f)).playbook[0].status).toBe('pending');
 		await f.t.mutation(internal.hubspotQuotes.pump, {});
 		expect(await f.t.run(({ db }) => db.get('hubspotQuotePushes', push.id))).toMatchObject({
 			state: 'retired'
@@ -191,45 +185,23 @@ describe('HubSpot Quotes workflow', () => {
 		}
 	);
 
-	it('accepts equivalent JSON field order but rejects changed reservation content and another actor', async () => {
+	it('refuses commit if the saved contract changes between prepare and commit', async () => {
 		const f = await fixture();
 		await installQuotes(f);
 		const args = await quoteArgs(f);
-		const admission = await f.t.mutation(internal.hubspotQuotes.reserve, args);
-		if (admission.kind !== 'reserved') throw new Error('Expected a reservation');
-		for (let turn = 0; turn < 64; turn++) {
-			if (
-				await f.t.mutation(internal.outputReservations.verify, {
-					outputId: admission.reservation.proof.outputId
-				})
-			)
-				break;
-		}
-		const outputId = admission.reservation.proof.outputId;
-		await f.t.run(async ({ db }) => {
-			const row = (await db.get('contractOutputs', outputId))!;
-			if (row.format !== 'full') throw new Error('Expected full output evidence');
-			const value = row.reservationManifest!;
-			await db.patch('contractOutputs', outputId, {
-				reservationManifest: Object.fromEntries(Object.entries(value).reverse()) as typeof value
-			});
-		});
-		expect((await f.t.query(internal.hubspotQuotes.content, args)).source.actor.profileId).toBe(
-			f.owner.profileId
-		);
+		const prepared = await f.t.query(internal.hubspotQuotes.prepare, args);
+		if (prepared.kind !== 'generate') throw new Error('Expected generate preparation');
+		await f.t.mutation(api.contracts.save, application(f));
 		await expect(
-			f.repClient.query(internal.hubspotQuotes.content, {
+			f.t.mutation(internal.hubspotQuotes.commit, {
 				...args,
-				membershipId: f.rep.membershipId
+				canonicalKey: 'c'.repeat(64),
+				fingerprint: 'a'.repeat(64),
+				payloadHash: 'b'.repeat(64),
+				preparedTemplateVersionId: prepared.templateVersionId,
+				expectedTitle: prepared.title
 			})
-		).rejects.toThrow('unavailable');
-		await f.t.run(async ({ db }) => {
-			const row = (await db.get('contractOutputs', outputId))!;
-			if (row.format !== 'full') throw new Error('Expected full output evidence');
-			await db.patch('contractOutputs', outputId, {
-				reservationManifest: { ...row.reservationManifest!, title: 'Tampered terms' }
-			});
-		});
-		await expect(f.t.query(internal.hubspotQuotes.content, args)).rejects.toThrow('ownership');
+		).rejects.toThrow('The saved contract changed.');
+		expect(await f.t.run(({ db }) => db.query('hubspotQuotePushes').collect())).toEqual([]);
 	});
 });

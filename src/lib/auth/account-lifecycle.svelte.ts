@@ -25,6 +25,7 @@ export class AccountLifecycle {
 	constructor(
 		private actions: {
 			signOut: () => Promise<void>;
+			signOutDeleted?: () => Promise<void>;
 			login: (recover: boolean) => Promise<void>;
 			clear: () => void;
 			cancelReads: () => void;
@@ -70,9 +71,14 @@ export class AccountLifecycle {
 	}
 	private startTimer() {
 		if (
-			['loading', 'authenticating', 'preparing', 'saving-before-logout', 'signing-out'].includes(
-				this.phase
-			)
+			[
+				'loading',
+				'authenticating',
+				'preparing',
+				'saving-before-logout',
+				'signing-out',
+				'completing-deletion'
+			].includes(this.phase)
 		) {
 			if (this.timer || this.delayed) return;
 			this.timer = setTimeout(() => {
@@ -109,7 +115,7 @@ export class AccountLifecycle {
 		if (this.preparedSessionId === sessionId && this.userId === userId) return;
 		const previous = this.preparedSessionId;
 		this.readFailed = false;
-		const voluntary = this.phase === 'signing-out';
+		const voluntary = this.phase === 'signing-out' || this.phase === 'completing-deletion';
 		this.generation++;
 		this.actions.cancelReads();
 		if (previous && sessionId) this.actions.clear();
@@ -149,9 +155,13 @@ export class AccountLifecycle {
 			return;
 		}
 		if (
-			['saving-before-logout', 'saving-before-company-exit', 'signing-out', 'signed-out'].includes(
-				this.phase
-			)
+			[
+				'saving-before-logout',
+				'saving-before-company-exit',
+				'signing-out',
+				'completing-deletion',
+				'signed-out'
+			].includes(this.phase)
 		) {
 			this.syncEditors();
 			return;
@@ -171,7 +181,14 @@ export class AccountLifecycle {
 		);
 	}
 	retryAuth() {
-		if (this.attempt || !this.preparedSessionId || this.disposed) return;
+		if (
+			this.attempt ||
+			!this.preparedSessionId ||
+			this.disposed ||
+			this.phase === 'completing-deletion' ||
+			this.phase === 'signed-out'
+		)
+			return;
 		this.actions.cancelReads();
 		this.readFailed = false;
 		beginStartupAttempt();
@@ -215,7 +232,12 @@ export class AccountLifecycle {
 	}
 
 	signOut() {
-		if (this.attempt || this.phase === 'signed-out' || this.disposed)
+		if (
+			this.attempt ||
+			this.phase === 'signed-out' ||
+			this.phase === 'completing-deletion' ||
+			this.disposed
+		)
 			return this.attempt ?? Promise.resolve();
 		const generation = ++this.generation;
 		this.error = '';
@@ -227,8 +249,49 @@ export class AccountLifecycle {
 		});
 		return work;
 	}
+	completeAccountDeletion() {
+		if (this.phase === 'signed-out' || this.disposed) return Promise.resolve();
+		if (this.phase === 'completing-deletion' && this.attempt) return this.attempt;
+		const generation = ++this.generation;
+		this.readAttempt?.abort();
+		this.readAttempt = undefined;
+		this.actions.cancelReads();
+		this.readFailed = false;
+		this.error = '';
+		this.delayed = false;
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		for (const editor of this.editors) {
+			editor.suspend();
+			editor.discard();
+		}
+		if (this.phase !== 'completing-deletion') this.setPhase('completing-deletion');
+		else this.startTimer();
+		const work = this.runCompleteAccountDeletion(generation);
+		this.attempt = work;
+		void work.finally(() => {
+			if (this.attempt === work) this.attempt = null;
+		});
+		return work;
+	}
 	private current(generation: number) {
 		return !this.disposed && generation === this.generation;
+	}
+	private async runCompleteAccountDeletion(generation: number) {
+		// Assign the shared attempt before any provider call can change identity.
+		await Promise.resolve();
+		try {
+			if (!this.current(generation)) return;
+			await (this.actions.signOutDeleted ?? this.actions.signOut)();
+			if (this.current(generation)) this.end(false);
+		} catch {
+			if (!this.current(generation)) return;
+			clearTimeout(this.timer);
+			this.timer = undefined;
+			this.delayed = false;
+			this.error =
+				'Your account was deleted, but we couldn’t finish clearing your session. Please try again.';
+		}
 	}
 	private async runSignOut(generation: number) {
 		// Assign the shared attempt before any provider call can change identity.
@@ -270,15 +333,14 @@ export class AccountLifecycle {
 		for (const editor of this.editors) editor.discard();
 		void this.signOut();
 	}
-	reset(recover = true) {
-		if (this.phase !== 'signed-out') this.end(recover);
-		else this.navigate(recover);
-	}
 	private end(recover: boolean) {
 		this.generation++;
 		this.attempt = null;
+		this.preparedSessionId = null;
+		this.userId = null;
 		this.workspaceAdmitted = false;
 		this.readFailed = false;
+		this.error = '';
 		this.setPhase('signed-out');
 		this.actions.clear();
 		this.navigate(recover);
@@ -289,8 +351,8 @@ export class AccountLifecycle {
 			if (this.current(generation)) this.error = 'We couldn’t open the login page.';
 		});
 	}
-	returnToLogin() {
-		this.navigate(false);
+	returnToLogin(recover = false) {
+		this.navigate(recover);
 	}
 	dismissError() {
 		this.error = '';

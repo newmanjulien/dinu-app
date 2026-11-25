@@ -434,7 +434,12 @@
 	{/snippet}
 	{#snippet leaveContent()}
 		{#if isOwner}<p class="mt-2 text-sm text-ink-muted">
-				Transfer ownership to a colleague before leaving or deleting your account.
+				{#if colleaguesCurrent && colleagueRows.length <= 1}
+					You’re the only member of this company. Invite a colleague to transfer ownership, or
+					delete your account and company in Settings.
+				{:else}
+					Transfer ownership to a colleague before leaving or deleting your account.
+				{/if}
 			</p>
 		{:else}
 			<p class="mt-2 text-sm text-ink-muted">

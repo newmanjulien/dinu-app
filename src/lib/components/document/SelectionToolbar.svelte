@@ -1,30 +1,25 @@
 <script lang="ts">
-	import type EnvelopeSimpleOpenIcon from 'phosphor-svelte/lib/EnvelopeSimpleOpenIcon';
 	import FloatingSurface from '$lib/components/ui/FloatingSurface.svelte';
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
-	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import type { FloatingVirtualAnchor } from '$lib/components/ui/floating';
 	import type { CloseReason } from '$lib/components/ui/interactions';
 
 	let {
 		anchor,
-		actions,
+		label,
+		description,
+		onSelect,
 		onClose,
 		element = $bindable()
 	}: {
 		anchor: FloatingVirtualAnchor;
-		actions: readonly {
-			id: string;
-			label: string;
-			icon: typeof EnvelopeSimpleOpenIcon;
-			enabled?: boolean;
-			reason?: string;
-			onSelect: () => void;
-		}[];
+		label: string;
+		description: string;
+		onSelect: () => void;
 		onClose: (reason: CloseReason) => void;
 		element?: HTMLDivElement | null;
 	} = $props();
-	const buttons = $state<Record<string, HTMLElement | null>>({});
+	let button = $state<HTMLButtonElement | null>(null);
 	const preserveSelection = (event: PointerEvent) => event.preventDefault();
 </script>
 
@@ -37,33 +32,28 @@
 	gap={10}
 	referenceClipping="hide"
 	role="group"
-	label="Selection actions"
-	class="flex h-[33px] items-center rounded-xl border-hairline border-edge bg-surface p-0.5 shadow-floating"
+	label="Selection action"
+	class="flex items-center rounded-xl border-hairline border-edge bg-surface p-0.5 shadow-floating"
 	onpointerdown={preserveSelection}
 >
-	{#each actions as action (action.id)}
-		{@const enabled = action.enabled !== false}
-		<Tooltip
-			text={enabled ? action.label : (action.reason ?? action.label)}
-			trigger={buttons[action.id] ?? undefined}
-			standalone={false}
-			leaveDelay={0}
-			onpointerdown={preserveSelection}
-		>
-			{#snippet children(descriptionId)}
-				<span class="inline-flex" bind:this={buttons[action.id]}>
-					<SquareIconButton
-						class="size-[27px] rounded-[9.5px]"
-						type="button"
-						disabled={!enabled}
-						aria-describedby={descriptionId}
-						onclick={action.onSelect}
-						aria-label={enabled ? action.label : `${action.label}: ${action.reason}`}
-					>
-						<action.icon aria-hidden="true" class="size-5" weight="regular" />
-					</SquareIconButton>
-				</span>
-			{/snippet}
-		</Tooltip>
-	{/each}
+	<Tooltip
+		text={description}
+		trigger={button ?? undefined}
+		placement="bottom"
+		standalone={false}
+		leaveDelay={0}
+		onpointerdown={preserveSelection}
+	>
+		{#snippet children(descriptionId)}
+			<button
+				bind:this={button}
+				type="button"
+				class="inline-flex h-[25px] cursor-pointer items-center justify-center rounded-[9.5px] border-0 bg-transparent px-2 text-[12.5px] leading-none font-normal whitespace-nowrap text-ink transition-colors hover:bg-control-hover focus-visible:bg-control-hover focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-accent motion-reduce:transition-none"
+				aria-describedby={descriptionId}
+				onclick={onSelect}
+			>
+				{label}
+			</button>
+		{/snippet}
+	</Tooltip>
 </FloatingSurface>

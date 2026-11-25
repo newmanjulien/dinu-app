@@ -15,17 +15,31 @@
 	import { DOCX_MAX_BYTES, type ImportIssue } from '$lib/document/import/limits';
 	import { saveError } from '$lib/contract/saved';
 	import Button from '$lib/ui/Button.svelte';
-	import { initialAvailability, useCsmPreload } from '$lib/components/chrome/csm-preload.svelte';
+	import {
+		createCsmOwner,
+		initialAvailability,
+		type CsmOwner
+	} from '$lib/components/chrome/csm-owner.svelte';
+	import {
+		csmPreviewScope,
+		useCsmOnboardingPreview
+	} from '$lib/components/chrome/csm-onboarding-preview.svelte';
+	import { useBoundaryClock } from '$lib/components/chrome/csm-clock.svelte';
+	import {
+		formatMeetingCountdown,
+		nextMeetingCountdownUpdateAt
+	} from '$lib/components/chrome/csm-time';
 	import CsmBooking from '$lib/components/chrome/CsmBooking.svelte';
+	import TemplateSetupBookingFrame from './TemplateSetupBookingFrame.svelte';
+	import TemplateSetupIntake from './TemplateSetupIntake.svelte';
 	import TemplateSetupLayout from './TemplateSetupLayout.svelte';
-	const preload = useCsmPreload();
+	const csmPreview = useCsmOnboardingPreview();
 	let { getNavigationIntent }: { getNavigationIntent: () => number } = $props();
 	const viewer = useViewer();
 	const session = useViewerSession();
 	const client = useConvexClient();
 	const clerk = useClerkContext();
 	const membershipId = $derived(viewer().membership.id);
-	const admin = $derived(viewer().membership.role === 'admin');
 	let fileInput = $state<HTMLInputElement>();
 	let fileName = $state('');
 	let choosingAnother = $state(false);
@@ -38,15 +52,11 @@
 	let attempt: ReadAttempt | undefined;
 	const errors = $derived(issues.filter((i) => i.severity === 'error'));
 	const blocked = $derived(errors.length > 0);
-	type SetupStatus = FunctionReturnType<typeof api.templateUploads.status>;
+	type SetupStatus = FunctionReturnType<typeof api.templateSetup.status>;
 	let observed = $state.raw<{ identity: string; data?: SetupStatus; error?: string }>();
 	let statusRetry = $state(0);
 	const identity = $derived(
-		admin &&
-			session.preparedSessionId &&
-			!session.blocked &&
-			!session.closing &&
-			!viewer().company.deletionPending
+		session.preparedSessionId && !session.blocked && !session.closing && !viewer().company.deletion
 			? JSON.stringify([
 					session.userId,
 					session.preparedSessionId,
@@ -58,13 +68,73 @@
 	);
 	const status = $derived(observed?.identity === identity ? observed?.data : undefined);
 	const statusError = $derived(observed?.identity === identity ? observed?.error : undefined);
+	const setupCall = $derived(viewer().company.setupCall);
+	const setupBooked = $derived(setupCall?.state === 'scheduled');
+	const scheduledCallStart = $derived(setupCall?.state === 'scheduled' ? setupCall.start : null);
 	const canUpload = $derived(status?.kind === 'upload' || status?.kind === 'waiting');
 	const pending = $derived(
 		status?.kind === 'waiting' || status?.kind === 'booking' ? status.pending : null
 	);
 	const ready = $derived(status?.kind === 'waiting' && !choosingAnother && !blocked && !parsing);
+	const clock = useBoundaryClock(
+		(now, timeZone) =>
+			ready && scheduledCallStart
+				? nextMeetingCountdownUpdateAt(scheduledCallStart, now, timeZone)
+				: null,
+		() => (ready ? scheduledCallStart : null)
+	);
+	const meetPhrase = $derived(
+		ready && scheduledCallStart
+			? formatMeetingCountdown(scheduledCallStart, clock.now, clock.timeZone)
+			: null
+	);
 	const busy = $derived(parsing);
-	const owner = $derived(preload.owner);
+	let owner = $state.raw<CsmOwner>();
+	$effect(() => {
+		const currentIdentity = identity;
+		const currentMembership = membershipId;
+		const previewScope = csmPreviewScope(
+			session.userId,
+			session.preparedSessionId,
+			session.transportGeneration
+		);
+		if (!currentIdentity) {
+			owner = undefined;
+			return;
+		}
+		let active = true;
+		const current = () => active && identity === currentIdentity;
+		const next = createCsmOwner({
+			client,
+			membershipId: currentMembership,
+			current,
+			canRead: (mode, replacement) =>
+				current() &&
+				mode === 'setup' &&
+				(Boolean(replacement) || !setupBooked) &&
+				viewer().permissions.manageTemplate &&
+				!viewer().templateReady,
+			load: async (selection) => {
+				if (selection.mode !== 'setup' || selection.replacement) return;
+				const preview = csmPreview?.read(previewScope, selection.timeZone);
+				if (!preview) return;
+				try {
+					const data = await preview.pending;
+					const expiresAt = preview.expiresAt();
+					if (data.status === 'ready' && expiresAt && expiresAt > Date.now())
+						return { data, expiresAt };
+				} catch {
+					// A failed preview uses the authorized company availability request.
+				}
+			}
+		});
+		owner = next;
+		return () => {
+			active = false;
+			next.dispose();
+			if (owner === next) owner = undefined;
+		};
+	});
 	const booking = $derived(status?.kind === 'booking' ? status.booking : undefined);
 	// The calendar freezes its operation target. State-only updates keep the same instance.
 	const calendarKey = $derived(
@@ -106,7 +176,7 @@
 			read.signal.addEventListener('abort', fail, { once: true });
 			try {
 				release = client.onUpdate(
-					api.templateUploads.status,
+					api.templateSetup.status,
 					{ membershipId: currentMembership },
 					(data) => {
 						if (current()) {
@@ -128,17 +198,10 @@
 		});
 	});
 	$effect(() => {
-		void identity;
-		untrack(() => {
-			resetUpload();
-			choosingAnother = false;
-		});
-	});
-	$effect(() => {
 		if (!canUpload)
 			untrack(() => {
-				cancel();
-				parsing = false;
+				resetUpload();
+				choosingAnother = false;
 			});
 	});
 	$effect(() => {
@@ -169,7 +232,7 @@
 		fileInput.click();
 	}
 	function selectFiles(files: FileList | null) {
-		if (!files?.length || !admin || !canUpload || busy) return;
+		if (!files?.length || !canUpload || busy) return;
 		if (files.length !== 1) {
 			resetUpload();
 			uploadError = 'Upload one Word document at a time.';
@@ -209,12 +272,12 @@
 		attempt = read;
 		try {
 			if (!active()) return;
-			if (!clerk.session) throw new Error('Sign in again to upload your template.');
+			if (!clerk.session) throw new Error('Log in again to upload your template.');
 			const token = await waitForRead(clerk.session.getToken({ template: 'convex' }), read.signal);
 			if (!active()) return;
-			if (!token) throw new Error('Sign in again to upload your template.');
+			if (!token) throw new Error('Log in again to upload your template.');
 			const url = new URL(
-				'/templates/upload',
+				'/template-setup/upload',
 				env.PUBLIC_CONVEX_URL!.replace('.convex.cloud', '.convex.site')
 			);
 			url.searchParams.set('membershipId', membershipId);
@@ -293,47 +356,76 @@
 	}
 </script>
 
-{#snippet content()}
-	{#if statusError}
+{#snippet bookingBody()}
+	{#if !bookingInProgress && pending}
+		<p role="status" class="mb-4 text-[13px] leading-6 text-ink-muted">
+			Your upload, <span class="font-medium text-ink">{pending.filename}</span>, is still saved.
+			Book a new time to continue setup.
+		</p>
+	{/if}
+	{#if owner && calendarKey && booking}
+		{#key owner}
+			{#key calendarKey}
+				<CsmBooking
+					{owner}
+					bind:inProgress={bookingInProgress}
+					flushTop
+					initial={{
+						...initialAvailability('setup'),
+						...(booking.kind === 'replacement'
+							? {
+									replacement: {
+										appointmentId: booking.appointmentId,
+										currentUid: booking.currentUid
+									}
+								}
+							: {})
+					}}
+					admission={booking.kind === 'unavailable' ? 'unavailable' : booking.state}
+					description="Choose a time for a 15 minute call."
+					onBooked={() => {}}
+				/>
+			{/key}
+		{/key}
+	{/if}
+{/snippet}
+
+{#if statusError}
+	<TemplateSetupLayout title="Set up your template">
 		<p role="alert" class="text-[13px] leading-6 text-danger">{statusError}</p>
 		<Button variant="secondary" class="mt-3" onclick={() => statusRetry++}>Try again</Button>
-	{:else if status?.kind === 'booking'}
-		{#if !bookingInProgress && pending}
-			<p role="status" class="mt-4 text-[13px] leading-6 text-ink-muted">
-				Your upload, <span class="font-medium text-ink">{pending.filename}</span>, is still saved.
-				Book a new time to continue setup.
+	</TemplateSetupLayout>
+{:else if status?.kind === 'booking' || (!status && !setupBooked)}
+	<TemplateSetupBookingFrame
+		bookingInProgress={status?.kind === 'booking' && bookingInProgress}
+		children={status?.kind === 'booking' && owner && calendarKey && booking
+			? bookingBody
+			: undefined}
+	/>
+{:else if !status}
+	<TemplateSetupLayout title="Set up your template" loadingLabel="Loading setup status" />
+{:else if status?.kind === 'intake'}
+	<TemplateSetupLayout
+		title={status.step === 'team' ? 'Help us prepare for your call' : 'One last question'}
+		description={status.step === 'team'
+			? "Your call is booked. Answer a few quick questions to help us prepare. They're all optional so skip anything you'd like."
+			: "Share anything about how your team handles contracts today. This is optional too, so skip it if you'd like."}
+	>
+		{#key `${identity}:${status.step}`}
+			<TemplateSetupIntake {membershipId} step={status.step} disabled={session.closing} />
+		{/key}
+	</TemplateSetupLayout>
+{:else if canUpload}
+	<TemplateSetupLayout
+		title="Upload your template (optional)"
+		description={ready
+			? undefined
+			: 'Is there a contract template you use with customers? Upload it so we can look over it while we prepare for your call.'}
+	>
+		{#if !ready && pending}
+			<p class="mb-4 text-[13px] leading-6 text-ink-muted">
+				Your previous file, {pending.filename}, stays saved until a new upload succeeds.
 			</p>
-		{/if}
-		{#if owner && calendarKey && booking}
-			{#key owner}
-				{#key calendarKey}
-					<CsmBooking
-						{owner}
-						bind:inProgress={bookingInProgress}
-						initial={{
-							...initialAvailability('setup'),
-							...(booking.kind === 'replacement'
-								? {
-										replacement: {
-											appointmentId: booking.appointmentId,
-											currentUid: booking.currentUid
-										}
-									}
-								: {})
-						}}
-						admission={booking.kind === 'unavailable' ? 'unavailable' : booking.state}
-						description="Choose a time for a 20 minute call."
-						onBooked={() => {}}
-					/>
-				{/key}
-			{/key}
-		{/if}
-	{:else if canUpload}
-		{#if !ready}
-			<p class="mb-4 text-[13px] leading-6 text-ink-muted">Upload a Word document (optional).</p>
-			{#if pending}<p class="mb-4 text-[13px] leading-6 text-ink-muted">
-					Your previous file, {pending.filename}, stays saved until a new upload succeeds.
-				</p>{/if}
 		{/if}
 		<input
 			bind:this={fileInput}
@@ -395,10 +487,14 @@
 					<FileTextIcon class="size-7 text-ink-muted" />
 				{/if}
 			</div>
-			<div role="status" aria-atomic="true" class="w-full">
-				<h2 class="text-[15.5px] leading-6 font-medium text-ink [overflow-wrap:anywhere]">
+			<div class="w-full">
+				<h2
+					role="status"
+					aria-atomic="true"
+					class="text-[15.5px] leading-6 font-medium text-ink [overflow-wrap:anywhere]"
+				>
 					{ready
-						? 'Waiting for Julien'
+						? 'Thank you for helping us prepare'
 						: dragging
 							? 'Drop your Word document here'
 							: fileName || 'Drop your Word document here'}
@@ -408,8 +504,10 @@
 						<span class="block truncate font-medium text-ink" title={pending?.filename}
 							>{pending?.filename}</span
 						>
-						Your document is saved. Julien will make your template available after preparing it. You can
-						wait for your call.
+						We can't wait to meet{#if meetPhrase && scheduledCallStart}{' '}<time
+								datetime={scheduledCallStart}>{meetPhrase}</time
+							>{/if}. Upload a different file if this was the wrong contract. Otherwise, you're all
+						set
 					{:else if parsing}
 						<span class="block truncate" title={fileName}>{fileName}</span>
 					{:else if uploadError}
@@ -426,7 +524,7 @@
 					variant="secondary"
 					class="mt-5"
 					disabled={busy || session.closing}
-					onclick={chooseFile}>Choose another file</Button
+					onclick={chooseFile}>Choose a different file</Button
 				>
 			{:else if !parsing}
 				<Button
@@ -439,9 +537,7 @@
 				>
 			{/if}
 		</section>
-	{/if}
 
-	{#if admin && canUpload}
 		{#if uploadError}
 			<p
 				role="alert"
@@ -482,11 +578,5 @@
 				</ul>
 			</section>
 		{/if}
-	{/if}
-{/snippet}
-
-<TemplateSetupLayout
-	role={viewer().membership.role}
-	bookingInProgress={status?.kind === 'booking' && bookingInProgress}
-	children={admin && (status || statusError) ? content : undefined}
-/>
+	</TemplateSetupLayout>
+{/if}

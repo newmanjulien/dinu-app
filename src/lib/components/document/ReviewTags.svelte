@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { packAnnotationRail } from '$lib/discussions/annotation-rail-layout';
 	import { tick, untrack } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
@@ -7,7 +6,12 @@
 	import MenuItem from '$lib/components/ui/MenuItem.svelte';
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import { ReviewAnchorProjector, type ReviewAnchor } from '$lib/document/review-anchors';
-	import type { ReviewTag, ReviewNavigation, ReviewDecision } from '$lib/contract/approval';
+	import {
+		availableReviewDecisions,
+		type ReviewTag,
+		type ReviewNavigation,
+		type ReviewDecision
+	} from '$lib/contract/approval';
 	import type { SelectionDocument } from '$lib/document/selection/selection-model';
 	import type { PaginatedPage } from '$lib/document/pagination/types';
 	import { revealInDocumentViewport } from '$lib/document/document-viewport';
@@ -38,23 +42,15 @@
 	const id = $props.id();
 	const projector = new ReviewAnchorProjector();
 	const decisionLabels: Record<ReviewDecision, string> = {
-		approve: 'Approve change',
-		decline: 'Decline change',
-		undo: 'Undo approved change'
+		approve: 'Approve concession',
+		decline: 'Decline concession'
 	};
-	const actions = (tag: ReviewTag): ReviewDecision[] =>
-		tag.status === 'approved'
-			? tag.kind === 'buyer-link'
-				? ['undo']
-				: []
-			: ['approve', 'decline'];
-	const eligibility = (tag: ReviewTag, action: ReviewDecision) =>
-		action === 'approve' ? tag.approve : action === 'decline' ? tag.decline : tag.undo;
-	const actionable = (tag: ReviewTag) =>
-		actions(tag).some((action) => eligibility(tag, action).allowed === true);
-	const tagsByChange = $derived(new Map<string, ReviewTag>(tags.map((tag) => [tag.changeId, tag])));
+	const actions = (tag: ReviewTag): readonly ReviewDecision[] =>
+		availableReviewDecisions(tag.status);
+	const actionable = (tag: ReviewTag) => actions(tag).length > 0;
+	const tagsByItem = $derived(new Map<string, ReviewTag>(tags.map((tag) => [tag.itemId, tag])));
 	// Status changes update labels without reading document geometry again.
-	const geometryKey = $derived(JSON.stringify(tags.map((t) => [t.changeId, t.target])));
+	const geometryKey = $derived(JSON.stringify(tags.map((t) => [t.itemId, t.targets])));
 	$effect(() => {
 		const root = host,
 			mountedDocument = document,
@@ -69,30 +65,7 @@
 			if (!cancelled) {
 				anchors =
 					root && mountedDocument && shown
-						? untrack(() =>
-								(() => {
-									const projected = projector.project(
-										root,
-										tags,
-										mountedDocument,
-										mountedPages,
-										key
-									);
-									if (!tags.some((tag) => tag.kind === 'buyer-link')) return projected;
-									const packed = packAnnotationRail(
-										projected.map((anchor, order) => ({
-											id: anchor.key,
-											anchorTop: anchor.top,
-											height: 34,
-											order
-										}))
-									);
-									return projected.map((anchor) => ({
-										...anchor,
-										top: packed.placements[anchor.key]
-									}));
-								})()
-							)
+						? untrack(() => projector.project(root, tags, mountedDocument, mountedPages, key))
 						: [];
 				projectionPending = false;
 			}
@@ -102,15 +75,9 @@
 		};
 	});
 	$effect(() => {
-		const current = openKey ? tagsByChange.get(openKey) : undefined;
-		if (
-			!ready ||
-			!current?.admin ||
-			current.disabled ||
-			!actionable(current) ||
-			!anchors.some((anchor) => anchor.key === openKey)
-		)
-			openKey = null;
+		const openAnchor = openKey ? anchors.find((anchor) => anchor.key === openKey) : undefined;
+		const current = openAnchor ? tagsByItem.get(openAnchor.itemId) : undefined;
+		if (!ready || !current?.admin || current.disabled || !actionable(current)) openKey = null;
 	});
 	function register(node: HTMLButtonElement, key: string) {
 		elements.set(key, node);
@@ -128,19 +95,19 @@
 		const ordered = [...anchors].sort(
 			(a, b) => a.order - b.order || a.page - b.page || a.target - b.target
 		);
-		const after = ordered.findIndex((a) => a.changeId === request.afterChangeId);
+		const after = ordered.findIndex((a) => a.itemId === request.afterItemId);
 		let firstPending: ReviewAnchor | undefined, nextPending: ReviewAnchor | undefined;
 		for (let i = 0; i < ordered.length; i++) {
 			const anchor = ordered[i];
 			if (
-				anchor.changeId === request.afterChangeId ||
-				tagsByChange.get(anchor.changeId)?.status !== 'pending'
+				anchor.itemId === request.afterItemId ||
+				tagsByItem.get(anchor.itemId)?.status !== 'pending'
 			)
 				continue;
 			firstPending ??= anchor;
 			if (i > after) nextPending ??= anchor;
 		}
-		const target = request.afterChangeId
+		const target = request.afterItemId
 			? (nextPending ?? firstPending)
 			: (firstPending ?? ordered[0]);
 		let cancelled = false;
@@ -148,7 +115,7 @@
 			if (cancelled) return;
 			consumed = request;
 			openKey = null;
-			if (request.afterChangeId && !target) return;
+			if (request.afterItemId && !target) return;
 			const node = target ? elements.get(target.key) : root;
 			if (!node) return;
 			if (!target) root.setAttribute('tabindex', '-1');
@@ -165,17 +132,13 @@
 		};
 	});
 	function label(tag: ReviewTag) {
-		return tag.detailRequired && tag.admin
-			? 'Checking…'
-			: tag.status === 'pending'
-				? tag.kind === 'buyer-link'
-					? 'Pending'
-					: tag.admin
-						? 'Review'
-						: 'Pending...'
-				: tag.status === 'approved'
-					? 'Approved'
-					: 'Declined';
+		return tag.status === 'pending'
+			? tag.admin
+				? 'Review'
+				: 'Pending...'
+			: tag.status === 'approved'
+				? 'Approved'
+				: 'Declined';
 	}
 </script>
 
@@ -185,9 +148,10 @@
 	aria-label="Contract reviews"
 >
 	{#each anchors as anchor, i (anchor.key)}
-		{@const tag = tagsByChange.get(anchor.changeId)}
+		{@const tag = tagsByItem.get(anchor.itemId)}
 		{#if tag}
 			{@const explanation = reviewTagExplanation(tag, ready)}
+			{@const canOpen = tag.admin && actionable(tag)}
 			<Tooltip
 				text={explanation}
 				trigger={elements.get(anchor.key)}
@@ -211,18 +175,17 @@
 						use:register={anchor.key}
 						aria-label={`${label(tag)}: ${tag.description}`}
 						aria-describedby={descriptionId}
-						aria-disabled={!tag.admin || tag.disabled || !ready || !actionable(tag)}
-						aria-haspopup={tag.admin ? 'menu' : undefined}
-						aria-expanded={tag.admin ? openKey === anchor.key : undefined}
-						aria-controls={tag.admin && openKey === anchor.key ? `${id}-${i}` : undefined}
+						aria-disabled={!canOpen || tag.disabled || !ready}
+						aria-haspopup={canOpen ? 'menu' : undefined}
+						aria-expanded={canOpen ? openKey === anchor.key : undefined}
+						aria-controls={canOpen && openKey === anchor.key ? `${id}-${i}` : undefined}
 						onclick={() => {
-							if (tag.admin && !tag.disabled && ready && actionable(tag))
+							if (canOpen && !tag.disabled && ready)
 								openKey = openKey === anchor.key ? null : anchor.key;
 						}}
 						onkeydown={(event) => {
 							if (
-								tag.admin &&
-								actionable(tag) &&
+								canOpen &&
 								!tag.disabled &&
 								ready &&
 								(event.key === 'ArrowDown' || event.key === 'ArrowUp')
@@ -232,7 +195,7 @@
 							}
 						}}
 					>
-						{label(tag)}{#if tag.admin}<CaretDownIcon
+						{label(tag)}{#if canOpen}<CaretDownIcon
 								aria-hidden="true"
 								weight="bold"
 								class="size-3"
@@ -247,7 +210,7 @@
 				>
 					{tag.error}
 				</p>{/if}
-			{#if tag.admin && openKey === anchor.key}
+			{#if canOpen && openKey === anchor.key}
 				<Menu
 					open={true}
 					placement="bottom-start"
@@ -260,20 +223,14 @@
 				>
 					{#snippet children(close)}
 						{#each actions(tag) as action}
-							{@const permission = eligibility(tag, action)}
 							<MenuItem
-								disabled={tag.disabled || !ready || permission.allowed !== true}
-								title={permission.reason ??
-									(permission.allowed === null ? 'Checking this action…' : undefined)}
+								disabled={tag.disabled || !ready}
 								onclick={() => {
-									if (!ready || tag.disabled || permission.allowed !== true) return;
+									if (!ready || tag.disabled) return;
 									close();
 									onDecision?.(tag, action);
 								}}>{decisionLabels[action]}</MenuItem
 							>
-							{#if permission.reason}<p class="m-0 px-2 py-1 text-xs text-ink-muted">
-									{permission.reason}
-								</p>{/if}
 						{/each}
 					{/snippet}
 				</Menu>

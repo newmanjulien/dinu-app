@@ -1,7 +1,8 @@
+import type { DocumentOverlayItem } from '../../playbook/document-overlay';
+import type { ConcessionSelection } from '../../playbook/model';
 import { DocumentCompositionEngine } from '../compose';
 import type { CanonicalNumbering } from './numbering';
 import type { SourceBlock, ResolvedRun } from '../model';
-import { documentIndex, type ContractDocument } from '../contract-document';
 
 export type ExportBlock =
 	| {
@@ -26,20 +27,22 @@ function exportText(runs: ResolvedRun[]): string {
 	return text.replace(/\r\n|\r/g, '\n');
 }
 
-/** Export materialized wording, or plain template blocks for source tooling. */
-export function composeExport(
-	input: { blocks: readonly SourceBlock[] } | { document: ContractDocument }
-): ExportBlock[] {
-	const engine =
-		'document' in input
-			? new DocumentCompositionEngine(
-					input.document.blocks,
-					documentIndex(input.document),
-					undefined,
-					new Map(input.document.aliases)
-				)
-			: new DocumentCompositionEngine(input.blocks);
-	const resolved = [...engine.compose({ items: [], activeConcessions: {}, view: 'effective' })];
+/** Export effective contract wording directly from template blocks and applied concessions. */
+export function composeExport(input: {
+	blocks: readonly SourceBlock[];
+	items?: readonly DocumentOverlayItem[];
+	concessions?: ConcessionSelection;
+}): ExportBlock[] {
+	const engine = new DocumentCompositionEngine(input.blocks);
+	// Drain compose() completely before reading numberingBlocks / addresses so structural
+	// paragraph insertions and removals produce accurate CanonicalNumbering.
+	const resolved = [
+		...engine.compose({
+			items: input.items ?? [],
+			activeConcessions: input.concessions ?? {},
+			view: 'effective'
+		})
+	];
 	const numbered = new Map(
 		engine.numberingBlocks.flatMap((block) =>
 			block.numbering

@@ -2,7 +2,7 @@ import { v } from 'convex/values';
 import { setupCallView } from './csmSetupValidators';
 import { permissions, role } from './permissions';
 
-export const helpPreferences = v.object({ rep: v.boolean(), buyer: v.boolean() });
+export const helpPreferences = v.object({ contract: v.boolean(), buyerLink: v.boolean() });
 
 export const profileView = v.object({
 	id: v.id('profiles'),
@@ -10,6 +10,13 @@ export const profileView = v.object({
 	email: v.string(),
 	avatarUrl: v.union(v.string(), v.null())
 });
+export const companyDeletionView = v.union(
+	v.null(),
+	v.object({
+		status: v.union(v.literal('inProgress'), v.literal('deleting'), v.literal('cleaning')),
+		ownedByViewer: v.boolean()
+	})
+);
 export const accountView = v.object({
 	profile: profileView,
 	helpPreferences,
@@ -20,7 +27,8 @@ export const accountView = v.object({
 			id: v.id('memberships'),
 			role,
 			companyId: v.id('company'),
-			isOwner: v.boolean()
+			isOwner: v.boolean(),
+			supportWidgetCollapsed: v.boolean()
 		})
 	),
 	company: v.union(
@@ -31,7 +39,7 @@ export const accountView = v.object({
 			avatarUrl: v.union(v.string(), v.null()),
 			approvalEmail: v.union(v.string(), v.null()),
 			setupCall: setupCallView,
-			deletionPending: v.boolean()
+			deletion: companyDeletionView
 		})
 	),
 	needsInitialization: v.boolean(),

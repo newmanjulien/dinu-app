@@ -118,7 +118,6 @@ export class LayoutPreparationEngine {
 			const inline = yield* tokens(block.content);
 			fragment = {
 				type: 'paragraph',
-				...(block.discussionRemoved ? { discussionRemoved: true as const } : {}),
 				role: block.role,
 				anchor: block.anchor ?? (block.role !== 'body' ? block.blockKey : undefined),
 				interval: { start: 0, end: inline.length },

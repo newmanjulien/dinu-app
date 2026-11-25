@@ -1,12 +1,19 @@
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
 	import type { LayoutData } from './$types';
 	import ContractRoute from '$lib/components/workspace/ContractRoute.svelte';
-	import DocumentBody from '$lib/auth/DocumentBody.svelte';
+	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	let { data, children }: { data: LayoutData; children: Snippet } = $props();
+	const runtime = getWorkspaceRuntime();
+	let mounted = $state(untrack(() => !runtime.paused));
+	$effect(() => {
+		if (!runtime.paused) mounted = true;
+	});
 </script>
 
-<DocumentBody requiresTemplate={data.contractDestination.kind === 'new'} requiresDocument={false}>
-	<ContractRoute data={data.contractDestination} />
-</DocumentBody>
+{#if mounted}
+	<div hidden={runtime.paused} inert={runtime.paused}>
+		<ContractRoute data={data.contractDestination} />
+	</div>
+{/if}
 {@render children()}

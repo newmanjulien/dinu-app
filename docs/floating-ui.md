@@ -77,8 +77,8 @@ only trigger-width matching writes an inline width. Viewport constraints still a
 
 ## Adding an interaction
 
-Use `Tooltip` for supplementary text, `Menu` for actions, and `Popover` for ordinary
-interactive controls. Each has its own semantics and focus behavior:
+Use `Tooltip` for supplementary text and `Menu` for actions. Each has its own semantics and focus
+behavior:
 
 - `Tooltip` shows on hover or keyboard focus, allows hovering its content, and never
   focuses its content. The standalone info button also toggles on touch. A custom
@@ -92,14 +92,11 @@ interactive controls. Each has its own semantics and focus behavior:
   `danger` for a destructive action. Pointer opening does not highlight the focused
   item; keyboard focus uses a background and outline via `:focus-visible`. Status
   colors on review tags and active navigation underlines belong to their features.
-- `Popover` contains normal controls, such as checkboxes. Pass `keyboard` when opened
-  by keyboard to focus its first enabled control; pointer opening leaves trigger focus
-  intact. Changes inside it do not dismiss it.
 
-Both interactive components restore the available trigger after Escape or activation.
+`Menu` restores the available trigger after Escape or activation.
 Outside pointers and focus leaving dismiss without preventing the clicked action or
-redirecting focus. Preferred placements are below-start for tooltips, below-end for
-menus, and below-start with trigger-width matching for options popovers.
+redirecting focus. Preferred placements are below-start for tooltips and below-end for
+menus.
 Tooltips and menus accept a `placement` override: HubSpot deal hints use below-end
 to extend inward from the row's right edge, and review decision menus use below-start
 to extend rightward from the document's left-side tabs. All placements retain viewport

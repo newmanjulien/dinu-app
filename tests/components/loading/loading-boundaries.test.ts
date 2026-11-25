@@ -67,7 +67,7 @@ vi.mock('convex/browser', () => ({
 }));
 let component: ReturnType<typeof mount> | undefined;
 const viewer = (): NonNullable<AccountViewer> => ({
-	helpPreferences: { rep: false, buyer: false },
+	helpPreferences: { contract: false, buyerLink: false },
 	profile: {
 		id: 'profile' as Id<'profiles'>,
 		email: 'private@example.com',
@@ -78,7 +78,8 @@ const viewer = (): NonNullable<AccountViewer> => ({
 		id: 'member' as Id<'memberships'>,
 		companyId: 'company' as Id<'company'>,
 		role: 'admin',
-		isOwner: true
+		isOwner: true,
+		supportWidgetCollapsed: false
 	},
 	company: {
 		id: 'company' as Id<'company'>,
@@ -86,12 +87,13 @@ const viewer = (): NonNullable<AccountViewer> => ({
 		avatarUrl: null,
 		approvalEmail: null,
 		setupCall: null,
-		deletionPending: false
+		deletion: null
 	},
 	permissions: {
 		editCompanyProfile: true,
 		manageMembers: true,
 		manageTemplate: true,
+		manageIntegrations: true,
 		manageOwnership: true
 	},
 	needsInitialization: false,

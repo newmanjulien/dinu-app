@@ -24,7 +24,6 @@ interface FragmentSpacing {
 }
 
 export interface ParagraphFragment extends FragmentSpacing {
-	readonly discussionRemoved?: true;
 	readonly role: import('$lib/document/source-model').ParagraphRole;
 	readonly anchor?: string;
 	readonly keepWithNext?: boolean;

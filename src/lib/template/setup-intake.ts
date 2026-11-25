@@ -1,0 +1,2 @@
+export const SETUP_INTAKE_MAX_COUNT = 1_000_000;
+export const SETUP_INTAKE_MAX_TEXT_LENGTH = 4_000;

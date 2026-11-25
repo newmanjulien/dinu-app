@@ -1,18 +1,18 @@
-import { templateItem } from '../lib/playbook/validators';
+import { templateAudience, templateItem } from '../lib/playbook/validators';
+import { VALIDATION_CODEC_VERSION } from '../lib/document/validation-codec';
 import { defineSchema, defineTable } from 'convex/server';
 import { v } from 'convex/values';
 import { sourceBlock } from '../lib/document/source-validators';
 import { storedTemplateSource } from './templateSourceValidators';
-import { contractOutput, outputProofCursor } from './outputValidators';
+import { storedSetupIntake } from './templateSetupValidators';
 import { contractCleanupPhase } from './contractCleanupValidators';
 import {
-	storedApprovalRequest,
 	storedContract,
 	storedContractHubspotAssociation,
 	contractBuyerRefresh
 } from './contractValidators';
 import { companyDeletion, deletedUser } from './deletionValidators';
-import { emailDelivery, nativeEmailEntry } from './emailValidators';
+import { emailDelivery } from './emailValidators';
 import { storedInvitation } from './invitationValidators';
 import {
 	hubspotLink,
@@ -25,25 +25,11 @@ import {
 import { role } from './permissions';
 import { helpPreferences } from './accountViews';
 import { operationReceipt } from './operationReceiptValidators';
-import { nativeStage } from './nativeStageValidators';
-import { storedExportAttempt } from './exportValidators';
+import { storedWordExport } from './exportValidators';
 import { hubspotExportDelivery } from './hubspotExportDeliveryValidators';
 import { quoteInstallation, quotePush } from './hubspotQuoteValidators';
 import { buyerLink } from './buyerValidators';
-import { storedThread, storedMessage, storedReceipt } from './discussionValidators';
-import {
-	storedInvalidation,
-	storedMapChunk,
-	storedUnreadNode,
-	storedUnreadControl,
-	storedPassageClaim
-} from './discussionIndexValidators';
-import {
-	storedContractChange,
-	storedContractChangeHead,
-	storedContractChangeDecision,
-	storedChangeContent
-} from './contractChangeValidators';
+import { storedThread, storedMessage } from './discussionValidators';
 import {
 	activityQuotaKey,
 	discussionQuotaKey,
@@ -56,7 +42,7 @@ import { storedSetupAppointment } from './csmSetupValidators';
 import { storedEvidence } from './csmEvidenceValidators';
 import { storedErasureGuard } from './csmErasureGuardValidators';
 import { storedTemplateItem } from './playbookValidators';
-import { retentionSweep } from './retentionValidators';
+
 /** Domain map: docs/data-model.md. Child company IDs support authorization and bounded cleanup. */
 export default defineSchema({
 	// HubSpot integration lifecycle and provider work.
@@ -70,7 +56,6 @@ export default defineSchema({
 		.index('by_contractId_and_generation', ['contractId', 'generation']),
 	hubspotQuoteInstallations: defineTable(quoteInstallation).index('by_companyId', ['companyId']),
 	hubspotQuotePushes: defineTable(quotePush)
-		.index('by_outputId', ['outputId'])
 		.index('by_companyId', ['companyId'])
 		.index('by_contractId', ['contractId'])
 		.index('by_canonicalKey', ['canonicalKey'])
@@ -124,109 +109,22 @@ export default defineSchema({
 		.index('by_destination_connectionId', ['destination.connectionId'])
 		.index('by_key', ['key'])
 		.index('by_status_and_dueAt', ['status', 'dueAt']),
-	// Core operation replay; survives individual contract deletion.
+	// Flat operation replay receipts; contracts.create, hubspotDeals, and hubspotQuotes check
+	// receipts before contract existence. All receipts self-expire in 24h and are wiped on companyDeletion.
 	operationReceipts: defineTable(operationReceipt)
-		.index('by_gcAfter', ['gcAfter'])
-		.index('by_actor_profileId_and_state', ['actor.profileId', 'state'])
-		.index('by_actor_profileId_and_emailPreparation_dueAt', [
-			'actor.profileId',
-			'emailPreparation.dueAt'
-		])
-		.index('by_documentId', ['documentId'])
-		.index('by_nativeCleanup_dueAt', ['nativeCleanup.dueAt'])
-		.index('by_contractId_and_state_and_preparation_map_mapKey', [
-			'contractId',
-			'state',
-			'preparation.map.mapKey'
-		])
-		.index('by_contractId_and_state_and_preparation_dueAt', [
-			'contractId',
-			'state',
-			'preparation.dueAt'
-		])
-		.index('by_contractId_and_state_and_emailPreparation_dueAt', [
-			'contractId',
-			'state',
-			'emailPreparation.dueAt'
-		])
-		.index('by_companyId', ['companyId'])
 		.index('by_key', ['key'])
-		.index('by_contractId', ['contractId']),
-	retentionSweeps: defineTable(retentionSweep).index('by_name', ['name']),
-	contractOutputs: defineTable(contractOutput)
-		.index('by_retentionDueAt', ['retentionDueAt'])
-		.index('by_receiptId', ['receiptId'])
-		.index('by_actor_profileId_and_outputPreparation_purpose', [
-			'actor.profileId',
-			'outputPreparation.purpose'
-		])
 		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId'])
-		.index('by_contractId_and_format', ['contractId', 'format'])
-		.index('by_documentId', ['documentId'])
-		.index('by_providerOperationId', ['providerOperationId'])
-		.index('by_outputPreparation_dueAt', ['outputPreparation.dueAt'])
-		.index('by_outputCleanup_dueAt', ['outputCleanup.dueAt']),
-	contractOutputChunks: defineTable({
-		companyId: v.id('company'),
-		contractId: v.id('savedContracts'),
-		outputId: v.id('contractOutputs'),
-		section: v.literal('output-proof'),
-		generation: v.number(),
-		order: v.number(),
-		fingerprint: v.string(),
-		recordCount: v.number(),
-		data: v.string()
-	})
-		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId'])
-		.index('by_outputId_and_section_and_generation_and_order', [
-			'outputId',
-			'section',
-			'generation',
-			'order'
-		]),
-	operationReceiptChunks: defineTable({
-		companyId: v.id('company'),
-		receiptId: v.id('operationReceipts'),
-		section: v.union(
-			v.literal('payload'),
-			v.literal('native-plan'),
-			v.literal('native-sources'),
-			v.literal('native-result')
-		),
-		generation: v.number(),
-		nativeKey: v.optional(v.string()),
-		order: v.number(),
-		fingerprint: v.string(),
-		recordCount: v.number(),
-		data: v.string()
-	})
-		.index('by_companyId', ['companyId'])
-		.index('by_receiptId_and_section_and_generation_and_order', [
-			'receiptId',
-			'section',
-			'generation',
-			'order'
-		])
-		.index('by_receiptId_and_section_and_generation_and_nativeKey', [
-			'receiptId',
-			'section',
-			'generation',
-			'nativeKey'
-		]),
+		.index('by_expiresAt', ['expiresAt']),
 	hubspotExportDeliveries: defineTable(hubspotExportDelivery)
 		.index('by_companyId', ['companyId'])
 		.index('by_attemptId', ['attemptId'])
 		.index('by_destination_connectionId', ['destination.connectionId']),
-	// Core export attempts/provenance. Physical names and IDs preserve indefinite browser journals.
-	hubspotExports: defineTable(storedExportAttempt)
-		.index('by_outputId', ['outputId'])
+	wordExports: defineTable(storedWordExport)
 		.index('by_contractId', ['contractId'])
 		.index('by_companyId', ['companyId'])
 		.index('by_key', ['key'])
 		.index('by_fileId', ['fileId'])
-		.index('by_state_and_expiresAt', ['state', 'expiresAt']),
+		.index('by_expiresAt', ['expiresAt']),
 
 	// Accounts and companies
 	profiles: defineTable({
@@ -252,7 +150,7 @@ export default defineSchema({
 		pendingTemplateSourceId: v.optional(v.id('templateSources')),
 		colleaguesInvitedAt: v.optional(v.number()),
 		setupAppointmentId: v.optional(v.id('csmSetupAppointments')),
-		authoringMigration: v.optional(v.boolean())
+		setupIntake: v.optional(storedSetupIntake)
 	})
 		.index('by_ownerProfileId', ['ownerProfileId'])
 		.index('by_avatarId', ['avatarId']),
@@ -260,9 +158,9 @@ export default defineSchema({
 	memberships: defineTable({
 		profileId: v.id('profiles'),
 		companyId: v.id('company'),
-		// Retired copy milestone; setup now checks buyerLinks directly.
 		setupCompletedAt: v.optional(v.number()),
 		firstBuyerLinkHintShowing: v.optional(v.object({ visitId: v.string(), shownAt: v.number() })),
+		supportWidgetCollapsed: v.boolean(),
 		role
 	})
 		.index('by_profileId', ['profileId'])
@@ -366,22 +264,9 @@ export default defineSchema({
 		'templateSourceId',
 		'order'
 	]),
-	authoringMigrations: defineTable({
-		companyId: v.id('company'),
-		templateSourceId: v.id('templateSources'),
-		fingerprint: v.string(),
-		versionId: v.id('templateVersions'),
-		generation: v.number(),
-		state: v.union(
-			v.literal('heads'),
-			v.literal('versions'),
-			v.literal('certify'),
-			v.literal('complete')
-		),
-		nextItem: v.number(),
-		versionCursor: v.optional(v.string())
-	}).index('by_companyId', ['companyId']),
-	playbookItems: defineTable(storedTemplateItem).index('by_companyId', ['companyId']),
+	playbookItems: defineTable(storedTemplateItem)
+		.index('by_companyId', ['companyId'])
+		.index('by_companyId_and_audience', ['companyId', 'audience']),
 	// Historical item IDs remain valid after the live item is deleted.
 	playbookItemRevisions: defineTable({
 		companyId: v.id('company'),
@@ -390,7 +275,7 @@ export default defineSchema({
 		contentRevision: v.number(),
 		body: templateItem,
 		lastOperation: v.optional(v.object({ id: v.string(), callerId: v.id('profiles') })),
-		renderKey: v.optional(v.string()),
+		renderKey: v.string(),
 		// A mutable template version owns these revisions until a contract freezes it.
 		mutableVersionId: v.optional(v.id('templateVersions'))
 	}).index('by_companyId', ['companyId']),
@@ -398,7 +283,11 @@ export default defineSchema({
 		companyId: v.id('company'),
 		templateSourceId: v.id('templateSources'),
 		items: v.array(
-			v.object({ itemId: v.id('playbookItems'), revisionId: v.id('playbookItemRevisions') })
+			v.object({
+				itemId: v.id('playbookItems'),
+				revisionId: v.id('playbookItemRevisions'),
+				audience: templateAudience
+			})
 		),
 		// First contract capture freezes this version permanently, even if the contract is deleted.
 		mutability: v.union(v.literal('mutable'), v.literal('frozen')),
@@ -408,25 +297,25 @@ export default defineSchema({
 		itemCount: v.number(),
 		snapshotBytes: v.number(),
 		contentReadBytes: v.number(),
-		headReadBytes: v.optional(v.number()),
-		structureResultBytes: v.optional(v.number()),
-		authoringGeneration: v.optional(v.number()),
-		structuralGeneration: v.optional(v.number()),
-		validation: v.optional(v.object({ format: v.number(), fingerprint: v.string() }))
+		headReadBytes: v.number(),
+		structureResultBytes: v.number(),
+		authoringGeneration: v.number(),
+		structuralGeneration: v.number(),
+		validation: v.object({
+			format: v.union(v.literal(0), v.literal(VALIDATION_CODEC_VERSION)),
+			fingerprint: v.string()
+		})
 	}).index('by_companyId', ['companyId']),
 
 	// One pointer per company, enforced by the template version writer.
 	currentTemplate: defineTable({
 		companyId: v.id('company'),
-		versionId: v.id('templateVersions'),
-		// Historical fallback/output mirrors only. Present manifest clocks are authoritative.
-		authoringGeneration: v.optional(v.number()),
-		structuralGeneration: v.optional(v.number())
+		versionId: v.id('templateVersions')
 	}).index('by_companyId', ['companyId']),
 	// Survives item deletion: retry must never recreate a deleted item.
 	playbookItemCreationReceipts: defineTable({
 		companyId: v.id('company'),
-		renderKey: v.optional(v.string()),
+		renderKey: v.string(),
 		operationId: v.string(),
 		itemId: v.id('playbookItems')
 	})
@@ -434,7 +323,7 @@ export default defineSchema({
 		.index('by_companyId_and_renderKey', ['companyId', 'renderKey'])
 		.index('by_companyId', ['companyId']),
 
-	// A permanent buyer link with its small atomically updated approved-view pointer.
+	// Permanent buyer link with auto-synced approved-concessions view.
 	buyerLinks: defineTable(buyerLink)
 		.index('by_token', ['token'])
 		.index('by_contractId', ['contractId'])
@@ -497,127 +386,17 @@ export default defineSchema({
 		.index('by_expiresAt', ['expiresAt'])
 		.index('by_companyId', ['companyId'])
 		.index('by_contractId', ['contractId']),
-	discussionInvalidations: defineTable(storedInvalidation)
-		.index('by_contractId_and_map_mapKey', ['contractId', 'map.mapKey'])
-		.index('by_contractId_and_fromRevision', ['contractId', 'fromRevision'])
-		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId']),
-	discussionTransitionMapChunks: defineTable(storedMapChunk)
-		.index('by_mapKey_and_firstBefore', ['mapKey', 'firstBefore'])
-		.index('by_contractId_and_garbage', ['contractId', 'garbage'])
-		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId']),
-	discussionUnreadNodes: defineTable(storedUnreadNode)
-		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId']),
-	discussionUnreadControls: defineTable(storedUnreadControl)
-		.index('by_contractId', ['contractId'])
-		.index('by_dueAt', ['dueAt'])
-		.index('by_companyId', ['companyId']),
-	discussionPassageClaims: defineTable(storedPassageClaim)
-		.index('by_contractId_and_indexedDocumentRevision_and_start', [
-			'contractId',
-			'indexedDocumentRevision',
-			'start'
-		])
-		.index('by_threadId', ['threadId'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
 	discussionThreads: defineTable(storedThread)
-		.index('by_contractId_and_tombstoned_and_cleanupDueAt', [
-			'contractId',
-			'tombstoned',
-			'cleanupDueAt'
-		])
-		.index('by_contractId_and_tombstoned_and_indexedDocumentRevision', [
-			'contractId',
-			'tombstoned',
-			'indexedDocumentRevision'
-		])
 		.index('by_contractId', ['contractId'])
+		.index('by_contractId_and_hasUnread', ['contractId', 'hasUnread'])
 		.index('by_companyId', ['companyId']),
 	discussionMessages: defineTable(storedMessage)
 		.index('by_threadId_and_reply', ['threadId', 'reply'])
 		.index('by_contractId', ['contractId'])
 		.index('by_companyId', ['companyId']),
-	discussionReceipts: defineTable(storedReceipt)
-		.index('by_gcAfter', ['gcAfter'])
-		.index('by_threadId', ['threadId'])
-		.index('by_contractId_and_actorKey_and_operationId', ['contractId', 'actorKey', 'operationId'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
-	// Contracts and approvals
+
+	// Contracts
 	savedContracts: defineTable(storedContract).index('by_companyId', ['companyId']),
-	// Immutable materialized wording; each manifest shares unchanged content-addressed chunks.
-	contractDocuments: defineTable({
-		stage: v.optional(nativeStage),
-		companyId: v.id('company'),
-		contractId: v.id('savedContracts'),
-		format: v.literal(1),
-		fingerprint: v.string(),
-		chunkIds: v.array(v.id('contractDocumentChunks')),
-		chunkHashes: v.array(v.string()),
-		dataBytes: v.number(),
-		readBytes: v.number(),
-		blockCount: v.number()
-	})
-		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId'])
-		.index('by_stage_receiptId_generation_unit_slot', [
-			'stage.receiptId',
-			'stage.generation',
-			'stage.unit',
-			'stage.slot'
-		]),
-	contractDocumentChunks: defineTable({
-		companyId: v.id('company'),
-		contractId: v.id('savedContracts'),
-		fingerprint: v.string(),
-		data: v.bytes()
-	})
-		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId']),
-	// Bounded, reusable validation data for an exact published document revision.
-	discussionPassageIndexes: defineTable({
-		companyId: v.id('company'),
-		contractId: v.id('savedContracts'),
-		documentId: v.id('contractDocuments'),
-		documentRevision: v.number(),
-		manifestSeal: v.string(),
-		data: v.bytes()
-	})
-		.index('by_documentId_and_documentRevision', ['documentId', 'documentRevision'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
-	contractChanges: defineTable(storedContractChange)
-		.index('by_stage_receiptId_generation_unit_slot', [
-			'stage.receiptId',
-			'stage.generation',
-			'stage.unit',
-			'stage.slot'
-		])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
-	contractChangeHeads: defineTable(storedContractChangeHead)
-		.index('by_contractId_and_kind_and_key', ['contractId', 'kind', 'key'])
-		.index('by_contractId_and_kind_and_activePlaybook', ['contractId', 'kind', 'activePlaybook'])
-		.index('by_contractId_and_kind', ['contractId', 'kind'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
-	contractChangeDecisions: defineTable(storedContractChangeDecision)
-		.index('by_stage_receiptId_generation_unit_slot', [
-			'stage.receiptId',
-			'stage.generation',
-			'stage.unit',
-			'stage.slot'
-		])
-		.index('by_changeId_and_decidedAt', ['changeId', 'decidedAt'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
-	contractChangeContents: defineTable(storedChangeContent)
-		.index('by_changeId_and_order', ['changeId', 'order'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
 	contractHubspotAssociations: defineTable(storedContractHubspotAssociation)
 		.index('by_contractId', ['contractId'])
 		.index('by_companyId', ['companyId'])
@@ -625,7 +404,7 @@ export default defineSchema({
 	contractBuyerRefreshes: defineTable(contractBuyerRefresh)
 		.index('by_contractId', ['contractId'])
 		.index('by_companyId', ['companyId']),
-	// Derived by contractDirectory.writeDirectory; one row per contract. Browsing avoids growing application state.
+	// Derived by contractDirectory.writeDirectory; one row per contract.
 	contractDirectory: defineTable({
 		contractId: v.id('savedContracts'),
 		companyId: v.id('company'),
@@ -636,8 +415,7 @@ export default defineSchema({
 		createdAt: v.number(),
 		hasUnreadComment: v.boolean(),
 		buyerLinkCreatedAt: v.optional(v.number()),
-		// Optional only while existing directory rows are backfilled.
-		hasBuyerLink: v.optional(v.boolean())
+		hasBuyerLink: v.boolean()
 	})
 		.index('by_contractId', ['contractId'])
 		.index('by_companyId_and_creatorId_and_createdAt', ['companyId', 'creatorId', 'createdAt'])
@@ -657,58 +435,11 @@ export default defineSchema({
 			searchField: 'title',
 			filterFields: ['companyId', 'hasBuyerLink']
 		}),
-	buyerLinkBrowseBackfills: defineTable({
-		key: v.literal('directory'),
-		completedAt: v.number()
-	}).index('by_key', ['key']),
-	// Latest request per contract and context; immutable delivery evidence lives separately.
-	approvalRequests: defineTable(storedApprovalRequest)
-		.index('by_contractId_and_context', ['contractId', 'context'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
-	// Survives contract deletion: retry must never resurrect a deleted contract.
-	contractCreationReceipts: defineTable({
-		retryUntil: v.number(),
-		gcAfter: v.number(),
-		inputs: v.string(),
-		companyId: v.id('company'),
-		operationId: v.string(),
-		contractId: v.id('savedContracts'),
-		// Kept optional for receipt rows written before version freezing moved onto
-		// the template itself. New receipts no longer need a reverse lookup.
-		templateVersionId: v.optional(v.id('templateVersions'))
-	})
-		.index('by_gcAfter', ['gcAfter'])
-		.index('by_operationId', ['operationId'])
-		.index('by_companyId', ['companyId']),
 	contractCleanups: defineTable({
 		companyId: v.id('company'),
 		contractId: v.id('savedContracts'),
 		phase: contractCleanupPhase,
-		retentionComplete: v.optional(v.literal(true)),
-		retentionOwnersDone: v.optional(v.literal(true)),
-		retentionPhase: v.optional(
-			v.union(
-				v.literal('receipts'),
-				v.literal('outputs'),
-				v.literal('attempts'),
-				v.literal('providers')
-			)
-		),
-		retentionCursor: v.optional(v.string()),
-		retentionProof: v.optional(
-			v.object({
-				outputId: v.id('contractOutputs'),
-				section: v.literal('output-proof'),
-				generation: v.number(),
-				cursor: outputProofCursor
-			})
-		),
-		retentionDocumentId: v.optional(v.id('contractDocuments')),
-		retentionChunkOffset: v.optional(v.number()),
-		retentionBytes: v.optional(v.number()),
-		retentionReadBytes: v.optional(v.number()),
-		providerCursor: v.optional(v.string()),
+		cursor: v.optional(v.string()),
 		waitingDueAt: v.optional(v.number()),
 		generation: v.number(),
 		jobId: v.optional(v.id('_scheduled_functions'))
@@ -719,7 +450,6 @@ export default defineSchema({
 
 	// Email delivery
 	emailDeliveries: defineTable(emailDelivery)
-		.index('by_snapshot_receiptId', ['snapshot.receiptId'])
 		.index('by_companyId', ['companyId'])
 		.index('by_contractId', ['contractId'])
 		.index('by_state_kind_and_event_kind_and_state_retryable_and_attempt', [
@@ -732,23 +462,7 @@ export default defineSchema({
 			'state.kind',
 			'event.kind',
 			'state.retryEligible'
-		])
-		.index('by_disposal_generation', ['disposal.generation']),
-	// Ordered, bounded selection chunks owned by one delivery.
-	emailSelectionChunks: defineTable({
-		companyId: v.id('company'),
-		deliveryId: v.id('emailDeliveries'),
-		generation: v.number(),
-		order: v.number(),
-		entries: v.array(nativeEmailEntry),
-		fingerprint: v.string(),
-		previousHash: v.string(),
-		hash: v.string(),
-		bytes: v.number()
-	})
-		.index('by_deliveryId_and_order', ['deliveryId', 'order'])
-		.index('by_deliveryId_and_generation_and_order', ['deliveryId', 'generation', 'order'])
-		.index('by_companyId', ['companyId']),
+		]),
 
 	// Account and storage maintenance
 	deletedUsers: defineTable(deletedUser)

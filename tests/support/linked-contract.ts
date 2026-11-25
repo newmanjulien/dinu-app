@@ -3,13 +3,11 @@ import { fixtureOperationId } from './operation';
 import { convexTest } from 'convex-test';
 import rateLimiter from '@convex-dev/rate-limiter/test';
 import workpool from '@convex-dev/workpool/test';
-import type { FunctionArgs } from 'convex/server';
 import type { WorkId } from '@convex-dev/workpool';
 import { afterEach, beforeEach, vi } from 'vitest';
 import { api, internal } from '../../src/convex/_generated/api';
 import type { Doc, Id } from '../../src/convex/_generated/dataModel';
 import schema from '../../src/convex/schema';
-import { expectedSourceOf } from '../../src/convex/contractSource';
 import { readContract } from '../../src/convex/contractState';
 import { block, identity, initializeViewer, item } from './contract-data';
 
@@ -109,7 +107,7 @@ export async function fixture({
 	};
 	const rep = await t.run(async ({ db }) => {
 		const profileId = await db.insert('profiles', {
-			helpPreferences: { rep: false, buyer: false },
+			helpPreferences: { contract: false, buyerLink: false },
 			identity: repIdentity.tokenIdentifier,
 			issuer: repIdentity.issuer,
 			clerkId: repIdentity.subject,
@@ -119,7 +117,8 @@ export async function fixture({
 		const membershipId = await db.insert('memberships', {
 			profileId,
 			companyId: owner.companyId,
-			role: 'rep'
+			role: 'rep',
+			supportWidgetCollapsed: false
 		});
 		return { profileId, membershipId };
 	});
@@ -136,6 +135,7 @@ export async function fixture({
 	};
 }
 export type Fixture = Awaited<ReturnType<typeof fixture>>;
+
 export function events(f: Fixture) {
 	return f.t.run(({ db }) => db.query('hubspotEvents').collect());
 }
@@ -183,22 +183,17 @@ export async function claim(f: Fixture) {
 	if (!owned) throw new Error('Claim refused');
 	return { ...owned, execution: row.execution, workId: row.workId };
 }
-export function application(f: Fixture, operationId = 'apply') {
+
+export function application(f: Fixture, operationId = 'apply', expectedStateRevision = 0) {
 	return {
 		membershipId: f.owner.membershipId,
 		id: f.id,
-		commands: [
-			{
-				id: fixtureOperationId(`${operationId}-command`),
-				itemId: f.itemId,
-				expectedCurrentChangeId: null,
-				action: { kind: 'set' as const, optionId: 'preferred' },
-				occurredAt: Date.now()
-			}
-		],
+		selections: { [f.itemId]: 'preferred' } as Record<Id<'playbookItems'>, string>,
+		expectedStateRevision,
 		operationId: fixtureOperationId(operationId)
 	};
 }
+
 export async function currentContract(f: Fixture) {
 	return f.t.run(async (ctx) => {
 		const root = await ctx.db.get('savedContracts', f.id);
@@ -206,7 +201,8 @@ export async function currentContract(f: Fixture) {
 		return readContract(ctx, root);
 	});
 }
-export function exportDelivery(f: Fixture, attemptId: Id<'hubspotExports'>) {
+
+export function exportDelivery(f: Fixture, attemptId: Id<'wordExports'>) {
 	return f.t.run(({ db }) =>
 		db
 			.query('hubspotExportDeliveries')
@@ -214,70 +210,38 @@ export function exportDelivery(f: Fixture, attemptId: Id<'hubspotExports'>) {
 			.unique()
 	);
 }
-export async function expectedSource(f: Fixture) {
-	return expectedSourceOf(await currentContract(f));
-}
-/** These ordinary fixture outputs reserve in one mutation on their durable output owner. */
-export async function reserveExport(
+
+export async function readyExport(
 	f: Fixture,
-	args: FunctionArgs<typeof internal.hubspotExports.reserve>
-) {
-	const result = await f.t.mutation(internal.hubspotExports.reserve, args);
-	if (result.status !== 'reserved') throw new Error('Fixture output is still preparing');
-	let verified = false;
-	for (let i = 0; !verified && i < 64; i++)
-		verified = await f.t.mutation(internal.outputReservations.verify, {
-			outputId: result.attempt.outputId
-		});
-	if (!verified) throw new Error('Fixture output evidence is still being checked');
-	return result.attempt;
-}
-export async function prepareRelease(f: Fixture, id: Id<'hubspotExports'>) {
-	const proof = await f.t.mutation(internal.contractExports.prepareRelease, { id });
-	let complete = proof.complete;
-	for (let i = 0; !complete && i < 32; i++)
-		complete = await f.t.mutation(internal.outputReservations.progress, {
-			outputId: proof.outputId
-		});
-	if (!complete) throw new Error('Fixture release proof is still preparing');
-}
-export async function readyExport(f: Fixture, operationId = 'download') {
-	const attempt = await reserveExport(f, {
-		membershipId: f.owner.membershipId,
-		id: f.id,
-		expectedSource: await expectedSource(f),
-		operationId: fixtureOperationId(operationId),
-		claim: 'export-claim'
-	});
+	operationId = 'download'
+): Promise<Doc<'wordExports'>> {
+	const contract = await currentContract(f);
 	const fileId = await f.t.run(({ storage }) => storage.store(new Blob([bytes])));
 	const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
 		b.toString(16).padStart(2, '0')
 	).join('');
-	await f.t.mutation(internal.hubspotExports.publish, {
-		id: attempt._id,
-		claim: attempt.claim,
+	await f.t.mutation(internal.contractExports.commit, {
+		membershipId: f.owner.membershipId,
+		id: f.id,
+		operationId: fixtureOperationId(operationId),
 		fileId,
 		sha256: hash,
-		size: bytes.byteLength
+		size: bytes.byteLength,
+		expectedTemplateVersionId: contract.root.templateVersionId,
+		expectedStateRevision: contract.root.stateRevision,
+		expectedTitle: contract.root.title
 	});
-	await prepareRelease(f, attempt._id);
-	await f.t.mutation(internal.hubspotExports.release, { id: attempt._id });
-	const released = await f.t.run(({ db }) => db.get('hubspotExports', attempt._id));
-	if (released?.format !== 'full') throw new Error('Expected a full released attempt');
-	return released;
+	const rows = await f.t.run(({ db }) =>
+		db
+			.query('wordExports')
+			.withIndex('by_contractId', (q) => q.eq('contractId', f.id))
+			.collect()
+	);
+	const latest = rows.at(-1);
+	if (!latest) throw new Error('Expected committed word export');
+	return latest;
 }
-export async function acknowledge(
-	f: Fixture,
-	attempt: Doc<'hubspotExports'>,
-	initiatedAt = Date.now()
-) {
-	await f.t.mutation(api.hubspotExports.acknowledge, {
-		membershipId: f.owner.membershipId,
-		id: attempt._id,
-		initiatedAt
-	});
-	return (await events(f)).find((row) => row.attemptId === attempt._id)!;
-}
+
 export async function markUnavailable(f: Fixture) {
 	const row = await claim(f);
 	await f.t.mutation(internal.hubspotDelivery.settle, {
@@ -307,28 +271,17 @@ export async function playbookState(f: Fixture) {
 	if (!state) throw new Error('Fixture contract is missing');
 	return state;
 }
-export async function reviewExpectation(f: Fixture) {
+
+export async function decision(f: Fixture, action: 'approve' | 'decline', operationId: string) {
 	const state = await playbookState(f);
-	return {
-		context: 'playbook' as const,
-		expectedDocument: { documentId: state.documentId, documentRevision: state.documentRevision },
-		expectedIdentity: state.reviews.playbook.identity
-	};
-}
-export async function decision(
-	f: Fixture,
-	action: 'approve' | 'decline' | 'undo',
-	operationId: string
-) {
-	const state = await playbookState(f),
-		head = state.playbook.find((item) => item.itemId === f.itemId);
-	if (!head?.currentChangeId) throw new Error('Fixture change is missing');
+	const entry = state.concessions.find((c) => c.itemId === f.itemId);
+	if (!entry) throw new Error('Fixture concession is missing');
 	return {
 		membershipId: f.owner.membershipId,
 		id: f.id,
-		expectedDocument: { documentId: state.documentId, documentRevision: state.documentRevision },
-		changeId: head.currentChangeId,
-		expectedDecisionId: head.decisionId,
+		itemId: f.itemId,
+		expectedOptionId: entry.optionId,
+		expectedStateRevision: state.stateRevision,
 		action,
 		operationId: fixtureOperationId(operationId)
 	};

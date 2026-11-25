@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { composeExport } from '../../../src/lib/document/export/content';
-import { createContractDocument } from '../../../src/lib/document/contract-document';
 import type { SourceBlock } from '../../../src/lib/document/source-model';
 import { generateWord } from '../../../src/lib/server/document/export/word';
 import { elements, readDocx, textContent } from './docx';
@@ -85,7 +84,7 @@ const blocks: SourceBlock[] = [
 
 describe('real Word document generation', () => {
 	it('preserves composed wording, numbering, references, Unicode, whitespace and line breaks in a valid package', async () => {
-		const resolved = composeExport({ document: createContractDocument(blocks) });
+		const resolved = composeExport({ blocks });
 		expect(resolved.slice(0, 4).map((b) => b.kind === 'paragraph' && b.content)).toEqual([
 			'Agreement & café <2026>',
 			'3. Services',

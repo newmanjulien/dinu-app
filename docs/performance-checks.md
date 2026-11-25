@@ -88,17 +88,13 @@ upload limits, and the browser download helper remain outside that directory.
 
 | Group      | Automated guarantees                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one-selection saves skip template source reads and compilation, validate membership, and advance state. Replays succeed; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. A changed two-selection save confirms the read/compiler observers execute real code.                                   |
+| Saving     | Identical selections return success without snapshot queries, compilation, or writes, preserving `savedAt`, revision, and `lastOperationId`. Changed zero/one/two-selection saves skip template source reads when fewer than two selected concessions contain edits, hydrate only selected items, validate membership, and advance state with one root write, one directory write, and one receipt write. Replays succeed with zero writes; stale saves conflict; invalid operations/revisions and missing contracts retain their behavior. |
 | Scheduling | Foreground dispatches before queued background work. Aborted queued callbacks never run. Destroy rejects queued work and cancels dispatch.                                                                                                                                                                                                                                                                                                                                                                |
 | Caching    | Compact metadata and an immutable template load once through Convex; the snapshot reopens from memory without another request, then from IndexedDB after memory release without downloading. Confirmed state updates survive reopening without rewriting the immutable snapshot store.                                                                                                                                                                                                                    |
-| Creation   | Creation owns one contract root and approved document, freezes a mutable template version on its first contract capture, and reuses already frozen versions. The existing frozen-template fixture checks two root writes, two other writes, one directory write, one source-content read and three document writes. Existing checks also cover template save replay, exhausted-capacity rejection, frozen content after later authoring/deletion, import races, creation retries and saved-version reads. |
+| Creation   | Creation owns one `savedContracts` root, freezes a mutable template version on its first contract capture, and reuses already frozen versions. The creation fixture checks one root write, two other writes (version freeze + creation receipt), one directory write, and zero template content reads. Existing checks also cover template save replay, exhausted-capacity rejection, frozen content after later authoring/deletion, import races, creation retries and saved-version reads. |
 | Startup    | Repeated opening requests navigate once. Returning accounts do not provision; confirmed missing state initializes once per transport generation without unnecessary initialization writes.                                                                                                                                                                                                                                                                                                                |
 
-Saving observers count directory writes separately while preserving the original
-contract-write assertions. Unchanged saves and replays perform zero writes to either
-table; changed saves classify root/head/receipt work and approved document materialization
-separately, preserving exact operation counts. See the
-[contract model](data-model.md#contracts-documents-and-review) for their ownership.
+Saving observers count root, directory, and receipt writes separately. Unchanged saves and replays perform zero writes; changed saves record one root write, one directory write, and one receipt write. See the [contract model](data-model.md#contracts-concessions-and-review) for ownership.
 
 Unchanged saves do not consume operation IDs: repeating one at the same revision
 remains a no-op, and repeating it after an intervening change follows conflict rules.
@@ -142,24 +138,7 @@ teardown, timeout and retry.
 These checks do not certify live HubSpot behavior, Word's visual rendering or actual
 browser download behavior. Simultaneous version consumers remain unverified.
 
-Output fixtures use durable `contractOutputs`/`contractOutputChunks` ownership and
-explicit full-row narrowing for Word attempts and Quote pushes. The saving observer
-still counts root/head/receipt work, document materialization and directory writes
-separately; output retention adds no chunk reference-count writes to hot saves. The
-existing exact cost, byte-expiry, fresh approval/release, actor/destination, canonical
-reuse, immutable retry and acknowledgement assertions remain required. Fixture
-maintenance preserves those assertions without adding coverage.
-
-The [retention model](retention.md) additionally has immutable seven-day retry and
-acknowledgement windows, 90-day full-evidence settlement, actual-owner native promotion,
-hourly collection with a fixed cutoff and deleted-contract coarse waiting/drain.
-Existing suites do not exhaustively prove those time boundaries, partial-promotion
-and compaction/deletion races, scheduler recovery/fairness, shared physical-file/chunk
-reclamation, company catch-up or populated preservation conversion. Source/type review
-does not establish runtime or platform-budget success. The mandatory performance
-suite, production build and necessary existing export/quote/activity/delivery/security/
-uninstall suites must be recorded separately from those unverified guarantees; no live
-provider or browser result is implied.
+Output fixtures exercise `wordExports`, `hubspotExportDeliveries`, and `hubspotQuotePushes` 2-step `prepare`/`commit` flows, byte-expiry, approval/readiness fences, canonical reuse, and retry replay. See [retention](retention.md) for expiry clocks and cleanup boundaries. Existing suites do not certify live provider outcomes, Word visual rendering, or browser download behavior.
 
 Admin authoring now uses compact certified structure, revision-authoritative details, atomic
 changed-body/version deltas and template source-lived rendering artifacts. Save publishes pending
@@ -207,10 +186,7 @@ also runs them with the existing suites, mandatory performance suite, type check
 fresh production build/loading manifest. These assert actual work, request counts, object
 and DOM identity, controlled focus and visible ordering rather than latency targets.
 
-- `materialized-composition-snappiness.test.ts` exercises the real materialized compositor,
-  artifact dependency ownership beyond the 256 optional budget, cancellation and invalidation,
-  repeat resolved/prepared/page identity and zero added profile work. `tests/client/caching.test.ts`
-  preserves approved payload authority, one accepted size calculation and durable bounds.
+- `tests/client/caching.test.ts` preserves frozen-template snapshot authority, one accepted size calculation and durable bounds.
 - `progressive-viewer-snappiness.test.ts` holds real pagination/metadata work to check the
   three-page visible batch, complete one/two-page admission, stable appended page DOM,
   before/after-threshold errors, warm reuse and complete-only custom work. It also checks

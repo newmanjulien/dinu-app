@@ -1,5 +1,5 @@
 <script lang="ts">
-	import AuthFlow from '$lib/auth/AuthFlow.svelte';
+	import EmailCodeFlow from '$lib/auth/EmailCodeFlow.svelte';
 </script>
 
-<AuthFlow />
+<EmailCodeFlow mode="login" />

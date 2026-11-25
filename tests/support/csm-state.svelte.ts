@@ -7,21 +7,33 @@ type MutableSession = {
 export function csmState() {
 	const state = $state({
 		viewer: {
-			helpPreferences: { rep: false, buyer: false },
+			helpPreferences: { contract: false, buyerLink: false },
 			profile: {
 				id: 'profile',
 				name: 'Synthetic',
 				email: 'synthetic@example.com',
 				avatarUrl: null
 			},
-			membership: { id: 'member', companyId: 'company', role: 'admin', isOwner: true },
+			membership: {
+				id: 'member',
+				companyId: 'company',
+				role: 'admin',
+				isOwner: true,
+				supportWidgetCollapsed: false
+			},
 			company: {
 				id: 'company',
 				name: 'Synthetic',
 				setupCall: null,
-				deletionPending: false
+				deletion: null
 			},
-			permissions: { manageTemplate: true },
+			permissions: {
+				editCompanyProfile: true,
+				manageMembers: true,
+				manageTemplate: true,
+				manageIntegrations: true,
+				manageOwnership: true
+			},
 			templateReady: true
 		} as Viewer,
 		session: {

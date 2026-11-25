@@ -3,7 +3,7 @@ import { ConvexError } from 'convex/values';
 import { Webhook } from 'svix';
 import { internal } from './_generated/api';
 import { env, httpAction } from './_generated/server';
-import { preflight, upload } from './templateUploads';
+import { preflight, upload } from './templateSetup';
 import { webhook as calWebhook } from './csmBookings';
 import { readUploadBody } from './uploadHttp';
 import { readTextBody } from '../lib/http-body';
@@ -14,8 +14,8 @@ import { readActivity } from '../lib/buyer/activity-transport';
 const http = httpRouter();
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 const CLERK_WEBHOOK_MAX_BYTES = 256 * 1024;
-http.route({ path: '/templates/upload', method: 'POST', handler: upload });
-http.route({ path: '/templates/upload', method: 'OPTIONS', handler: preflight });
+http.route({ path: '/template-setup/upload', method: 'POST', handler: upload });
+http.route({ path: '/template-setup/upload', method: 'OPTIONS', handler: preflight });
 http.route({ path: '/cal/webhook', method: 'POST', handler: calWebhook });
 http.route({
 	path: '/clerk/webhook',
@@ -68,7 +68,7 @@ http.route({
 	handler: httpAction(async (ctx, request) => {
 		try {
 			if (!(await ctx.auth.getUserIdentity()))
-				return new Response('Sign in required.', { status: 401 });
+				return new Response('Log in required.', { status: 401 });
 			const params = new URL(request.url).searchParams;
 			const company = params.get('company') === 'true';
 			const membershipId = params.get('membershipId') as
@@ -184,21 +184,13 @@ http.route({
 							token: body.token,
 							browserId: body.browserId
 						})
-					: body.kind === 'result'
-						? await ctx.runQuery(internal.discussions.buyerResult, {
-								token: body.token,
-								browserId: body.browserId,
-								operationId: body.operationId,
-								expectedAuthorKey: body.expectedAuthorKey,
-								command: body.command
-							})
-						: await ctx.runMutation(internal.discussions.buyerWrite, {
-								token: body.token,
-								browserId: body.browserId,
-								operationId: body.operationId,
-								expectedAuthorKey: body.expectedAuthorKey,
-								command: body.command
-							});
+					: await ctx.runMutation(internal.discussions.buyerWrite, {
+							token: body.token,
+							browserId: body.browserId,
+							operationId: body.operationId,
+							expectedAuthorKey: body.expectedAuthorKey,
+							command: body.command
+						});
 			return new Response(JSON.stringify(result), { headers });
 		} catch (error) {
 			if (
@@ -214,8 +206,7 @@ http.route({
 				error.data &&
 				typeof error.data === 'object' &&
 				'code' in error.data &&
-				typeof error.data.code === 'string' &&
-				['OPERATION_EXPIRED', 'OPERATION_INVALID', 'OPERATION_FUTURE'].includes(error.data.code)
+				error.data.code === 'OPERATION_INVALID'
 			)
 				return new Response(JSON.stringify(error.data), { status: 409, headers });
 			if (error instanceof ConvexError)

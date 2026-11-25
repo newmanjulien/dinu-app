@@ -1,11 +1,4 @@
-import {
-	approvedDocumentInput,
-	previewContractDocument,
-	type PreviewBasis,
-	type ApprovedContractDocument
-} from './document-preview';
-import { awaitContractOperation } from './operation-result';
-import { isRepItem, sameSelection } from '$lib/playbook/model';
+import { isRepItem, sameSelection, type RepInstructionRecord } from '$lib/playbook/model';
 import type { TemplateContent } from '../template/model';
 import { queryOnce } from '$lib/query-once';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
@@ -16,19 +9,31 @@ import { getContext, setContext, untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
+import type { DocumentSourceInput } from '$lib/document/runtime/source.svelte';
+import { concessionSelectionMap } from './changes';
 import { DraftJournal, discoverContractDrafts, type DraftRecovery } from './draft-recovery.svelte';
 import { ContractPersistence } from './persistence.svelte';
-import { saveError, olderContractState, type ReadyContract } from './saved';
+import {
+	saveError,
+	olderContractState,
+	persistedContractMetadata,
+	type LiveContractMetadata,
+	type LiveContractState,
+	type ReadyContract
+} from './saved';
 import type { getContractSnapshotCache, SavedOpening } from './snapshot-cache';
-import { createReadQuery } from '$lib/auth/read-query.svelte';
-import { resolveTemplateItem } from './items';
-import type { DocumentSourceInput } from '$lib/document/runtime/source.svelte';
 
-type LiveMetadata = NonNullable<FunctionReturnType<typeof api.contracts.state>>;
-type Metadata = Omit<LiveMetadata, 'buyerName'>;
-function persistedMetadata({ buyerName, ...metadata }: LiveMetadata): Metadata {
-	return metadata;
-}
+type LiveMetadata = LiveContractMetadata;
+type Metadata = LiveContractState;
+export type RequestDelivery = LiveMetadata['requestDelivery'];
+
+const persistedMetadata = persistedContractMetadata;
+const cachedWorkBlock = (value: ReadyContract['contract']): Metadata['workBlock'] =>
+	'workBlock' in value &&
+	(value.workBlock === 'association-required' || value.workBlock === 'deal-unavailable')
+		? value.workBlock
+		: null;
+
 type SnapshotCache = Pick<
 	ReturnType<typeof getContractSnapshotCache>,
 	| 'loadFrozenVersion'
@@ -36,22 +41,20 @@ type SnapshotCache = Pick<
 	| 'updateState'
 	| 'confirmMetadata'
 	| 'remove'
-	| 'peekApproved'
-	| 'rememberApproved'
-	| 'loadApproved'
 	| 'peek'
 	| 'restore'
 	| 'restoreMetadata'
 	| 'invalidate'
 >;
+
 export type SaveStatus = 'Checking' | 'Saving' | 'Paused' | 'Save failed' | 'Conflict' | 'Saved';
 export type SaveNotice = {
 	id: string;
 	name: string;
 	status: SaveStatus;
 	message?: string;
-	memoryOnly: boolean;
 };
+
 type Options = {
 	userId: string;
 	membershipId: Id<'memberships'>;
@@ -69,17 +72,12 @@ type EditingSession = {
 	journal: DraftJournal;
 	ownsRecovery: boolean;
 };
-type PreviewState =
-	{ kind: 'loading' } | { kind: 'ready'; basis: PreviewBasis } | { kind: 'error'; error: Error };
-
-function previewError(cause: unknown) {
-	return cause instanceof Error ? cause : new Error('Selected contract wording is unavailable.');
-}
 
 /** One compact live observation shared by Settings and the saved opening. No journal/content. */
 class ContractMetadataRead {
 	data = $state.raw<Metadata | null>();
 	buyerName = $state<string | null>(null);
+	requestDelivery = $state.raw<RequestDelivery>(null);
 	current = $state(false);
 	error = $state<string | null>(null);
 	rejected = $state(false);
@@ -93,7 +91,7 @@ class ContractMetadataRead {
 	) {
 		const cached = owner.options.cache.peek(id)?.contract;
 		this.data = cached
-			? { ...cached, workBlock: cached.workBlock ?? null, hubspot: cached.hubspot }
+			? { ...cached, workBlock: cachedWorkBlock(cached), hubspot: cached.hubspot }
 			: undefined;
 	}
 	listen(listener: () => void) {
@@ -144,6 +142,7 @@ class ContractMetadataRead {
 				attempt.complete();
 				this.data = data;
 				this.buyerName = live?.buyerName ?? null;
+				this.requestDelivery = live?.requestDelivery ?? null;
 				this.current = true;
 				this.error = null;
 				if (data) this.owner.options.cache.confirmMetadata(data);
@@ -156,7 +155,6 @@ class ContractMetadataRead {
 		);
 		if (owns()) this.unsubscribe = unsubscribe;
 		else unsubscribe();
-		// Install live ownership before optional target-key storage. A late disk cannot win.
 		if (this.data === undefined)
 			void this.owner.options.cache
 				.restoreMetadata(this.id, attempt.signal)
@@ -170,7 +168,7 @@ class ContractMetadataRead {
 						data.companyId !== this.owner.options.companyId
 					)
 						return;
-					this.data = { ...data, workBlock: data.workBlock ?? null, hubspot: data.hubspot };
+					this.data = { ...data, workBlock: cachedWorkBlock(data), hubspot: data.hubspot };
 					this.publish();
 				})
 				.catch(() => {});
@@ -180,6 +178,7 @@ class ContractMetadataRead {
 		this.stop();
 		this.data = undefined;
 		this.buyerName = null;
+		this.requestDelivery = null;
 		this.rejected = true;
 		this.error = 'We couldn’t check this contract. Try again.';
 		this.owner.options.cache.invalidate(this.id);
@@ -205,7 +204,7 @@ class ContractMetadataRead {
 	}
 }
 
-/** One contract editor and journal survive route changes within this member session. */
+/** One contract editor and draft backup survive route changes within this member session. */
 export class ContractEditor {
 	private initialJournal: DraftJournal;
 	private session = $state.raw<EditingSession>();
@@ -214,6 +213,7 @@ export class ContractEditor {
 	}
 	metadata = $state.raw<Metadata | null>();
 	buyerName = $state<string | null>(null);
+	requestDelivery = $state.raw<RequestDelivery>(null);
 	snapshot = $state.raw<TemplateContent>();
 	persistence = $state.raw<ContractPersistence>();
 	error = $state<string | null>(null);
@@ -236,20 +236,17 @@ export class ContractEditor {
 	private version: string | undefined;
 	private alive = true;
 	private wasPending = false;
-	private recoveryName: string | undefined;
 	private recovery: DraftRecovery['draft'] | null;
 	private removed = $state(false);
-	private definitions!: ReturnType<typeof createReadQuery<typeof api.contractDefinitions.current>>;
-	private approved = $state.raw<ApprovedContractDocument>();
 	private readableContract = $state.raw<ReadyContract['contract']>();
 	private restoration: Promise<ReadyContract | undefined> | undefined;
+
 	get readable() {
-		return this.snapshot && this.approved && this.readableContract
+		return this.snapshot && this.readableContract
 			? {
 					id: this.id,
 					status: 'ready' as const,
 					snapshot: this.snapshot,
-					approved: this.approved,
 					contract: this.readableContract
 				}
 			: undefined;
@@ -258,26 +255,9 @@ export class ContractEditor {
 		return this.validated && !this.error && Boolean(this.persistence && this.metadata);
 	}
 	private acceptReadable(data: ReadyContract) {
-		if (
-			!data.approved ||
-			data.id !== this.id ||
-			data.contract.companyId !== this.owner.options.companyId ||
-			data.approved.documentId !== data.contract.documentId ||
-			data.approved.documentRevision !== data.contract.documentRevision
-		)
-			return;
+		if (data.id !== this.id || data.contract.companyId !== this.owner.options.companyId) return;
 		if (this.readableContract && olderContractState(data.contract, this.readableContract)) return;
-		const live = this.definitions.data;
-		const approved =
-			live &&
-			!this.definitions.isLoading &&
-			!this.definitions.error &&
-			live.documentId === data.contract.documentId &&
-			live.documentRevision === data.contract.documentRevision
-				? live
-				: data.approved;
 		this.snapshot = data.snapshot;
-		this.approved = this.owner.options.cache.rememberApproved(this.id, approved) ?? approved;
 		this.readableContract = data.contract;
 	}
 	private restoreReadable(opening: SavedOpening) {
@@ -307,172 +287,25 @@ export class ContractEditor {
 		}
 		return this.restoration;
 	}
-	private previewItemId = $state<Id<'playbookItems'>>();
-	private readonly previewStates = new SvelteMap<string, PreviewState>();
-	private readonly previewRecency = new Set<string>();
-	private readonly basisFlights = new Map<
-		string,
-		{ attempt: ReadAttempt; result: Promise<void> }
-	>();
+
 	private view!: {
 		renderChoices: Record<string, string>;
-		items: ReturnType<typeof resolveTemplateItem>[];
+		items: readonly RepInstructionRecord[];
 		input: DocumentSourceInput;
 		definitionsReady: boolean;
-		focusedPreview: ReturnType<typeof previewContractDocument>;
-		previewError?: Error;
 	};
 	private retireView!: () => void;
 	get items() {
 		return this.view.items;
 	}
-	/** Main annotations follow applied options only; local intent belongs to the focused panel. */
 	get renderChoices() {
 		return this.view.renderChoices;
-	}
-	/** Controls may edit only the exact approved document currently materialized in this view. */
-	get currentDocumentReady() {
-		return Boolean(
-			this.currentReady &&
-			!this.definitions.isLoading &&
-			!this.definitions.error &&
-			this.definitions.data?.displayIdentity === this.approved?.displayIdentity &&
-			this.approved &&
-			this.persistence &&
-			this.approved.documentId === this.persistence.confirmed.documentId &&
-			this.approved.documentRevision === this.persistence.confirmed.documentRevision
-		);
 	}
 	get documentInput() {
 		return this.view.input;
 	}
 	get definitionsReady() {
 		return this.view.definitionsReady;
-	}
-	get focusedPreview() {
-		return this.view.focusedPreview;
-	}
-	get previewError() {
-		const state = this.previewState;
-		return this.view.previewError ?? (state?.kind === 'error' ? state.error : undefined);
-	}
-	get previewBusy() {
-		return this.previewState?.kind === 'loading';
-	}
-	get previewRetryable() {
-		return this.previewState?.kind === 'error';
-	}
-	private get previewState() {
-		const key = this.basisKey(this.previewItemId);
-		return key ? this.previewStates.get(key) : undefined;
-	}
-	private rememberPreview(key: string) {
-		this.previewRecency.delete(key);
-		this.previewRecency.add(key);
-		const focusedKey = this.basisKey(this.previewItemId);
-		while (this.previewRecency.size > 32) {
-			const oldest = this.previewRecency.keys().next().value!;
-			if (oldest === focusedKey) {
-				this.previewRecency.delete(oldest);
-				this.previewRecency.add(oldest);
-				continue;
-			}
-			this.previewRecency.delete(oldest);
-			this.previewStates.delete(oldest);
-		}
-	}
-	private basisKey(itemId?: string) {
-		if (!itemId || !this.approved || !this.persistence || !this.currentDocumentReady)
-			return undefined;
-		const head = this.persistence.confirmed.playbook.find((item) => item.itemId === itemId);
-		return JSON.stringify([
-			this.approved.displayIdentity,
-			itemId,
-			head?.currentChangeId ?? null,
-			head?.appliedChangeId ?? null
-		]);
-	}
-	focusPreview(itemId: string | null) {
-		this.previewItemId = itemId ? (itemId as Id<'playbookItems'>) : undefined;
-	}
-	/** Clause intent and the focused panel share one request per identity and a 32-entry cache. */
-	prefetchPreview(itemId: string): Promise<void> {
-		const key = this.basisKey(itemId);
-		if (!key || !this.attachments || !this.owner.accessAvailable || this.owner.frozen)
-			return Promise.resolve();
-		const state = this.previewStates.get(key);
-		if (state?.kind === 'ready') {
-			this.rememberPreview(key);
-			return Promise.resolve();
-		}
-		const existing = this.basisFlights.get(key);
-		if (existing) return existing.result;
-		const attempt = new ReadAttempt(15_000);
-		this.previewStates.set(key, { kind: 'loading' });
-		const result = queryOnce(
-			this.owner.options.client,
-			api.contractDefinitions.previewBasis,
-			{
-				membershipId: this.owner.options.membershipId,
-				id: this.id as Id<'savedContracts'>,
-				itemId: itemId as Id<'playbookItems'>
-			},
-			attempt.signal
-		)
-			.then((basis) => {
-				if (
-					!this.alive ||
-					this.basisFlights.get(key)?.attempt !== attempt ||
-					attempt.signal.aborted ||
-					this.basisKey(itemId) !== key
-				)
-					return;
-				const actual = JSON.stringify([
-					basis.displayIdentity,
-					itemId,
-					basis.currentChangeId,
-					basis.appliedChangeId
-				]);
-				if (actual !== key || basis.displayIdentity !== this.approved?.displayIdentity)
-					this.previewStates.set(key, {
-						kind: 'error',
-						error: new Error('The contract changed while preparing this preview. Try again.')
-					});
-				else this.previewStates.set(key, { kind: 'ready', basis });
-				this.rememberPreview(key);
-			})
-			.catch((cause) => {
-				if (
-					this.alive &&
-					this.basisFlights.get(key)?.attempt === attempt &&
-					this.basisKey(itemId) === key
-				) {
-					this.previewStates.set(key, { kind: 'error', error: previewError(cause) });
-					this.rememberPreview(key);
-				}
-			})
-			.finally(() => {
-				attempt.complete();
-				if (this.basisFlights.get(key)?.attempt === attempt) {
-					this.basisFlights.delete(key);
-					if (this.previewStates.get(key)?.kind === 'loading') this.previewStates.delete(key);
-				}
-			});
-		this.basisFlights.set(key, { attempt, result });
-		return result;
-	}
-	private stopPreviewReads() {
-		const flights = [...this.basisFlights];
-		this.basisFlights.clear();
-		for (const [key, flight] of flights) {
-			if (this.previewStates.get(key)?.kind === 'loading') this.previewStates.delete(key);
-			flight.attempt.abort();
-		}
-	}
-	private retirePreviews() {
-		this.previewStates.clear();
-		this.previewRecency.clear();
-		this.stopPreviewReads();
 	}
 
 	constructor(
@@ -483,171 +316,52 @@ export class ContractEditor {
 		this.initialJournal =
 			recovery?.journal ?? new DraftJournal(owner.options.userId, id, owner.options.membershipId);
 		this.recovery = recovery?.draft ?? this.journal.read();
-		this.recovered = Boolean(this.recovery || this.journal.recoveryError);
-		this.recoveryName = this.recovery?.base.title;
+		this.recovered = Boolean(this.recovery);
 		this.releaseEffects = $effect.root(() => {
-			// Derivations belong to the editor root, never the route effect that first opens it.
-			const templateItems = $derived(
-				this.snapshot?.items.filter(isRepItem).map(resolveTemplateItem) ?? []
-			);
-			const approvedResult = $derived.by(() => {
-				if (!this.approved || !this.snapshot) return { value: null };
-				try {
-					return { value: approvedDocumentInput(this.snapshot, this.approved) };
-				} catch (cause) {
-					return { value: null, error: previewError(cause) };
-				}
-			});
-			const rendered = $derived(approvedResult.value);
-			const definitionsReady = $derived(Boolean(rendered));
-			const input: DocumentSourceInput = $derived(
-				rendered ?? {
-					kind: 'records',
-					contract: true,
-					materialized: { error: this.definitions.error ?? approvedResult.error },
-					items: { error: this.definitions.error ?? approvedResult.error }
-				}
-			);
-			const focusedResult = $derived.by(() => {
-				const itemId = this.previewItemId,
-					key = this.basisKey(itemId);
-				const state = key ? this.previewStates.get(key) : undefined;
-				const basis = state?.kind === 'ready' ? state.basis : undefined;
-				const item = templateItems.find((item) => item._id === itemId);
-				if (!basis || !item || !this.approved) return { value: null };
-				try {
-					return {
-						value: previewContractDocument({
-							approved: this.approved,
-							item,
-							basis,
-							action: this.persistence?.intent[item._id]
-						})
-					};
-				} catch (cause) {
-					return { value: null, error: previewError(cause) };
-				}
+			const templateItems = $derived(this.snapshot?.items.filter(isRepItem) ?? []);
+			const definitionsReady = $derived(Boolean(this.snapshot));
+			const input: DocumentSourceInput = $derived({
+				kind: 'records',
+				contract: true,
+				blocks: { data: this.snapshot?.blocks },
+				items: { data: this.snapshot ? templateItems : undefined }
 			});
 			let choicesForDocument: Record<string, string> = {};
 			const renderChoices = $derived.by(() => {
+				const persistence = this.persistence;
 				const readable = this.readableContract;
-				if (!readable) return choicesForDocument;
-				const confirmed = this.persistence?.confirmed;
-				const metadata = this.metadata;
-				const approved = this.approved;
-				const compatible =
-					this.validated &&
-					!this.isDeleted &&
-					metadata &&
-					this.validMetadata(metadata) &&
-					readable._id === this.id &&
-					readable.companyId === this.owner.options.companyId &&
-					readable.templateVersionId === metadata.templateVersionId &&
-					approved &&
-					approved.documentId === readable.documentId &&
-					approved.documentRevision === readable.documentRevision &&
-					confirmed &&
-					!olderContractState(confirmed, readable) &&
-					confirmed.documentId === approved.documentId &&
-					confirmed.documentRevision === approved.documentRevision;
-				const next = Object.fromEntries(
-					((compatible ? confirmed.playbook : readable.playbook) ?? [])
-						.filter((item) => item.appliedOptionId !== null)
-						.map((item) => [item.itemId, item.appliedOptionId!])
-				);
+				const next =
+					persistence && !this.isDeleted
+						? persistence.choices
+						: readable
+							? concessionSelectionMap(readable.concessions)
+							: {};
 				if (!sameSelection(next, choicesForDocument)) choicesForDocument = next;
 				return choicesForDocument;
 			});
-			const thisEditor = this;
 			this.view = {
 				get renderChoices() {
 					return renderChoices;
 				},
 				get items() {
-					return rendered?.items.data ?? templateItems;
+					return templateItems;
 				},
 				get input() {
 					return input;
 				},
 				get definitionsReady() {
 					return definitionsReady;
-				},
-				get focusedPreview() {
-					return focusedResult.value;
-				},
-				get previewError() {
-					return focusedResult.error;
 				}
 			};
 			this.retireView = () => {
 				this.snapshot = undefined;
 				this.readableContract = undefined;
 				this.restoration = undefined;
-				this.approved = undefined;
-				this.retirePreviews();
-				this.previewItemId = undefined;
 				untrack(() => {
 					void templateItems;
-					void approvedResult;
-					void rendered;
-					void focusedResult;
 					void input;
 				});
 			};
-			this.definitions = createReadQuery(
-				owner.options.client,
-				api.contractDefinitions.current,
-				() =>
-					this.attachments &&
-					owner.accessAvailable &&
-					!owner.frozen &&
-					!this.isDeleted &&
-					!this.deleting
-						? { membershipId: owner.options.membershipId, id: id as Id<'savedContracts'> }
-						: 'skip'
-			);
-			$effect(() => {
-				const data = this.definitions.data;
-				if (this.definitions.rejected)
-					untrack(() => {
-						this.retireView();
-						owner.rejectMetadata(this.id);
-					});
-				if (
-					data &&
-					this.attachments &&
-					this.metadata &&
-					data.documentId === this.metadata.documentId &&
-					data.documentRevision === this.metadata.documentRevision
-				)
-					untrack(() => {
-						if (
-							this.approved?.documentId !== data.documentId ||
-							this.approved?.documentRevision !== data.documentRevision
-						)
-							this.retirePreviews();
-						if (this.approved?.displayIdentity !== data.displayIdentity)
-							if (this.snapshot)
-								this.acceptReadable({
-									id: this.id,
-									status: 'ready',
-									snapshot: this.snapshot,
-									contract: this.metadata!,
-									approved: owner.options.cache.rememberApproved(this.id, data) ?? data
-								});
-							else this.approved = owner.options.cache.rememberApproved(this.id, data) ?? data;
-					});
-			});
-			$effect(() => {
-				const itemId = this.previewItemId,
-					key = this.basisKey(itemId),
-					canRead = this.attachments && owner.accessAvailable && !owner.frozen;
-				if (itemId && key && canRead && !this.previewStates.has(key))
-					untrack(() => {
-						void this.prefetchPreview(itemId);
-					});
-			});
-
 			// Cache writes follow confirmed state alone, never view or save housekeeping.
 			$effect(() => {
 				const persistence = this.persistence;
@@ -695,6 +409,7 @@ export class ContractEditor {
 				Boolean(this.error || this.persistence?.error || this.persistence?.conflict)
 		});
 	}
+
 	attach() {
 		const token = Symbol('contract-view');
 		this.attached.add(token);
@@ -735,7 +450,6 @@ export class ContractEditor {
 			this.metadata?.title ??
 			this.persistence?.confirmed.title ??
 			this.readableContract?.title ??
-			this.recoveryName ??
 			'Contract'
 		);
 	}
@@ -754,9 +468,7 @@ export class ContractEditor {
 			id: this.id,
 			name: this.name,
 			status,
-			message:
-				this.error ?? this.persistence?.error ?? this.persistence?.blockedReason ?? undefined,
-			memoryOnly: this.journal.memoryOnly && this.pending
+			message: this.error ?? this.persistence?.error ?? this.persistence?.blockedReason ?? undefined
 		};
 	}
 	private current(attempt: ReadAttempt) {
@@ -770,7 +482,6 @@ export class ContractEditor {
 		attempt?.abort();
 		this.viewAttempt?.abort();
 		this.viewAttempt = undefined;
-		this.stopPreviewReads();
 		this.validated = false;
 	}
 	interrupt() {
@@ -782,7 +493,6 @@ export class ContractEditor {
 		this.work = undefined;
 		this.initializing = false;
 		this.metadata = undefined;
-		this.definitions.retry();
 	}
 	initialize(): Promise<boolean> {
 		if (!this.alive || !this.owner.accessAvailable || this.deleting) return Promise.resolve(false);
@@ -811,7 +521,6 @@ export class ContractEditor {
 		this.work = work;
 		return work;
 	}
-	/** Rendering data can be reacquired without replacing a healthy save subscription. */
 	private loadView(): Promise<boolean> {
 		const metadata = this.metadata!;
 		const opening: SavedOpening = { id: this.id };
@@ -820,28 +529,21 @@ export class ContractEditor {
 		this.viewAttempt = attempt;
 		this.initializing = true;
 		const work = waitForRead(
-			Promise.all([
-				this.owner.options.cache.loadFrozenVersion(
-					metadata.templateVersionId,
-					metadata.companyId,
-					attempt.signal,
-					{ opening }
-				),
-				this.owner.options.cache.loadApproved(this.id, metadata.documentId, attempt.signal, {
-					opening,
-					documentRevision: metadata.documentRevision
-				})
-			]),
+			this.owner.options.cache.loadFrozenVersion(
+				metadata.templateVersionId,
+				metadata.companyId,
+				attempt.signal,
+				{ opening }
+			),
 			attempt.signal
 		)
-			.then(([snapshot, approved]) => {
+			.then((snapshot) => {
 				if (!this.alive || this.viewAttempt !== attempt || attempt.signal.aborted || !this.metadata)
 					return false;
 				const canonical = this.owner.options.cache.seedConfirmed({
 					id: this.id,
 					status: 'ready',
 					snapshot,
-					approved,
 					contract: this.metadata
 				});
 				if (canonical) this.acceptReadable(canonical);
@@ -886,6 +588,7 @@ export class ContractEditor {
 				}
 				if (!read.current) return;
 				this.buyerName = read.buyerName;
+				this.requestDelivery = read.requestDelivery;
 				const state = read.data ?? null;
 				this.metadata = state;
 				first(state);
@@ -926,37 +629,6 @@ export class ContractEditor {
 			}
 			if (!this.validMetadata(initial))
 				throw new Error('This contract is unavailable in your company.');
-			const cachedApproved = this.owner.options.cache.peekApproved(this.id, initial.documentId);
-			if (cachedApproved?.documentRevision === initial.documentRevision && !this.approved)
-				this.approved = cachedApproved;
-			if (
-				this.approved?.documentId !== initial.documentId ||
-				this.approved?.documentRevision !== initial.documentRevision
-			)
-				void this.owner.options.cache
-					.loadApproved(this.id, initial.documentId, attempt.signal, {
-						opening,
-						documentRevision: initial.documentRevision
-					})
-					.then((data) => {
-						if (
-							this.current(attempt) &&
-							this.metadata &&
-							data.documentId === this.metadata.documentId &&
-							data.documentRevision === this.metadata.documentRevision
-						) {
-							if (this.snapshot)
-								this.acceptReadable({
-									id: this.id,
-									status: 'ready',
-									snapshot: this.snapshot,
-									contract: this.metadata,
-									approved: data
-								});
-							else this.approved = this.owner.options.cache.rememberApproved(this.id, data) ?? data;
-						}
-					})
-					.catch(() => {});
 			const snapshot = await waitForRead(
 				this.owner.options.cache.loadFrozenVersion(
 					initial.templateVersionId,
@@ -976,15 +648,12 @@ export class ContractEditor {
 				throw new Error('This contract’s template changed. Try again.');
 			this.version = latest.templateVersionId;
 			this.snapshot = snapshot;
-			if (this.approved)
-				this.acceptReadable({
-					id: this.id,
-					status: 'ready',
-					snapshot,
-					contract: latest,
-					approved: this.approved
-				});
-
+			this.acceptReadable({
+				id: this.id,
+				status: 'ready',
+				snapshot,
+				contract: latest
+			});
 			if (!this.current(attempt)) return false;
 			this.adoptState(this.metadata ?? latest);
 			this.persistence!.freeze(this.owner.frozen);
@@ -994,8 +663,7 @@ export class ContractEditor {
 				id: this.id,
 				status: 'ready',
 				snapshot,
-				contract: this.metadata ?? latest,
-				approved: this.approved
+				contract: this.metadata ?? latest
 			});
 			if (canonical) this.acceptReadable(canonical);
 			attempt.complete();
@@ -1013,9 +681,6 @@ export class ContractEditor {
 		}
 	}
 
-	recoveryBlocked(journal: DraftJournal) {
-		this.initialJournal = journal;
-	}
 	private adoptState(state: Metadata) {
 		if (!this.persistence) {
 			this.session = this.owner.createSession(this, state, this.recovery);
@@ -1052,13 +717,6 @@ export class ContractEditor {
 	}
 	retry() {
 		this.error = null;
-		this.definitions.retry();
-		for (const [key, state] of this.previewStates) {
-			if (state.kind !== 'error') continue;
-			this.previewStates.delete(key);
-			this.previewRecency.delete(key);
-		}
-		if (this.previewItemId) void this.prefetchPreview(this.previewItemId);
 		void this.initialize().then((ready) => {
 			if (ready && this.alive) this.persistence?.retry();
 		});
@@ -1085,14 +743,11 @@ export class ContractEditor {
 		this.flushLifetime.abort();
 		this.flushLifetime = new AbortController();
 	}
-
-	discard(allStored = false) {
+	discard() {
 		this.cancelFlush();
 		this.wasPending = false;
 		this.recovered = false;
-		if (this.session?.ownsRecovery || this.recovery || this.journal.recoveryError)
-			if (allStored) this.journal.discardAll();
-			else this.journal.discard();
+		if (this.session?.ownsRecovery || this.recovery) this.journal.discard();
 		this.recovery = null;
 		this.persistence?.discard();
 		if (this.metadata) this.adoptState(this.metadata);
@@ -1107,6 +762,7 @@ export class ContractEditor {
 		if (this.recovery) this.journal.write(null);
 		this.recovery = null;
 		this.metadata = null;
+		this.requestDelivery = null;
 		this.retireView();
 		this.viewError = null;
 		this.persistence?.accept(null);
@@ -1115,7 +771,6 @@ export class ContractEditor {
 		this.error = null;
 		this.stopReads();
 	}
-	/** View data follows demand; submitted writes and flushes retain only the editor. */
 	private retain() {
 		if (!this.alive) return;
 		if (this.attached.size) return;
@@ -1129,7 +784,6 @@ export class ContractEditor {
 		}
 		if (this.inFlight || this.deleting || this.flushing || this.heldForLink) return;
 		if (!this.pending) {
-			// Destroying a clean abandoned editor aborts its initial read as well.
 			this.owner.releaseClean(this);
 			return;
 		}
@@ -1219,7 +873,7 @@ export class ContractEditors {
 				for (const entry of this.entries) entry.persistence?.freeze(frozen);
 			},
 			discard: () => {
-				for (const entry of [...this.entries]) entry.discard(true);
+				for (const entry of [...this.entries]) entry.discard();
 			},
 			restartTransport: () => {
 				this.interrupt();
@@ -1259,34 +913,19 @@ export class ContractEditors {
 		const persistence = new ContractPersistence(
 			editor.id as Id<'savedContracts'>,
 			state,
-			async (request, signal) => {
-				const result = await this.options.client.mutation(api.contracts.saveChanges, {
-					...request,
-					membershipId: this.options.membershipId
-				});
-				if (result.status !== 'preparing') return result;
-				return awaitContractOperation<import('./saved').ContractSaveResult>(
-					this.options.client,
-					{
-						membershipId: this.options.membershipId,
-						id: request.id,
-						kind: 'playbook-save',
-						operationId: request.operationId,
-						inputs: JSON.stringify([
-							request.id,
-							{ commands: request.commands, operationId: request.operationId }
-						])
-					},
-					signal,
-					request.commands.map((command) => command.id)
-				);
-			},
+			(request) =>
+				this.options.client.mutation(api.contracts.save, {
+					membershipId: this.options.membershipId,
+					id: request.id as Id<'savedContracts'>,
+					operationId: request.operationId,
+					expectedStateRevision: request.expectedStateRevision,
+					selections: request.selections as Record<Id<'playbookItems'>, string>
+				}),
 			(draft) => {
 				if (ownsRecovery) journal.write(draft);
 			},
 			retained
 		);
-		if (journal.recoveryError) persistence.blockStoredRecovery();
 		return { journal, persistence, ownsRecovery };
 	}
 	acquire(id: string) {
@@ -1294,7 +933,6 @@ export class ContractEditors {
 		const handoff = editor.attachments > 0;
 		const release = editor.attach();
 		this.queue.delete(editor);
-		// A screen adopting an opening observes its delivered failure until explicit retry.
 		if (this.accessAvailable && !(handoff && (editor.error || editor.viewError)))
 			void editor.initialize();
 		return { editor, release };
@@ -1332,7 +970,7 @@ export class ContractEditors {
 	});
 	saved(editor: ContractEditor) {
 		if (!this.alive) return;
-		this.options.onSaved({ id: editor.id, name: editor.name, status: 'Saved', memoryOnly: false });
+		this.options.onSaved({ id: editor.id, name: editor.name, status: 'Saved' });
 	}
 	releaseClean(editor: ContractEditor) {
 		if (
@@ -1412,7 +1050,6 @@ export class ContractEditors {
 			const saving = this.entries.filter(
 				(entry) => !entry.isDeleted && (entry.pending || entry.inFlight)
 			);
-			// Queued recovery keeps its bounded initialization concurrency.
 			const active = saving.filter((entry) => !this.queue.has(entry));
 			if (!active.length) return false;
 			const results = await Promise.all(active.map((entry) => entry.savePending()));
@@ -1463,16 +1100,11 @@ export class ContractEditors {
 			this.options.cache.confirmMetadata(persistedMetadata(state));
 			this.options.onRenamed(id, state.title);
 		};
-		// Home may have no editing editor. Subscribe before submitting the command:
-		// Convex delivers query transitions before resolving the mutation promise.
 		const unsubscribe = this.options.client.onUpdate(
 			api.contracts.state,
 			{ membershipId: this.options.membershipId, id },
 			confirm,
-			() => {
-				// Cache refresh is optional. The mutation reports command failures,
-				// and an editing editor always checks fresh state on opening.
-			}
+			() => {}
 		);
 		const release = () => {
 			if (this.renameSubscriptions.delete(release)) unsubscribe();
@@ -1497,7 +1129,6 @@ export class ContractEditors {
 			if (!this.alive || generation !== this.generation)
 				throw new Error('Your connection changed. Check the name before trying again.');
 			try {
-				// A no-op may resolve before the SDK's deferred cached-result callback.
 				const current = unsubscribe.getCurrentValue();
 				if (current !== undefined) confirm(current);
 			} catch {
@@ -1521,6 +1152,7 @@ export class ContractEditors {
 		this.recovering.clear();
 	}
 }
+
 const key = Symbol('contract-editors');
 export const setContractEditors = (editors: ContractEditors) => setContext(key, editors);
 export const getContractEditors = () => getContext<ContractEditors>(key);

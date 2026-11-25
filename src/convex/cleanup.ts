@@ -4,12 +4,17 @@ import type { Doc, TableNames } from './_generated/dataModel';
 export const CLEANUP_DISCOVERY_PAGE_SIZE = 10;
 
 /** One transaction budget, including nested children and job cancellation. */
-export function cleanupBudget(ctx: MutationCtx) {
+export function cleanupBudget(
+	ctx: MutationCtx,
+	options: { minScheduled?: number; minScheduledArgsBytes?: number } = {}
+) {
+	const minScheduled = options.minScheduled ?? 1;
+	const minScheduledArgsBytes = options.minScheduledArgsBytes ?? 1024;
 	let count = 0;
 	async function exhausted() {
 		const metrics = await ctx.meta.getTransactionMetrics();
 		// Leave room for a full-size next row, cancellation, marker progress,
-		// and one continuation. These are reserves, not application limits.
+		// and required continuations. These are reserves, not application limits.
 		return (
 			count >= 100 ||
 			metrics.bytesRead.remaining < 4_000_000 ||
@@ -17,8 +22,8 @@ export function cleanupBudget(ctx: MutationCtx) {
 			metrics.databaseQueries.remaining < 64 ||
 			metrics.documentsRead.remaining < 64 ||
 			metrics.documentsWritten.remaining < 64 ||
-			metrics.functionsScheduled.remaining < 1 ||
-			metrics.scheduledFunctionArgsBytes.remaining < 1024
+			metrics.functionsScheduled.remaining < minScheduled ||
+			metrics.scheduledFunctionArgsBytes.remaining < minScheduledArgsBytes
 		);
 	}
 	async function drain<Table extends TableNames>(

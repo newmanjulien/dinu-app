@@ -11,6 +11,7 @@
 	import SettingsAvatarCard from '$lib/features/settings/SettingsAvatarCard.svelte';
 	import SettingsRoleCard from '$lib/features/settings/SettingsRoleCard.svelte';
 	import SettingsDangerCard from '$lib/features/settings/SettingsDangerCard.svelte';
+	import SettingsDeletionHoldCard from '$lib/features/settings/SettingsDeletionHoldCard.svelte';
 	const viewer = useViewer();
 	const membershipId = viewer().membership.id;
 	const client = useConvexClient();
@@ -22,7 +23,7 @@
 	let busy = $state<Record<string, boolean>>({});
 	let errors = $state<Record<string, string | null>>({});
 	async function perform(key: string, task: () => Promise<unknown>) {
-		if (!alive || session.blocked || viewer().company.deletionPending || busy[key]) return;
+		if (!alive || session.blocked || viewer().company.deletion || busy[key]) return;
 		busy[key] = true;
 		errors[key] = null;
 		try {
@@ -59,9 +60,15 @@
 	role={viewer().membership.role}
 	editCompanyProfile={viewer().permissions.editCompanyProfile}
 >
+	{#snippet notice()}
+		{@const hold = viewer().company.deletion}
+		{#if hold && hold.status !== 'inProgress'}
+			<SettingsDeletionHoldCard deletion={hold} companyName={viewer().company.name} />
+		{/if}
+	{/snippet}
 	{#snippet field(card)}
 		<fieldset
-			disabled={card.id !== 'danger' && Boolean(viewer().company.deletionPending)}
+			disabled={card.id !== 'danger' && Boolean(viewer().company.deletion)}
 			class="contents"
 		>
 			{#if card.id === 'name'}
@@ -82,7 +89,7 @@
 					title={card.title}
 					description={card.description}
 					footerText={card.footerText}
-					fieldId="sign-in-email"
+					fieldId="log-in-email"
 					label="Email address"
 					value={viewer().profile.email}
 				/>

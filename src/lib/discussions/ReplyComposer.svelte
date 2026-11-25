@@ -6,24 +6,22 @@
 		id,
 		text,
 		pending = false,
-		checkResultId,
 		writeBlocked = false,
+		textLocked = false,
 		errorMessage = '',
 		onTextChange,
 		onClose,
-		onSubmit,
-		onCheckResult
+		onSubmit
 	}: {
 		id: string;
 		text: string;
 		pending?: boolean;
-		checkResultId?: string;
 		writeBlocked?: boolean;
+		textLocked?: boolean;
 		errorMessage?: string;
 		onTextChange: (text: string) => void;
 		onClose: (restoreFocus: boolean) => void;
 		onSubmit: () => Promise<void>;
-		onCheckResult?: (operationId: string) => Promise<void>;
 	} = $props();
 </script>
 
@@ -32,14 +30,13 @@
 		{id}
 		{text}
 		{pending}
-		{checkResultId}
 		{writeBlocked}
+		{textLocked}
 		{errorMessage}
 		title="Write a reply"
 		placeholder="Reply…"
-		submitLabel="Reply"
+		submitLabel={textLocked ? 'Retry' : 'Reply'}
 		{onTextChange}
 		{onSubmit}
-		{onCheckResult}
 	/>
 </div>

@@ -1,54 +1,54 @@
-import { buyerName } from './contractBuyer';
 import { ConvexError, type Infer } from 'convex/values';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import type { DiscussionContext } from './discussionContext';
 import type { Doc } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
+import type { publicAuthor } from '../lib/discussions/validators';
 import { liveProfile, memberForCompany, requireMembership, type CompanyAccess } from './auth';
 import { sellerAuthorName } from './authorPresentation';
-import type { publicAuthor } from '../lib/discussions/validators';
-import { sellerPreparationActor, type PreparationActor } from './discussionPreparation';
+import { buyerName } from './contractBuyer';
+import type { DiscussionContext } from './discussionContext';
 
 export const fingerprint = (value: string) => bytesToHex(sha256(new TextEncoder().encode(value)));
+
 export type DiscussionActor = {
 	key: string;
 	profileId?: Doc<'profiles'>['_id'];
 	access?: CompanyAccess;
-	preparation: PreparationActor;
 };
+
 export async function discussionActor(
 	ctx: QueryCtx,
 	context: DiscussionContext,
-	browserId?: string
+	browserId?: string,
+	verifiedAccess?: CompanyAccess
 ): Promise<DiscussionActor> {
-	const { root, link } = context;
+	const { root } = context;
+	if (verifiedAccess) {
+		if (verifiedAccess.companyId !== root.companyId)
+			throw new Error('Discussion access does not belong to this contract company.');
+		return {
+			key: fingerprint(JSON.stringify([root._id, 'account', verifiedAccess.profile._id])),
+			profileId: verifiedAccess.profile._id,
+			access: verifiedAccess
+		};
+	}
 	const member = await memberForCompany(ctx, root.companyId);
 	if (member) {
 		const access = await requireMembership(ctx, member.membership._id);
 		return {
 			key: fingerprint(JSON.stringify([root._id, 'account', member.profile._id])),
 			profileId: member.profile._id,
-			access,
-			preparation: { ...sellerPreparationActor(access), link: { id: link._id, token: link.token } }
+			access
 		};
 	}
 	if (!browserId || !/^[a-f0-9-]{36}$/u.test(browserId))
 		throw new ConvexError('Reopen the discussion and try again.');
 	const accountIdentity = (await ctx.auth.getUserIdentity())?.tokenIdentifier;
 	const key = fingerprint(JSON.stringify([root._id, 'buyer', browserId, accountIdentity ?? null]));
-	return {
-		key,
-		preparation: {
-			kind: 'buyer',
-			browserId,
-			actorKey: key,
-			linkId: link._id,
-			token: link.token,
-			...(accountIdentity ? { accountIdentity } : {})
-		}
-	};
+	return { key };
 }
+
 export async function authorView(
 	ctx: QueryCtx,
 	contract: Doc<'savedContracts'>,
@@ -64,6 +64,7 @@ export async function authorView(
 		buyer: !actor.profileId
 	};
 }
+
 export function messageProjector(ctx: QueryCtx, contract: Doc<'savedContracts'>) {
 	const authors = new Map<string, Promise<Infer<typeof publicAuthor>>>();
 	return async (message: Doc<'discussionMessages'>) => {
@@ -77,14 +78,11 @@ export function messageProjector(ctx: QueryCtx, contract: Doc<'savedContracts'>)
 		}
 		return {
 			id: message._id,
-			text: message.deleted ? '' : message.text,
+			text: message.text,
 			revision: message.revision,
-			deleted: message.deleted,
 			createdAt: message._creationTime,
 			operationId: message.operationId ?? null,
 			author: { ...(await author), key: message.authorKey }
 		};
 	};
 }
-/** Anchors and proposal normalization share the same current-approved composition. */
-export { resolvedDiscussionDocument as resolvedDiscussion } from '../lib/discussions/tape';

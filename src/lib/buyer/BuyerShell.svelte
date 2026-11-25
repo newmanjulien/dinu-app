@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { page } from '$app/state';
-	import { loginHref, currentDestination } from '$lib/auth/navigation';
 	import { getBuyerActivity } from './activity.svelte';
 	import type { ActivityBrowser } from './tracking';
 
@@ -31,9 +29,7 @@
 	import ArrowSquareOutIcon from 'phosphor-svelte/lib/ArrowSquareOutIcon';
 	import AccountMenu from '$lib/components/chrome/AccountMenu.svelte';
 	import { BuyerSeller, setBuyerSeller } from './seller.svelte';
-	import { DiscussionRecovery, setDiscussionRecovery } from '$lib/discussions/recovery.svelte';
 	import type { HelpPolicy } from '$lib/components/ui/modal/help-session.svelte';
-	import { isBuyerHelpHidden, setBuyerHelpHidden } from '$lib/components/ui/modal/help-storage';
 	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
 	let {
 		token,
@@ -57,7 +53,6 @@
 		opening: contract.help.loadingOpening
 	});
 	const seller = setBuyerSeller(new BuyerSeller(initialToken));
-	setDiscussionRecovery(new DiscussionRecovery(initialToken));
 	const headerReadiness = $derived(seller.headerReadiness);
 	const headerProfile = $derived(seller.headerProfile);
 	let firstPaintPassed = $state(false);
@@ -99,33 +94,32 @@
 		const viewer = seller.viewer;
 		const sellerClient = seller.client;
 		const buyerIdentity = seller.recoveryIdentity;
-		const scope = page.data.buyerPreferenceScope;
 		let policy: HelpPolicy = { kind: 'pending' };
 		if (viewer && sellerClient && (presentation === 'seller' || presentation === 'preview')) {
 			const identity = viewer.profile.id;
 			policy =
 				presentation === 'preview'
-					? { kind: 'preview', identity }
+					? { kind: 'manual', variant: 'buyer-link-buyer', identity }
 					: {
 							kind: 'preference',
-							confirmation: 'subscription',
+							variant: 'buyer-link-seller',
 							identity,
-							hidden: viewer.helpPreferences.buyer,
+							hidden: viewer.helpPreferences.buyerLink,
 							save: (hidden) =>
-								sellerClient.mutation(api.profiles.setHelpHidden, { variant: 'buyer', hidden }),
+								sellerClient.mutation(api.profiles.setHelpHidden, {
+									variant: 'buyerLink',
+									hidden
+								}),
 							current: () =>
 								seller.viewer?.profile.id === identity &&
 								seller.client === sellerClient &&
 								seller.accountIdentity === account
 						};
-		} else if (presentation === 'buyer' && scope) {
+		} else if (presentation === 'buyer') {
 			policy = {
-				kind: 'preference',
-				confirmation: 'save',
-				identity: `buyer:${buyerIdentity}`,
-				hidden: untrack(() => isBuyerHelpHidden(scope)),
-				save: async (hidden) => setBuyerHelpHidden(scope, hidden),
-				current: () => seller.phase === 'buyer' && seller.accountIdentity === account
+				kind: 'manual',
+				variant: 'buyer-link-buyer',
+				identity: `buyer:${buyerIdentity}`
 			};
 		}
 		untrack(() => contract.help.configure(policy));
@@ -240,11 +234,7 @@
 			{/if}
 		{:else if seller.presentation === 'buyer'}
 			<p class="min-w-0 truncate text-[13.5px] text-ink-muted">
-				{#if page.url.searchParams.get('review') === '1'}<a
-						class="text-accent underline"
-						href={loginHref(currentDestination(page.url))}>Sign in to review buyer changes</a
-					>
-				{:else}Review your contract and leave comments{/if}
+				Review your contract and leave comments
 			</p>
 			<SquareIconButton
 				bind:element={menuButton}
@@ -292,12 +282,7 @@
 	<WorkspaceStatus announcement={null}>{@render header.content()}</WorkspaceStatus>
 {/if}
 {#if contractVisible && contract.allowed && contract.help.open}
-	<HelpModal
-		variant="buyer"
-		isAdmin={seller.viewer?.role === 'admin'}
-		help={contract.help}
-		onClose={() => contract.help.close()}
-	/>
+	<HelpModal help={contract.help} onClose={() => contract.help.close()} />
 {/if}
 {#if headerReadiness === 'unavailable'}
 	<main class="mx-auto max-w-md px-6 py-16 text-center">

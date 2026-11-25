@@ -1,29 +1,24 @@
-import { createOperationId } from '$lib/contract/operation-identity';
-import { assertOperationRetryable, isOperationRecovery } from '$lib/contract/operation-recovery';
 import { ConvexError } from 'convex/values';
 import type { ConvexClient } from 'convex/browser';
 import type { FunctionArgs, FunctionReturnType } from 'convex/server';
 import type { Id } from '../../convex/_generated/dataModel';
 import { api } from '../../convex/_generated/api';
 import type { ContractEditors } from '$lib/contract/editors.svelte';
+import { contractReadiness } from '$lib/contract/changes';
+import { IdempotentAction } from '$lib/contract/idempotent-action.svelte';
 import { saveError } from '$lib/contract/saved';
-import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
+import { waitForRead } from '$lib/auth/attempt';
 import { buyerPath } from './urls';
 
 type Link = NonNullable<FunctionReturnType<typeof api.buyerLinks.latest>>;
-type CaptureResult = FunctionReturnType<typeof api.buyerLinkActions.ensureLatest>;
-type Capture = {
-	args: FunctionArgs<typeof api.buyerLinkActions.ensureLatest>;
-	link?: CaptureResult;
-	work?: Promise<CaptureResult>;
-	uncertain?: boolean;
-};
+type CaptureArgs = FunctionArgs<typeof api.buyerLinks.ensureLatest>;
+type CaptureResult = FunctionReturnType<typeof api.buyerLinks.ensureLatest>;
 
 /** Permanent-link preparation for copying buyer links. */
 export class BuyerLinkController {
 	busy = $state<string | null>(null);
 	error = $state<string | null>(null);
-	private operation: Capture | undefined;
+	private capture = new IdempotentAction<CaptureArgs, CaptureResult>({ cacheResult: true });
 	private alive = true;
 	constructor(
 		private client: Pick<ConvexClient, 'query' | 'action' | 'connectionState'>,
@@ -34,109 +29,71 @@ export class BuyerLinkController {
 	) {}
 	destroy() {
 		this.alive = false;
-		this.operation = undefined;
+		this.capture.reset();
 	}
 	async copy() {
-		await this.withLink(async (link) => {
-			await this.copyToClipboard(`${location.origin}${buyerPath(link.token)}`, link.created);
-		});
-	}
-	private async withLink(complete: (link: CaptureResult) => void | Promise<void>) {
 		if (this.busy || !this.alive) return;
 		this.error = null;
 		this.busy = 'Checking link…';
-		const deadline = new ReadAttempt(20_000);
 		try {
 			if (!this.client.connectionState().isWebSocketConnected)
 				throw new ConvexError('Reconnect to prepare a link.');
 			const args = { membershipId: this.membershipId, id: this.id };
-			let link: Link | null = null;
-			if (!this.operation) {
-				const reservation = this.editors.reserveForLink(this.id);
-				try {
-					// Resolve a permanent link before touching any local editor or publication state.
-					link = await waitForRead(this.client.query(api.buyerLinks.latest, args), deadline.signal);
-					if (!link) {
+			let existingLink: Link | null = null;
+			await this.capture.run({
+				timeoutMs: 20_000,
+				isCurrent: () => this.alive,
+				prepare: async (signal) => {
+					const reservation = this.editors.reserveForLink(this.id);
+					try {
+						const link = await waitForRead(this.client.query(api.buyerLinks.latest, args), signal);
+						if (link) {
+							existingLink = link;
+							return null;
+						}
 						if (reservation.needsSave) {
 							this.busy = 'Saving changes…';
-							if (!(await waitForRead(reservation.editor.savePending(), deadline.signal)))
+							if (!(await waitForRead(reservation.editor.savePending(), signal)))
 								throw new ConvexError('Resolve unsaved changes before continuing.');
 						}
-						if (!this.alive) return;
+						if (!this.alive) return null;
 						if (reservation.needsSave)
 							throw new ConvexError('Resolve unsaved changes before continuing.');
-						const readiness = await waitForRead(
-							this.client.query(api.contracts.readiness, args),
-							deadline.signal
-						);
+						const state = await waitForRead(this.client.query(api.contracts.state, args), signal);
 						if (reservation.needsSave)
 							throw new ConvexError('Resolve unsaved changes before continuing.');
-						if (!readiness?.ready)
+						if (!state || !contractReadiness(state.concessions, state.workBlock).ready)
 							throw new ConvexError(
-								'Save this contract and approve all required changes before continuing.'
+								'Approve or remove pending concessions before sharing a buyer link.'
 							);
-						const expectedState = readiness.expectation;
-						if (!this.alive) return;
-						this.operation = {
-							args: {
-								...args,
-								preparation: { kind: 'prepared', expectedState, operationId: createOperationId() }
-							}
+						if (!this.alive) return null;
+						return {
+							...args,
+							operationId: crypto.randomUUID(),
+							expectedStateRevision: state.stateRevision
 						};
+					} finally {
+						reservation.release();
 					}
-				} finally {
-					reservation.release();
+				},
+				onDispatch: () => {
+					this.busy = 'Creating link…';
+				},
+				invoke: (captureArgs) => this.client.action(api.buyerLinks.ensureLatest, captureArgs),
+				finish: async (link) => {
+					await this.copyToClipboard(`${location.origin}${buyerPath(link.token)}`, link.created);
 				}
+			});
+			if (existingLink && this.alive) {
+				await this.copyToClipboard(
+					`${location.origin}${buyerPath((existingLink as Link).token)}`,
+					false
+				);
 			}
-			const result = link
-				? { ...link, created: false }
-				: await this.confirmCapture(deadline.signal);
-			if (!this.alive) return;
-			await complete(result);
-			// Only the requested completion action consumes this capture.
-			this.operation = undefined;
 		} catch (error) {
 			if (this.alive) this.error = saveError(error, 'We couldn’t prepare the link. Try again.');
 		} finally {
-			deadline.complete();
 			if (this.alive) this.busy = null;
-		}
-	}
-	private async confirmCapture(signal: AbortSignal) {
-		const operation = this.operation;
-		if (!operation) throw new ConvexError('This contract is unavailable.');
-		if (operation.link) return operation.link;
-		if (operation.args.preparation.kind === 'prepared')
-			assertOperationRetryable(operation.args.preparation.operationId);
-		this.busy = 'Creating link…';
-		const work: Promise<CaptureResult> = this.client
-			.action(api.buyerLinkActions.ensureLatest, operation.args)
-			.then(
-				(link) => {
-					if (this.operation === operation) operation.link ??= link;
-					return link;
-				},
-				(error: unknown) => {
-					if (
-						error instanceof ConvexError &&
-						!isOperationRecovery(error) &&
-						!operation.uncertain &&
-						this.operation === operation &&
-						operation.work === work &&
-						!operation.link
-					)
-						this.operation = undefined;
-					if (!(error instanceof ConvexError)) operation.uncertain = true;
-					throw error;
-				}
-			);
-		operation.work = work;
-		// Each click retries the request; late successes stay cached without copying automatically.
-		try {
-			return await waitForRead(work, signal);
-		} catch (error) {
-			if (!(error instanceof ConvexError)) operation.uncertain = true;
-			throw error;
 		}
 	}
 	private async copyToClipboard(url: string, created: boolean) {
@@ -149,7 +106,6 @@ export class BuyerLinkController {
 					: 'Couldn’t copy the link. Try again.'
 			);
 		}
-		// Every copy action uses the workspace confirmation after the clipboard accepts the URL.
 		if (this.alive) this.onCopied(created);
 	}
 }

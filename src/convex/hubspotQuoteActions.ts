@@ -1,48 +1,36 @@
 import { ConvexError, v, type Infer } from 'convex/values';
 import { action, internalAction } from './_generated/server';
 import { internal } from './_generated/api';
-import { quoteRequest, quoteSummary } from './hubspotQuoteValidators';
+import { contractName } from '../lib/contract/filename';
 import { composeExport } from '../lib/document/export/content';
 import { equivalentTerms, exportHtml } from '../lib/document/export/html';
-import { contractDocumentFromRenderTransport } from '../lib/document/contract-document';
-import { connectionToken, hubspot, HubSpotError, readDeal } from './hubspotApi';
-import { sha256 } from './operationReceipts';
 import { quoteSemanticIdentity } from '../lib/document/export/quote-identity';
+import { toAppliedOverlayItems } from '../lib/playbook/document-overlay';
+import { connectionToken, hubspot, HubSpotError, readDeal } from './hubspotApi';
 import { activeQuote, numericQuoteId, quotePath, quoteUrl } from './hubspotQuoteProvider';
-import { contractName } from '../lib/contract/filename';
-const pending = (message: string) => new ConvexError({ code: 'OUTPUT_PENDING', message });
+import { quoteRequest, quoteSummary } from './hubspotQuoteValidators';
+import { sha256 } from './operationReceipts';
 
 export const push = action({
-	args: quoteRequest.extend({ operationId: v.string() }).fields,
+	args: quoteRequest.fields,
 	returns: quoteSummary,
 	handler: async (ctx, args): Promise<Infer<typeof quoteSummary>> => {
-		let admission = await ctx.runMutation(internal.hubspotQuotes.reserve, args);
-		if (admission.kind === 'preparing') {
-			for (let turn = 0; turn < 24; turn++)
-				if (await ctx.runMutation(internal.outputReservations.progress, { outputId: admission.outputId })) break;
-			admission = await ctx.runMutation(internal.hubspotQuotes.reserve, args);
-		}
-		if (admission.kind === 'preparing') throw pending('Preparing your HubSpot quote…');
-		if (admission.kind === 'committed') return admission.summary;
-		let verified = false;
-		for (let turn = 0; turn < 64 && !verified; turn++)
-			verified = await ctx.runMutation(internal.outputReservations.verify, {
-				outputId: admission.reservation.proof.outputId
-			});
-		if (!verified) throw pending('Checking your HubSpot quote…');
-		const { source, document } = await ctx.runQuery(internal.hubspotQuotes.content, args);
+		const prepared = await ctx.runQuery(internal.hubspotQuotes.prepare, args);
+		if (prepared.kind === 'committed') return prepared.summary;
+
+		const items = toAppliedOverlayItems(prepared.appliedOverlays);
 		const resolved = composeExport({
-			document: contractDocumentFromRenderTransport(document)
+			blocks: prepared.blocks,
+			items,
+			concessions: prepared.concessions
 		});
-		const link = source.destination.hubspot;
-		if (!link) throw new Error('Missing original Quote destination.');
 		const identity = quoteSemanticIdentity(
 			{
-				companyId: source.companyId,
-				contractId: source.contractId,
-				accountId: link.accountId,
-				dealId: link.dealId,
-				title: source.title
+				companyId: prepared.companyId,
+				contractId: prepared.contractId,
+				accountId: prepared.destination.accountId,
+				dealId: prepared.destination.dealId,
+				title: prepared.title
 			},
 			resolved
 		);
@@ -56,28 +44,23 @@ export const push = action({
 			throw new ConvexError(
 				'This contract contains characters HubSpot cannot render. Nothing was sent. Contact Dinu support.'
 			);
+
 		const payload = {
 			...args,
 			...identity,
-			payloadHash: await sha256(html)
+			payloadHash: await sha256(html),
+			preparedTemplateVersionId: prepared.templateVersionId,
+			expectedTitle: prepared.title
 		};
-		let release = await ctx.runMutation(internal.hubspotQuotes.prepareCommit, args);
-		if (!release.complete) {
-			for (let turn = 0; turn < 24; turn++)
-				if (await ctx.runMutation(internal.outputReservations.progress, { outputId: release.outputId })) break;
-			release = await ctx.runMutation(internal.hubspotQuotes.prepareCommit, args);
-		}
-		if (!release.complete) throw pending('Checking your HubSpot quote…');
 		const commit = await ctx.runMutation(internal.hubspotQuotes.commit, payload);
-		if (commit.kind === 'preparing') throw pending('Checking your HubSpot quote…');
 		if (commit.kind === 'reused') return commit.summary;
+
 		const fileId = await ctx.storage.store(new Blob([html], { type: 'text/html;charset=utf-8' }));
 		try {
 			const result = await ctx.runMutation(internal.hubspotQuotes.commit, {
 				...payload,
 				fileId
 			});
-			if (result.kind === 'preparing') throw pending('Checking your HubSpot quote…');
 			if (result.kind !== 'reused') throw new Error('Payload reservation was not completed');
 			return result.summary;
 		} finally {
@@ -112,22 +95,6 @@ export const send = internalAction({
 						state: 'rejected',
 						message: 'The linked HubSpot deal is unavailable. Link another deal, then push again.'
 					});
-					return null;
-				}
-				let preparation = await ctx.runMutation(internal.hubspotQuotes.prepareDispatch, {
-					...args,
-					generation: connection.generation
-				});
-				if (!preparation.complete) {
-					for (let turn = 0; turn < 24; turn++)
-						if (await ctx.runMutation(internal.outputReservations.progress, { outputId: preparation.outputId })) break;
-					preparation = await ctx.runMutation(internal.hubspotQuotes.prepareDispatch, {
-						...args,
-						generation: connection.generation
-					});
-				}
-				if (!preparation.complete) {
-					await ctx.runMutation(internal.hubspotQuotes.deferPreparation, args);
 					return null;
 				}
 				if (

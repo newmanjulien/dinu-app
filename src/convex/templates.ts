@@ -1,8 +1,8 @@
 import { isRepItem } from '../lib/playbook/model';
-import type { historicalRepItem } from './playbookValidators';
-import { ConvexError, v, getConvexSize, type Infer } from 'convex/values';
-import { MAX_SELECTED_CONCESSIONS } from '../lib/document/selection-limits';
+import { ConvexError, v, getConvexSize } from 'convex/values';
+import { buildSourceIndex } from '../lib/document/source-index';
 import type { SourceBlock } from '../lib/document/source-model';
+import type { ValidationSourceFacts } from '../lib/document/validation-source';
 import { validatePlaybook } from '../lib/playbook/audit';
 import {
 	MAX_DOCUMENT_BLOCKS,
@@ -21,7 +21,6 @@ import {
 	readTemplateSource,
 	canonicalFingerprint
 } from './templateSourceStorage';
-import { selections } from './contractValidators';
 import {
 	businessItem,
 	hydrateHead,
@@ -32,7 +31,11 @@ import {
 } from './playbookItemRevisions';
 import { templateContent } from './templateValidators';
 import { itemStructure, type TemplateDetailRecord } from '../lib/playbook/structure';
-import { validationCertified, readValidationCertificate } from './authoringValidation';
+import {
+	validationCertified,
+	readValidationCertificate,
+	readValidationFacts
+} from './authoringValidation';
 import { VALIDATION_CODEC_VERSION } from '../lib/document/validation-codec';
 
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
@@ -99,15 +102,13 @@ async function snapshotCapacity(ctx: MutationCtx, captured: LiveSnapshot) {
 		snapshotBytes > MAX_SNAPSHOT_BYTES
 	)
 		throw templateRejected('Template snapshot exceeds supported size.');
-	if (items.some((item) => !item.currentRevisionId))
-		throw templateRejected('The saved rule revision is missing.');
 	let contentReadBytes = templateSource.chunkReadBytes;
 	// Initial/bulk saves have no prior proof. Count every actual stored wrapper.
 	for (let offset = 0; offset < items.length; offset += 64) {
 		const batch = items.slice(offset, offset + 64);
 		await assertStorageCapacity(ctx, { queries: batch.length, readDocuments: batch.length });
 		const revisions = await Promise.all(
-			batch.map((item) => ctx.db.get('playbookItemRevisions', item.currentRevisionId!))
+			batch.map((item) => ctx.db.get('playbookItemRevisions', item.currentRevisionId))
 		);
 		for (let index = 0; index < batch.length; index++) {
 			const item = batch[index];
@@ -139,10 +140,6 @@ export async function saveTemplateVersion(
 	const pointer = captured.pointer;
 	const templateSourceId = captured.templateSource._id;
 	const company = knownCompany ?? (await ctx.db.get('company', companyId));
-	if (company?.authoringMigration)
-		throw templateRejected(
-			'Template authoring is temporarily unavailable while its data is upgraded.'
-		);
 	if (
 		!company ||
 		company._id !== companyId ||
@@ -170,7 +167,7 @@ export async function saveTemplateVersion(
 		blockCount: captured.blocks.length,
 		itemCount: captured.items.length,
 		...capacity,
-		validation: { format: 0, fingerprint: captured.templateSource.fingerprint },
+		validation: { format: 0 as const, fingerprint: captured.templateSource.fingerprint },
 		structureResultBytes: captured.items.reduce(
 			(sum, item) => sum + getConvexSize(itemStructure(item)),
 			0
@@ -184,7 +181,8 @@ export async function saveTemplateVersion(
 		templateSourceId,
 		items: captured.items.map((item) => ({
 			itemId: item._id,
-			revisionId: item.currentRevisionId!
+			revisionId: item.currentRevisionId,
+			audience: item.audience
 		}))
 	};
 	const versionId = await writeTemplateVersion(ctx, pointer, captured.templateSource, version);
@@ -200,35 +198,28 @@ export async function saveTemplateVersion(
 	return versionId;
 }
 
-type TemplateVersionContent = Omit<Doc<'templateVersions'>, '_id' | '_creationTime' | 'mutability'>;
+type TemplateVersionContent = Omit<
+	Doc<'templateVersions'>,
+	'_id' | '_creationTime' | 'mutability' | 'authoringGeneration' | 'structuralGeneration'
+>;
 
 function generation(value: number) {
 	if (!Number.isSafeInteger(value) || value < 0)
 		throw templateRejected('The authoring generation is invalid.');
 	return value;
 }
-/** Manifest clocks own canonical state; pointer clocks only fill historical missing fields. */
-export function templateGenerations(
-	version: Doc<'templateVersions'> | null,
-	pointer: Doc<'currentTemplate'> | null
-) {
-	if (version && pointer && version._id !== pointer.versionId)
-		throw templateRejected('The template is not available.');
+/** Manifest clocks own canonical state. */
+export function templateGenerations(version: Doc<'templateVersions'> | null) {
 	return {
-		authoringGeneration: generation(
-			version ? (version.authoringGeneration ?? pointer?.authoringGeneration ?? 0) : 0
-		),
-		structuralGeneration: generation(
-			version ? (version.structuralGeneration ?? pointer?.structuralGeneration ?? 0) : 0
-		)
+		authoringGeneration: generation(version ? version.authoringGeneration : 0),
+		structuralGeneration: generation(version ? version.structuralGeneration : 0)
 	};
 }
 export function nextTemplateGenerations(
 	version: Doc<'templateVersions'> | null,
-	pointer: Doc<'currentTemplate'> | null,
 	structuralChanged = true
 ) {
-	const current = templateGenerations(version, pointer);
+	const current = templateGenerations(version);
 	return {
 		authoringGeneration: generation(current.authoringGeneration + 1),
 		structuralGeneration: generation(current.structuralGeneration + Number(structuralChanged))
@@ -268,12 +259,12 @@ export function authoringReadCapacity(
 	if (!certificate) return;
 	if (
 		!Number.isSafeInteger(version.headReadBytes) ||
-		version.headReadBytes! < 0 ||
+		version.headReadBytes < 0 ||
 		!Number.isSafeInteger(version.structureResultBytes) ||
-		version.structureResultBytes! < 0 ||
+		version.structureResultBytes < 0 ||
 		// The fixed source identity and readiness/watermark envelope fit this reserve.
-		version.structureResultBytes! + 65_536 > 16 * 1024 * 1024 ||
-		version.headReadBytes! +
+		version.structureResultBytes + 65_536 > 16 * 1024 * 1024 ||
+		version.headReadBytes +
 			certificate.readBytes +
 			documentBytes(certificate) +
 			documentBytes(version) +
@@ -309,25 +300,16 @@ export async function writeTemplateVersion(
 		throw templateRejected('The template is not available.');
 	const { authoringGeneration, structuralGeneration } = nextTemplateGenerations(
 		current,
-		pointer,
 		structuralChanged
 	);
 	const stored = {
 		...version,
 		authoringGeneration,
 		structuralGeneration,
-		...(validationCertified(templateSource, certificate)
-			? {
-					validation: { format: VALIDATION_CODEC_VERSION, fingerprint: templateSource.fingerprint }
-				}
-			: {}),
+		validation: validationCertified(templateSource, certificate)
+			? ({ format: VALIDATION_CODEC_VERSION, fingerprint: templateSource.fingerprint } as const)
+			: version.validation,
 		mutability: 'mutable' as const
-	};
-	const nextPointer = {
-		companyId: version.companyId,
-		versionId: current?._id as Id<'templateVersions'>,
-		authoringGeneration,
-		structuralGeneration
 	};
 	authoringReadCapacity(stored, templateSource, certificate);
 	const bytes = templateReadCapacity(stored, templateSource);
@@ -336,12 +318,10 @@ export async function writeTemplateVersion(
 	// replacing a mutable version preserves its ID and current pointer.
 	if (pointer && current?.mutability === 'mutable') {
 		await ctx.db.replace('templateVersions', current._id, stored);
-		await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(nextPointer) });
-		await ctx.db.replace('currentTemplate', pointer._id, nextPointer);
 		return current._id;
 	}
 	const versionId = await ctx.db.insert('templateVersions', stored);
-	nextPointer.versionId = versionId;
+	const nextPointer = { companyId: version.companyId, versionId };
 	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(nextPointer) });
 	if (pointer) await ctx.db.replace('currentTemplate', pointer._id, nextPointer);
 	else await ctx.db.insert('currentTemplate', nextPointer);
@@ -380,10 +360,6 @@ export async function readAuthoringVersion(
 	company: Doc<'company'>,
 	current?: TemplateDetailRecord
 ) {
-	if (company.authoringMigration)
-		throw templateRejected(
-			'Template authoring is temporarily unavailable while its data is upgraded.'
-		);
 	const pointer = await currentPointer(ctx, company._id);
 	if (!pointer || !company.templateSourceId)
 		throw templateRejected('The template is not available.');
@@ -402,15 +378,11 @@ export async function readAuthoringVersion(
 		templateSource.blockCount !== version.blockCount
 	)
 		throw templateRejected('The template is not available.');
-	templateGenerations(version, pointer);
+	templateGenerations(version);
 	if (!validationCertified(templateSource, certificate, version))
 		throw templateRejected('The template needs authoring certification.');
 	const references = versionReferences(version);
-	if (
-		current &&
-		(!current.currentRevisionId ||
-			references.get(current._id)?.revisionId !== current.currentRevisionId)
-	)
+	if (current && references.get(current._id)?.revisionId !== current.currentRevisionId)
 		throw templateRejected('The saved rule revision is missing.');
 	return { pointer, version, templateSource, certificate: certificate! };
 }
@@ -441,11 +413,14 @@ export async function saveChangedVersion(
 		? version.items.flatMap((reference) =>
 				reference.itemId === id
 					? next
-						? [{ itemId: id, revisionId: next.currentRevisionId! }]
+						? [{ itemId: id, revisionId: next.currentRevisionId, audience: next.audience }]
 						: []
 					: [reference]
 			)
-		: [...version.items, { itemId: id, revisionId: next!.currentRevisionId! }];
+		: [
+				...version.items,
+				{ itemId: id, revisionId: next!.currentRevisionId, audience: next!.audience }
+			];
 	const jsonBytes = (item: HistoricalItem | null) =>
 		item ? new TextEncoder().encode(JSON.stringify(snapshotItem(item))).byteLength : 0;
 	// Creating/deleting changes array punctuation only when another member exists.
@@ -466,11 +441,15 @@ export async function saveChangedVersion(
 			itemCount: items.length,
 			snapshotBytes: version.snapshotBytes + jsonBytes(next) - jsonBytes(previous) + punctuation,
 			contentReadBytes: version.contentReadBytes + revisionBytes.next - revisionBytes.previous,
-			headReadBytes: (version.headReadBytes ?? 0) + headBytes.next - headBytes.previous,
+			headReadBytes: version.headReadBytes + headBytes.next - headBytes.previous,
 			structureResultBytes:
-				(version.structureResultBytes ?? 0) +
+				version.structureResultBytes +
 				(next ? getConvexSize(itemStructure(next)) : 0) -
 				(previous ? getConvexSize(itemStructure(previous)) : 0),
+			validation: {
+				format: VALIDATION_CODEC_VERSION,
+				fingerprint: templateSource.fingerprint
+			},
 			items
 		},
 		structuralChanged,
@@ -560,46 +539,81 @@ export async function versionReader(
 			items.push(...(await Promise.all(version.items.slice(offset, offset + 64).map(resolve))));
 		return items;
 	}
+	async function readItemsByIds(ids: readonly Id<'playbookItems'>[]) {
+		const unique = [...new Set(ids)];
+		const result: HistoricalItem[] = [];
+		for (let offset = 0; offset < unique.length; offset += 64) {
+			const rows = await Promise.all(unique.slice(offset, offset + 64).map(item));
+			for (const row of rows) if (row) result.push(row);
+		}
+		return result;
+	}
+	async function readBuyerExplanations() {
+		const refs = version.items.filter((ref) => ref.audience === 'buyer');
+		const items: Extract<HistoricalItem, { audience: 'buyer' }>[] = [];
+		for (let offset = 0; offset < refs.length; offset += 64) {
+			const rows = await Promise.all(refs.slice(offset, offset + 64).map(resolve));
+			for (const row of rows) if (row.audience === 'buyer') items.push(row);
+		}
+		return items;
+	}
 	async function blocks() {
 		const result = await templateSourceBlocks(ctx, templateSourceId, companyId);
 		if (result.length !== blockCount) throw new ConvexError('This template version is incomplete.');
 		return result;
 	}
+	let sourceFactsPromise: Promise<ValidationSourceFacts> | undefined;
+	function readSourceFacts(): Promise<ValidationSourceFacts> {
+		return (sourceFactsPromise ??= (async () => {
+			const [templateSource, certificate] = await Promise.all([
+				ctx.db.get('templateSources', templateSourceId),
+				readValidationCertificate(ctx, companyId, templateSourceId)
+			]);
+			if (
+				templateSource &&
+				templateSource.companyId === companyId &&
+				validationCertified(templateSource, certificate)
+			) {
+				return (await readValidationFacts(ctx, templateSource, certificate!)).index;
+			}
+			return buildSourceIndex(await blocks());
+		})());
+	}
 	return {
 		readBytes: version.contentReadBytes + documentBytes(version),
 		blocks,
+		readSourceFacts,
 		item,
 		readItems,
-		async selectedItems(
-			selectedConcessions: Infer<typeof selections>,
-			unavailableMessage = 'A selected concession does not belong to this contract.'
-		) {
-			const selectedIds = Object.keys(selectedConcessions) as Id<'playbookItems'>[];
-			if (selectedIds.length > MAX_SELECTED_CONCESSIONS)
-				throw new ConvexError('Too many selected concessions.');
-			const items: Infer<typeof historicalRepItem>[] = [];
-			// Read only selected bodies. Every lookup uses the one transaction-local map.
-			for (let offset = 0; offset < selectedIds.length; offset += 64) {
-				const selected = selectedIds.slice(offset, offset + 64);
-				const rows = await Promise.all(selected.map(item));
-				for (let index = 0; index < rows.length; index++) {
-					const saved = rows[index];
-					if (
-						!saved ||
-						!isRepItem(saved) ||
-						!saved.concessions.some((c) => c.id === selectedConcessions[selected[index]])
-					)
-						throw new ConvexError(unavailableMessage);
-					items.push(saved);
-				}
-			}
-			return items;
-		},
+		readItemsByIds,
+		readBuyerExplanations,
 		async read() {
 			const [snapshotBlocks, items] = await Promise.all([blocks(), readItems()]);
 			return { blockCount, itemCount, blocks: snapshotBlocks, items };
 		}
 	};
+}
+
+/** Project only the active concession changes needed by effective-view and export wire payloads. */
+export async function readAppliedOverlays(
+	reader: Pick<Awaited<ReturnType<typeof versionReader>>, 'readItemsByIds'>,
+	concessions: Readonly<Record<string, string>>
+) {
+	const appliedIds = Object.keys(concessions) as Id<'playbookItems'>[];
+	const appliedItems = appliedIds.length > 0 ? await reader.readItemsByIds(appliedIds) : [];
+	return appliedItems.flatMap((item) => {
+		if (!isRepItem(item)) return [];
+		const optionId = concessions[item._id];
+		const concession = item.concessions.find((c) => c.id === optionId);
+		if (!concession) return [];
+		return [
+			{
+				itemId: item._id,
+				trigger: item.trigger,
+				concessions: [{ id: concession.id, changes: concession.changes }]
+			}
+		];
+	});
 }
 
 /** Trusted release reuses the canonical version/bootstrap path in one transaction. */
@@ -749,6 +763,29 @@ export function orderedHeads(version: Doc<'templateVersions'>, heads: Doc<'playb
 		if (
 			!head ||
 			head.companyId !== version.companyId ||
+			head.audience !== reference.audience ||
+			head.currentRevisionId !== reference.revisionId
+		)
+			throw templateRejected('The saved rule revision is missing.');
+		return head;
+	});
+}
+export function orderedAudienceHeads(
+	version: Doc<'templateVersions'>,
+	audience: Doc<'playbookItems'>['audience'],
+	heads: Doc<'playbookItems'>[]
+) {
+	versionReferences(version);
+	const expected = version.items.filter((reference) => reference.audience === audience);
+	const byId = new Map(heads.map((head) => [head._id, head]));
+	if (heads.length !== expected.length || byId.size !== heads.length)
+		throw templateRejected('The saved rule revision is missing.');
+	return expected.map((reference) => {
+		const head = byId.get(reference.itemId);
+		if (
+			!head ||
+			head.companyId !== version.companyId ||
+			head.audience !== audience ||
 			head.currentRevisionId !== reference.revisionId
 		)
 			throw templateRejected('The saved rule revision is missing.');

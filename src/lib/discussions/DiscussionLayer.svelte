@@ -1,21 +1,19 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick, untrack } from 'svelte';
-	import ChatCenteredTextIcon from 'phosphor-svelte/lib/ChatCenteredTextIcon';
-	import EraserIcon from 'phosphor-svelte/lib/EraserIcon';
 	import type { DiscussionSession } from './session.svelte';
 	import type { DiscussionAnchor } from './validators';
 	import type { DocumentHighlightController } from '$lib/document/highlights/controller';
 	import DocumentPanelRail from '$lib/components/document/DocumentPanelRail.svelte';
 	import DocumentPanelCard from '$lib/components/document/DocumentPanelCard.svelte';
 	import DocumentPanelBody from '$lib/components/document/DocumentPanelBody.svelte';
+	import Hint from '$lib/ui/Hint.svelte';
+	import { LOGIN_PATH } from '$lib/auth/navigation';
 	import InlineAction from '$lib/components/playbook/InlineAction.svelte';
 	import { captureDiscussionAnchor, discussionDomRange, indexDiscussionDom } from './dom-anchor';
 	import { packAnnotationRail } from './annotation-rail-layout';
 	import DiscussionRootCard from './DiscussionRootCard.svelte';
-	import ProvisionalMessage from './ProvisionalMessage.svelte';
 	import DiscussionThread from './DiscussionThread.svelte';
 	import MessageComposer from './MessageComposer.svelte';
-	import OperationStatus from './OperationStatus.svelte';
 	import { composerBoundary } from './focus-composer';
 	import SelectionToolbar from '$lib/components/document/SelectionToolbar.svelte';
 	import BoxDismissal from '$lib/components/playbook/BoxDismissal.svelte';
@@ -72,15 +70,23 @@
 		reference: FloatingVirtualAnchor;
 		anchor: DiscussionAnchor;
 	} | null>(null);
-	const visibleComposerCard = $derived(session.visibleComposerCard);
-	const standaloneCreateOperations = $derived(
-		[...session.work.operations.values()].filter(
-			(operation) =>
-				operation.command.kind === 'create' &&
-				session.hasOperationStatus(operation.source) &&
-				!session.provisionalPosts.has(operation.source) &&
-				operation.source !== visibleComposerCard?.id
-		)
+	$effect(() => {
+		void session.transitionVersion;
+		toolbar = null;
+		dismissedSelection = undefined;
+		selectionPointer = null;
+		window.getSelection()?.removeAllRanges();
+	});
+	const visibleComposerCard = $derived(session.composer);
+	const previewEntry = $derived(
+		active &&
+		!obscured &&
+		session.authorized &&
+		session.policy().readOnly &&
+		session.perspective() === 'buyer'
+	);
+	const showSellerNameHint = $derived(
+		!session.readOnly && !session.authRequired && session.missingSellerName()
 	);
 	const selectionGeometryListeners = new Set<() => void>();
 	let dismissedSelection: string | undefined;
@@ -105,14 +111,13 @@
 	});
 	let frame: number | undefined,
 		selectionPointer: number | null = null;
-	const rootCards = $derived(session.displayRoots);
+	const threads = $derived(session.threads);
 	const cards = $derived([
-		...rootCards.map((card) => ({
-			key: card.key,
-			id: card.id,
-			anchor: card.anchor,
-			type: card.type,
-			available: card.available
+		...threads.map((thread) => ({
+			key: thread.id,
+			id: thread.id,
+			anchor: thread.anchor,
+			available: session.authorized
 		})),
 		...(visibleComposerCard
 			? [
@@ -120,8 +125,7 @@
 						key: 'composer',
 						id: 'composer',
 						anchor: visibleComposerCard.anchor,
-						type: visibleComposerCard.type,
-						available: visibleComposerCard.contentIdentity === session.contentIdentity()
+						available: visibleComposerCard.contentRevision === session.contentRevision()
 					}
 				]
 			: [])
@@ -208,11 +212,7 @@
 					owner.dataset.discussionId = card.id;
 					controller.setGroup(
 						name,
-						card.id === 'composer'
-							? 'authoring-selection'
-							: card.type === 'proposal'
-								? 'discussion-proposal'
-								: 'buyer-attachment',
+						card.id === 'composer' ? 'authoring-selection' : 'buyer-attachment',
 						[range],
 						undefined,
 						owner
@@ -261,7 +261,6 @@
 			cards.map((card) => [card.key, card.id, card.anchor, card.available])
 		);
 		const documentWidth = documentRoot.getBoundingClientRect().width;
-		// Mounted-page revisions can change during scrolling without changing anchor order.
 		const sameDocument =
 			railOrderInputs?.root === documentRoot &&
 			railOrderInputs.layout === layout &&
@@ -285,8 +284,6 @@
 				: undefined;
 			const cached = measuredAnchors.get(card.key);
 			const cachedTop = cached?.signature === signature ? cached.top : undefined;
-			// A zero-size rect is the highlight controller's page-top placeholder while
-			// character geometry is unavailable. Keep the last exact anchor instead.
 			if (rect && (rect.width || rect.height)) next[card.key] = Math.max(0, rect.top - base.top);
 			const exactTop = next[card.key] ?? cachedTop;
 			if (exactTop !== undefined) retainedAnchors.set(card.key, { signature, top: exactTop });
@@ -303,8 +300,6 @@
 		});
 		const selectedKey = cards.find((card) => card.id === session.selected)?.key;
 		const selectedTop = selectedKey ? retainedAnchors.get(selectedKey)?.top : undefined;
-		// A selected range can gain precise geometry before other ranges do. Keep the
-		// established order while its current anchor and card height are remeasured.
 		const packed = packAnnotationRail(
 			items,
 			selectedKey && selectedTop !== undefined ? { id: selectedKey, targetTop: selectedTop } : null,
@@ -336,9 +331,7 @@
 		void cards;
 		void session.selected;
 		void active;
-		if (!active) {
-			toolbar = null;
-		}
+		if (!active) toolbar = null;
 		untrack(() => void tick().then(schedule));
 	});
 	function selectionChanged() {
@@ -400,11 +393,11 @@
 		toolbar = null;
 		if (reason !== 'outside-pointer') window.getSelection()?.removeAllRanges();
 	}
-	function begin(type: 'comment' | 'proposal') {
+	function begin() {
 		if (session.readOnly || !toolbar) return;
 		rememberTrigger();
 		onActivate?.();
-		session.begin(toolbar.anchor, type);
+		session.begin(toolbar.anchor);
 		focusComposer();
 		toolbar = null;
 		window.getSelection()?.removeAllRanges();
@@ -417,8 +410,8 @@
 				active &&
 				!obscured &&
 				session.selected === 'composer' &&
-				session.visibleComposer?.open &&
-				!session.visibleComposer.busy
+				session.composer &&
+				!session.composer.busy
 			)
 				rail
 					?.querySelector<HTMLTextAreaElement>('[data-discussion-card="composer"] textarea')
@@ -429,8 +422,16 @@
 		const selected = session.selected;
 		const replyingTo = session.replyingTo;
 		if (!selected || !active || obscured) return;
+		const transitionVersion = untrack(() => session.transitionVersion);
+		const policyGeneration = untrack(() => session.policy().generation);
 		void tick().then(() => {
-			if (session.selected !== selected || session.replyingTo !== replyingTo) return;
+			if (
+				session.transitionVersion !== transitionVersion ||
+				session.policy().generation !== policyGeneration ||
+				session.selected !== selected ||
+				session.replyingTo !== replyingTo
+			)
+				return;
 			const panel = rail?.querySelector<HTMLElement>('[data-workspace-panel]');
 			if (!panel || getComputedStyle(panel).overflowY !== 'auto') return;
 			const card = rail?.querySelector<HTMLElement>(
@@ -438,7 +439,6 @@
 			);
 			const target =
 				(replyingTo === selected && card?.querySelector<HTMLElement>('[data-discussion-reply]')) ||
-				card?.querySelector<HTMLElement>('[data-discussion-provisional]') ||
 				card;
 			if (!target) return;
 			const bounds = target.getBoundingClientRect(),
@@ -460,7 +460,7 @@
 		onActivate?.();
 		session.selected = id;
 		if (id === 'composer') focusComposer();
-		if (!session.readOnly) void session.loadBuyerViewer();
+		if (!session.readOnly && !session.viewer) void session.loadBuyerViewer();
 	}
 	onMount(() => {
 		let selectionFrame: number | undefined;
@@ -546,15 +546,15 @@
 	<div class="flex flex-col gap-2 text-xs">
 		<p class="text-danger">Reconnect your account to continue discussions.</p>
 		<div class="flex flex-wrap gap-x-3 gap-y-2">
-			<InlineAction href="/login" target="_blank">Sign in in another tab</InlineAction>
+			<InlineAction href={LOGIN_PATH} target="_blank">Log in in another tab</InlineAction>
 			<InlineAction onclick={() => session.loadBuyerViewer()}>Retry account</InlineAction>
 			<InlineAction disabled={!session.canContinueAsBuyer} onclick={() => session.continueAsBuyer()}
 				>Continue as Buyer</InlineAction
 			>
 		</div>
 		<p class="text-ink-muted">
-			Continue as Buyer changes the author for new messages. Pending account submissions and
-			account-owned edits still need that account.
+			Continue as Buyer changes the author for new messages. Account-owned edits still need that
+			account.
 		</p>
 	</div>
 {/snippet}
@@ -563,43 +563,19 @@
 	{#if !session.readOnly && toolbar}
 		<SelectionToolbar
 			anchor={toolbar.reference}
+			label="Add comment"
+			description="Leave a comment on the highlighted text to start a discussion."
+			onSelect={begin}
 			onClose={dismissToolbar}
-			actions={[
-				{
-					id: 'comment',
-					label: 'Add comment',
-					icon: ChatCenteredTextIcon,
-					onSelect: () => begin('comment')
-				},
-				{
-					id: 'proposal',
-					label: 'Propose change',
-					icon: EraserIcon,
-					onSelect: () => begin('proposal')
-				}
-			]}
 		/>
 	{/if}
-	{#if session.error || standaloneCreateOperations.length || (!session.loading && !session.done)}
+	{#if session.error}
 		<div
 			class="pointer-events-auto absolute inset-x-3 z-10 flex flex-wrap items-center justify-end gap-3 text-xs text-ink-muted"
 			style:top={`${Math.max(documentBottom, bottom) + 8}px`}
 		>
-			{#if !session.done && !session.error}<InlineAction
-					disabled={session.loading}
-					onclick={() => session.loadMore()}>More discussions</InlineAction
-				>{/if}
-			{#if session.error}<p role="alert" class="text-danger">{session.error}</p>
-				<InlineAction onclick={() => session.retry()}>Retry discussions</InlineAction>{/if}
-			{#each standaloneCreateOperations as operation (operation.id)}
-				<OperationStatus
-					{session}
-					source={operation.source}
-					label={operation.command.kind === 'create' && operation.command.type === 'proposal'
-						? 'proposed change'
-						: 'comment'}
-				/>
-			{/each}
+			<p role="alert" class="text-danger">{session.error}</p>
+			<InlineAction onclick={() => session.retry()}>Retry discussions</InlineAction>
 		</div>
 	{/if}
 {/if}
@@ -609,66 +585,55 @@
 	active={active && !obscured}
 	label="Contract discussions"
 >
-	{#each rootCards as card, index (card.key)}
+	{#each threads as thread, index (thread.id)}
+		{@const showRecovery =
+			!session.readOnly &&
+			session.authRequired &&
+			(session.selected === thread.id || (!session.selected && !session.composer && index === 0))}
 		<div
 			use:observeCard
-			data-discussion-card={card.id}
+			data-discussion-card={thread.id}
 			class={[
 				'pointer-events-auto absolute inset-x-0 top-0 translate-y-(--discussion-top)',
-				positioned.has(card.key) &&
+				positioned.has(thread.id) &&
 					'motion-safe:transition-[translate] motion-safe:duration-120 motion-safe:ease-in-out',
-				session.selected === card.id && 'z-1'
+				previewEntry && 'motion-safe:animate-[discussion-preview-in_140ms_ease-out_both]',
+				session.selected === thread.id && 'z-1'
 			]}
-			style:--discussion-top={`${positions[card.key] ?? 0}px`}
+			style:--discussion-top={`${positions[thread.id] ?? 0}px`}
 		>
-			{#if card.kind === 'thread'}
-				{@const thread = card.thread}
-				{@const showRecovery =
-					!session.readOnly &&
-					session.authRequired &&
-					(session.selected === thread.id ||
-						session.hasThreadOperation(thread.id) ||
-						(!session.selected && !session.work.composer && index === 0))}
-				<DiscussionRootCard
-					{thread}
-					{session}
-					canRead={active && !obscured}
-					onActivate={() => {
-						rememberTrigger();
-						onActivate?.();
-					}}
-					orphaned={!resolved.has(thread.id)}
-					recovery={showRecovery ? recovery : undefined}
-				>
-					{#snippet detail(replyTrigger, onReplyTrigger, deletion)}
-						{#if active && !obscured && session.active && session.feed.authorized && session.feed.firstPageAccepted}
-							{#key thread.id}
-								<DiscussionThread
-									{thread}
-									{session}
-									canRead={active && !obscured}
-									onActivate={() => {
-										rememberTrigger();
-										onActivate?.();
-									}}
-									{replyTrigger}
-									{onReplyTrigger}
-									{deletion}
-								/>
-							{/key}
-						{/if}
-					{/snippet}
-				</DiscussionRootCard>
-			{:else}
-				<DocumentPanelCard
-					label={card.post.type === 'proposal' ? 'Proposed change' : 'Comment'}
-					selected={session.selected === card.id}
-				>
-					<ProvisionalMessage post={card.post} {session} />
-					{#if session.authRequired && session.selected === card.id}<div class="p-3.5">
-							{@render recovery()}
-						</div>{/if}
-				</DocumentPanelCard>
+			<DiscussionRootCard
+				{thread}
+				{session}
+				canRead={active && !obscured}
+				onActivate={() => {
+					rememberTrigger();
+					onActivate?.();
+				}}
+				orphaned={!resolved.has(thread.id)}
+				recovery={showRecovery ? recovery : undefined}
+			>
+				{#snippet detail(replyTrigger, onReplyTrigger, deletion)}
+					{#if active && !obscured && session.active && session.authorized}
+						{#key thread.id}
+							<DiscussionThread
+								{thread}
+								{session}
+								canRead={active && !obscured}
+								onActivate={() => {
+									rememberTrigger();
+									onActivate?.();
+								}}
+								{replyTrigger}
+								{onReplyTrigger}
+								{deletion}
+							/>
+						{/key}
+					{/if}
+				{/snippet}
+			</DiscussionRootCard>
+			{#if showSellerNameHint && session.selected === thread.id && session.replyComposer(thread.id)}
+				<Hint id="sellerCommentName" class="mt-3" />
 			{/if}
 		</div>
 	{/each}
@@ -687,52 +652,37 @@
 			]}
 			style:--discussion-top={`${positions.composer ?? 0}px`}
 			onfocusin={() => {
-				if (composer.open) session.selected = 'composer';
+				session.selected = 'composer';
 			}}
 		>
-			<DocumentPanelCard
-				label={composer.type === 'proposal' ? 'Propose change' : 'Add comment'}
-				selected={session.selected === 'composer'}
-			>
+			<DocumentPanelCard label="Add comment" selected={session.selected === 'composer'}>
 				<DocumentPanelBody>
-					{#if composer.open && session.selected === 'composer'}
+					{#if session.selected === 'composer'}
 						{#if session.authRequired && (session.selected === 'composer' || !session.threads.length)}{@render recovery()}{/if}
 						<div>
 							<MessageComposer
-								allowDeletion={composer.type === 'proposal'}
 								text={composer.text}
-								deleting={composer.deleteSelectedWording}
 								author={session.viewer}
 								viewerKey={session.viewer?.key}
 								perspective={session.perspective()}
-								title={composer.type === 'proposal' ? 'Propose change' : 'Add comment'}
-								placeholder={composer.type === 'proposal'
-									? 'Write the proposed wording or change…'
-									: 'Write a comment…'}
-								submitLabel={composer.type === 'proposal' ? 'Propose change' : 'Comment'}
+								title="Add comment"
+								placeholder="Write a comment…"
+									submitLabel={composer.awaitingConfirmation ? 'Retry' : 'Comment'}
 								closeLabel="Cancel"
 								pending={composer.busy}
-								checkResultId={session.checkableOperationId(composer.id)}
+									textLocked={composer.awaitingConfirmation}
 								errorMessage={composer.error ?? session.error ?? ''}
-								onTextChange={(text) => session.updatePostText(composer, text)}
-								onDeleteChange={(deleting) => session.updatePostDeletion(composer, deleting)}
+								onTextChange={(text) => session.updateComposerText(text)}
 								onClose={() => collapseComposer(true)}
 								onSubmit={() => session.submit()}
-								onCheckResult={(operationId) => session.submit(operationId)}
 							/>
-						</div>
-					{:else if session.work.operations.has(composer.id)}
-						<div class="flex flex-col gap-3">
-							<OperationStatus
-								{session}
-								source={composer.id}
-								label={composer.type === 'proposal' ? 'proposed change' : 'comment'}
-							/>
-							{#if session.authRequired}{@render recovery()}{/if}
 						</div>
 					{/if}
 				</DocumentPanelBody>
 			</DocumentPanelCard>
+			{#if showSellerNameHint && session.selected === 'composer'}
+				<Hint id="sellerCommentName" class="mt-3" />
+			{/if}
 		</div>
 	{/if}
 	{#if session.showReconnectCard}

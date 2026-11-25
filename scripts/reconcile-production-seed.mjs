@@ -9,7 +9,6 @@ import {
 	readExport,
 	transformExport,
 	remapSeedSelections,
-	materializeSeedSelections,
 	seedParagraphRole,
 	retiredTableRule,
 	present
@@ -338,14 +337,11 @@ export async function reconcile(server, blocks, items) {
 		await server.ssrLoadModule('svelte/server')
 	);
 	const { default: RepPlaybookPanel } =
-		/** @type {{default:import('svelte').Component<{item:import('../src/lib/contract/items').ResolvedContractItem;onToggle:(id:string|null)=>void;onConcessionInteraction:(id:string|null)=>void;onWithdraw:()=>void}>}} */ (
+		/** @type {{default:import('svelte').Component<{item:import('../src/lib/playbook/model').RepInstructionRecord;onToggle:(id:string|null)=>void;onConcessionInteraction:(id:string|null)=>void}>}} */ (
 			await server.ssrLoadModule('/src/lib/components/playbook/RepPlaybookPanel.svelte')
 		);
 	/** @param {string} text */
 	const escapeText = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;');
-	const { resolveTemplateItem } = /** @type {typeof import('../src/lib/contract/items.ts')} */ (
-		await server.ssrLoadModule('/src/lib/contract/items.ts')
-	);
 	const { validateConcessionUpdate } =
 		/** @type {typeof import('../src/lib/playbook/validation.ts')} */ (
 			await server.ssrLoadModule('/src/lib/playbook/validation.ts')
@@ -363,7 +359,7 @@ export async function reconcile(server, blocks, items) {
 		const harness = convexTest(schema, modules).withIdentity(identity);
 		const { companyId, membershipId } = await harness.run(async (ctx) => {
 			const profileId = await ctx.db.insert('profiles', {
-				helpPreferences: { rep: false, buyer: false },
+				helpPreferences: { contract: false, buyerLink: false },
 				identity: identity.tokenIdentifier,
 				issuer: identity.issuer,
 				clerkId: identity.subject,
@@ -377,7 +373,8 @@ export async function reconcile(server, blocks, items) {
 			const membershipId = await ctx.db.insert('memberships', {
 				companyId,
 				profileId,
-				role: 'admin'
+				role: 'admin',
+				supportWidgetCollapsed: false
 			});
 			return { companyId, membershipId };
 		});
@@ -396,7 +393,7 @@ export async function reconcile(server, blocks, items) {
 		});
 		assert.equal(saved.audience, 'rep', 'Seed round-trip requires rep instructions');
 		if (saved.audience !== 'rep') throw new Error('Expected rep instructions');
-		const editing = new AuthoringContext(item, saved, { kind: 'editing' });
+		const editing = new AuthoringContext(item, saved, 'rep');
 		assert.deepEqual(editing.payload, item, `Edit/save loses data: ${i}`);
 		validateConcessionUpdate(item, semanticRepInstruction(item));
 		const result = await harness.mutation(api.playbookItems.saveTemplateItem, {
@@ -413,14 +410,13 @@ export async function reconcile(server, blocks, items) {
 		assert.deepEqual(persisted, item, `Mutation drops business fields: ${i}`);
 		const html = render(RepPlaybookPanel, {
 			props: {
-				item: resolveTemplateItem(saved),
+				item: saved,
 				onToggle: () => {},
-				onConcessionInteraction: () => {},
-				onWithdraw: () => {}
+				onConcessionInteraction: () => {}
 			}
 		}).body;
 		const userText = [
-			...Object.values(item.instructions ?? {}),
+			...Object.values(item.instructions),
 			...(item.approvalPolicy.kind === 'required' ? [item.approvalPolicy.instructions] : []),
 			...item.concessions.map((c) => c.description)
 		];
@@ -436,7 +432,7 @@ export async function reconcile(server, blocks, items) {
 				false,
 				'Concession copy must affect save identity'
 			);
-		if (item.instructions?.negotiation)
+		if (item.instructions.negotiation)
 			assert.notDeepEqual(
 				semanticRepInstruction(item),
 				semanticRepInstruction({
@@ -449,27 +445,24 @@ export async function reconcile(server, blocks, items) {
 				'Negotiation notes must affect save identity'
 			);
 	}
-	const { ContractDocumentCompositionEngine } =
-		/** @type {typeof import('../src/lib/document/contract-compose.ts')} */ (
-			await server.ssrLoadModule('/src/lib/document/contract-compose.ts')
+	const { DocumentCompositionEngine } =
+		/** @type {typeof import('../src/lib/document/compose.ts')} */ (
+			await server.ssrLoadModule('/src/lib/document/compose.ts')
 		);
-	const { documentIndex, contractDocumentToRenderTransport, contractDocumentFromRenderTransport } =
-		/** @type {typeof import('../src/lib/document/contract-document.ts')} */ (
-			await server.ssrLoadModule('/src/lib/document/contract-document.ts')
+	const { buildSourceIndex } = /** @type {typeof import('../src/lib/document/source-index.ts')} */ (
+		await server.ssrLoadModule('/src/lib/document/source-index.ts')
+	);
+	const { toDocumentOverlay } =
+		/** @type {typeof import('../src/lib/playbook/document-overlay.ts')} */ (
+			await server.ssrLoadModule('/src/lib/playbook/document-overlay.ts')
 		);
 	const { composeExport } = /** @type {typeof import('../src/lib/document/export/content.ts')} */ (
 		await server.ssrLoadModule('/src/lib/document/export/content.ts')
 	);
-	const { changeSession } = /** @type {typeof import('../src/convex/contractChanges.ts')} */ (
-		await server.ssrLoadModule('/src/convex/contractChanges.ts')
-	);
-	const { seller } = /** @type {typeof import('../src/convex/contractState.ts')} */ (
-		await server.ssrLoadModule('/src/convex/contractState.ts')
-	);
 	const harness = convexTest(schema, modules).withIdentity(identity);
-	const { companyId, membershipId } = await harness.run(async (ctx) => {
+	const { companyId } = await harness.run(async (ctx) => {
 		const profileId = await ctx.db.insert('profiles', {
-			helpPreferences: { rep: false, buyer: false },
+			helpPreferences: { contract: false, buyerLink: false },
 			identity: identity.tokenIdentifier,
 			issuer: identity.issuer,
 			clerkId: identity.subject,
@@ -480,12 +473,13 @@ export async function reconcile(server, blocks, items) {
 			ownerProfileId: profileId,
 			name: 'Seed company'
 		});
-		const membershipId = await ctx.db.insert('memberships', {
+		await ctx.db.insert('memberships', {
 			companyId,
 			profileId,
-			role: 'admin'
+			role: 'admin',
+			supportWidgetCollapsed: false
 		});
-		return { companyId, membershipId };
+		return { companyId };
 	});
 	const fixture = await harness.mutation(internal.operator.bootstrap, { companyId, blocks, items });
 	await harness.mutation(internal.authoringValidation.certify, {
@@ -497,6 +491,16 @@ export async function reconcile(server, blocks, items) {
 			(item) => item.itemId
 		)
 	);
+	const overlays = items.map((item, i) =>
+		toDocumentOverlay({
+			...item,
+			_id: present(itemIds[i]),
+			_creationTime: 0,
+			contentRevision: 1
+		})
+	);
+	const sourceKeys = new Set(blocks.map((block) => block.blockKey));
+	const engine = new DocumentCompositionEngine(blocks, buildSourceIndex(blocks));
 
 	// Only the approved hidden-placeholder -> virtual-gap identity changes. All other
 	// block identities, placement, wording and numbering remain exact oracle checks.
@@ -518,53 +522,32 @@ export async function reconcile(server, blocks, items) {
 			scenarios.push({ name: state.name, selected: remapSeedSelections(items, state.selected) });
 	for (const { name, selected } of scenarios) {
 		const old = historicalEffective(source, new Set(Object.values(selected)));
-		const created = await harness.mutation(api.contracts.create, {
-			membershipId,
-			title: `Seed ${name}`,
-			operationId: `seed:${name}`
-		});
-		assert.equal(created.status, 'created');
-		assert.ok(created.status === 'created');
-		const { document, insertionChangeId } = await harness.run(async (ctx) => {
-			const { contract, access } = await seller(ctx, { membershipId, id: created.id });
-			const session = await changeSession(ctx, contract);
-			const document = await materializeSeedSelections(session, items, selected, itemIds, {
-				access,
-				templateVersionId: contract.root.templateVersionId,
-				operationId: `seed:${name}`
-			});
-			return {
-				document,
-				insertionChangeId: (await session.head('playbook', present(itemIds[insertionIndex])))
-					.applied?.id
-			};
-		});
+		/** @type {Record<string, string>} */
+		const concessions = {};
+		for (const [seedId, optionId] of Object.entries(selected)) {
+			const index = Number(seedId.replace('seed-item-', ''));
+			concessions[present(itemIds[index])] = optionId;
+		}
+		const effective = [
+			...engine.compose({ items: overlays, activeConcessions: concessions, view: 'effective' })
+		];
+		const redline = [
+			...engine.compose({ items: overlays, activeConcessions: concessions, view: 'redline' })
+		];
 		const aliases = new Map();
 		if (selected[`seed-item-${insertionIndex}`] === insertionId) {
-			const pieceKeys = new Set(
-				document.pieces
-					.filter((piece) => piece.createdBy === present(insertionChangeId))
-					.map((piece) => piece.sourceKey)
-			);
-			const inserted = document.blocks.filter(
-				(block) =>
-					block.kind !== 'table' && block.content.some((atom) => pieceKeys.has(atom.sourceKey))
+			const inserted = effective.filter(
+				(block) => block.kind !== 'table' && !sourceKeys.has(block.blockKey)
 			);
 			assert.equal(inserted.length, 1, 'The retained insertion must create exactly one paragraph');
 			aliases.set(inserted[0].blockKey, 'paragraph-mutual-indemnification');
 		}
-		const rendered = contractDocumentFromRenderTransport(
-			contractDocumentToRenderTransport(document)
-		);
-		const engine = new ContractDocumentCompositionEngine(rendered, blocks, documentIndex(rendered));
-		const effective = [...engine.compose({ items: [], activeConcessions: {}, view: 'effective' })];
-		const redline = [...engine.compose({ items: [], activeConcessions: {}, view: 'redline' })];
 		mismatches.push(
 			...differences(visible(old), visible(effective, aliases), `output/${name}/effective`)
 		);
 		// Word and HubSpot receive this same effective-only export, compared directly
 		// with the archived wording oracle rather than another composition result.
-		const exported = composeExport({ document });
+		const exported = composeExport({ blocks, items: overlays, concessions });
 		mismatches.push(
 			...differences(
 				visible(old).map((block) =>

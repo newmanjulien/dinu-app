@@ -1,7 +1,3 @@
-import {
-	contractDocumentToRenderTransport,
-	createContractDocument
-} from '../../src/lib/document/contract-document';
 import { getFunctionName } from 'convex/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../src/convex/_generated/api';
@@ -16,11 +12,6 @@ import {
 import type { ReadyContract } from '../../src/lib/contract/saved';
 import { block, item } from '../support/contract-data';
 import { observeSnapshotStorage } from './snapshot-storage-observer';
-import {
-	SNAPSHOT_BYTES,
-	SNAPSHOT_ENTRIES,
-	SnapshotStorage
-} from '../../src/lib/contract/snapshot-storage';
 
 const id = 'synthetic-contract' as Id<'savedContracts'>;
 const itemId = 'synthetic-item' as Id<'playbookItems'>;
@@ -42,22 +33,13 @@ function fixture(): ReadyContract {
 			creatorId: 'synthetic-profile' as Id<'profiles'>,
 			companyId,
 			templateVersionId: 'synthetic-template' as Id<'templateVersions'>,
-			documentId: 'approved-document' as Id<'contractDocuments'>,
-			documentRevision: 0,
 			stateRevision: 0,
+			metadataRevision: 0,
 			title: 'Synthetic Buyer',
 			savedAt: 123,
-			playbook: [],
-			reviews: { playbook: { identity: 'playbook:0' }, buyerLink: { identity: 'buyer-link:0' } },
+			concessions: [],
+			review: { generation: 0 },
 			lastOperationId: null
-		},
-		approved: {
-			documentId: 'approved-document' as Id<'contractDocuments'>,
-			documentRevision: 0,
-			displayIdentity: 'approved:0',
-			document: contractDocumentToRenderTransport(createContractDocument([block])),
-			hiddenItemIds: [],
-			projectedTargets: []
 		},
 		snapshot: {
 			blockCount: 1,
@@ -78,7 +60,9 @@ function fixture(): ReadyContract {
 
 function networkFixture() {
 	const data = fixture();
-	const state = vi.fn().mockResolvedValue({ ...data.contract, lastOperationId: null });
+	const state = vi
+		.fn()
+		.mockResolvedValue({ ...data.contract, buyerName: null, requestDelivery: null });
 	const version = vi.fn().mockResolvedValue(data.snapshot);
 	const versionReleased = vi.fn();
 	const client: SnapshotClient = {
@@ -87,11 +71,7 @@ function networkFixture() {
 			.mockImplementation((reference, _args, callback, onError) => {
 				let subscribed = true;
 				const work =
-					getFunctionName(reference) === getFunctionName(api.contracts.state)
-						? state()
-						: getFunctionName(reference) === getFunctionName(api.contractDefinitions.current)
-							? Promise.resolve(data.approved)
-							: version();
+					getFunctionName(reference) === getFunctionName(api.contracts.state) ? state() : version();
 				void work.then(
 					(value: never) => {
 						if (subscribed) callback(value);
@@ -110,29 +90,6 @@ function networkFixture() {
 			})
 	};
 	return { client, state, version, versionReleased };
-}
-
-async function approvedRows() {
-	const scope = createCacheScope({
-		profileId: 'synthetic-profile' as Id<'profiles'>,
-		membershipId: 'synthetic-membership' as Id<'memberships'>
-	});
-	const opening = indexedDB.open(`${scope.namespace}:snapshots`);
-	const db = await new Promise<IDBDatabase>((resolve, reject) => {
-		opening.onsuccess = () => resolve(opening.result);
-		opening.onerror = () => reject(opening.error);
-	});
-	try {
-		const request = db.transaction('approved', 'readonly').objectStore('approved').getAll();
-		return await new Promise<{ id: string; bytes: number; data: ReadyContract['approved'] }[]>(
-			(resolve, reject) => {
-				request.onsuccess = () => resolve(request.result);
-				request.onerror = () => reject(request.error);
-			}
-		);
-	} finally {
-		db.close();
-	}
 }
 
 describe('snapshot caching work', () => {
@@ -231,19 +188,9 @@ describe('snapshot caching work', () => {
 		const confirmedState = {
 			...reopened.contract,
 			title: 'Confirmed Buyer',
-			playbook: [
-				{
-					itemId,
-					currentChangeId: 'confirmed-change' as Id<'contractChanges'>,
-					appliedChangeId: 'confirmed-change' as Id<'contractChanges'>,
-					currentOptionId: 'preferred',
-					appliedOptionId: 'preferred',
-					status: 'approved' as const,
-					decisionId: null
-				}
-			],
+			concessions: [{ itemId, optionId: 'preferred', status: 'approved' as const }],
 			stateRevision: 1,
-			reviews: { ...reopened.contract.reviews, playbook: { identity: 'playbook:1' } },
+			metadataRevision: 1,
 			lastOperationId: 'confirmed-operation'
 		};
 		const updatedCommit = storage.committedRevision(1);
@@ -272,9 +219,9 @@ describe('snapshot caching work', () => {
 		cache.updateState(id, {
 			...data.contract,
 			title: 'Latest',
-			playbook: [],
+			concessions: [],
 			stateRevision: 2,
-			reviews: { ...data.contract.reviews, playbook: { identity: 'playbook:2' } },
+			metadataRevision: 2,
 			lastOperationId: 'latest'
 		});
 		expect(cache.seedConfirmed(data)?.contract.stateRevision).toBe(2);
@@ -284,78 +231,4 @@ describe('snapshot caching work', () => {
 		expect(cache.seedConfirmed(data)).toBeUndefined();
 		expect(await cache.load(id, client)).toEqual({ id, status: 'missing' });
 	});
-	it('sizes accepted approved wording once for memory and actual durable storage, preserving immutable reuse and validation', async () => {
-		const data = fixture(),
-			approved = data.approved!;
-		const expectedBytes = JSON.stringify(approved).length * 2;
-		const stringify = vi.spyOn(JSON, 'stringify');
-		const durable = vi.spyOn(SnapshotStorage.prototype, 'putApproved');
-		const cache = getContractSnapshotCache();
-		const commit = storage.committedRevision(0);
-		expect(cache.seedConfirmed(data)).toBe(data);
-		await commit;
-		expect(stringify.mock.calls.filter(([value]) => value === approved)).toHaveLength(1);
-		expect(durable).toHaveBeenCalledExactlyOnceWith(
-			id,
-			approved,
-			expectedBytes,
-			expect.any(Function)
-		);
-		expect(await approvedRows()).toEqual([
-			expect.objectContaining({ id: approved.documentId, bytes: expectedBytes, data: approved })
-		]);
-		expect(cache.rememberApproved(id, structuredClone(approved))).toBe(approved);
-		expect(durable).toHaveBeenCalledTimes(1);
-		const corrupt = {
-			...approved,
-			documentId: 'corrupt' as Id<'contractDocuments'>,
-			documentRevision: -1
-		};
-		expect(cache.rememberApproved(id, corrupt)).toBeUndefined();
-		expect(stringify.mock.calls.some(([value]) => value === corrupt)).toBe(false);
-		cache.remove(id);
-		expect(cache.rememberApproved(id, approved)).toBeUndefined();
-		expect(durable).toHaveBeenCalledTimes(1);
-	});
-
-	it.each(['entry', 'byte'] as const)(
-		'preserves real durable approved %s bounds with the shared computed size',
-		async (bound) => {
-			const cache = getContractSnapshotCache();
-			const count = bound === 'entry' ? SNAPSHOT_ENTRIES + 1 : 3;
-			const accepted: ReadyContract[] = [];
-			for (let i = 0; i < count; i++) {
-				const data = fixture();
-				data.id = `bounded-${i}`;
-				data.contract = {
-					...data.contract,
-					_id: data.id as Id<'savedContracts'>,
-					documentId: `document-${i}` as Id<'contractDocuments'>
-				};
-				data.approved = {
-					...data.approved!,
-					documentId: data.contract.documentId,
-					displayIdentity: `bounded:${i}`
-				};
-				if (bound === 'byte') {
-					const block = data.approved.document.blocks[0];
-					if (block.kind !== 'paragraph' || block.content[0].kind !== 'text')
-						throw new Error('Expected text fixture');
-					block.content[0].text = 'x'.repeat(6 * 1024 * 1024);
-					data.approved.document.pieceGroups[0][0].origin.end = block.content[0].text.length;
-				}
-				const commit = storage.committedRevision(0);
-				cache.seedConfirmed(data);
-				await commit;
-				accepted.push(data);
-			}
-			const rows = await approvedRows();
-			expect(rows.length).toBeLessThanOrEqual(SNAPSHOT_ENTRIES);
-			expect(rows.reduce((sum, row) => sum + row.bytes, 0)).toBeLessThanOrEqual(SNAPSHOT_BYTES);
-			expect(rows.length).toBe(bound === 'entry' ? SNAPSHOT_ENTRIES : 2);
-			expect(rows.some((row) => row.id === accepted[0].approved!.documentId)).toBe(false);
-			expect(rows.some((row) => row.id === accepted.at(-1)!.approved!.documentId)).toBe(true);
-			for (const row of rows) expect(row.bytes).toBe(JSON.stringify(row.data).length * 2);
-		}
-	);
 });

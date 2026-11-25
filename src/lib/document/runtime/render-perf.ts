@@ -113,7 +113,6 @@ export interface PanelOpenPerfSample {
 	lookupMs?: number;
 	geometryMs?: number;
 	heldPosition?: 0 | 1;
-	preparedSourceFacts?: 0 | 1;
 	effective?: 0 | 1;
 	resolvedAt?: number;
 	contentMountedAt?: number;
@@ -349,12 +348,6 @@ export interface RenderPerfSample extends LayoutProfileMetrics {
 	preparedArtifactsReused: number;
 	containerArtifactsReused: number;
 	resolvedArtifactsReused: number;
-	panelSourcePrepareMs: number;
-	panelSourcePreparationSlices: number;
-	maxPanelSourcePreparationSliceMs: number;
-	panelSourceFactsReused: number;
-	panelSourcePreparationFailed: number;
-	panelSourceReadyAt?: number;
 	paginationRestartPage: number;
 	paginationStopPage: number;
 	generation: number;
@@ -415,11 +408,6 @@ export function createPerfSample(
 		preparedArtifactsReused: 0,
 		containerArtifactsReused: 0,
 		resolvedArtifactsReused: 0,
-		panelSourcePrepareMs: 0,
-		panelSourcePreparationSlices: 0,
-		maxPanelSourcePreparationSliceMs: 0,
-		panelSourceFactsReused: 0,
-		panelSourcePreparationFailed: 0,
 		paginationRestartPage: 1,
 		paginationStopPage: 0,
 		maxProfileTransactionMs: 0,

@@ -3,7 +3,7 @@ import { internalAction } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
 import { env } from './_generated/server';
 import { internal } from './_generated/api';
-import { retainedUntil } from './exportRetention';
+import { retainedUntil } from './hubspotExportDeliveries';
 import {
 	connectionToken,
 	hubspot,
@@ -26,8 +26,10 @@ function detailText(event: Doc<'hubspotEvents'>): string {
 	try {
 		const detail = JSON.parse(event.detail);
 		if (typeof detail.description === 'string') return `Concession: ${detail.description}`;
-		if (event.kind === 'requested')
-			return `Approval requested for ${detail.count} concession${detail.count === 1 ? '' : 's'}.`;
+		if (event.kind === 'requested') {
+			const count = detail.pendingCount ?? detail.count;
+			return `Approval requested for ${count} concession${count === 1 ? '' : 's'}.`;
+		}
 		if (event.kind === 'downloaded') return `Document: ${detail.filename}`;
 		return '';
 	} catch {
@@ -352,8 +354,7 @@ export const send = internalAction({
 			if (
 				event.kind === 'downloaded' &&
 				!event.fileId &&
-				attempt?.format === 'full' &&
-				attempt.fileId &&
+				attempt?.fileId &&
 				retainedUntil(attempt, data.delivery) > Date.now()
 			) {
 				const blob = await ctx.storage.get(attempt.fileId);

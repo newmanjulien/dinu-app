@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { getBuyerContract } from './contract.svelte';
 	import UtilityRail from '$lib/components/chrome/UtilityRail.svelte';
-	import { helpContent } from '$lib/components/ui/modal/help-content';
 	const contract = getBuyerContract();
 	const download = contract.download;
 	let desktop = $state<HTMLElement>();
@@ -32,7 +31,7 @@
 	onSearchToggle={(button) => {
 		tools?.onSearchToggle(button);
 	}}
-	helpLabel={helpContent.buyer.title}
+	helpLabel={contract.help.title}
 	helpEnabled={tools?.helpEnabled ?? contract.help.resolved}
 	onOpenHelp={() => {
 		if (tools) tools.onOpenHelp();

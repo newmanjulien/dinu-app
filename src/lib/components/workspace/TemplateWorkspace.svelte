@@ -19,11 +19,8 @@
 	import { isRepItem, type SourceTarget, type TemplateAudience } from '$lib/playbook/model';
 	import { templateCopy } from '$lib/playbook/template-copy';
 	import { setAnnotationLabel } from '$lib/document/annotation-label';
-	import type { SelectionCandidate } from '$lib/document/selection/selection-model';
 	import { immutable } from '../../immutable';
 	import { semanticConcession } from '../../playbook/content';
-	import { useQuery, useConvexClient } from 'convex-svelte';
-	import { api } from '../../../convex/_generated/api';
 	import type { DocumentSourceInput } from '$lib/document/runtime/source.svelte';
 	import type { AuthoringOutcome } from '$lib/playbook/authoring-controller.svelte';
 	import { getTemplateAuthoringSession } from '$lib/playbook/template-authoring-session.svelte';
@@ -45,11 +42,11 @@
 
 	let {
 		active = true,
-		audience = 'rep',
+		audience,
 		onFrame
 	}: {
 		active?: boolean;
-		audience?: TemplateAudience;
+		audience: TemplateAudience;
 		onFrame?: (frame: TemplateRouteFrameState) => () => void;
 	} = $props();
 	const buyerTemplate = untrack(() => audience === 'buyer');
@@ -57,55 +54,22 @@
 	setAnnotationLabel(buyerTemplate ? 'explanation' : 'instructions');
 	const runtime = getWorkspaceRuntime();
 	const accountViewer = useViewer();
-	const isAdmin = $derived(accountViewer().membership.role === 'admin');
+	const canManageTemplate = $derived(accountViewer().permissions.manageTemplate);
 	const authoringSession = untrack(() => getTemplateAuthoringSession(audience));
 	const available = $derived(
 		active &&
 			!runtime.paused &&
-			isAdmin &&
+			canManageTemplate &&
 			!authoringSession.templateSource.rejected &&
 			!authoringSession.structureRejected
 	);
 	const session = useViewerSession();
-	const membershipId = accountViewer().membership.id;
 	const templateSource = authoringSession.templateSource;
 	// The mounted workspace keeps its own lease, including the Settings detour.
 	const releaseReads = untrack(() => authoringSession.retainReads());
 	onDestroy(releaseReads);
-	const client = useConvexClient();
-	let copyCandidate = $state.raw<SelectionCandidate | null>(null);
-	const copyTarget = $derived(copyCandidate?.target);
-	const copySource = $derived(templateSource.data?.templateSourceFingerprint);
-	const repSummary = useQuery(api.playbookItems.repSummary, () =>
-		buyerTemplate && available && copyTarget && copySource && !session.blocked
-			? { membershipId, templateSourceFingerprint: copySource, target: copyTarget }
-			: 'skip'
-	);
 	let disposed = false;
 	onDestroy(() => (disposed = true));
-	async function copyRepSummary(candidate: SelectionCandidate, current: () => boolean) {
-		const fingerprint = copySource;
-		if (!fingerprint || !buyerTemplate) return false;
-		try {
-			const saved = await client.query(api.playbookItems.repSummary, {
-				membershipId,
-				templateSourceFingerprint: fingerprint,
-				target: candidate.target
-			});
-			if (disposed || !available || !current() || fingerprint !== copySource) return false;
-			if (!saved) {
-				authoring.reportBlocked('This selection no longer has a saved rep summary to copy.');
-				return false;
-			}
-			if (!authoring.startItemFromSelection(candidate)) return false;
-			authoring.setExplanation(saved);
-			return true;
-		} catch {
-			if (!disposed && current())
-				authoring.reportBlocked('Unable to copy the rep summary. Please try again.');
-			return false;
-		}
-	}
 	const preloadTemplateSource = $derived(
 		available && !session.blocked && !templateSource.error
 			? (templateSource.data?.templateSourceFingerprint ?? null)
@@ -252,7 +216,7 @@
 		}
 	}
 	onMount(() => {
-		if (!isAdmin) return;
+		if (!canManageTemplate) return;
 		return authoringSession.attach(() => ({
 			document: source.compiled,
 			geometry: source.geometry,
@@ -310,7 +274,7 @@
 	});
 	const projectionMatches = $derived(source.compactStructure && sourceMatches);
 	const locationPicking = $derived(
-		projectionMatches && authoringSession.entryMatchesSource && authoring.locationPicking
+		projectionMatches && authoringSession.entryMatchesSource && authoring.pickingSecondaryLocation
 	);
 	const entry = $derived(
 		projectionMatches && authoringSession.entryMatchesSource ? authoring.entry : null
@@ -327,7 +291,7 @@
 	});
 	const draft = $derived(authoring.draft);
 	const previewConcession = $derived(
-		authoring.creationConcession ??
+		authoring.concessionComposer ??
 			(draft && isRepItem(draft)
 				? draft.concessions.find((concession) => concession.id === authoring.previewConcessionId)
 				: undefined)
@@ -361,12 +325,22 @@
 				!previewChanges.some((change) => sameSourceTarget(range, change.target))
 		)
 	);
-	/** Restore the captured annotation only when an action actually closes the editor. */
+	let editor = $state<PlaybookEditor>();
+	/** Restore annotation focus on panel close, or concession button focus when backing out of the composer. */
 	async function runEditorAction(action: () => AuthoringOutcome, restoreFocus = true) {
+		const returnTier = authoring.concessionComposer?.tier;
 		const restore = restoreFocus ? viewer.captureAnnotationFocus?.() : undefined;
-		if (action() !== 'closed' || authoring.entry) return;
-		await tick();
-		if (!authoring.entry) restore?.();
+		const outcome = action();
+		if (outcome === 'closed') {
+			if (authoring.entry) return;
+			await tick();
+			if (!authoring.entry) restore?.();
+			return;
+		}
+		if (restoreFocus && returnTier && !authoring.addingConcession) {
+			await tick();
+			editor?.focusAddConcession(returnTier);
+		}
 	}
 	let pendingRestoreFocus: (() => void) | undefined;
 	$effect(() => {
@@ -392,19 +366,12 @@
 		if (restoreFocus && !authoringSession.selectionRequest && authoring.entry === previousEntry)
 			restore?.();
 	}
-	function cancel() {
-		if (pendingPanel) {
-			void dismissPending(true);
-			return;
-		}
-		void runEditorAction(() => authoring.cancel());
-	}
 	function dismiss(restoreFocus = false) {
 		if (pendingPanel) {
 			void dismissPending(restoreFocus);
 			return;
 		}
-		void runEditorAction(() => authoring.dismissFromOutside(), restoreFocus);
+		void runEditorAction(() => authoring.cancel(), restoreFocus);
 	}
 	function remove() {
 		if (!authoring.canDelete) return;
@@ -570,15 +537,10 @@
 
 <WorkspacePresentationReporter
 	active={active && !runtime.paused}
-	outcome={isAdmin ? presentationOutcome : 'success'}
+	outcome={canManageTemplate ? presentationOutcome : 'pending'}
 />
-{#if active && !runtime.paused && !isAdmin}
-	<p role="alert" class="px-6 py-8 text-sm text-ink-muted">
-		{copy.denied}
-	</p>
-{/if}
 
-{#if active && isAdmin && (templateSource.rejected || authoringSession.structureRejected)}
+{#if active && canManageTemplate && (templateSource.rejected || authoringSession.structureRejected)}
 	<p role="alert" class="px-6 py-4 text-sm text-danger">
 		Unable to load this template. <button
 			class="underline"
@@ -590,6 +552,7 @@
 <BoxDismissal
 	owner={interactionOwner}
 	active={available && Boolean(entry || pendingPanel)}
+	dismissOnOutsidePointer={!locationPicking}
 	onDismiss={dismiss}
 />
 
@@ -663,16 +626,17 @@
 										{#if pendingPanel.body}<PlaybookReadBody item={pendingPanel.body} />{/if}
 									</div>
 									<div class="flex justify-end gap-2">
-										<Button variant="secondary" onclick={cancel}>Close</Button>
+										<Button variant="secondary" onclick={() => dismiss(true)}>Close</Button>
 										{#if pendingPanel.error}<Button onclick={() => authoringSession.retryReads()}
 												>Try again</Button
 											>{/if}
 									</div>
 								{:else if entry}
 									<PlaybookEditor
+										bind:this={editor}
 										controller={authoring}
 										animateContent={animateEditorContent}
-										onCancel={cancel}
+										onCancel={() => dismiss(true)}
 										onPrimary={() => runEditorAction(() => authoring.primary())}
 										onDelete={remove}
 									/>
@@ -708,52 +672,30 @@
 						selectedConcessions={{}}
 						onRemoveConcession={() => authoring.clearPreview()}
 						panelTarget={projectionMatches && authoringSession.entryMatchesSource
-							? (pendingPanel?.target ?? draft?.trigger.target)
+							? (pendingPanel?.target ?? authoring.panelTarget)
 							: undefined}
 						picking={locationPicking}
 						sourceSelectionEnabled={projectionMatches &&
 							authoringSession.entryMatchesSource &&
 							authoring.textSelectionEnabled &&
 							!pendingPanel}
+						allowBoundarySelection={!buyerTemplate}
 						allowPlaybookNavigation={true}
 						playbookNavigationReady={projectionMatches}
 						onSelect={selectItem}
-						onDocumentBackground={() => dismiss(false)}
+						onDocumentBackground={locationPicking ? undefined : () => dismiss(false)}
 					/>
 				</div>
 			</main>
 		</InteractionInputScope>
 		{#if available && viewer.interactionEnabled && viewer.displayedSnapshot}<SourceSelectionToolbar
-				{audience}
+				controller={authoring}
 				container={viewer.documentStageElement ?? undefined}
 				snapshot={viewer.displayedSnapshot}
 				enabled={projectionMatches &&
 					authoringSession.entryMatchesSource &&
 					authoring.textSelectionEnabled &&
 					!pendingPanel}
-				autoConfirm={authoring.textSelectionAutoConfirm}
-				onSelectionIssue={(issue) => authoring.reportIssue(issue)}
-				onActionBlocked={(reason) => authoring.reportBlocked(reason)}
-				onGestureStart={() => authoring.clearFeedback()}
-				evaluate={(candidate) =>
-					buyerTemplate && candidate.target.kind !== 'text'
-						? { allowed: false, reason: 'Select the text you want to explain to buyers.' }
-						: authoring.selectionEligibility(candidate)}
-				onCandidate={(candidate) => (copyCandidate = candidate)}
-				copyRepSummary={buyerTemplate
-					? {
-							enabled: Boolean(repSummary.data),
-							reason: 'Select text within a rep clause with a saved summary to copy it.',
-							run: copyRepSummary
-						}
-					: undefined}
-				onConfirm={(range, mode) => {
-					if (mode === 'add-item') return authoring.startItemFromSelection(range);
-					if (mode === 'concession') return authoring.startConcessionFromSelection(range);
-					return authoring.textSelectionPurpose === 'secondary-location'
-						? authoring.attachSecondaryLocation(range)
-						: authoring.startConcessionFromSelection(range);
-				}}
 			/>{/if}
 	{:else}<p role="alert">We couldn’t load this template. Please refresh to try again.</p>{/if}
 </div>

@@ -36,7 +36,7 @@
 		) => void;
 	} = $props();
 
-	const saved = $derived(navigationCapable && !annotation.passive);
+	const saved = $derived(navigationCapable);
 	function register(owner: HTMLElement, ids: readonly string[]) {
 		let release = registry?.register(owner, ids);
 		return {

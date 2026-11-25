@@ -29,7 +29,12 @@ export const create = mutation({
 			ownerProfileId: profile._id,
 			approvalEmail: identity.email.trim().toLowerCase()
 		});
-		await ctx.db.insert('memberships', { companyId, profileId: profile._id, role: 'admin' });
+		await ctx.db.insert('memberships', {
+			companyId,
+			profileId: profile._id,
+			role: 'admin',
+			supportWidgetCollapsed: false
+		});
 		return companyId;
 	}
 });
@@ -114,7 +119,8 @@ export const recoverOwner = internalMutation({
 			await ctx.db.insert('memberships', {
 				companyId: company._id,
 				profileId: replacement._id,
-				role: 'admin'
+				role: 'admin',
+				supportWidgetCollapsed: false
 			});
 		}
 		await ctx.db.patch('company', company._id, { ownerProfileId: replacement._id });

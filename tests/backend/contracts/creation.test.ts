@@ -66,74 +66,32 @@ async function prepareApproval(
 	}: Pick<Awaited<ReturnType<typeof fixture>>, 't' | 'membershipId' | 'itemId'>,
 	id: Id<'savedContracts'>
 ) {
-	await t.mutation(api.contracts.saveChanges, {
+	await t.mutation(api.contracts.save, {
 		membershipId,
 		id,
-		operationId: fixtureOperationId('save'),
-		commands: [
-			{
-				id: fixtureOperationId('save-command'),
-				itemId,
-				expectedCurrentChangeId: null,
-				action: { kind: 'set', optionId: 'preferred' },
-				occurredAt: Date.now()
-			}
-		]
+		selections: { [itemId]: 'preferred' } as Record<Id<'playbookItems'>, string>,
+		expectedStateRevision: 0,
+		operationId: fixtureOperationId('save')
 	});
 	const state = await t.query(api.contracts.state, { membershipId, id });
 	if (!state) throw new Error('Contract missing');
-	const result = await t.mutation(api.contractApprovals.request, {
+	await t.mutation(api.approvals.request, {
 		membershipId,
 		id,
-		context: 'playbook',
-		expectedDocument: { documentId: state.documentId, documentRevision: state.documentRevision },
-		expectedIdentity: state.reviews.playbook.identity,
+		expectedGeneration: state.review.generation,
 		operationId: fixtureOperationId('request-approval')
 	});
-	if (result.status !== 'complete' || !result.request)
-		throw new Error('Request is still preparing');
-	const request = result.request;
-	const stored = await t.run(({ db }) =>
-		db
-			.query('approvalRequests')
-			.withIndex('by_contractId', (q) => q.eq('contractId', id))
-			.unique()
-	);
-	if (!stored || stored.id !== request.id || !('deliveryId' in stored))
-		throw new Error('approval delivery missing');
+	const updated = await t.query(api.contracts.state, { membershipId, id });
+	const deliveryId = updated?.review.request?.deliveryId;
+	if (!deliveryId) throw new Error('approval delivery missing');
 	const delivery = await t.mutation(internal.emailDeliveries.prepare, {
-		id: stored.deliveryId,
+		id: deliveryId,
 		attempt: 1
 	});
 	if (!delivery) throw new Error('approval delivery unavailable');
-	const event = delivery.delivery.event;
+	const event = delivery.event;
 	if (event.kind !== 'approval') throw new Error('wrong delivery kind');
-	const entries = await t.query(api.contractApprovals.entries, {
-		membershipId,
-		id,
-		context: 'playbook',
-		requestId: request.id,
-		paginationOpts: { cursor: null, numItems: 8 }
-	});
-	const selectionDetails = await Promise.all(
-		entries.page.map(async (selection) => {
-			if (selection.source.kind !== 'playbook') throw new Error('Expected frozen Playbook source');
-			const change = await t.run(({ db }) => db.get('contractChanges', selection.changeId));
-			return {
-				description: selection.source.value.description,
-				requiresApproval: change?.policy === 'required',
-				reviewStatus: selection.status
-			};
-		})
-	);
-	const counts = {
-		pendingCount: entries.page.filter((entry) => entry.status === 'pending').length,
-		reviewedCount: entries.page.filter((entry) => entry.status !== 'pending').length,
-		notRequiredCount: 0,
-		approvedCount: 0,
-		rejectedCount: 0
-	};
-	return { event, selections: counts, selectionDetails };
+	return { event, state: updated! };
 }
 
 const templateOperationId = '11111111-1111-1111-1111-111111111111';
@@ -217,11 +175,13 @@ describe('immutable template creation', () => {
 		await t.mutation(api.playbookItems.deleteTemplateItem, {
 			membershipId,
 			id: itemId,
+			audience: 'rep',
 			expectedContentRevision: 2
 		});
 		await t.mutation(api.playbookItems.deleteTemplateItem, {
 			membershipId,
 			id: itemId,
+			audience: 'rep',
 			expectedContentRevision: 2
 		});
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(3);
@@ -249,16 +209,14 @@ describe('immutable template creation', () => {
 			})
 		).rejects.toThrow('transaction capacity');
 	});
-	it('materializes the frozen source once at creation with bounded snapshot writes and one directory write', async () => {
+	it('creates a contract with bounded pointer writes and zero template content reads', async () => {
 		const { t, companyId, membershipId } = await fixture();
 		await finishTemplate(t, companyId);
 		const counts = {
 			writes: 0,
 			rootWrites: 0,
 			directoryWrites: 0,
-			content: 0,
-			documentWrites: 0,
-			passageIndexWrites: 0
+			content: 0
 		};
 		await t.run((ctx) => {
 			const db = new Proxy(ctx.db, {
@@ -267,10 +225,7 @@ describe('immutable template creation', () => {
 					if (typeof value !== 'function') return value;
 					return (...args: unknown[]) => {
 						if (['insert', 'patch', 'replace', 'delete'].includes(String(key))) {
-							if (args[0] === 'contractDocuments' || args[0] === 'contractDocumentChunks')
-								counts.documentWrites++;
-							else if (args[0] === 'discussionPassageIndexes') counts.passageIndexWrites++;
-							else if (args[0] === 'savedContracts') counts.rootWrites++;
+							if (args[0] === 'savedContracts') counts.rootWrites++;
 							else if (args[0] === 'contractDirectory') counts.directoryWrites++;
 							else counts.writes++;
 						}
@@ -300,11 +255,9 @@ describe('immutable template creation', () => {
 		});
 		expect(counts).toEqual({
 			writes: 2,
-			rootWrites: 2,
+			rootWrites: 1,
 			directoryWrites: 1,
-			content: 1,
-			documentWrites: 3,
-			passageIndexWrites: 1
+			content: 0
 		});
 	});
 	it('refuses first-link creation when saving advances beyond the flushed revision', async () => {
@@ -315,41 +268,27 @@ describe('immutable template creation', () => {
 			operationId
 		});
 		if (created.status !== 'created') throw new Error('creation failed');
-		const saved = await t.mutation(api.contracts.saveChanges, {
+		const saved = await t.mutation(api.contracts.save, {
 			membershipId,
 			id: created.id,
-			operationId: fixtureOperationId('newer-save'),
-			commands: [
-				{
-					id: fixtureOperationId('newer-save-command'),
-					itemId,
-					expectedCurrentChangeId: null,
-					action: { kind: 'set', optionId: 'preferred' },
-					occurredAt: 123
-				}
-			]
+			selections: { [itemId]: 'preferred' } as Record<Id<'playbookItems'>, string>,
+			expectedStateRevision: 0,
+			operationId: fixtureOperationId('newer-save')
 		});
 		expect(saved.status).toBe('saved');
 		await expect(
 			t.mutation(internal.buyerLinks.capture, {
 				membershipId,
 				id: created.id,
-				preparation: {
-					kind: 'prepared',
-					operationId: fixtureOperationId('first-link'),
-					expectedState: {
-						stateRevision: created.contract.stateRevision,
-						documentId: created.contract.documentId,
-						documentRevision: created.contract.documentRevision
-					}
-				},
+				operationId: fixtureOperationId('first-link'),
+				expectedStateRevision: created.contract.stateRevision,
 				token: 'Ab3Cd4Ef5Gh6I'
 			})
 		).rejects.toThrow('The saved contract changed.');
 		expect(await t.query(api.buyerLinks.latest, { membershipId, id: created.id })).toBeNull();
 	});
 	it('captures approval statuses against shared versions; blocks company holds', async () => {
-		const { t, itemId, profileId, companyId, membershipId } = await fixture();
+		const { t, itemId, companyId, membershipId } = await fixture();
 		await finishTemplate(t, companyId);
 		const created = await t.mutation(api.contracts.create, {
 			membershipId,
@@ -359,14 +298,9 @@ describe('immutable template creation', () => {
 		if (created.status !== 'created') throw new Error('creation failed');
 		// Rep selections enter review; admin selections are automatically approved.
 		await t.run(({ db }) => db.patch('memberships', membershipId, { role: 'rep' }));
-		const { event, selections, selectionDetails } = await prepareApproval(
-			{ t, membershipId, itemId },
-			created.id
-		);
-		expect(selectionDetails).toEqual([
-			{ description: 'Synthetic choice.', requiresApproval: true, reviewStatus: 'pending' }
-		]);
-		expect(contractNotification('https://app.example.com', event, selections)).toEqual({
+		const { event, state } = await prepareApproval({ t, membershipId, itemId }, created.id);
+		expect(state.concessions).toEqual([{ itemId, optionId: 'preferred', status: 'pending' }]);
+		expect(contractNotification('https://app.example.com', event)).toEqual({
 			kind: 'approval',
 			data: {
 				companyName: 'Buyer',
@@ -382,9 +316,10 @@ describe('immutable template creation', () => {
 				companyId,
 				issuer: identity.issuer,
 				clerkId: identity.subject,
-				attemptId: 'hold',
+				executionId: 'hold',
 				requestedAt: Date.now(),
-				status: 'prepared',
+				status: 'deleting',
+				inFlight: false,
 				phase: 'invitations',
 				cleanupGeneration: 0
 			})
@@ -400,6 +335,7 @@ describe('immutable template creation', () => {
 			t.mutation(api.playbookItems.deleteTemplateItem, {
 				membershipId,
 				id: itemId,
+				audience: 'rep',
 				expectedContentRevision: 1
 			})
 		).rejects.toThrow('paused');
@@ -412,7 +348,7 @@ describe('immutable template creation', () => {
 		);
 	});
 	it('keeps saved versions readable for saving and approval after live item deletion', async () => {
-		const { t, itemId, profileId, companyId, membershipId } = await fixture();
+		const { t, itemId, companyId, membershipId } = await fixture();
 		await finishTemplate(t, companyId);
 		const created = await t.mutation(api.contracts.create, {
 			membershipId,
@@ -424,6 +360,7 @@ describe('immutable template creation', () => {
 		await t.mutation(api.playbookItems.deleteTemplateItem, {
 			membershipId,
 			id: itemId,
+			audience: 'rep',
 			expectedContentRevision: 1
 		});
 		expect(
@@ -436,14 +373,9 @@ describe('immutable template creation', () => {
 		).toBe(itemId);
 		// Rep selections enter review; admin selections are automatically approved.
 		await t.run(({ db }) => db.patch('memberships', membershipId, { role: 'rep' }));
-		const { event, selections, selectionDetails } = await prepareApproval(
-			{ t, membershipId, itemId },
-			id
-		);
-		expect(selectionDetails).toEqual([
-			{ description: 'Synthetic choice.', requiresApproval: true, reviewStatus: 'pending' }
-		]);
-		expect(contractNotification('https://app.example.com', event, selections)).toEqual({
+		const { event, state } = await prepareApproval({ t, membershipId, itemId }, id);
+		expect(state.concessions).toEqual([{ itemId, optionId: 'preferred', status: 'pending' }]);
+		expect(contractNotification('https://app.example.com', event)).toEqual({
 			kind: 'approval',
 			data: {
 				companyName: 'Buyer',

@@ -8,9 +8,8 @@ import {
 	getDocumentHighlights
 } from '../../../src/lib/document/highlights/controller';
 import * as selection from '../../../src/lib/document/selection/selection-model';
-import { approvedDocumentInput } from '../../../src/lib/contract/document-preview';
 import { csmState } from '../../support/csm-state.svelte';
-import { documentFixture, readyContract } from '../../support/document';
+import { documentFixture } from '../../support/document';
 import { layoutFixture } from '../../support/document-layout';
 import { documentDom } from '../../support/document-dom';
 import { reactive } from '../../support/observers.svelte';
@@ -58,15 +57,12 @@ function hidden(value: boolean) {
 function fixture(count = 70, kind: 'saved' | 'rep' | 'buyer' = 'rep', active = true) {
 	const data = documentFixture(count),
 		layout = layoutFixture();
-	const saved = readyContract(data);
-	const input =
-		kind === 'saved'
-			? approvedDocumentInput(saved.snapshot, saved.approved!)
-			: {
-					kind: 'records' as const,
-					blocks: { data: data.blocks },
-					items: { data: data.records }
-				};
+	const input = {
+		kind: 'records' as const,
+		contract: kind === 'saved',
+		blocks: { data: data.blocks },
+		items: { data: data.records }
+	};
 	const workspace = createDocumentWorkspace(input, kind === 'buyer' ? 'effective' : 'redline');
 	const resources = new DocumentResources(layout.profiles, () => createDocumentWorkspace);
 	const controls = reactive({

@@ -1,8 +1,8 @@
 # Assisted template setup
 
-Admins book the setup call in the template fallback on `/template`,
-`/template/buyers` or `/contracts/new`. After provider confirmation, they may upload
-a DOCX or wait for the call. A valid upload is saved for Julien; it does not unlock
+Admins book the setup call on `/template/setup` (visiting `/template`,
+`/template/buyers`, or `/contracts/new` before release redirects there). After provider confirmation, they may answer optional intake questions, upload
+a DOCX, or wait for the call. A valid upload is saved for Julien; it does not unlock
 the template editor or instructions. Help stays available on demand.
 
 Cancel before release: booking returns with the exact current appointment ID/UID,

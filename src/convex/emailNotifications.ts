@@ -1,5 +1,4 @@
-import { buyerPath } from '../lib/buyer/urls';
-import type { EmailEvent, EmailCounts } from './emailValidators';
+import type { EmailEvent } from './emailValidators';
 
 /** Templates own copy and structure; the app supplies only event data. */
 export type EmailNotification =
@@ -24,37 +23,29 @@ export type EmailNotification =
 
 export function contractNotification(
 	appUrl: string,
-	event: Exclude<EmailEvent, { kind: 'invitation' }>,
-	counts: EmailCounts
+	event: Exclude<EmailEvent, { kind: 'invitation' }>
 ): EmailNotification {
-	const path =
-		event.context === 'buyer-link' && event.buyerToken
-			? `${appUrl}${buyerPath(event.buyerToken)}`
-			: `${appUrl}/contracts/${event.contractId}`;
-	const params = new URLSearchParams();
-	if (event.kind === 'approval' || event.context === 'buyer-link') params.set('review', '1');
-	const url = `${path}${params.size ? `?${params}` : ''}`;
+	const path = `${appUrl}/contracts/${event.contractId}`;
+	const url = event.kind === 'approval' ? `${path}?review=1` : path;
 	if (event.kind === 'decision') {
-		const { approvedCount, rejectedCount } = counts;
 		return {
 			kind: 'decision',
 			data: {
 				companyName: event.title,
 				url,
-				approvedCount,
-				rejectedCount
+				approvedCount: event.approvedCount,
+				rejectedCount: event.rejectedCount
 			}
 		};
 	}
-	const { pendingCount, reviewedCount, notRequiredCount } = counts;
 	return {
 		kind: 'approval',
 		data: {
 			companyName: event.title,
 			url,
-			pendingCount,
-			reviewedCount,
-			notRequiredCount
+			pendingCount: event.pendingCount,
+			reviewedCount: event.reviewedCount,
+			notRequiredCount: event.notRequiredCount
 		}
 	};
 }

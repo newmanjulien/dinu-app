@@ -1,7 +1,5 @@
 import { paginationResultValidator } from 'convex/server';
-import { ConvexError, v } from 'convex/values';
-import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/validation';
-import { headStructure } from './playbookItemRevisions';
+import { v } from 'convex/values';
 import type { Id } from './_generated/dataModel';
 import { mutation, query, type QueryCtx } from './_generated/server';
 import { viewerResult } from './accountViews';
@@ -14,22 +12,20 @@ import {
 } from './auth';
 import { installation, lifecycle } from './hubspotInstallation';
 import { readDirectory } from './contractDirectory';
-import { linkFor } from './buyerCurrent';
+import { hasActiveLinkForCreator, liveLinkFor } from './buyerLinks';
 import { hasInvitedColleagues } from './invitationDeliverySummary';
 import { permissionsForRole, role } from './permissions';
 import { contractCard } from './savedContractValidators';
 import { resolveSetupBooking, setupCallFor } from './csmSetupState';
 
 async function hasRepInstructions(ctx: QueryCtx, companyId: Id<'company'>) {
-	let count = 0;
-	for await (const head of ctx.db
+	const item = await ctx.db
 		.query('playbookItems')
-		.withIndex('by_companyId', (q) => q.eq('companyId', companyId))) {
-		if (++count > MAX_PLAYBOOK_ITEMS)
-			throw new ConvexError('The playbook list exceeds supported size.');
-		if (headStructure(head).audience === 'rep') return true;
-	}
-	return false;
+		.withIndex('by_companyId_and_audience', (q) =>
+			q.eq('companyId', companyId).eq('audience', 'rep')
+		)
+		.first();
+	return Boolean(item);
 }
 
 export async function readViewer(ctx: QueryCtx) {
@@ -37,17 +33,18 @@ export async function readViewer(ctx: QueryCtx) {
 	if (!profile) return null;
 	const membership = await membershipForProfile(ctx, profile._id);
 	const company = membership ? await ctx.db.get('company', membership.companyId) : null;
+	const isOwner = company?.ownerProfileId === profile._id;
+	const memberRole = membership && company ? membership.role : 'rep';
+	const viewerPermissions = permissionsForRole(memberRole, isOwner);
 	const [profileAvatar, companyAvatar, deletion, instruction, setupBooking] = await Promise.all([
 		profile.avatarId ? ctx.storage.getUrl(profile.avatarId) : null,
 		company?.avatarId ? ctx.storage.getUrl(company.avatarId) : null,
 		company ? companyDeletion(ctx, company._id) : null,
 		company?.templateSourceId ? hasRepInstructions(ctx, company._id) : false,
-		company && membership?.role === 'admin' && !company.templateSourceId
+		company && viewerPermissions.manageTemplate && !company.templateSourceId
 			? resolveSetupBooking(ctx, company)
 			: null
 	]);
-	const isOwner = company?.ownerProfileId === profile._id;
-	const role = membership && company ? membership.role : 'rep';
 	return {
 		helpPreferences: profile.helpPreferences,
 		profile: {
@@ -58,7 +55,13 @@ export async function readViewer(ctx: QueryCtx) {
 		},
 		membership:
 			membership && company
-				? { id: membership._id, companyId: company._id, role: membership.role, isOwner }
+				? {
+						id: membership._id,
+						companyId: company._id,
+						role: membership.role,
+						isOwner,
+						supportWidgetCollapsed: membership.supportWidgetCollapsed
+					}
 				: null,
 		company: company
 			? {
@@ -67,10 +70,21 @@ export async function readViewer(ctx: QueryCtx) {
 					avatarUrl: companyAvatar,
 					approvalEmail: company.approvalEmail ?? null,
 					setupCall: setupCallFor(setupBooking),
-					deletionPending: Boolean(deletion)
+					deletion: deletion
+						? {
+								status:
+									deletion.status === 'deleting'
+										? deletion.inFlight
+											? ('inProgress' as const)
+											: ('deleting' as const)
+										: ('cleaning' as const),
+								ownedByViewer:
+									deletion.issuer === profile.issuer && deletion.clerkId === profile.clerkId
+							}
+						: null
 				}
 			: null,
-		permissions: permissionsForRole(membership && company ? role : 'rep', isOwner),
+		permissions: viewerPermissions,
 		needsInitialization: profile.email !== identity.email.trim().toLowerCase(),
 		templateReady: Boolean(company?.templateSourceId),
 		instructionsReady: Boolean(instruction)
@@ -112,7 +126,7 @@ export const startup = query({
 	handler: async (ctx) => {
 		const viewer = await readViewer(ctx);
 		const company =
-			viewer?.membership && !viewer.needsInitialization && !viewer.company?.deletionPending
+			viewer?.membership && !viewer.needsInitialization && !viewer.company?.deletion
 				? viewer.company
 				: null;
 		return {
@@ -189,13 +203,10 @@ async function readSetupProgress(ctx: QueryCtx, access: CompanyAccess) {
 		.order('desc')
 		.first();
 	if (!contract) return result('contract');
-	const buyerLink = await ctx.db
-		.query('buyerLinks')
-		.withIndex('by_companyId_and_creatorId', (q) =>
-			q.eq('companyId', access.companyId).eq('creatorId', access.profile._id)
-		)
-		.first();
-	if (!buyerLink && !(await linkFor(ctx, contract.contractId)))
+	if (
+		!(await hasActiveLinkForCreator(ctx, access.companyId, access.profile._id)) &&
+		!(await liveLinkFor(ctx, contract.contractId))
+	)
 		return result('buyer-link', contract.contractId);
 	if (access.membership.role === 'rep') return result(null, contract.contractId);
 	// The catalog counts both connected and reconnect installations as installed.

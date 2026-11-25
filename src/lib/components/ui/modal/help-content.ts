@@ -1,6 +1,9 @@
-export type HelpVariant = 'rep' | 'template' | 'buyer-template' | 'buyer';
+export type TemplateHelpVariant = 'template' | 'buyer-template';
+export type WorkspaceHelpVariant = 'contract' | TemplateHelpVariant;
+export type BuyerLinkHelpVariant = 'buyer-link-seller' | 'buyer-link-buyer';
+export type HelpVariant = WorkspaceHelpVariant | BuyerLinkHelpVariant;
 
-type HelpContent = {
+export type HelpContent = {
 	title: string;
 	intro: string;
 	steps: {
@@ -12,7 +15,7 @@ type HelpContent = {
 };
 
 export const helpContent = {
-	buyer: {
+	'buyer-link-buyer': {
 		title: 'How to review this contract',
 		intro: 'Dinu helps you read this contract and understand its key terms.',
 		steps: [
@@ -32,7 +35,7 @@ export const helpContent = {
 			}
 		]
 	},
-	rep: {
+	'buyer-link-seller': {
 		title: 'How buyer links work',
 		intro: 'Buyer links let you exchange comments with your buyer.',
 		steps: [
@@ -43,11 +46,29 @@ export const helpContent = {
 			},
 			{
 				title: 'Buyers answer',
-				description: 'Buyers can see you comments, answer and leave their own comments.'
+				description: 'Buyers can see your comments, answer and leave their own comments.'
+			}
+		]
+	},
+	contract: {
+		title: 'How Dinu works',
+		intro: 'Dinu helps you understand, negotiate and close sales contracts.',
+		steps: [
+			{
+				title: 'Open a clause',
+				highlight: { text: 'Blue clauses have instructions.', color: 'blue' },
+				description:
+					'Blue clauses have instructions. Select one to read the instructions for that clause.'
 			},
 			{
-				title: 'Buyers propose changes',
-				description: 'You can get changes approved with 1 click if buyers propose them.'
+				title: 'Understand the clause',
+				description:
+					'Clauses are explained in plain English and include tips for negotiating with buyers.'
+			},
+			{
+				title: 'Negotiate safely',
+				description: 'Automatically apply concessions to the clauses you can negotiate.',
+				adminNote: 'Concessions are automatically approved because you’re an admin.'
 			}
 		]
 	},
@@ -64,11 +85,6 @@ export const helpContent = {
 				highlight: { text: 'Green clauses have explanations.', color: 'green' },
 				description:
 					'Choose Add explanation, write your explanation, then Save. Green clauses have explanations. Select one to edit it.'
-			},
-			{
-				title: 'Start from rep wording',
-				description:
-					'Copy rep summary copies the full saved rep Summary when your selection is inside a rep clause with a summary. Edit and save the copy for buyers. Rep instructions and buyer explanations stay independent.'
 			}
 		]
 	},
@@ -79,17 +95,18 @@ export const helpContent = {
 			{
 				title: 'Select template wording',
 				highlight: { text: 'Select the text', color: 'blue' },
-				description: 'Select the text your reps need help understanding or negotiating.'
+				description:
+					'Select the text your reps need help understanding or negotiating, or drag a gap between paragraphs to add guidance or a new clause there.'
 			},
 			{
-				title: 'Explain in plain English',
+				title: 'Add instructions and guidance',
 				description:
-					'Add instructions lets you add a plain English summary so reps understand what the template says.'
+					'Choose Add instructions to add a plain English summary, talk tracks, objection handling, negotiation tips, and approval rules.'
 			},
 			{
-				title: 'Let reps make concessions',
+				title: 'Include approved concessions',
 				description:
-					'Add concession lets you set up changes reps can make and lets you specify when they need approval.'
+					'Open Preferred concessions or Rare concessions inside the instructions box to add pre-approved changes reps can apply, then Save.'
 			}
 		]
 	}

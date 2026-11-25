@@ -1,5 +1,6 @@
 import { preloadCode } from '$app/navigation';
 import { loadContracts } from '$lib/components/workspace/contracts';
+import { INVITATION_PATH } from './navigation';
 import { describeDestination } from './routes';
 
 /** Share intent and demand imports, retrying failed downloads on the next demand. */
@@ -47,10 +48,10 @@ export async function preloadDestination(pathname: string) {
 		preloadCode(pathname),
 		import('./AuthenticatedAccount.svelte'),
 		import('./AccountContentScope.svelte'),
-		pathname === '/invitation' ? import('./InvitationLink.svelte') : undefined,
+		pathname === INVITATION_PATH ? import('./InvitationLink.svelte') : undefined,
 		route.presentation === 'contracts' ? loadContracts() : undefined,
-		// Generic entry preloads keep template setup cheap; admitted intent warms the editor.
-		route.document && !route.requiresTemplate ? loadDocumentHost() : undefined,
-		route.document && !route.requiresTemplate ? loadDocumentWorkspace() : undefined
+		// Leave template-gated routes to admitted intent so direct visits wait for template readiness.
+		route.document && route.template !== 'required' ? loadDocumentHost() : undefined,
+		route.document && route.template !== 'required' ? loadDocumentWorkspace() : undefined
 	]);
 }

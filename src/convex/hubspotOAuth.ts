@@ -1,7 +1,8 @@
 import { ConvexError, v } from 'convex/values';
 import { action, internalMutation, env } from './_generated/server';
 import { internal } from './_generated/api';
-import { requireMembership } from './auth';
+import { requireMembership, requirePermission } from './auth';
+import { permissionsForRole } from './permissions';
 import { sha256 } from './operationReceipts';
 import { tokenExchange } from './hubspotApi';
 import { hubspotConnection } from './hubspotValidators';
@@ -13,9 +14,7 @@ export const reserve = internalMutation({
 	args: { hash: v.string(), purpose: v.optional(oauthPurpose) },
 	returns: v.null(),
 	handler: async (ctx, { hash, purpose = 'base' }) => {
-		const access = await requireMembership(ctx);
-		if (access.membership.role !== 'admin')
-			throw new ConvexError('Only admins can install HubSpot.');
+		const access = await requirePermission(ctx, 'manageIntegrations');
 		const state = await requireInstallAllowed(ctx, access.companyId);
 		const connection = await ctx.db
 			.query('hubspotConnections')
@@ -91,7 +90,7 @@ export const claim = internalMutation({
 			state.membershipId !== access.membershipId ||
 			state.profileId !== access.profile._id ||
 			state.companyId !== access.companyId ||
-			access.membership.role !== 'admin'
+			!permissionsForRole(access.membership.role, access.isOwner).manageIntegrations
 		)
 			throw new ConvexError('Installation expired. Start again.');
 		const current = await requireInstallAllowed(ctx, access.companyId);
@@ -119,7 +118,7 @@ export const commit = internalMutation({
 			state.membershipId !== access.membershipId ||
 			state.profileId !== access.profile._id ||
 			state.companyId !== access.companyId ||
-			access.membership.role !== 'admin'
+			!permissionsForRole(access.membership.role, access.isOwner).manageIntegrations
 		)
 			throw new ConvexError('Installation expired. Start again.');
 		const current = await requireInstallAllowed(ctx, access.companyId, args.accountId);

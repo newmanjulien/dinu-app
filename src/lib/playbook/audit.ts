@@ -8,7 +8,6 @@ import {
 	MAX_DOCUMENT_BLOCKS,
 	MAX_PLAYBOOK_ITEMS,
 	validateTemplateItemContent,
-	validateStructuralReplacementContent,
 	validateChangeReferences
 } from './validation';
 
@@ -28,7 +27,6 @@ export function validatePlaybook(blocks: readonly SourceBlock[], items: readonly
 	Object.values(geometries).forEach((geometry) => geometry.auditGeometry());
 	for (const item of items) {
 		if (item.audience === 'buyer') continue;
-		validateStructuralReplacementContent(item);
 		validateChangeReferences(compiled, item);
 	}
 	return compiled;

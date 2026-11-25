@@ -248,9 +248,17 @@ async function fixture(
 	};
 }
 
+async function revealFirstVisit() {
+	await clock.frame();
+	await clock.frame();
+	await settle();
+}
+
 it('shows a scoped startup card before the live contracts page arrives', async () => {
 	const f = await fixture();
 	expect(document.querySelector('#contracts-heading')).not.toBeNull();
+	expect(contractCard()).toBeNull();
+	await revealFirstVisit();
 	expect(contractCard()).not.toBeNull();
 	expect(f.query.status).toBe('LoadingFirstPage');
 	expect(f.query.results).toEqual([]);
@@ -259,6 +267,7 @@ it('shows a scoped startup card before the live contracts page arrives', async (
 
 it('warms visible contracts after live readiness and pauses during interaction', async () => {
 	const f = await fixture();
+	await revealFirstVisit();
 	f.query.results = [f.card];
 	f.query.status = 'Exhausted';
 	await settle();
@@ -284,6 +293,7 @@ it('warms visible contracts after live readiness and pauses during interaction',
 
 it('filters displayed cards immediately without declaring a final empty result while search is pending', async () => {
 	const f = await fixture();
+	await revealFirstVisit();
 	f.query.results = [f.card];
 	f.query.status = 'Exhausted';
 	await settle();
@@ -305,10 +315,10 @@ it.each([
 	{ profileId: 'another-profile' as Id<'profiles'> }
 ])('ignores startup cards with mismatched scope %o', async (scope) => {
 	const f = await fixture(scope);
+	await revealFirstVisit();
 	expect(contractCard()).toBeNull();
 	f.query.results = [f.card];
 	f.query.status = 'Exhausted';
-	await vi.advanceTimersByTimeAsync(80);
 	await settle();
 	expect(contractCard()).not.toBeNull();
 });
@@ -341,7 +351,8 @@ it('stages a cold entry from toolbar to setup, headings, and then rows only when
 	input.focus();
 	expect(input.disabled).toBe(false);
 	expect(document.querySelector('a[href="/contracts/new"]')).not.toBeNull();
-	expect(document.querySelector('#contracts-heading')).toBeNull();
+	const heading = document.querySelector('#contracts-heading');
+	expect(heading).not.toBeNull();
 	expect(contractCard()).toBeNull();
 	expect(document.body.textContent).not.toContain('Loading contracts');
 	expect(document.body.textContent).not.toContain('No contracts');
@@ -355,21 +366,14 @@ it('stages a cold entry from toolbar to setup, headings, and then rows only when
 	await settle();
 	const prompt = document.querySelector('a[href="/integrations"]');
 	expect(prompt?.textContent).toBe('Explore integrations');
-	expect(document.querySelector('#contracts-heading')).toBeNull();
+	expect(prompt!.compareDocumentPosition(heading!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 	f.query.results = [f.card];
 	f.query.status = 'Exhausted';
 	await settle();
 	expect(contractCard()).toBeNull();
-	await clock.frame();
-	await clock.frame();
-	const heading = document.querySelector('#contracts-heading');
-	expect(heading).not.toBeNull();
-	expect(prompt!.compareDocumentPosition(heading!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	expect(contractCard()).toBeNull();
 	expect(searchInput()).toBe(input);
 	expect(document.activeElement).toBe(input);
-	await vi.advanceTimersByTimeAsync(80);
-	await settle();
+	await revealFirstVisit();
 	expect(contractCard()).not.toBeNull();
 	expect(
 		heading!.compareDocumentPosition(contractCard()!) & Node.DOCUMENT_POSITION_FOLLOWING
@@ -380,6 +384,8 @@ it('stages a cold entry from toolbar to setup, headings, and then rows only when
 
 it('makes retained contracts usable for search before the results module or live page arrives', async () => {
 	const f = await fixture({}, { startup: false, deferModule: true, retained: true });
+	expect(contractCard()).toBeNull();
+	await revealFirstVisit();
 	expect(contractCard()).not.toBeNull();
 	expect(f.query.status).toBe('LoadingFirstPage');
 	const input = searchInput();
@@ -408,8 +414,7 @@ it('reveals saved contracts from a delayed directory read and searches them whil
 	vi.spyOn(f.reads!.storage, 'readDirectory').mockReturnValue(diskRead as never);
 	const hydration = f.reads!.hydrateDirectory('contracts');
 	expect(contractCard()).toBeNull();
-	await vi.advanceTimersByTimeAsync(80);
-	await settle();
+	await revealFirstVisit();
 	completeRead({ savedAt: Date.now(), rows: [f.card] });
 	await hydration;
 	await settle();

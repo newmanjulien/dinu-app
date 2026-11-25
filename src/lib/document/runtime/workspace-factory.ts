@@ -6,21 +6,13 @@ import { DocumentViewerState } from './viewer.svelte';
 import type { DocumentWorkspace } from './workspace-context';
 
 function querySnapshot(input: DocumentSourceInput): DocumentSourceInput {
-	const materialized = input.materialized?.data;
-	const common = input.contract
-		? {
-				contract: true as const,
-				materialized: {
-					data: materialized
-						? { document: materialized.document, baseline: materialized.baseline }
-						: undefined,
-					error: input.materialized.error
-				}
-			}
-		: { blocks: { data: input.blocks.data, error: input.blocks.error } };
+	const common = {
+		contract: input.contract,
+		blocks: { data: input.blocks.data, error: input.blocks.error }
+	};
 	switch (input.kind) {
 		case 'prose':
-			return { kind: 'prose', blocks: { data: input.blocks.data, error: input.blocks.error } };
+			return { kind: 'prose', ...common };
 		case 'records':
 			return {
 				kind: input.kind,
@@ -58,11 +50,8 @@ export function createDocumentWorkspace(
 				!prior ||
 				prior.kind !== current.kind ||
 				prior.contract !== current.contract ||
-				prior.blocks?.data !== current.blocks?.data ||
-				prior.blocks?.error !== current.blocks?.error ||
-				prior.materialized?.data?.document !== current.materialized?.data?.document ||
-				prior.materialized?.data?.baseline !== current.materialized?.data?.baseline ||
-				prior.materialized?.error !== current.materialized?.error ||
+				prior.blocks.data !== current.blocks.data ||
+				prior.blocks.error !== current.blocks.error ||
 				prior.items?.data !== current.items?.data ||
 				prior.items?.error !== current.items?.error ||
 				prior.structure?.data !== current.structure?.data ||

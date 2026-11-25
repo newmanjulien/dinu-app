@@ -1,34 +1,40 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import AuthEntryShell from '$lib/auth/components/AuthEntryShell.svelte';
 	import { setEntryPresentation } from '$lib/auth/entry-presentation.svelte';
-	import { localReturn } from '$lib/auth/navigation';
+	import {
+		createAccountHref,
+		isAccountEntryPath,
+		isCreateAccountPath,
+		localReturn,
+		loginHref
+	} from '$lib/auth/navigation';
 	import { useAccount, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	let { children } = $props();
 	const presentation = setEntryPresentation();
 	const account = useAccount();
 	const session = useViewerSession();
-	const joining = $derived(page.url.pathname === '/join');
-	const accountEntry = $derived(joining || page.url.pathname === '/login');
+	const creatingAccount = $derived(isCreateAccountPath(page.url.pathname));
+	const accountEntry = $derived(isAccountEntryPath(page.url.pathname));
+	const destination = $derived(localReturn(page.url.searchParams.get('returnTo')));
 	const accountHref = $derived(
-		`${resolve(joining ? '/login' : '/join')}?returnTo=${encodeURIComponent(localReturn(page.url.searchParams.get('returnTo')))}` as const
+		creatingAccount ? loginHref(destination) : createAccountHref(destination)
 	);
 </script>
 
 <AuthEntryShell
 	showFooter={presentation.showFooter && Boolean(accountEntry || account?.())}
-	signupStep={presentation.signupStep}
+	createAccountStep={presentation.createAccountStep}
 >
 	{#snippet footer()}
 		{#if accountEntry}
 			<p class="m-0 text-[13px] leading-5 text-ink-muted">
-				{joining ? 'Already have an account?' : 'Need an account?'}
+				{creatingAccount ? 'Already have an account?' : 'Need an account?'}
 				<a
 					href={accountHref}
 					class="text-ink-muted underline underline-offset-2 transition-colors hover:text-ink"
 				>
-					{joining ? 'Log in' : 'Join'}
+					{creatingAccount ? 'Log in' : 'Create account'}
 				</a>
 			</p>
 		{:else if account?.()}

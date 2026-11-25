@@ -21,49 +21,40 @@ export const deletedUser = v.union(
 export const companyCleanupPhases = [
 	'invitations',
 	'hubspot',
-	'operationReceipts',
-	'outputs',
-	'exports',
-	'approvals',
 	'deliveries',
-	'emailSelectionChunks',
-	'decisions',
+	'contractCleanups',
+	'operationReceipts',
+	'exports',
 	'buyerActivity',
-	'buyerActivityQuotaKeys',
 	'buyerLinks',
-	'buyerLinkShowings',
 	'discussions',
 	'contracts',
-	'contractState',
-	'contractDirectory',
-	'contractCleanups',
-	'validationCertificates',
-	'validationFacts',
-	'authoringMigrations',
-	'blocks',
-	'items',
-	'itemReceipts',
-	'contractReceipts',
-	'versions',
-	'pointer',
-	'templateSources',
-	'itemRevisions',
+	'templateData',
 	'csmBookings',
 	'memberships',
 	'company'
 ] as const;
+
 const companyDeletionFields = v.object({
 	companyId: v.id('company'),
 	issuer: v.string(),
 	clerkId: v.string(),
-	attemptId: v.string(),
+	executionId: v.string(),
 	requestedAt: v.number(),
 	cleanupJobId: v.optional(v.id('_scheduled_functions')),
 	cleanupGeneration: v.number()
 });
+export const deletingCompanyRecord = v.object({
+	id: v.id('companyDeletions'),
+	executionId: v.string(),
+	requestedAt: v.number(),
+	issuer: v.string(),
+	clerkId: v.string()
+});
 export const companyDeletion = v.union(
 	companyDeletionFields.extend({
-		status: v.union(v.literal('prepared'), v.literal('dispatched')),
+		status: v.literal('deleting'),
+		inFlight: v.boolean(),
 		phase: v.literal('invitations')
 	}),
 	companyDeletionFields.extend({

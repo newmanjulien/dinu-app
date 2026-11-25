@@ -2,7 +2,7 @@
 	import { getWorkspaceFeedback } from './workspace-feedback.svelte';
 	import StatusBubble from './StatusBubble.svelte';
 	import { getTemplateAuthoringSession } from '$lib/playbook/template-authoring-session.svelte';
-	const authoring = getTemplateAuthoringSession();
+	const authoring = getTemplateAuthoringSession('rep');
 	const buyers = getTemplateAuthoringSession('buyer');
 	const feedback = getWorkspaceFeedback();
 	let { completionNotice = null }: { completionNotice?: string | null } = $props();

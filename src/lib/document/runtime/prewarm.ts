@@ -26,7 +26,6 @@ function* alternatives(
 	availableItems = snapshot.source.items
 ): Generator<GeometryWork | undefined, void> {
 	const { source, concessions } = snapshot;
-	if (source.materialized) return;
 	const composer = artifacts.createComposer();
 	const preparation = artifacts.createPreparation();
 	const items = [...availableItems].sort(

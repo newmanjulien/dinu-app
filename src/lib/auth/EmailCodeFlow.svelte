@@ -6,34 +6,46 @@
 	import { useClerkReadiness } from './clerk-readiness';
 	import { beginStartupAttempt, recordStartup } from './startup-perf';
 	import { page } from '$app/state';
-	import { useClerkContext } from 'svelte-clerk';
-	import { localReturn, onboardingHref } from './navigation';
-	import { useSignIn, useSignUp } from 'svelte-clerk';
-	import AuthCodeStep from '$lib/auth/components/AuthCodeStep.svelte';
+	import { useClerkContext, useSignIn, useSignUp } from 'svelte-clerk';
+	import { createAccountDestination, isAccountEntryPath, localReturn } from './navigation';
+	import AuthCodeStep from './components/AuthCodeStep.svelte';
 	import { useEntryPresentation } from './entry-presentation.svelte';
-	import AuthHotkeyButton from '$lib/auth/components/AuthHotkeyButton.svelte';
-	import AuthStepFrame from '$lib/auth/components/AuthStepFrame.svelte';
-	import AuthTextInput from '$lib/auth/components/AuthTextInput.svelte';
-	import { createClerkEmailCodeAuthController, getClerkErrorCode } from '$lib/auth/email-code-auth';
+	import AuthHotkeyButton from './components/AuthHotkeyButton.svelte';
+	import AuthStepFrame from './components/AuthStepFrame.svelte';
+	import AuthTextInput from './components/AuthTextInput.svelte';
+	import { createClerkEmailCodeAuthController, getClerkErrorCode } from './email-code-auth';
 	import { useStartupPreparation } from './startup-preparation';
 	import { preloadDestination } from './destination-code';
+	import { useViewerSession } from './viewer-session.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 
-	type LoginStep = 'login' | 'code';
+	type EntryStep = 'email' | 'code';
+	type Props =
+		| { mode: 'login'; invitation?: never }
+		| { mode: 'create-account'; invitation?: never }
+		| { mode: 'invitation'; invitation: { email: string; companyName: string } };
 
-	let {
-		joining = false,
-		invitation
-	}: { joining?: boolean; invitation?: { email: string; companyName: string } } = $props();
+	let props: Props = $props();
+	const creatingAccount = $derived(props.mode === 'create-account');
+	const invitation = $derived(props.mode === 'invitation' ? props.invitation : undefined);
 	const presentation = useEntryPresentation();
 	const clerk = useClerkContext();
+	const session = useViewerSession();
 	const readiness = useClerkReadiness();
 	const preparation = useStartupPreparation();
+	const sessionEnding = $derived(
+		Boolean(
+			session &&
+			(session.closing ||
+				session.phase === 'signing-out' ||
+				session.phase === 'completing-deletion')
+		)
+	);
+	const activeSessionId = $derived(sessionEnding ? undefined : clerk.session?.id);
 	const navigation = new AccountNavigation(async (destination) => {
 		recordStartup('navigation-started');
 		await goto(destination, { invalidateAll: true });
-		if (page.url.pathname === '/login' || page.url.pathname === '/join')
-			throw new Error('Navigation returned to sign-in.');
+		if (isAccountEntryPath(page.url.pathname)) throw new Error('Navigation returned to log in.');
 		recordStartup('navigation-completed');
 	});
 	let opening = $state(false);
@@ -46,14 +58,12 @@
 			? page.url.pathname + page.url.search
 			: localReturn(page.url.searchParams.get('returnTo'))
 	);
-	const entryDestination = $derived.by(() => {
-		if (!joining || invitation) return returnTo;
-		const pathname = new URL(returnTo, page.url).pathname;
-		return ['/onboarding', '/invitation'].includes(pathname) ? returnTo : onboardingHref(returnTo);
-	});
+	const entryDestination = $derived(
+		creatingAccount ? createAccountDestination(returnTo) : returnTo
+	);
 	const authTicket = $derived(page.url.searchParams.get('__clerk_ticket'));
 	$effect(() => {
-		const id = clerk.session?.id;
+		const id = activeSessionId;
 		const destination = entryDestination;
 		untrack(() => {
 			if (id === observedSession) return;
@@ -94,7 +104,7 @@
 			!ticketStarted &&
 			!clerk.session &&
 			readiness.status === 'ready' &&
-			(joining ? signUpState.signUp : signInState.signIn)
+			(creatingAccount ? signUpState.signUp : signInState.signIn)
 		) {
 			ticketStarted = true;
 			void acceptTicket(ticket);
@@ -107,8 +117,8 @@
 		try {
 			if (!(await waitForAuth(current))) return;
 			prepareDestination();
-			if (joining) await authController.acceptTicket(ticket);
-			else await authController.acceptSignInTicket(ticket);
+			if (creatingAccount) await authController.acceptCreateAccountTicket(ticket);
+			else await authController.acceptLoginTicket(ticket);
 		} catch (error) {
 			if (current === generation) {
 				preparation.cancel();
@@ -141,16 +151,16 @@
 	}
 	onMount(() => {
 		hydrated = true;
-		recordStartup('sign-in-hydrated');
+		recordStartup('entry-hydrated');
 	});
 	onDestroy(() => {
 		cancelPending();
 		lifetime.abort();
-		if (!clerk.session) preparation.cancel();
+		if (!activeSessionId) preparation.cancel();
 	});
 
-	let step = $state<LoginStep>('login');
-	let email = $state(untrack(() => invitation?.email ?? ''));
+	let step = $state<EntryStep>('email');
+	let email = $state(untrack(() => (props.mode === 'invitation' ? props.invitation.email : '')));
 	let verificationCode = $state('');
 	let authErrorText = $state<string | null>(null);
 	let isSubmittingEmail = $state(false);
@@ -173,9 +183,9 @@
 		if (
 			invitation
 				? !signInState.signIn || !signUpState.signUp
-				: !(joining ? signUpState.signUp : signInState.signIn)
+				: !(creatingAccount ? signUpState.signUp : signInState.signIn)
 		)
-			throw new Error('Sign-in is unavailable. Please try again.');
+			throw new Error('Log in is unavailable. Please try again.');
 		return true;
 	}
 	async function retry() {
@@ -202,7 +212,7 @@
 			if (authTicket && !ticketStarted) return;
 			prepareDestination();
 			if (invitation) await authController.sendInvitationCode(normalizedEmail);
-			else if (joining) await authController.sendJoinCode(normalizedEmail);
+			else if (creatingAccount) await authController.sendCreateAccountCode(normalizedEmail);
 			else await authController.sendLoginCode(normalizedEmail);
 			if (current !== generation) return;
 			email = normalizedEmail;
@@ -212,7 +222,7 @@
 			preparation.cancel();
 			authErrorText =
 				getClerkErrorCode(error) === 'form_identifier_not_found'
-					? "Couldn't find your account."
+					? 'Couldn’t find your account.'
 					: authController.getErrorMessage(error);
 		} finally {
 			if (current === generation) isSubmittingEmail = false;
@@ -263,20 +273,16 @@
 		preparation.cancel();
 		verificationCode = '';
 		authErrorText = null;
-		step = 'login';
+		step = 'email';
 	}
 
 	$effect(() => {
-		presentation.showFooter = !invitation && step === 'login' && !opening && !ticketPending;
-		presentation.signupStep =
-			joining && !invitation && !authTicket && !clerk.session
-				? step === 'code'
-					? 2
-					: 1
-				: undefined;
+		presentation.showFooter = !invitation && step === 'email' && !opening && !ticketPending;
+		presentation.createAccountStep =
+			creatingAccount && !authTicket && !activeSessionId ? (step === 'code' ? 2 : 1) : undefined;
 		return () => {
 			presentation.showFooter = true;
-			presentation.signupStep = undefined;
+			presentation.createAccountStep = undefined;
 		};
 	});
 
@@ -289,29 +295,35 @@
 
 <RouteTitle
 	title={step === 'code'
-		? 'Enter your sign-in code'
+		? 'Enter your verification code'
 		: invitation
 			? `Join ${invitation.companyName}`
-			: joining
-				? 'Create your account'
-				: 'Sign in'}
+			: creatingAccount
+				? 'Create account'
+				: 'Log in'}
 />
 
 {#if opening || ticketPending}
-	<LoadingState label={opening ? 'Opening your account' : 'Signing in'} />
+	<LoadingState
+		label={opening
+			? 'Opening your account'
+			: creatingAccount
+				? 'Creating your account'
+				: 'Logging in'}
+	/>
 {:else}
-	{#if clerk.session}
+	{#if activeSessionId}
 		<AuthStepFrame title="Continue to Dinu">
 			{#if authErrorText}
 				<p role="alert" class="m-0 text-sm leading-5 text-danger">{authErrorText}</p>
 			{/if}
-			<AuthHotkeyButton onclick={() => void openDestination(clerk.session!.id, entryDestination)}>
+			<AuthHotkeyButton onclick={() => void openDestination(activeSessionId, entryDestination)}>
 				Try again
 			</AuthHotkeyButton>
 		</AuthStepFrame>
-	{:else if step === 'login'}
+	{:else if step === 'email'}
 		<AuthStepFrame
-			title={invitation ? `Welcome to Dinu` : joining ? 'Join Dinu' : 'Log in to Dinu'}
+			title={invitation ? 'Welcome to Dinu' : creatingAccount ? 'Create account' : 'Log in to Dinu'}
 			description={invitation
 				? `You’ll be joining ${invitation.companyName}’s workspace and we’ll create your account if you don’t have one yet.`
 				: undefined}
@@ -369,8 +381,8 @@
 	{/if}
 {/if}
 
-<!-- Keep the host mounted while Clerk waits for a signup challenge. -->
-{#if joining || invitation}
+<!-- Keep the host mounted while Clerk waits for an account-creation challenge. -->
+{#if creatingAccount || invitation}
 	<div
 		id="clerk-captcha"
 		class="flex justify-center"

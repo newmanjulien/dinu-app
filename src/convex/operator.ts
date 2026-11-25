@@ -3,6 +3,8 @@ import type { SourceBlock } from '../lib/document/source-model';
 import { sourceBlock } from '../lib/document/source-validators';
 import { validatePlaybook } from '../lib/playbook/audit';
 import type { TemplateItem } from '../lib/playbook/model';
+import { playbookStructure } from '../lib/playbook/structure';
+import { encodeStructure } from '../lib/playbook/structure-codec';
 import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/validation';
 import type { Doc, Id } from './_generated/dataModel';
 import { internalMutation, internalQuery, type QueryCtx } from './_generated/server';
@@ -28,8 +30,8 @@ import {
 	readLiveSnapshot,
 	activatePendingTemplate
 } from './templates';
-import { currentPendingTemplate } from './templateUploads';
-import { pendingTemplateMetadata } from './templateUploadValidators';
+import { currentPendingTemplate } from './templateSetup';
+import { pendingTemplateMetadata } from './templateSetupValidators';
 import { resolveSetupBooking } from './csmSetupState';
 
 /** Trusted, company-scoped inspection; original bytes are never exposed by customer status. */
@@ -175,12 +177,12 @@ async function activeSeed(
 		const historical = snapshot.items[index];
 		const manifest = version.items[index];
 		if (
-			!item.currentRevisionId ||
 			item.companyId !== company._id ||
 			!Number.isSafeInteger(item.contentRevision) ||
 			item.contentRevision < 1 ||
 			manifest.itemId !== item._id ||
 			manifest.revisionId !== item.currentRevisionId ||
+			manifest.audience !== item.audience ||
 			historical.companyId !== company._id ||
 			historical._id !== item._id ||
 			historical._creationTime !== item._creationTime ||
@@ -331,10 +333,24 @@ export const bootstrap = internalMutation({
 				itemId: measurementId,
 				itemCreatedAt: item._creationTime,
 				contentRevision: 1,
+				renderKey: measurementId,
 				body: businessItem(item)
 			};
-			const head = { ...item, currentRevisionId: measurementId };
-			itemBytes += documentBytes(item) + documentBytes(head) + documentBytes(contentRevision);
+			const initialHead = {
+				format: 1 as const,
+				companyId,
+				audience: item.audience,
+				contentRevision: 1,
+				renderKey: measurementId,
+				structure: new ArrayBuffer(0)
+			};
+			const packedHead = {
+				...initialHead,
+				currentRevisionId: measurementId,
+				structure: encodeStructure(playbookStructure(item))
+			};
+			itemBytes +=
+				documentBytes(initialHead) + documentBytes(packedHead) + documentBytes(contentRevision);
 			contentReadBytes += documentBytes(contentRevision);
 		}
 		const versionBytes = documentBytes({
@@ -345,7 +361,15 @@ export const bootstrap = internalMutation({
 			itemCount: items.length,
 			snapshotBytes,
 			contentReadBytes,
-			items: items.map(() => ({ itemId: measurementId, revisionId: measurementId }))
+			headReadBytes: 0,
+			structureResultBytes: 0,
+			authoringGeneration: 1,
+			structuralGeneration: 1,
+			items: items.map((item) => ({
+				itemId: measurementId,
+				revisionId: measurementId,
+				audience: item.audience
+			}))
 		});
 		if (contentReadBytes + versionBytes + documentBytes(templateSource) + 65_536 > 16 * 1024 * 1024)
 			throw templateRejected('Template snapshot exceeds supported read capacity.');

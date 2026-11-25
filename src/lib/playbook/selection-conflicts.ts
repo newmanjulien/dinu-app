@@ -1,8 +1,9 @@
 import type { DocumentOverlayItem } from './document-overlay';
-import type { SourceIndex } from '../document/source-index';
+import type { ValidationSourceFacts } from '../document/validation-source';
 import type { ConcessionSelection } from './model';
 import { createChangeConflictChecker, iterateChangeConflicts } from './conflicts';
 import { complete } from '../document/iteration';
+
 export function selectedItems(
 	items: readonly DocumentOverlayItem[],
 	selection: ConcessionSelection
@@ -11,23 +12,12 @@ export function selectedItems(
 		const selected = selection[item.itemId];
 		if (selected === undefined) return [];
 		const concession = item.concessions.find((c) => c.id === selected);
-		return concession
-			? [
-					{
-						itemId: item.itemId,
-						concession: concession.changes.some((change) => change.suppressed)
-							? {
-									...concession,
-									changes: concession.changes.filter((change) => !change.suppressed)
-								}
-							: concession
-					}
-				]
-			: [];
+		return concession ? [{ itemId: item.itemId, concession }] : [];
 	});
 }
+
 export function conflictsForConcession(
-	index: SourceIndex,
+	index: ValidationSourceFacts,
 	items: readonly DocumentOverlayItem[],
 	selection: ConcessionSelection,
 	itemId: string,
@@ -41,13 +31,12 @@ export function conflictsForConcession(
 	return selectedItems(items, selection).filter(
 		(a) =>
 			a.itemId !== itemId &&
-			candidate.changes.some(
-				(x) => !x.suppressed && a.concession.changes.some((y) => !y.suppressed && conflicts(x, y))
-			)
+			candidate.changes.some((x) => a.concession.changes.some((y) => conflicts(x, y)))
 	);
 }
+
 export function activeConflicts(
-	index: SourceIndex,
+	index: ValidationSourceFacts,
 	items: readonly DocumentOverlayItem[],
 	selection: ConcessionSelection
 ) {

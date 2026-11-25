@@ -112,13 +112,6 @@
 				class={`document-highlight document-highlight--${rect.kind}`}
 				data-trigger-state={rect.triggerState}
 			/>
-			{#if rect.kind === 'discussion-proposal'}
-				<line
-					x1={rect.x} x2={rect.x + rect.width}
-					y1={rect.y + rect.height / 2} y2={rect.y + rect.height / 2}
-					class="stroke-ink-muted" stroke-width="1"
-				/>
-			{/if}
 		{/each}
 	</svg><div
 		data-document-chrome

@@ -20,9 +20,8 @@ export async function fileOwned(ctx: QueryCtx, fileId: Id<'_storage'>) {
 			.query('company')
 			.withIndex('by_avatarId', (q) => q.eq('avatarId', fileId))
 			.first(),
-		// Core attempts retain this physical table so browser acknowledgment IDs stay valid.
 		ctx.db
-			.query('hubspotExports')
+			.query('wordExports')
 			.withIndex('by_fileId', (q) => q.eq('fileId', fileId))
 			.first(),
 		ctx.db

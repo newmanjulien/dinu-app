@@ -5,7 +5,7 @@
 	import CsmBooking from './CsmBooking.svelte';
 	import type { SupportContent } from './csm-support';
 
-	import type { CsmOwner } from './csm-preload.svelte';
+	import type { CsmOwner } from './csm-owner.svelte';
 	import type { AvailabilitySelection } from './csm-availability';
 	let {
 		owner,

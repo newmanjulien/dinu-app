@@ -2,7 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import type { DocumentWorkspace } from '$lib/document/runtime/workspace-context';
 	import type { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
-	import type { HelpVariant } from '$lib/components/ui/modal/help-content';
+	import type { TemplateHelpVariant } from '$lib/components/ui/modal/help-content';
 	import type { TemplateAudience } from '$lib/playbook/model';
 	import DocumentHeading from '$lib/components/document/DocumentHeading.svelte';
 	import DocumentSection from '$lib/components/document/DocumentSection.svelte';
@@ -27,7 +27,7 @@
 	}: {
 		kind: 'saved' | 'template';
 		audience?: TemplateAudience;
-		helpVariant?: Exclude<HelpVariant, 'buyer'>;
+		helpVariant?: TemplateHelpVariant;
 		helpReady?: boolean;
 		help?: HelpSession;
 		helpHosted?: boolean;
@@ -43,8 +43,9 @@
 	} = $props();
 </script>
 
-{#if active && helpVariant}
+{#if active && (help || helpVariant)}
 	<WorkspaceChrome
+		{kind}
 		{helpVariant}
 		{helpReady}
 		{help}

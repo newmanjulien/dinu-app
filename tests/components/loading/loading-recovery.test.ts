@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BuyerContract } from '../../../src/lib/buyer/contract.svelte';
+import { BuyerContract, type BuyerDocumentContent } from '../../../src/lib/buyer/contract.svelte';
 import { BuyerLinkController } from '../../../src/lib/buyer/links.svelte';
 import { BuyerLinkCopyFeedback } from '../../../src/lib/buyer/copy-feedback.svelte';
 import { HubSpotDeals } from '../../../src/lib/hubspot-deals.svelte';
-import type { NativePage } from '../../../src/lib/native-pagination';
-import { LiveDiscussionPages } from '../../../src/lib/discussions/live-pages.svelte';
+import { DiscussionSession } from '../../../src/lib/discussions/session.svelte';
 import { ReadAttempt } from '../../../src/lib/auth/attempt';
 import { api } from '../../../src/convex/_generated/api';
 import { getFunctionName, type FunctionReference, type FunctionReturnType } from 'convex/server';
@@ -23,7 +22,6 @@ function snapshots<Query extends FunctionReference<'query'>>(expectedQuery: Quer
 			expect(getFunctionName(query)).toBe(getFunctionName(expectedQuery));
 			const release = vi.fn();
 			reads.push({
-				// The checked query identity above correlates the erased subscription callback.
 				receive: (value) => receive(value as FunctionReturnType<typeof query>),
 				fail: (error) => {
 					fail?.(error);
@@ -38,14 +36,18 @@ function snapshots<Query extends FunctionReference<'query'>>(expectedQuery: Quer
 const membershipId = 'member' as Id<'memberships'>;
 const contractId = 'contract' as Id<'savedContracts'>;
 const buyerCode = 'Ab3Cd4Ef5Gh6I';
-const buyerContent: FunctionReturnType<typeof api.buyerLinks.currentDocument> = {
-	contentIdentity: 'approved-document' as Id<'contractDocuments'>,
+const buyerState: FunctionReturnType<typeof api.buyerLinks.currentState> = {
+	templateVersionId: 'version' as Id<'templateVersions'>,
 	displayIdentity: 'approved:0',
 	title: 'Contract',
 	contentRevision: 0,
-	document: { blocks: [], pieceGroups: [], aliasGroups: [], removedBlockGroups: [] },
-	annotationGroups: [],
-	explanations: []
+	concessions: {},
+	appliedOverlays: []
+};
+const buyerContent: BuyerDocumentContent = {
+	...buyerState,
+	blocks: [],
+	rawExplanations: []
 };
 const unused = () => {
 	throw new Error('Unused fixture capability');
@@ -100,25 +102,25 @@ it('evicts a hung coalesced deal request and ignores its late completion after a
 	owner.destroy();
 });
 it('bounds snapshot acquisition and ignores results after a buyer view is replaced', async () => {
-	const { client, reads } = snapshots(api.buyerLinks.currentDocument);
+	const { client, reads } = snapshots(api.buyerLinks.currentState);
 	const accept = vi.fn(),
 		fail = vi.fn();
 	const replaced = new ReadAttempt(15_000);
 	const first = queryOnce(
 		client,
-		api.buyerLinks.currentDocument,
+		api.buyerLinks.currentState,
 		{ token: buyerCode },
 		replaced.signal
 	).then(accept);
 	const cancellation = expect(first).rejects.toThrow('replaced');
 	replaced.abort();
-	reads[0].receive(buyerContent);
+	reads[0].receive(buyerState);
 	await cancellation;
 	expect(accept).not.toHaveBeenCalled();
 	const attempt = new ReadAttempt(15_000);
 	const second = queryOnce(
 		client,
-		api.buyerLinks.currentDocument,
+		api.buyerLinks.currentState,
 		{ token: buyerCode },
 		attempt.signal
 	).then(accept, fail);
@@ -126,70 +128,48 @@ it('bounds snapshot acquisition and ignores results after a buyer view is replac
 	await second;
 	expect(fail).toHaveBeenCalledTimes(1);
 	expect(reads[1].release).toHaveBeenCalledTimes(1);
-	reads[1].receive(buyerContent);
+	reads[1].receive(buyerState);
 	await Promise.resolve();
 	expect(accept).not.toHaveBeenCalled();
 });
-it('retains accepted discussions through a local page timeout but clears it on delivered access rejection', async () => {
-	type Thread = FunctionReturnType<typeof api.discussions.threads>['page'][number];
-	const reads: { receive: (page: NativePage<Thread>) => void; fail: (error: Error) => void }[] = [];
-	const history = new LiveDiscussionPages<Thread>((changed, fail) => {
-		let value: NativePage<Thread> | undefined;
-		reads.push({
-			receive: (page) => {
-				value = page;
-				changed();
-			},
-			fail
-		});
-		return { unsubscribe: vi.fn(), getCurrentValue: () => value };
-	});
-	history.reset();
-	reads[0].receive({
-		results: [
-			{
-				id: 'thread' as Id<'discussionThreads'>,
-				contentIdentity: 'version:published:1',
-				contentRevision: 1,
-				anchor: {
-					start: { kind: 'source', point: { sourceKey: 'p', offset: 0 } },
-					end: { kind: 'source', point: { sourceKey: 'p', offset: 1 } },
-					quote: 'x'
-				},
-				type: 'comment',
-				root: {
-					id: 'message' as Id<'discussionMessages'>,
-					text: 'Comment',
-					revision: 1,
-					deleted: false,
-					createdAt: 0,
-					operationId: null,
-					author: { key: 'buyer', name: 'Buyer', avatarUrl: null, buyer: true }
-				}
-			}
-		],
-		status: 'CanLoadMore',
-		loadMore: () => {
-			reads[0].receive({
-				results: [...history.rows],
-				status: 'LoadingMore',
-				loadMore: () => false
-			});
-			return true;
+it('clears discussions on delivered access rejection and recovers on retry', async () => {
+	const { client, reads } = snapshots(api.discussions.list);
+	const session = new DiscussionSession(
+		client as unknown as ConstructorParameters<typeof DiscussionSession>[0],
+		{ token: buyerCode },
+		() => 1,
+		() => ({ readOnly: true, generation: 0 })
+	);
+	session.setActive(true);
+	const thread: FunctionReturnType<typeof api.discussions.list>['page'][number] = {
+		id: 'thread' as Id<'discussionThreads'>,
+		contentRevision: 1,
+		anchor: {
+			start: { kind: 'source', point: { sourceKey: 'p', offset: 0 } },
+			end: { kind: 'source', point: { sourceKey: 'p', offset: 1 } },
+			quote: 'x'
+		},
+		root: {
+			id: 'message' as Id<'discussionMessages'>,
+			text: 'Comment',
+			revision: 1,
+			createdAt: 0,
+			operationId: null,
+			author: { key: 'buyer', name: 'Buyer', avatarUrl: null, buyer: true }
 		}
-	});
-	await Promise.resolve();
-	const rows = history.rows;
-	history.loadMore();
-	await vi.advanceTimersByTimeAsync(15_001);
-	expect(history.error?.message).toContain('timed out');
-	expect(history.rows[0]).toEqual(rows[0]);
-	expect(history.authorized).toBe(true);
-	history.retry();
-	reads.at(-1)!.fail(new Error('Access revoked'));
-	expect(history.rows).toEqual([]);
-	expect(history.authorized).toBe(false);
-	history.destroy();
+	};
+	reads[0].receive({ page: [thread], isDone: true, continueCursor: '' });
+	expect(session.authorized).toBe(true);
+	expect(session.threads).toEqual([thread]);
+	reads[0].fail(new Error('Access revoked'));
+	expect(session.authorized).toBe(false);
+	expect(session.threads).toEqual([]);
+	expect(session.error).toContain('Comments are unavailable');
+	session.retry();
+	reads.at(-1)!.receive({ page: [thread], isDone: true, continueCursor: '' });
+	expect(session.authorized).toBe(true);
+	expect(session.threads).toEqual([thread]);
+	session.destroy();
 });
 
 it('retains the accepted buyer resource through an opening retry and tears it down on access withdrawal', () => {
@@ -243,7 +223,7 @@ it('reports successful clipboard writes to one feedback owner and extends dismis
 				return latest as FunctionReturnType<typeof query>;
 			},
 			action: async (action) => {
-				expect(getFunctionName(action)).toBe(getFunctionName(api.buyerLinkActions.ensureLatest));
+				expect(getFunctionName(action)).toBe(getFunctionName(api.buyerLinks.ensureLatest));
 				return { ...latest, created: false } as FunctionReturnType<typeof action>;
 			}
 		},

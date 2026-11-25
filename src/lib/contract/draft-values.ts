@@ -1,89 +1,67 @@
-import {
-	MAX_ACTIVITY_COMMANDS,
-	MAX_SAVE_COMMANDS,
-	type ActivityCommand
-} from './activity-commands';
-import { validContractState } from './persisted-values';
-import type { ContractSaveRequest } from './persistence.svelte';
-import type { ContractState } from './saved';
-import { parseOperationId } from './operation-identity';
+import { MAX_PLAYBOOK_ITEMS } from '../playbook/limits';
+
+export type ContractSaveRequest = {
+	id: string;
+	operationId: string;
+	expectedStateRevision: number;
+	selections: Record<string, string>;
+};
 
 export type ContractDraft = {
-	version: 12;
-	commands: ActivityCommand[];
-	base: ContractState;
+	version: 1;
+	baseStateRevision: number;
+	selections: Record<string, string>;
 	request: ContractSaveRequest | null;
 	conflict: boolean;
-	blocked: boolean;
 };
+
 export function draftObject(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+
 const identifier = (value: unknown): value is string =>
 	typeof value === 'string' && value.trim().length > 0 && value.length <= 200;
-export function validDraftCommands(value: unknown, limit: number): value is ActivityCommand[] {
-	if (!Array.isArray(value) || value.length > limit) return false;
-	const ids = new Set<string>();
-	for (const c of value) {
-		if (
-			!draftObject(c) ||
-			Object.keys(c).some(
-				(key) => !['id', 'itemId', 'action', 'expectedCurrentChangeId', 'occurredAt'].includes(key)
-			) ||
-			!(typeof c.id === 'string' && parseOperationId(c.id)) ||
-			ids.has(c.id) ||
-			!identifier(c.itemId) ||
-			!(c.expectedCurrentChangeId === null || identifier(c.expectedCurrentChangeId)) ||
-			typeof c.occurredAt !== 'number' ||
-			!Number.isFinite(c.occurredAt) ||
-			!draftObject(c.action) ||
-			!(c.action.kind === 'withdraw'
-				? Object.keys(c.action).length === 1
-				: c.action.kind === 'set' &&
-					Object.keys(c.action).every((key) => ['kind', 'optionId'].includes(key)) &&
-					(c.action.optionId === null || identifier(c.action.optionId)))
-		)
-			return false;
-		ids.add(c.id);
+
+const natural = (value: unknown): value is number =>
+	typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+export function validSelections(value: unknown): value is Record<string, string> {
+	if (!draftObject(value)) return false;
+	const entries = Object.entries(value);
+	if (entries.length > MAX_PLAYBOOK_ITEMS) return false;
+	for (const [k, v] of entries) {
+		if (!identifier(k) || !identifier(v)) return false;
 	}
 	return true;
 }
+
 export function validDraftRequest(value: unknown, id: string): value is ContractSaveRequest {
 	return (
 		draftObject(value) &&
-		Object.keys(value).every((key) => ['id', 'operationId', 'commands'].includes(key)) &&
+		Object.keys(value).every((key) =>
+			['id', 'operationId', 'expectedStateRevision', 'selections'].includes(key)
+		) &&
 		value.id === id &&
-		typeof value.operationId === 'string' &&
-		Boolean(parseOperationId(value.operationId)) &&
-		validDraftCommands(value.commands, MAX_SAVE_COMMANDS) &&
-		value.commands.length > 0
+		identifier(value.operationId) &&
+		natural(value.expectedStateRevision) &&
+		validSelections(value.selections)
 	);
 }
 
-/** Only the post-reset envelope can become a live journal owner. */
 export function readDraft(value: unknown, id: string): ContractDraft | undefined {
 	if (
 		!draftObject(value) ||
 		Object.keys(value).some(
-			(key) => !['version', 'base', 'request', 'conflict', 'blocked', 'commands'].includes(key)
+			(key) => !['version', 'baseStateRevision', 'selections', 'request', 'conflict'].includes(key)
 		)
 	)
 		return;
 	if (
-		value.version !== 12 ||
-		!validContractState(value.base) ||
+		value.version !== 1 ||
+		!natural(value.baseStateRevision) ||
+		!validSelections(value.selections) ||
 		typeof value.conflict !== 'boolean' ||
-		typeof value.blocked !== 'boolean' ||
-		!validDraftCommands(value.commands, MAX_ACTIVITY_COMMANDS) ||
 		!(value.request === null || validDraftRequest(value.request, id))
-	)
-		return;
-	const commands = value.commands;
-	if (
-		value.request &&
-		!value.request.commands.every(
-			(command, index) => JSON.stringify(command) === JSON.stringify(commands[index])
-		)
 	)
 		return;
 	return value as ContractDraft;

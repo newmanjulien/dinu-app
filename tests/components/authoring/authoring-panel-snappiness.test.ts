@@ -8,14 +8,6 @@ import { companyId, documentFixture, membershipId } from '../../support/document
 import { controlledClient } from '../../support/transport';
 import { settle } from '../../support/svelte';
 
-const context = vi.hoisted(() => ({
-	templateSource: {} as { data?: unknown },
-	client: undefined as unknown
-}));
-vi.mock('convex-svelte', () => ({
-	useQuery: () => context.templateSource,
-	useConvexClient: () => context.client
-}));
 vi.mock(
 	'$lib/components/document/DocumentViewer.svelte',
 	() => import('./AuthoringSnappinessViewer.svelte')
@@ -47,12 +39,9 @@ function button(text: string) {
 async function fixture() {
 	const data = documentFixture(),
 		network = controlledClient();
-	context.client = network.client;
-	context.templateSource = {
-		data: {
-			blocks: data.blocks,
-			templateSourceFingerprint: data.structure.templateSourceFingerprint
-		}
+	const sourcePayload = {
+		blocks: data.blocks,
+		templateSourceFingerprint: data.structure.templateSourceFingerprint
 	};
 	templateSource = new TemplateSource(network.client, membershipId);
 	session = new TemplateAuthoringSession({
@@ -60,6 +49,7 @@ async function fixture() {
 		client: network.client,
 		membershipId,
 		companyId,
+		audience: 'rep',
 		registerEditor: () => () => {}
 	});
 	session.start();
@@ -68,7 +58,7 @@ async function fixture() {
 		props: { state: csmState(), authoring: session }
 	});
 	await settle();
-	network.publish('templateSources:authoringSource', context.templateSource.data);
+	network.publish('templateSources:authoringSource', sourcePayload);
 	network.publish('playbookItems:currentStructure', data.structure);
 	await settle();
 	return { data, network };

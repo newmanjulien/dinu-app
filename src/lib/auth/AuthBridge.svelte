@@ -3,19 +3,54 @@
 	import SessionStatus from './SessionStatus.svelte';
 	import { AccountLifecycle } from './account-lifecycle.svelte';
 	import { setViewerSession, type SessionResources } from './viewer-session.svelte';
-	import { loginDestination } from './navigation';
+	import { isEntryPath, loginDestination } from './navigation';
+	import { ReadAttempt, waitForRead } from './attempt';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
+	import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
 	let { children }: { children: Snippet } = $props();
 	const clerk = useClerkContext();
 	let alive = true;
 	const resources = new Set<SessionResources>();
+	async function signOutClerk(allowClientDestroy: boolean) {
+		const instance = clerk.clerk;
+		if (!instance) {
+			if (!clerk.session) return;
+			throw new Error('Authentication is unavailable.');
+		}
+		const attempt = allowClientDestroy ? new ReadAttempt(15_000) : undefined;
+		const bounded = <T,>(work: Promise<T>) => (attempt ? waitForRead(work, attempt.signal) : work);
+		async function destroyClient() {
+			if (!allowClientDestroy || !instance?.client || attempt?.signal.aborted) return false;
+			try {
+				await bounded(instance.client.destroy());
+			} catch {
+				/* Fall through to active-session verification below. */
+			}
+			await tick();
+			return !clerk.session && !instance.session;
+		}
+		try {
+			try {
+				await bounded(instance.signOut(() => {}));
+			} catch (error) {
+				await tick();
+				if (!clerk.session && !instance.session) return;
+				if (await destroyClient()) return;
+				throw error;
+			}
+			await tick();
+			if (clerk.session || instance.session) {
+				if (await destroyClient()) return;
+				throw new Error('Unable to clear your session.');
+			}
+		} finally {
+			attempt?.complete();
+		}
+	}
 	const controller = new AccountLifecycle({
-		signOut: async () => {
-			if (!clerk.clerk) throw new Error('Authentication is unavailable.');
-			await clerk.clerk.signOut(() => {});
-		},
+		signOut: () => signOutClerk(false),
+		signOutDeleted: () => signOutClerk(true),
 		cancelReads: () => resources.forEach((resource) => resource.cancelReads()),
 		clear: () =>
 			resources.forEach((resource) => {
@@ -68,7 +103,6 @@
 		discardAndSignOut: () => controller.discardAndSignOut(),
 		dismissError: () => controller.dismissError(),
 		returnToLogin: () => controller.returnToLogin(),
-		reset: () => controller.reset(),
 		signOut: () => controller.signOut(),
 		exitCompany: (action, discard) => {
 			const userId = controller.userId;
@@ -87,8 +121,8 @@
 				(clerk.session && clerk.session.id !== sessionId) ||
 				(clerk.user && clerk.user.id !== userId)
 			)
-				return;
-			controller.reset(false);
+				return Promise.resolve();
+			return controller.completeAccountDeletion();
 		}
 	});
 	let identity: string | null | undefined;
@@ -101,8 +135,7 @@
 			const initial = identity === undefined;
 			identity = sessionId;
 			controller.identity(sessionId, userId, loaded);
-			if (initial && !sessionId && !['/login', '/join', '/invitation'].includes(page.url.pathname))
-				controller.reset(true);
+			if (initial && !sessionId && !isEntryPath(page.url.pathname)) controller.returnToLogin(true);
 		});
 	});
 	onMount(() => controller.start());

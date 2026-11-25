@@ -10,6 +10,6 @@
 <SnappinessContext {state} {authoring}>
 	<DocumentSection>
 		{#snippet heading()}{/snippet}
-		<TemplateWorkspace />
+		<TemplateWorkspace audience="rep" />
 	</DocumentSection>
 </SnappinessContext>

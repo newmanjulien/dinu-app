@@ -1,19 +1,17 @@
 import { v } from 'convex/values';
-import { contractRenderTransport } from './contractValidators';
-import { sourceTarget } from '../lib/document/source-validators';
-import { trigger } from '../lib/playbook/validators';
-import { readiness } from '../lib/contract/changes';
+import { sourceBlock } from '../lib/document/source-validators';
+import { contractChange, textTrigger, trigger } from '../lib/playbook/validators';
 
-/** A small derived pointer, revoked synchronously by logical deletion. */
+/** Small derived pointer, auto-synced when 0 pending & 0 rejected concessions. */
 export const buyerCurrentView = v.object({
-	documentId: v.id('contractDocuments'),
-	documentRevision: v.number(),
-	documentFingerprint: v.string(),
-	title: v.string(),
 	templateVersionId: v.id('templateVersions'),
+	title: v.string(),
 	buyerName: v.union(v.string(), v.null()),
+	concessions: v.record(v.id('playbookItems'), v.string()),
+	contentRevision: v.number(),
 	displayIdentity: v.string()
 });
+
 export const buyerLink = v.object({
 	companyId: v.id('company'),
 	contractId: v.id('savedContracts'),
@@ -22,34 +20,50 @@ export const buyerLink = v.object({
 	createdAt: v.number(),
 	currentView: v.union(buyerCurrentView, v.null())
 });
+
 export const buyerExplanation = v.object({
 	itemId: v.id('playbookItems'),
-	trigger,
+	trigger: textTrigger,
 	explanation: v.string()
 });
-export const currentBuyerDocument = v.object({
+
+/** Only applied concession changes — never unapplied alternatives or internal rep notes. */
+export const appliedOverlay = v.object({
+	itemId: v.id('playbookItems'),
+	trigger,
+	concessions: v.array(
+		v.object({
+			id: v.string(),
+			changes: v.array(contractChange)
+		})
+	)
+});
+
+/** Immutable template payload fetched once per templateVersionId on a buyer link. */
+export const buyerTemplateContent = v.object({
+	templateVersionId: v.id('templateVersions'),
+	blocks: v.array(sourceBlock),
+	explanations: v.array(buyerExplanation)
+});
+
+/** Small reactive state pushed to a buyer link when title or approved concessions change. */
+export const buyerDocumentState = v.object({
+	templateVersionId: v.id('templateVersions'),
 	title: v.string(),
-	document: contractRenderTransport,
-	contentIdentity: v.id('contractDocuments'),
 	contentRevision: v.number(),
 	displayIdentity: v.string(),
-	explanations: v.array(buyerExplanation),
-	annotationGroups: v.array(v.array(v.object({ target: sourceTarget })))
+	concessions: v.record(v.id('playbookItems'), v.string()),
+	appliedOverlays: v.array(appliedOverlay)
 });
+
 export const linkSummary = v.object({
 	id: v.id('buyerLinks'),
 	token: v.string(),
 	createdAt: v.number()
 });
+
 export const linkCapture = linkSummary.extend({ created: v.boolean() });
-export const linkPreparation = v.union(
-	v.object({ kind: v.literal('existing') }),
-	v.object({
-		kind: v.literal('prepared'),
-		expectedState: readiness.fields.expectation,
-		operationId: v.string()
-	})
-);
+
 export const publicStatus = v.union(
 	v.object({ kind: v.literal('unavailable') }),
 	v.object({

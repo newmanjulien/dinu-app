@@ -1,7 +1,7 @@
 import { ConvexError, v } from 'convex/values';
 import { mutation } from './_generated/server';
 import { accessibleContract, requireMembership } from './auth';
-import { linkFor } from './buyerCurrent';
+import { hasSingleActiveOwnLink, linkFor } from './buyerLinks';
 
 function validVisitId(visitId: string) {
 	if (!visitId || visitId.length > 100) throw new ConvexError('Invalid visit.');
@@ -53,13 +53,7 @@ export const claimFirstBuyerLinkHintShowing = mutation({
 		const access = await requireMembership(ctx, membershipId);
 		if (access.membership.firstBuyerLinkHintShowing)
 			return access.membership.firstBuyerLinkHintShowing.visitId === visitId;
-		const ownLinks = await ctx.db
-			.query('buyerLinks')
-			.withIndex('by_companyId_and_creatorId', (q) =>
-				q.eq('companyId', access.companyId).eq('creatorId', access.profile._id)
-			)
-			.take(2);
-		if (ownLinks.length !== 1 || !ownLinks[0].currentView) return false;
+		if (!(await hasSingleActiveOwnLink(ctx, access.companyId, access.profile._id))) return false;
 		await ctx.db.patch('memberships', access.membershipId, {
 			firstBuyerLinkHintShowing: { visitId, shownAt: Date.now() }
 		});

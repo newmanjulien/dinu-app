@@ -89,7 +89,7 @@ function sharedSetup() {
 }
 function setup(value: unknown) {
 	setupStatus = value;
-	network.publish('templateUploads:status', value);
+	network.publish('templateSetup:status', value);
 	network.publish('csmBookings:setupStatus', sharedSetup());
 }
 const pending = {
@@ -153,7 +153,7 @@ beforeEach(() => {
 	action = vi.fn(async () => ready);
 	mutation = vi.fn(async () => null);
 	network = controlledClient((observation) => {
-		if (observation.name === 'templateUploads:status') observation.update(setupStatus);
+		if (observation.name === 'templateSetup:status') observation.update(setupStatus);
 		if (observation.name === 'csmBookings:setupStatus') observation.update(sharedSetup());
 	});
 	context.client = {
@@ -165,7 +165,7 @@ beforeEach(() => {
 	};
 	context.getToken.mockResolvedValue('synthetic-token');
 	localStorage.clear();
-	route('/template');
+	route('/contracts');
 	navigating.to = null;
 	setNavigate(async (path) => {
 		route(path);
@@ -176,13 +176,21 @@ afterEach(async () => {
 	document.body.innerHTML = '';
 	vi.useRealTimers();
 });
-it('keeps upload help collapsed and idle until requested across revisions and route visits, including optional failure', async () => {
+it('renders no support widget before template release, and keeps post-release help collapsed and idle until requested across revisions and route visits, including optional failure', async () => {
+	route('/template/setup');
 	const state = csmState();
 	state.viewer.templateReady = false;
+	state.viewer.membership.supportWidgetCollapsed = true;
 	action.mockRejectedValue(new Error('optional failure'));
 	attach(state);
-	await settle();
+	await paint();
 	expect(action).not.toHaveBeenCalled();
+	expect(document.querySelector('.widget-action')).toBeNull();
+	route('/contracts');
+	await paint();
+	expect(action).not.toHaveBeenCalled();
+	expect(document.querySelector('.widget-action')).toBeNull();
+	state.viewer.templateReady = true;
 	await paint();
 	await imports();
 	expect(action).not.toHaveBeenCalled();
@@ -194,9 +202,9 @@ it('keeps upload help collapsed and idle until requested across revisions and ro
 	state.revision++;
 	await paint();
 	expect(action).toHaveBeenCalledTimes(1);
-	route('/contracts');
+	route('/integrations');
 	await paint();
-	route('/template');
+	route('/contracts');
 	await paint();
 	expect(action).toHaveBeenCalledTimes(1);
 	document.querySelector('.widget-action')!.dispatchEvent(new Event('pointerenter'));
@@ -243,11 +251,6 @@ it('waits for an unblocked owner to warm times and a fresh usable receipt to ena
 });
 it('initially collapsed support stays idle until opening and unresolved receipt suppresses reopen reads until failed', async () => {
 	const state = csmState();
-	state.viewer.company.setupCall = {
-		state: 'scheduled',
-		start: '2026-11-14T15:00:00Z',
-		end: '2026-11-14T15:30:00Z'
-	};
 	attach(state);
 	await paint();
 	await imports();
@@ -264,9 +267,9 @@ it('initially collapsed support stays idle until opening and unresolved receipt 
 	expect(action).toHaveBeenCalledTimes(2);
 });
 it.each(['/template', '/contracts/new'])(
-	'books before optional upload on %s, waits durably, and opens help only on request without navigating',
+	'books before optional upload on /template/setup, waits durably, and updates help availability on release to %s',
 	async (path) => {
-		route(path);
+		route('/template/setup');
 		const state = csmState();
 		state.form = true;
 		state.viewer.templateReady = false;
@@ -314,12 +317,23 @@ it.each(['/template', '/contracts/new'])(
 		expect(document.querySelector('[aria-label="Waiting for Julien"]')!.textContent).toContain(
 			'contract.docx'
 		);
-		expect(button('Choose another file')).toBeDefined();
+		expect(button('Choose a different file')).toBeDefined();
 		expect(mutation).not.toHaveBeenCalled();
-		expect(page.url.pathname).toBe(path);
+		expect(page.url.pathname).toBe('/template/setup');
+		expect(document.querySelector('.widget-action')).toBeNull();
+		expect(order).toEqual(['upload']);
 		state.viewer.templateReady = true;
+		state.viewer.company.setupCall = null;
 		state.form = false;
+		route(path);
 		await paint();
+		if (path === '/template') {
+			expect(document.querySelector('.widget-action')).toBeNull();
+			expect(document.querySelector('dialog[open]')).toBeNull();
+			expect(order).toEqual(['upload']);
+			expect(page.url.pathname).toBe(path);
+			return;
+		}
 		await imports();
 		expect(document.querySelector('dialog[open]')).toBeNull();
 		await open();
@@ -330,10 +344,10 @@ it.each(['/template', '/contracts/new'])(
 	}
 );
 it('replaces the cache on transport change and ignores prior late work', async () => {
+	route('/contracts');
 	const old = deferred<Availability>();
 	action.mockReturnValue(old.promise);
 	const state = csmState();
-	state.viewer.templateReady = false;
 	attach(state);
 	await paint();
 	await open();
@@ -349,8 +363,8 @@ it('replaces the cache on transport change and ignores prior late work', async (
 	await settle();
 	expect(document.querySelector('.slot-button')).not.toBeNull();
 });
-it('calendar failures never fail uploads and repeated uploads do not speculatively refresh help', async () => {
-	route('/template');
+it('repeated uploads on /template/setup never render support or trigger calendar reads', async () => {
+	route('/template/setup');
 	const state = csmState();
 	state.form = true;
 	state.viewer.templateReady = false;
@@ -362,12 +376,7 @@ it('calendar failures never fail uploads and repeated uploads do not speculative
 	setupStatus = { kind: 'upload' };
 	attach(state);
 	await paint();
-	await imports();
-	vi.setSystemTime(now + 120_001);
-	action.mockRejectedValue(new Error('optional calendar error'));
-	document.querySelector('.widget-action')!.dispatchEvent(new Event('pointerenter'));
-	await settle();
-	expect(action).toHaveBeenCalledTimes(1);
+	expect(document.querySelector('.widget-action')).toBeNull();
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(
@@ -386,15 +395,16 @@ it('calendar failures never fail uploads and repeated uploads do not speculative
 		expect(document.querySelector('[role=alert]')).toBeNull();
 	};
 	await upload();
-	button('Choose another file').click();
+	button('Choose a different file').click();
 	await settle();
 	await upload();
-	expect(action).toHaveBeenCalledTimes(1);
+	expect(action).not.toHaveBeenCalled();
 	expect(mutation).not.toHaveBeenCalled();
-	expect(page.url.pathname).toBe('/template');
+	expect(page.url.pathname).toBe('/template/setup');
+	expect(document.querySelector('.widget-action')).toBeNull();
 	expect(document.querySelector('dialog[open]')).toBeNull();
 });
-it('submission invalidates before waiting; support receipt still completes when authoritative setup booking state changes', async () => {
+it('submission invalidates before waiting and preserves expanded widget after booking', async () => {
 	const state = attach();
 	await paint();
 	await open();
@@ -421,11 +431,6 @@ it('submission invalidates before waiting; support receipt still completes when 
 	expect(action).toHaveBeenCalledTimes(1);
 	receipt({ ...unresolved('queued'), operationId: args.operationId });
 	await settle();
-	state.viewer.company.setupCall = {
-		state: 'scheduled',
-		start: '2026-11-14T15:00:00Z',
-		end: '2026-11-14T15:30:00Z'
-	};
 	receipt({ ...unresolved('booked'), operationId: args.operationId });
 	await settle();
 	expect(document.querySelector('dialog[open]')!.textContent).toContain('Your call is booked');
@@ -433,7 +438,9 @@ it('submission invalidates before waiting; support receipt still completes when 
 	await settle();
 	await close();
 	await imports();
-	button('Expand support widget').click();
+	// Booking leaves the widget expanded; only the member's dismissal collapses it.
+	expect(button('Dismiss support widget')).toBeDefined();
+	document.querySelector('.widget-action')!.dispatchEvent(new Event('pointerenter'));
 	await settle();
 	expect(action).toHaveBeenCalledTimes(2);
 });

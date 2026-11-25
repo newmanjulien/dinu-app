@@ -205,7 +205,7 @@ qualification. Cancellation before release returns to booking and retains any pe
 file; confirmed exact replacement restores waiting/upload. A user without a DOCX can
 simply wait for their call. Help opens only on request.
 
-The uploader sends the original DOCX to authenticated `POST /templates/upload`,
+The uploader sends the original DOCX to authenticated `POST /template-setup/upload`,
 with membership and filename. The backend derives admin access and checks confirmed
 setup qualification, available company and absence of an active template/history at
 both authorization and final adoption. Body/hash/type/size bounds and parser validation
@@ -219,12 +219,12 @@ issues. No public mutation accepts client-generated source blocks or activates t
 
 The existing upload card shows checking, then the reactive status shows the saved
 filename and “Waiting for Julien”. “Choose another file” uses the same uploader; a
-failed replacement keeps the previous file. Admin-only `templateUploads.status`
-returns booking/upload/waiting/released plus bounded pending metadata. It exposes
-neither source content nor download URLs. Reps retain the waiting-for-admin page.
+failed replacement keeps the previous file. Admin-only `templateSetup.status`
+returns booking/intake/upload/waiting/released plus bounded pending metadata. It exposes
+neither source content nor download URLs. Reps redirect to `/contracts`.
 Requests retain their 30-second token/body deadline and abort on leaving the page;
 identity, transport, membership and navigation guards reject stale upload results.
-Release keeps the current route and existing readiness gates reveal its normal content.
+Release redirects `/template/setup` to `/template` reactively.
 
 Internal `operator.inspectPendingTemplate` supplies a trusted operator the exact
 company's pending source, fingerprint and signed original download URL.

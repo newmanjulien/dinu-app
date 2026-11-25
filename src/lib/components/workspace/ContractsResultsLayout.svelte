@@ -33,12 +33,6 @@
 	const showBuyerContent = $derived(
 		showContent && !loading && (!firstVisit || buyerHeadingPainted)
 	);
-	let loadingWheelVisible = $state(false);
-	$effect(() => {
-		if (showContent) return;
-		const timer = setTimeout(() => (loadingWheelVisible = true), 300);
-		return () => clearTimeout(timer);
-	});
 </script>
 
 {@render notice?.()}
@@ -69,9 +63,7 @@
 	{@render buyerLinksContent?.(showBuyerContent)}
 	{#if loading || !showContent}
 		<div class="col-span-full flex min-h-40 items-center justify-center">
-			{#if loading || loadingWheelVisible}
-				<LoadingWheel class="size-5" label="Loading contract results" />
-			{/if}
+			<LoadingWheel class="size-5" label="Loading contract results" />
 		</div>
 	{/if}
 </div>

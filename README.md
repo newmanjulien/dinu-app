@@ -62,7 +62,7 @@ npx convex dev
 ```
 
 Configure `PUBLIC_CONVEX_URL` and the Clerk development keys in `.env.local`.
-For a fresh development deployment, run `npm run dev`, sign up, and create a
+For a fresh development deployment, run `npm run dev`, create an account, and create a
 company. Copy its ID from the Convex dashboard, then run
 `npm run convex:seed -- --company-id COMPANY_ID`. Each company starts without a
 template; contract creation becomes available after its initial scoped import.
@@ -121,13 +121,13 @@ An applied concession requires approval when its captured playbook item's
 `approvalPolicy.kind` is `required`. The existing “Changes need to be approved”
 text editor sets that policy for nonblank guidance and clears it when empty. Pending or rejected
 concessions block Word download. Approval decisions belong to the saved application
-lifecycle, and changing selections advances the review generation. Approval requests
-capture the company name, recipient, and concession details. Their workspace link
+lifecycle, and changing selections advances the review generation. Approval requests capture the contract title and summary counts (concession details stay in the
+workspace), and resolve the company's live approval email before dispatch. Their workspace link
 is `APP_URL/contracts/<contract ID>?review=1`.
 
 All senders share `emailDeliveries` and its dispatch, completion, recovery, retry,
-and cancellation rules. Immutable descriptions are stored in bounded
-`emailSelectionChunks` chunks. Recipients and access are checked again before dispatch.
+and cancellation rules, carrying summary counts directly on the delivery event. Recipients
+and access are checked again before dispatch.
 The provider receives an idempotency key scoped to the deployment, delivery, and
 attempt. A successful response confirms provider acceptance; inbox delivery still
 requires manual verification.
@@ -138,7 +138,7 @@ resent. Explicit retry is available after the uncertainty cooldown and completio
 of the original job. Internal `emailDeliveries:retry` retries an eligible failed
 decision delivery. Delivery ID and attempt checks prevent old workers from
 completing a newer attempt. Contract and company deletion cancel tracked work and
-remove associated snapshots. An accepted email cannot be recalled.
+delete pending contract-scoped deliveries. An accepted email cannot be recalled.
 
 Invitation batches use five workers and a four-minute cancellation deadline.
 Invitation expiry jobs are canceled when an invitation is replaced, accepted,
@@ -166,7 +166,7 @@ business identity is stored. It compares the frozen compositor states,
 including full source/provenance signatures, pagination token conservation and
 server-rendered provenance attributes; see the [reference policy](docs/rendering-snappiness.md#verification-and-limits).
 
-Dinu uses open verified email signup and private companies. Each account creates a
+Dinu uses open verified email account creation and private companies. Each account creates a
 company, accepts an invitation, or waits for a colleague. There is no company
 discovery or email-domain autojoin. Each user chooses Rep or Admin for themselves
 in Settings; Admin grants company administration immediately. Roles belong to company memberships. Company creators become Admin and owner;
@@ -181,14 +181,13 @@ and [editor lifecycle](docs/lifecycle.md).
 
 ### Authoring behavior
 
-“Explain a clause” starts a summary draft. “Help reps negotiate” starts a
-concession draft. This choice only routes local creation; every saved box exposes
-the same editing capabilities. The staged concession itself determines which
-creation steps are shown, so no separate mode is serialized or sent to the backend.
+Selecting unowned source text or a structural boundary offers a single unified add action
+(`Add instructions` on `/template`, `Add explanation` on `/template/buyers`) that opens
+the item editor directly. Every saved box exposes the same editing capabilities, and no
+separate creation mode is serialized or sent to the backend.
 
-Creation mode is absent from live records and immutable snapshots. Every item has
-a required revision; admin creation and seed imports both start at revision 1.
-Deploy the Convex schema and mutations together with the frontend after the reset.
+Every item has a required revision; admin creation and seed imports both start at revision 1.
+Deploy the Convex schema and mutations together with the frontend after a clean reset.
 
 ## Production-data seed restoration
 

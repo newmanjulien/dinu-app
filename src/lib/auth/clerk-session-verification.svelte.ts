@@ -6,8 +6,7 @@ import type {
 	SessionVerifyPrepareFirstFactorParams,
 	SessionVerifyPrepareSecondFactorParams
 } from '@clerk/shared/types';
-
-const CLERK_REVERIFICATION_REQUIRED_CODE = 'session_reverification_required';
+import { getErrorMessage } from './account-errors';
 
 export type ClerkSessionVerificationStatus = 'idle' | 'preparing' | 'awaitingInput' | 'verifying';
 export type ClerkSessionVerificationFactor =
@@ -40,15 +39,22 @@ type SupportedSecondFactor = Extract<
 	{ strategy: 'phone_code' | 'totp' | 'backup_code' }
 >;
 
+type ResendParams =
+	| { level: 'first_factor'; params: SessionVerifyPrepareFirstFactorParams }
+	| { level: 'second_factor'; params: SessionVerifyPrepareSecondFactorParams };
+
 type CreateClerkSessionVerificationOptions = {
 	isCurrent: (session: SessionResource) => boolean;
 	onComplete: (session: SessionResource) => Promise<void> | void;
 };
-type ClerkErrorLike = {
-	code?: string;
-	longMessage?: string;
-	message?: string;
-};
+
+export function needsStrictReverification(session: SessionResource) {
+	try {
+		return !session.checkAuthorization({ reverification: 'strict' });
+	} catch {
+		return true;
+	}
+}
 
 // Shared across modal instances: Clerk verification state belongs to the session.
 const verificationQueues = new Map<string, Promise<void>>();
@@ -69,15 +75,20 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 	let factor = $state<ClerkSessionVerificationFactor | null>(null);
 	let input = $state('');
 	let errorText = $state<string | null>(null);
+	let resendNotice = $state<string | null>(null);
+	let resending = $state(false);
+	let resendParams = $state<ResendParams | null>(null);
 	let generation = 0;
 	type Attempt = { session: SessionResource; sessionId: string; generation: number };
 	let attempt: Attempt | null = null;
-	const busy = $derived(status === 'preparing' || status === 'verifying');
+	const busy = $derived(status === 'preparing' || status === 'verifying' || resending);
 	const canSubmit = $derived(
 		status === 'awaitingInput' &&
+			!resending &&
 			factor !== null &&
 			(factor.strategy === 'passkey' || input.trim().length > 0)
 	);
+	const canResend = $derived(status === 'awaitingInput' && !busy && resendParams !== null);
 	function current(a: Attempt) {
 		return (
 			a.generation === generation && a.session.id === a.sessionId && options.isCurrent(a.session)
@@ -90,15 +101,27 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 		factor = null;
 		input = '';
 		errorText = null;
+		resendNotice = null;
+		resending = false;
+		resendParams = null;
 	}
 	function clearError() {
 		errorText = null;
+		resendNotice = null;
 	}
 	function unsupported(a: Attempt) {
 		if (!current(a)) return;
 		status = 'idle';
 		factor = null;
+		resendParams = null;
 		errorText = 'This action requires a verification method that is not supported here.';
+	}
+	function expired(a: Attempt) {
+		if (!current(a)) return;
+		status = 'idle';
+		factor = null;
+		resendParams = null;
+		errorText = 'Your verification session expired. Try again to request a new code.';
 	}
 	async function run(a: Attempt, work: () => Promise<void>, fallback: string) {
 		await enqueueVerification(a.sessionId, async () => {
@@ -129,6 +152,33 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 			'Unable to start identity verification.'
 		);
 	}
+	async function resend() {
+		if (!canResend || !attempt || !resendParams) return;
+		const a = attempt;
+		const prepared = resendParams;
+		if (!current(a)) return;
+		errorText = null;
+		resendNotice = null;
+		resending = true;
+		await enqueueVerification(a.sessionId, async () => {
+			if (!current(a)) return;
+			try {
+				if (prepared.level === 'first_factor') {
+					await a.session.prepareFirstFactorVerification(prepared.params);
+				} else {
+					await a.session.prepareSecondFactorVerification(prepared.params);
+				}
+				if (!current(a)) return;
+				input = '';
+				resendNotice = 'A new verification code has been sent.';
+			} catch (error) {
+				if (!current(a)) return;
+				errorText = getErrorMessage(error, 'Unable to send a new verification code.');
+			} finally {
+				if (current(a)) resending = false;
+			}
+		});
+	}
 	async function submit() {
 		if (!canSubmit || !factor || !attempt || busy) return;
 		const a = attempt;
@@ -136,6 +186,7 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 		const value = input;
 		if (!current(a)) return;
 		errorText = null;
+		resendNotice = null;
 		status = 'verifying';
 		await run(
 			a,
@@ -174,7 +225,9 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 	async function handleResult(a: Attempt, result: SessionVerificationResource) {
 		if (!current(a)) return;
 		errorText = null;
+		resendNotice = null;
 		if (result.status === 'complete') {
+			resendParams = null;
 			await options.onComplete(a.session);
 			if (!current(a)) return;
 			status = 'idle';
@@ -198,6 +251,7 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 					strategy: supported.strategy,
 					safeIdentifier: supported.safeIdentifier
 				};
+				resendParams = { level: 'first_factor', params };
 				status = 'preparing';
 				if (!current(a)) return;
 				await a.session.prepareFirstFactorVerification(params);
@@ -205,6 +259,7 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 				status = 'awaitingInput';
 			} else if (supported.strategy === 'passkey') {
 				factor = { level: 'first_factor', strategy: 'passkey' };
+				resendParams = null;
 				status = 'verifying';
 				if (!current(a)) return;
 				const verified = await a.session.verifyWithPasskey();
@@ -212,9 +267,10 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 				await handleAttemptResult(a, verified);
 			} else {
 				factor = { level: 'first_factor', strategy: 'password' };
+				resendParams = null;
 				status = 'awaitingInput';
 			}
-		} else {
+		} else if (result.status === 'needs_second_factor') {
 			const supported = findSupportedSecondFactor(result.supportedSecondFactors);
 			if (!supported) {
 				unsupported(a);
@@ -231,12 +287,18 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 					strategy: 'phone_code',
 					safeIdentifier: supported.safeIdentifier
 				};
+				resendParams = { level: 'second_factor', params };
 				status = 'preparing';
 				if (!current(a)) return;
 				await a.session.prepareSecondFactorVerification(params);
 				if (!current(a)) return;
-			} else factor = { level: 'second_factor', strategy: supported.strategy };
+			} else {
+				factor = { level: 'second_factor', strategy: supported.strategy };
+				resendParams = null;
+			}
 			status = 'awaitingInput';
+		} else {
+			expired(a);
 		}
 	}
 	return {
@@ -255,68 +317,27 @@ export function createClerkSessionVerification(options: CreateClerkSessionVerifi
 		get errorText() {
 			return errorText;
 		},
+		get resendNotice() {
+			return resendNotice;
+		},
+		get resending() {
+			return resending;
+		},
 		get busy() {
 			return busy;
 		},
 		get canSubmit() {
 			return canSubmit;
 		},
+		get canResend() {
+			return canResend;
+		},
 		clearError,
 		reset,
 		start,
+		resend,
 		submit
 	};
-}
-
-export function getErrorMessage(error: unknown, fallback: string) {
-	if (isRecord(error) && typeof error.data === 'string') return error.data;
-	const clerkError = getClerkErrors(error)[0];
-	const topLevelError = getClerkErrorLike(error);
-
-	return (
-		clerkError?.longMessage ??
-		clerkError?.message ??
-		topLevelError?.longMessage ??
-		topLevelError?.message ??
-		(error instanceof Error ? error.message : fallback)
-	);
-}
-
-export function isReverificationRequiredError(error: unknown) {
-	return getClerkErrorCode(error) === CLERK_REVERIFICATION_REQUIRED_CODE;
-}
-
-function getClerkErrorCode(error: unknown) {
-	return getClerkErrors(error)[0]?.code ?? getClerkErrorLike(error)?.code;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null;
-}
-
-function getClerkErrorLike(value: unknown): ClerkErrorLike | null {
-	if (!isRecord(value)) {
-		return null;
-	}
-
-	return {
-		code: getStringProperty(value, 'code'),
-		longMessage: getStringProperty(value, 'longMessage'),
-		message: getStringProperty(value, 'message')
-	};
-}
-
-function getStringProperty(value: Record<string, unknown>, key: string) {
-	const property = value[key];
-	return typeof property === 'string' ? property : undefined;
-}
-
-function getClerkErrors(error: unknown) {
-	if (!isRecord(error) || !Array.isArray(error.errors)) {
-		return [];
-	}
-
-	return error.errors.map(getClerkErrorLike).filter((clerkError) => clerkError !== null);
 }
 
 function getVerificationError(

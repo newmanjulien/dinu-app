@@ -1,5 +1,4 @@
 import { templateAudience, templateItem } from '../lib/playbook/validators';
-import { containsRange } from '../lib/document/ranges';
 import { v } from 'convex/values';
 import { sourceTarget } from '../lib/document/source-validators';
 import { PlaybookGeometryIndex } from '../lib/playbook/geometry-index';
@@ -10,8 +9,7 @@ import { equalItemStructure } from '../lib/playbook/structure-codec';
 import {
 	validateChangeReferences,
 	validateConcessionUpdate,
-	validateTemplateItemContent,
-	validateStructuralReplacementContent
+	validateTemplateItemContent
 } from '../lib/playbook/validation';
 import { PlaybookValidationError } from '../lib/playbook/validation-error';
 import type { Doc } from './_generated/dataModel';
@@ -30,14 +28,15 @@ import {
 	itemRevision,
 	markDraftItemRevision,
 	replaceDraftItemRevision,
-	storeItemRevision
+	storeItemRevision,
+	type UnrevisedDetailRecord
 } from './playbookItemRevisions';
 import { hydratedTemplateItem, trigger } from './playbookValidators';
 import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { templateRejected } from './templateCapacity';
 import {
 	addTemplateReadBytes,
-	orderedHeads,
+	orderedAudienceHeads,
 	currentPointer,
 	isMutableTemplateVersion,
 	readAuthoringVersion,
@@ -87,7 +86,6 @@ async function observation(ctx: QueryCtx, company: Doc<'company'>) {
 			: null
 	]);
 	const ready = Boolean(
-		!company.authoringMigration &&
 		templateSource &&
 		version &&
 		templateSource.companyId === company._id &&
@@ -98,29 +96,26 @@ async function observation(ctx: QueryCtx, company: Doc<'company'>) {
 		validationCertified(templateSource, certificate, version)
 	);
 	return {
-		pointer,
-		templateSource,
 		version,
 		ready,
-		templateSourceFingerprint: templateSource?.fingerprint ?? '',
-		...templateGenerations(version, pointer)
-	};
-}
-function observed({
-	templateSource,
-	templateSourceFingerprint,
-	authoringGeneration,
-	structuralGeneration
-}: Awaited<ReturnType<typeof observation>>) {
-	return {
-		templateSourceId: templateSource?._id ?? null,
-		templateSourceFingerprint,
-		authoringGeneration,
-		structuralGeneration
+		watermark: {
+			templateSourceId: templateSource?._id ?? null,
+			templateSourceFingerprint: templateSource?.fingerprint ?? '',
+			...templateGenerations(version)
+		}
 	};
 }
 async function committed(ctx: QueryCtx, company: Doc<'company'>) {
-	return observed(await observation(ctx, company));
+	const pointer = await currentPointer(ctx, company._id);
+	const [templateSource, version] = await Promise.all([
+		company.templateSourceId ? ctx.db.get('templateSources', company.templateSourceId) : null,
+		pointer ? ctx.db.get('templateVersions', pointer.versionId) : null
+	]);
+	return {
+		templateSourceId: templateSource?._id ?? null,
+		templateSourceFingerprint: templateSource?.fingerprint ?? '',
+		...templateGenerations(version)
+	};
 }
 function rejection(error: unknown) {
 	if (!(error instanceof PlaybookValidationError)) throw error;
@@ -135,7 +130,7 @@ async function validateStructure(
 ) {
 	const { templateSource, version } = captured;
 	if (
-		(version.headReadBytes ?? 0) +
+		version.headReadBytes +
 			captured.certificate.readBytes +
 			documentBytes(captured.certificate) +
 			documentBytes(version) +
@@ -148,20 +143,15 @@ async function validateStructure(
 		readValidationFacts(ctx, templateSource, captured.certificate),
 		ctx.db
 			.query('playbookItems')
-			.withIndex('by_companyId', (q) => q.eq('companyId', version.companyId))
+			.withIndex('by_companyId_and_audience', (q) =>
+				q.eq('companyId', version.companyId).eq('audience', item.audience)
+			)
 			.take(MAX_PLAYBOOK_ITEMS + 1)
 	]);
-	const ordered = orderedHeads(version, heads);
+	const ordered = orderedAudienceHeads(version, item.audience, heads);
 	const geometry = new PlaybookGeometryIndex(contract);
-	geometry.loadCertified(
-		ordered
-			.map((head) => [head._id, headStructure(head)] as const)
-			.filter(([, structure]) => structure.audience === item.audience)
-	);
-	if (item.audience === 'rep') {
-		validateStructuralReplacementContent(item);
-		validateChangeReferences(contract, item);
-	}
+	geometry.loadCertified(ordered.map((head) => [head._id, headStructure(head)] as const));
+	if (item.audience === 'rep') validateChangeReferences(contract, item);
 	geometry.validateTriggersReplacing(previous?._id, [item.trigger]);
 	for (const concession of playbookStructure(item).concessions)
 		geometry.validateChanges(concession.changes, previous?._id, [item.trigger]);
@@ -201,7 +191,7 @@ export const saveTemplateItem = mutation({
 				head = await ctx.db.get('playbookItems', receipt.itemId);
 				if (!head || head.companyId !== access.companyId)
 					return { status: 'missing' as const, ...(await committed(ctx, access.company)) };
-				if (headStructure(head).audience !== item.audience)
+				if (head.audience !== item.audience)
 					return {
 						status: 'rejected' as const,
 						message: 'The template item audience cannot change.'
@@ -230,12 +220,12 @@ export const saveTemplateItem = mutation({
 				};
 		} else if (!head || head.companyId !== access.companyId)
 			return { status: 'missing' as const, ...(await committed(ctx, access.company)) };
+		if (head && head.audience !== item.audience)
+			return { status: 'rejected' as const, message: 'The template item audience cannot change.' };
 		const currentRevision = head?.currentRevisionId
 			? await ctx.db.get('playbookItemRevisions', head.currentRevisionId)
 			: null;
 		const current = head ? await hydrateHead(ctx, head, currentRevision) : null;
-		if (current && current.audience !== item.audience)
-			return { status: 'rejected' as const, message: 'The template item audience cannot change.' };
 
 		if (
 			current?.lastOperation?.id === operationId &&
@@ -280,7 +270,8 @@ export const saveTemplateItem = mutation({
 				...item,
 				companyId: access.companyId,
 				renderKey: operationId,
-				lastOperation: { id: operationId, callerId: access.profile._id }
+				lastOperation: { id: operationId, callerId: access.profile._id },
+				mutableVersionId
 			});
 			const receipt = {
 				companyId: access.companyId,
@@ -291,12 +282,12 @@ export const saveTemplateItem = mutation({
 			await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(receipt) });
 			await ctx.db.insert('playbookItemCreationReceipts', receipt);
 			nextRevisionBytes = documentBytes(
-				(await ctx.db.get('playbookItemRevisions', next.currentRevisionId!))!
+				(await ctx.db.get('playbookItemRevisions', next.currentRevisionId))!
 			);
 		} else {
 			previousRevision = currentRevision;
 			if (!previousRevision) throw templateRejected('The saved rule revision is missing.');
-			const proposed: TemplateDetailRecord = {
+			const proposed: UnrevisedDetailRecord = {
 				...item,
 				_id: current._id,
 				_creationTime: current._creationTime,
@@ -338,8 +329,8 @@ export const saveTemplateItem = mutation({
 				})
 			}
 		);
-		if (!mutableVersionId || !current) {
-			const delta = await markDraftItemRevision(ctx, next.currentRevisionId!, versionId);
+		if (!mutableVersionId) {
+			const delta = await markDraftItemRevision(ctx, next.currentRevisionId, versionId);
 			await addTemplateReadBytes(ctx, versionId, captured.templateSource, delta);
 		}
 		return { status: 'saved' as const, item: next, ...(await committed(ctx, access.company)) };
@@ -349,14 +340,14 @@ export const deleteTemplateItem = mutation({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.id('playbookItems'),
-		audience: v.optional(templateAudience),
+		audience: templateAudience,
 		expectedContentRevision: v.number()
 	},
 	returns: v.union(v.object({ status: v.literal('deleted'), ...watermark }), conflict),
-	handler: async (ctx, { membershipId, id, expectedContentRevision, audience = 'rep' }) => {
+	handler: async (ctx, { membershipId, id, expectedContentRevision, audience }) => {
 		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
 		const head = await ctx.db.get('playbookItems', id);
-		if (head && (head.companyId !== access.companyId || headStructure(head).audience !== audience))
+		if (head && (head.companyId !== access.companyId || head.audience !== audience))
 			throw new Error('This item is unavailable.');
 		if (!head) return { status: 'deleted' as const, ...(await committed(ctx, access.company)) };
 		const revision = head.currentRevisionId
@@ -392,33 +383,33 @@ export const deleteTemplateItem = mutation({
 	}
 });
 export const currentStructure = query({
-	args: { membershipId: v.id('memberships'), audience: v.optional(templateAudience) },
+	args: { membershipId: v.id('memberships'), audience: templateAudience },
 	returns: v.object({ ...watermark, ready: v.boolean(), items: v.array(structureItem) }),
-	handler: async (ctx, { membershipId, audience = 'rep' }) => {
+	handler: async (ctx, { membershipId, audience }) => {
 		const access =
 				audience === 'buyer'
 					? await requirePermission(ctx, 'manageTemplate', membershipId)
 					: await requireMembership(ctx, membershipId),
 			state = await observation(ctx, access.company);
-		if (!state.ready) return { ...observed(state), ready: false, items: [] };
+		if (!state.ready) return { ...state.watermark, ready: false, items: [] };
 		const heads = await ctx.db
 			.query('playbookItems')
-			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
+			.withIndex('by_companyId_and_audience', (q) =>
+				q.eq('companyId', access.companyId).eq('audience', audience)
+			)
 			.take(MAX_PLAYBOOK_ITEMS + 1);
-		const ordered = orderedHeads(state.version!, heads);
+		const ordered = orderedAudienceHeads(state.version!, audience, heads);
 		return {
-			...observed(state),
+			...state.watermark,
 			ready: true,
-			items: ordered
-				.filter((head) => headStructure(head).audience === audience)
-				.map((head) => ({
-					_id: head._id,
-					_creationTime: head._creationTime,
-					companyId: head.companyId,
-					contentRevision: head.contentRevision,
-					renderKey: head.renderKey,
-					...headStructure(head)
-				}))
+			items: ordered.map((head) => ({
+				_id: head._id,
+				_creationTime: head._creationTime,
+				companyId: head.companyId,
+				contentRevision: head.contentRevision,
+				renderKey: head.renderKey,
+				...headStructure(head)
+			}))
 		};
 	}
 });
@@ -427,7 +418,7 @@ export const content = query({
 	args: {
 		membershipId: v.id('memberships'),
 		id: v.id('playbookItems'),
-		audience: v.optional(templateAudience)
+		audience: templateAudience
 	},
 	returns: v.union(
 		v.object({
@@ -438,7 +429,7 @@ export const content = query({
 		}),
 		v.object({ ...sourceIdentity, ready: v.boolean(), status: v.literal('missing') })
 	),
-	handler: async (ctx, { membershipId, id, audience = 'rep' }) => {
+	handler: async (ctx, { membershipId, id, audience }) => {
 		const access =
 			audience === 'buyer'
 				? await requirePermission(ctx, 'manageTemplate', membershipId)
@@ -456,59 +447,13 @@ export const content = query({
 			templateSourceId: source?._id ?? null,
 			templateSourceFingerprint: source?.fingerprint ?? '',
 			ready: Boolean(
-				!access.company.authoringMigration &&
 				source?.companyId === access.companyId &&
 				source.state === 'active' &&
 				validationCertified(source, certificate)
 			)
 		};
-		if (
-			!scope.ready ||
-			!head ||
-			head.companyId !== access.companyId ||
-			headStructure(head).audience !== audience
-		)
+		if (!scope.ready || !head || head.companyId !== access.companyId || head.audience !== audience)
 			return { ...scope, status: 'missing' as const };
 		return { ...scope, status: 'present' as const, item: await hydrateHead(ctx, head) };
-	}
-});
-
-/** Only admins may copy saved rep wording into an independent buyer draft. */
-export const repSummary = query({
-	args: {
-		membershipId: v.id('memberships'),
-		templateSourceFingerprint: v.string(),
-		target: sourceTarget
-	},
-	returns: v.union(v.null(), v.string()),
-	handler: async (ctx, { membershipId, templateSourceFingerprint, target }) => {
-		const access = await requirePermission(ctx, 'manageTemplate', membershipId);
-		const state = await observation(ctx, access.company);
-		if (
-			!state.ready ||
-			state.templateSourceFingerprint !== templateSourceFingerprint ||
-			target.kind !== 'text'
-		)
-			return null;
-		const facts = await readValidationFacts(ctx, state.templateSource!, undefined);
-		const heads = orderedHeads(
-			state.version!,
-			await ctx.db
-				.query('playbookItems')
-				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
-				.take(MAX_PLAYBOOK_ITEMS + 1)
-		);
-		const matches = heads.filter((head) => {
-			const structure = headStructure(head);
-			return (
-				structure.audience === 'rep' &&
-				structure.trigger.target.kind === 'text' &&
-				containsRange(facts.index, structure.trigger.target.range, target.range)
-			);
-		});
-		if (matches.length !== 1) return null;
-		const item = await hydrateHead(ctx, matches[0]);
-		if (item.audience !== 'rep' || !item.instructions?.summary?.trim()) return null;
-		return item.instructions.summary;
 	}
 });

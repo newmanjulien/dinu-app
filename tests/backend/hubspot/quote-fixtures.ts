@@ -1,13 +1,6 @@
 import { fixtureOperationId } from '../../support/operation';
 import { vi } from 'vitest';
-import {
-	api,
-	internal,
-	currentContract,
-	expectedSource,
-	NOW,
-	type Fixture
-} from '../../support/linked-contract';
+import { api, internal, currentContract, NOW, type Fixture } from '../../support/linked-contract';
 
 export async function installQuotes(f: Fixture) {
 	vi.stubEnv('HUBSPOT_QUOTES_ENABLED', 'true');
@@ -28,12 +21,13 @@ export async function installQuotes(f: Fixture) {
 	});
 }
 export async function quoteArgs(f: Fixture, operationId = 'quote') {
-	const { availability, ...destination } = (await currentContract(f)).hubspot!;
+	const contract = await currentContract(f);
+	const { availability, ...destination } = contract.hubspot!;
 	return {
 		membershipId: f.owner.membershipId,
 		id: f.id,
 		operationId: fixtureOperationId(operationId),
-		expectedSource: await expectedSource(f),
+		expectedStateRevision: contract.root.stateRevision,
 		destination
 	};
 }
@@ -46,7 +40,7 @@ export async function sendQuote(
 ) {
 	await f.t.mutation(internal.hubspotQuotes.pump, {});
 	const row = await f.t.run(({ db }) => db.get('hubspotQuotePushes', id));
-	if (row?.format !== 'full' || !row.claim) throw new Error('Quote was not queued');
+	if (!row?.claim) throw new Error('Quote was not queued');
 	await f.t.action(internal.hubspotQuoteActions.send, { id, claim: row.claim });
 	return f.t.run(({ db }) => db.get('hubspotQuotePushes', id));
 }

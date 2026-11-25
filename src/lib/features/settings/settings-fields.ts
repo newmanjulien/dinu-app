@@ -9,8 +9,8 @@ export const settingsFields = {
 	email: {
 		id: 'email',
 		kind: 'readonly',
-		title: 'Sign-in email',
-		description: 'This is the email address you use to sign in to Dinu.',
+		title: 'Log-in email',
+		description: 'This is the email address you use to log in to Dinu.',
 		footerText: 'You cannot change this email.'
 	},
 	companyName: {

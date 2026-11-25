@@ -20,10 +20,12 @@ function semanticRange({ start, end }: SourceRange): SourceRange {
 	};
 }
 
-export function semanticTarget(target: SourceTarget): SourceTarget {
-	return target.kind === 'boundary'
-		? { kind: 'boundary', afterBlockKey: target.afterBlockKey }
-		: textTarget(semanticRange(target.range));
+export function semanticTarget<T extends SourceTarget>(target: T): T {
+	return (
+		target.kind === 'boundary'
+			? { kind: 'boundary', afterBlockKey: target.afterBlockKey }
+			: textTarget(semanticRange(target.range))
+	) as T;
 }
 
 /** Explicit field selection strips nested UI keys, without normalizing text. */
@@ -83,15 +85,12 @@ export function equalConcession(a: DeepReadonly<Concession>, b: DeepReadonly<Con
 	);
 }
 
-/** Preserve stored instruction strings, including empty strings, without UI keys. */
-export function semanticInstructions(
-	value: DeepReadonly<Instructions> | undefined
-): Instructions | undefined {
-	if (value === undefined) return undefined;
+/** Omit blank instruction strings while retaining exact authored text and stripping UI keys. */
+export function semanticInstructions(value: DeepReadonly<Instructions>): Instructions {
 	const instructions: Instructions = {};
 	for (const key of instructionKeys) {
 		const text = value[key];
-		if (text !== undefined) instructions[key] = text;
+		if (text !== undefined && text.trim()) instructions[key] = text;
 	}
 	return instructions;
 }
@@ -113,9 +112,7 @@ export function semanticRepInstruction(
 	return {
 		audience: 'rep',
 		trigger: { id: draft.trigger.id, target: semanticTarget(draft.trigger.target) },
-		...(draft.instructions === undefined
-			? {}
-			: { instructions: semanticInstructions(draft.instructions) }),
+		instructions: semanticInstructions(draft.instructions ?? {}),
 		approvalPolicy: semanticApprovalPolicy(draft.approvalPolicy ?? { kind: 'none' }),
 		concessions: draft.concessions.map(semanticConcession)
 	};

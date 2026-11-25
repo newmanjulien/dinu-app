@@ -6,6 +6,7 @@
 	import { ReadAttempt, waitForRead } from './attempt';
 	import { clerkScriptHead, waitForClerkScript } from './clerk-script';
 	import { setClerkReadiness } from './clerk-readiness';
+	import { CLERK_AUTH_URLS, ONBOARDING_PATH } from './navigation';
 	import { recordStartup } from './startup-perf';
 
 	let { publishableKey, children }: { publishableKey: string; children: Snippet } = $props();
@@ -49,15 +50,14 @@
 			await waitForRead(
 				instance.load({
 					telemetry: false,
-					signInUrl: '/login',
-					signUpUrl: '/join',
+					...CLERK_AUTH_URLS,
 					signInFallbackRedirectUrl: '/contracts',
-					signUpFallbackRedirectUrl: '/contracts'
+					signUpFallbackRedirectUrl: ONBOARDING_PATH
 				}),
 				current.signal
 			);
 			current.signal.throwIfAborted();
-			if (!alive || attempt !== current) throw new Error('Sign-in was closed.');
+			if (!alive || attempt !== current) throw new Error('Log in was closed.');
 			clerk = instance;
 			unsubscribe?.();
 			unsubscribe = instance.addListener((next) => {
@@ -67,13 +67,13 @@
 			// Flush the hooks subscribing to the newly available Clerk instance.
 			await tick();
 			current.signal.throwIfAborted();
-			if (!alive || attempt !== current) throw new Error('Sign-in was closed.');
+			if (!alive || attempt !== current) throw new Error('Log in was closed.');
 			status = 'ready';
 			recordStartup('clerk-ready');
 		} catch (cause) {
 			if (alive && attempt === current) {
 				status = 'error';
-				error = 'Sign-in could not connect. Please try again.';
+				error = 'Log in could not connect. Please try again.';
 			}
 			throw cause;
 		} finally {

@@ -54,9 +54,13 @@ class DocumentNavigation {
 	capture(): DocumentScrollSnapshot {
 		const surface = this.current;
 		const viewport = surface?.section.viewport;
-		return surface && viewport && isDocumentRoute(page.route.id) &&
+		return surface &&
+			viewport &&
+			isDocumentRoute(page.route.id) &&
 			surface.identity === surface.currentIdentity() &&
-			surface.active() && surface.section.active && viewport.isConnected
+			surface.active() &&
+			surface.section.active &&
+			viewport.isConnected
 			? { href: page.url.href, scroll: { x: viewport.scrollLeft, y: viewport.scrollTop } }
 			: null;
 	}
@@ -201,7 +205,14 @@ export function bindDocumentNavigation(
 		const token = identity();
 		if (!navigation || !owner || !active() || !owner.active) return;
 		return untrack(() =>
-			navigation.claim({ identity: token, currentIdentity: identity, viewer, section: owner, active, placed })
+			navigation.claim({
+				identity: token,
+				currentIdentity: identity,
+				viewer,
+				section: owner,
+				active,
+				placed
+			})
 		);
 	});
 }

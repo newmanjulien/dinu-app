@@ -1,16 +1,28 @@
 import type { DeepReadonly } from '../immutable';
-import type { ContractChange, SourceTarget, TemplateAudience, Trigger } from './model';
-
-import type { DocumentItemRecord } from '../contract/items';
+import type {
+	ConcessionSelection,
+	ContractChange,
+	RepInstructionRecord,
+	SourceTarget,
+	TemplateAudience,
+	TextTrigger,
+	Trigger
+} from './model';
 import type { AttachmentHighlightKind } from '../document/highlights/theme';
+import type { ValidationSourceFacts } from '../document/validation-source';
+import {
+	activeConcessionChanges,
+	collectOverlayImpact,
+	textRangeOverlapsImpact,
+	type OverlayImpactItem
+} from './overlay-impact';
+
 export type DocumentAnnotation = {
 	id: string;
 	itemId: string;
 	highlightKind: AttachmentHighlightKind;
 	target: SourceTarget;
 	pending?: boolean;
-	/** Approved buyer-safe geometry has no associated editor or explanation action. */
-	passive?: boolean;
 } & (
 	| { kind: 'trigger'; triggerId: string }
 	| { kind: 'concession-effect'; concessionId: string; changeIndex: number }
@@ -27,45 +39,28 @@ type AnnotationRecord = {
 	trigger: Trigger;
 	concessions?: readonly { id: string; changes: readonly { target: SourceTarget }[] }[];
 };
-export function documentAnnotations(
-	record:
-		| AnnotationRecord
-		| {
-				_id: string;
-				origin: { kind: 'template' | 'proposal' };
-				primary: Trigger & { changeIndex: number };
-				choices: readonly { id: string; changes: readonly { target: SourceTarget }[] }[];
-		  }
-): DocumentAnnotation[] {
-	if ('origin' in record && record.origin.kind === 'proposal') return [];
-	const resolved = 'primary' in record;
-	const trigger = resolved ? record.primary : record.trigger;
-	const concessions = resolved ? record.choices : (record.concessions ?? []);
-	const renderKey = !resolved ? record.renderKey : undefined;
-	const primaryIndex = resolved ? record.primary.changeIndex : 0;
-	const buyer = resolved ? record.origin.kind === 'proposal' : record.audience === 'buyer';
-	const highlightKind = buyer ? 'buyer-attachment' : 'rep-attachment';
+
+export function documentAnnotations(record: AnnotationRecord): DocumentAnnotation[] {
+	const concessions = record.concessions ?? [];
+	const highlightKind: AttachmentHighlightKind =
+		record.audience === 'buyer' ? 'buyer-attachment' : 'rep-attachment';
+	const key = record.renderKey ?? record._id;
 	return [
 		{
-			id: triggerAnnotationId(renderKey ?? record._id),
+			id: triggerAnnotationId(key),
 			kind: 'trigger',
 			itemId: record._id,
 			highlightKind,
-			triggerId: trigger.id,
-			target: trigger.target
+			triggerId: record.trigger.id,
+			target: record.trigger.target
 		},
 		...concessions.flatMap((concession) =>
 			concession.changes.flatMap((change, i): DocumentAnnotation[] =>
-				i === primaryIndex
+				i === 0
 					? []
 					: [
 							{
-								id: JSON.stringify([
-									'concession-effect',
-									renderKey ?? record._id,
-									concession.id,
-									i
-								]),
+								id: JSON.stringify(['concession-effect', key, concession.id, i]),
 								kind: 'concession-effect',
 								itemId: record._id,
 								highlightKind,
@@ -88,20 +83,44 @@ export type DocumentAnnotationItem = {
 export type DocumentOverlayItem = DocumentAnnotationItem & {
 	audience: 'rep';
 	trigger: Trigger;
-	concessions: DeepReadonly<
-		{ id: string; changes: (ContractChange & { suppressed?: boolean })[] }[]
-	>;
+	concessions: DeepReadonly<{ id: string; changes: ContractChange[] }[]>;
 };
 
+export type AppliedOverlay = Pick<DocumentOverlayItem, 'itemId' | 'trigger' | 'concessions'>;
+
+/** Wrap narrow Convex wire overlays for effective-view composition without widening the wire shape. */
+export function toAppliedOverlayItems(overlays: readonly AppliedOverlay[]): DocumentOverlayItem[] {
+	return overlays.map((overlay) => ({
+		...overlay,
+		audience: 'rep',
+		annotations: []
+	}));
+}
+
 /** Only this projection may contribute Playbook data to render-source identity. */
-export function toDocumentOverlay(record: DeepReadonly<DocumentItemRecord>): DocumentOverlayItem {
+export function toDocumentOverlay(record: DeepReadonly<RepInstructionRecord>): DocumentOverlayItem {
 	return {
 		itemId: record._id,
 		audience: 'rep',
 		annotations: documentAnnotations(record),
-		trigger: 'primary' in record ? record.primary : record.trigger,
-		concessions: ('choices' in record ? record.choices : record.concessions).map(
-			({ id, changes }) => ({ id, changes })
-		)
+		trigger: record.trigger,
+		concessions: record.concessions.map(({ id, changes }) => ({ id, changes }))
 	};
+}
+
+/** Hide buyer explanations whose template trigger overlaps any applied Playbook concession edit,
+ * structurally removed paragraph, or crossed boundary insertion. */
+export function filterOverlappedExplanations<T extends { trigger: TextTrigger }>(
+	index: ValidationSourceFacts,
+	explanations: readonly T[],
+	appliedOverlays: readonly OverlayImpactItem[],
+	concessions: ConcessionSelection
+): T[] {
+	if (!explanations.length || !appliedOverlays.length) return [...explanations];
+	const activeChanges = activeConcessionChanges(appliedOverlays, concessions);
+	if (!activeChanges.length) return [...explanations];
+	const impact = collectOverlayImpact(index, activeChanges);
+	return explanations.filter(
+		(explanation) => !textRangeOverlapsImpact(index, explanation.trigger.target, impact)
+	);
 }

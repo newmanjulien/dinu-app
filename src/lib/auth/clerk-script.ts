@@ -35,7 +35,7 @@ export function waitForClerkScript(publishableKey: string, signal: AbortSignal) 
 		const failed = () => {
 			element.dataset.loadState = 'error';
 			cleanup();
-			reject(new Error('Sign-in could not connect. Please try again.'));
+			reject(new Error('Log in could not connect. Please try again.'));
 		};
 		const loaded = () => {
 			cleanup();

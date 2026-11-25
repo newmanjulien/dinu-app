@@ -52,7 +52,7 @@
 			<p role="alert" class="m-0 text-sm leading-5 text-danger">{errorText}</p>
 		{/if}
 		<AuthButton type="submit" disabled={!canSubmit}>
-			{isSubmitting ? 'Checking...' : 'Continue'}
+			{isSubmitting ? 'Checking…' : 'Continue'}
 		</AuthButton>
 		<div class="flex items-center justify-between gap-3 text-[13px] leading-5">
 			{#if onChangeEmail}<button
@@ -68,7 +68,7 @@
 				disabled={isResending}
 				onclick={onResend}
 			>
-				{isResending ? 'Sending...' : 'Resend code'}
+				{isResending ? 'Sending…' : 'Resend code'}
 			</button>
 		</div>
 	</form>

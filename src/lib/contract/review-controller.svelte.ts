@@ -1,129 +1,153 @@
-import { createOperationId } from './operation-identity';
-import {
-	assertOperationRetryable,
-	isOperationRecovery,
-	OperationResultFailure
-} from './operation-recovery';
-import { reviewOperationInputs } from './changes';
 import type { ConvexClient } from 'convex/browser';
-import type { FunctionArgs, FunctionReturnType } from 'convex/server';
+import type { FunctionArgs } from 'convex/server';
 import { ConvexError } from 'convex/values';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
-import type { ReviewDecision, ReviewNavigation, ReviewTag } from './approval';
+import {
+	availableReviewDecisions,
+	type ReviewDecision,
+	type ReviewNavigation,
+	type ReviewTag
+} from './approval';
 import type { ContractPersistence } from './persistence.svelte';
-import { awaitContractOperation } from './operation-result';
 import { saveError } from './saved';
 
-type DecisionArgs = FunctionArgs<typeof api.contractApprovals.decideChange>;
-type RequestArgs = FunctionArgs<typeof api.contractApprovals.request>;
-type CompletionArgs = FunctionArgs<typeof api.contractApprovals.confirmCompletion>;
+type DecisionArgs = FunctionArgs<typeof api.approvals.decide>;
+type RequestArgs = FunctionArgs<typeof api.approvals.request>;
+type CompletionArgs = FunctionArgs<typeof api.approvals.complete>;
+
 type Options = {
-	client: Pick<ConvexClient, 'mutation' | 'onUpdate'>;
+	client: Pick<ConvexClient, 'mutation'>;
 	membershipId: Id<'memberships'>;
 	contractId: Id<'savedContracts'>;
 	persistence: ContractPersistence;
 	isAdmin: () => boolean;
 	canReview: () => boolean;
 	canRequest: () => boolean;
-	identity: () => string | undefined;
 	preflight?: () => Promise<void>;
 	tags: () => readonly ReviewTag[];
 };
-/** One native operation retains its exact original arguments until a factual result/refusal. */
+
+/** Synchronous Playbook approval decisions, requests, and review completion. */
 export class ContractReviewController {
 	deciding = $state(false);
 	requesting = $state(false);
-	requestError = $state<string | null>(null);
 	completionBusy = $state(false);
-	completionError = $state<string | null>(null);
 	navigation = $state.raw<ReviewNavigation>();
-	decisionError = $state.raw<{ changeId: string; message: string } | null>(null);
+	private _requestError = $state.raw<{
+		generation: number;
+		title: string;
+		choices: Readonly<Record<string, string>>;
+		message: string;
+	} | null>(null);
+	private _completionError = $state.raw<{ key: string; message: string } | null>(null);
+	private _decisionError = $state.raw<{
+		itemId: string;
+		optionId: string;
+		status: ReviewTag['status'];
+		message: string;
+	} | null>(null);
 	private decisions = new Map<string, DecisionArgs>();
-	private uncertain = new Set<string>();
 	private requestAttempt: RequestArgs | null = null;
 	private completionAttempt: CompletionArgs | null = null;
 	private active = true;
-	private lifetime: unknown;
 	private available = true;
-	private waiters = new Set<AbortController>();
+
 	constructor(private options: Options) {}
+
 	get completion() {
-		const current = this.options.persistence.confirmed.reviews.playbook.completion;
-		return this.options.isAdmin() && current?.completion.kind === 'awaitingConfirmation'
-			? current
+		const completion = this.options.persistence.confirmed.review.completion;
+		return this.options.isAdmin() && completion?.kind === 'awaitingConfirmation'
+			? completion
 			: null;
 	}
-	get completionGeneration() {
-		return this.completion?.reviewIdentity ?? null;
+	get completionKey() {
+		const completion = this.completion;
+		return completion ? `${completion.generation}:${completion.decidedAt}` : null;
 	}
-	setLifetime(available: boolean, generation: unknown) {
-		if ((!available && this.available) || generation !== this.lifetime)
-			for (const waiter of this.waiters) waiter.abort();
+	get requestError() {
+		const error = this._requestError;
+		if (!error) return null;
+		const confirmed = this.options.persistence.confirmed;
+		return error.generation === confirmed.review.generation &&
+			error.title === confirmed.title &&
+			error.choices === this.options.persistence.choices
+			? error.message
+			: null;
+	}
+	get completionError() {
+		return this._completionError && this._completionError.key === this.completionKey
+			? this._completionError.message
+			: null;
+	}
+	get decisionError() {
+		const error = this._decisionError;
+		if (!error) return null;
+		const current = this.options.tags().find((tag) => tag.itemId === error.itemId);
+		return current && current.optionId === error.optionId && current.status === error.status
+			? { itemId: error.itemId, message: error.message }
+			: null;
+	}
+	setLifetime(available: boolean) {
 		this.available = available;
-		this.lifetime = generation;
 	}
 	reconcile() {
-		if (this.decisionError) {
-			const current = this.options
-				.tags()
-				.find((tag) => tag.changeId === this.decisionError!.changeId);
-			const attempt = [...this.decisions.values()].find(
-				(args) => args.changeId === this.decisionError!.changeId
-			);
-			if (!current || (attempt && current.decisionId !== attempt.expectedDecisionId))
-				this.decisionError = null;
+		const tagsById = new Map(this.options.tags().map((tag) => [tag.itemId, tag]));
+		const confirmed = this.options.persistence.confirmed;
+		const confirmedRevision = confirmed.stateRevision;
+		const confirmedGeneration = confirmed.review.generation;
+		if (!this.deciding) {
+			for (const [key, attempt] of this.decisions) {
+				const current = tagsById.get(attempt.itemId);
+				if (
+					!current ||
+					current.optionId !== attempt.expectedOptionId ||
+					attempt.expectedStateRevision !== confirmedRevision
+				) {
+					this.decisions.delete(key);
+				}
+			}
+		}
+		if (this._decisionError) {
+			const current = tagsById.get(this._decisionError.itemId as Id<'playbookItems'>);
+			if (
+				!current ||
+				current.optionId !== this._decisionError.optionId ||
+				current.status !== this._decisionError.status
+			)
+				this._decisionError = null;
+		}
+		if (
+			this._requestError &&
+			(this._requestError.generation !== confirmedGeneration ||
+				this._requestError.title !== confirmed.title ||
+				this._requestError.choices !== this.options.persistence.choices)
+		) {
+			this._requestError = null;
+		}
+		if (
+			this.requestAttempt &&
+			this.requestAttempt.expectedGeneration !== confirmedGeneration &&
+			!this.requesting
+		) {
+			this.requestAttempt = null;
+		}
+		if (this._completionError && this._completionError.key !== this.completionKey) {
+			this._completionError = null;
 		}
 		if (
 			this.completionAttempt &&
-			this.completionGeneration !== this.completionAttempt.expectedIdentity &&
+			this.completionKey !==
+				`${this.completionAttempt.expectedGeneration}:${this.completionAttempt.expectedDecidedAt}` &&
 			!this.completionBusy
 		) {
-			this.completionError = null;
+			this._completionError = null;
+			this.completionAttempt = null;
 		}
 	}
-	private async settle<T extends { status: string }>(
-		kind: 'change-decision' | 'approval-request' | 'review-completion',
-		args: DecisionArgs | RequestArgs | CompletionArgs,
-		result: T
-	): Promise<T> {
-		if (result.status !== 'preparing') return result;
-		this.uncertain.add(args.operationId);
-		const waiter = new AbortController();
-		this.waiters.add(waiter);
-		if (!this.active || !this.available) waiter.abort();
-		try {
-			return await awaitContractOperation<T>(
-				this.options.client,
-				{
-					membershipId: this.options.membershipId,
-					id: this.options.contractId,
-					kind,
-					operationId: args.operationId,
-					inputs: reviewOperationInputs({ kind, args })
-				},
-				waiter.signal
-			);
-		} finally {
-			this.waiters.delete(waiter);
-		}
-	}
-	private retain(error: unknown, operationId: string | undefined) {
-		if (!operationId) return false;
-		if (!(error instanceof ConvexError)) this.uncertain.add(operationId);
-		return (
-			isOperationRecovery(error) ||
-			(!(error instanceof OperationResultFailure) && this.uncertain.has(operationId))
-		);
-	}
+
 	async decide(tag: ReviewTag, action: ReviewDecision) {
-		const current = this.options.tags().find((value) => value.changeId === tag.changeId);
-		const eligibility =
-			action === 'approve'
-				? current?.approve
-				: action === 'decline'
-					? current?.decline
-					: current?.undo;
+		const current = this.options.tags().find((value) => value.itemId === tag.itemId);
 		if (
 			!this.active ||
 			!this.available ||
@@ -131,99 +155,103 @@ export class ContractReviewController {
 			!this.options.canReview() ||
 			!current ||
 			current.disabled ||
-			eligibility?.allowed !== true
+			!availableReviewDecisions(current.status).includes(action)
 		)
 			return;
-		const key = `${tag.changeId}:${action}`;
+		const key = `${tag.itemId}:${action}`;
 		this.deciding = true;
-		this.decisionError = null;
+		this._decisionError = null;
+		let attemptedStatus = current.status;
 		try {
 			await this.options.preflight?.();
-			await this.options.persistence.savePending();
+			if (!(await this.options.persistence.savePending())) return;
 			if (!this.active || !this.available || !this.options.canReview()) return;
 			let args = this.decisions.get(key);
+			if (
+				args &&
+				(args.expectedOptionId !== tag.optionId ||
+					args.expectedStateRevision !== this.options.persistence.confirmed.stateRevision)
+			) {
+				this.decisions.delete(key);
+				args = undefined;
+			}
 			if (!args) {
-				const latest = this.options.tags().find((value) => value.changeId === tag.changeId);
+				const latest = this.options.tags().find((value) => value.itemId === tag.itemId);
 				if (
 					!latest ||
-					latest.decisionId !== tag.decisionId ||
-					latest.currentChangeId !== tag.currentChangeId
+					latest.optionId !== tag.optionId ||
+					!availableReviewDecisions(latest.status).includes(action)
 				)
 					return;
-				const state = this.options.persistence.confirmed;
+				attemptedStatus = latest.status;
 				args = {
 					membershipId: this.options.membershipId,
 					id: this.options.contractId,
-					changeId: tag.changeId,
-					expectedDecisionId: tag.decisionId,
+					itemId: tag.itemId,
+					expectedOptionId: tag.optionId,
+					expectedStateRevision: this.options.persistence.confirmed.stateRevision,
 					action,
-					expectedDocument: {
-						documentId: state.documentId,
-						documentRevision: state.documentRevision
-					},
-					operationId: createOperationId()
+					operationId: crypto.randomUUID()
 				};
 				this.decisions.set(key, args);
 			}
-			assertOperationRetryable(args.operationId);
-			await this.settle(
-				'change-decision',
-				args,
-				await this.options.client.mutation(api.contractApprovals.decideChange, args)
-			);
+			await this.options.client.mutation(api.approvals.decide, args);
 			this.decisions.delete(key);
-			if (this.active) this.navigation = { afterChangeId: tag.changeId };
+			if (this.active) this.navigation = { afterItemId: tag.itemId };
 		} catch (error) {
-			if (!this.retain(error, this.decisions.get(key)?.operationId)) this.decisions.delete(key);
+			if (error instanceof ConvexError) this.decisions.delete(key);
 			if (this.active && this.available)
-				this.decisionError = {
-					changeId: tag.changeId,
+				this._decisionError = {
+					itemId: tag.itemId,
+					optionId: tag.optionId,
+					status: attemptedStatus,
 					message: saveError(error, 'We couldn’t save this decision. Choose it again to retry.')
 				};
 		} finally {
 			if (this.active) this.deciding = false;
 		}
 	}
+
 	async requestApproval() {
 		if (!this.active || !this.available || this.requesting || !this.options.canRequest()) return;
 		this.requesting = true;
-		this.requestError = null;
+		this._requestError = null;
+		let attemptedGeneration = this.options.persistence.confirmed.review.generation;
 		try {
 			await this.options.preflight?.();
-			await this.options.persistence.savePending();
+			if (!(await this.options.persistence.savePending())) return;
 			if (!this.active || !this.available || !this.options.canRequest()) return;
-			if (!this.requestAttempt) {
-				const state = this.options.persistence.confirmed,
-					identity = this.options.identity();
-				if (!identity) return;
-				this.requestAttempt = {
-					membershipId: this.options.membershipId,
-					id: this.options.contractId,
-					context: 'playbook',
-					expectedIdentity: identity,
-					expectedDocument: {
-						documentId: state.documentId,
-						documentRevision: state.documentRevision
-					},
-					operationId: createOperationId()
-				};
+			if (
+				this.requestAttempt &&
+				this.requestAttempt.expectedGeneration !==
+					this.options.persistence.confirmed.review.generation
+			) {
+				this.requestAttempt = null;
 			}
-			assertOperationRetryable(this.requestAttempt.operationId);
-			await this.settle(
-				'approval-request',
-				this.requestAttempt,
-				await this.options.client.mutation(api.contractApprovals.request, this.requestAttempt)
-			);
+			this.requestAttempt ??= {
+				membershipId: this.options.membershipId,
+				id: this.options.contractId,
+				expectedGeneration: this.options.persistence.confirmed.review.generation,
+				operationId: crypto.randomUUID()
+			};
+			attemptedGeneration = this.requestAttempt.expectedGeneration;
+			await this.options.client.mutation(api.approvals.request, this.requestAttempt);
 			this.requestAttempt = null;
 		} catch (error) {
-			if (!this.retain(error, this.requestAttempt?.operationId)) this.requestAttempt = null;
+			if (error instanceof ConvexError) this.requestAttempt = null;
 			if (this.active && this.available)
-				this.requestError = saveError(error, 'We couldn’t request approval. Try again.');
+				this._requestError = {
+					generation: attemptedGeneration,
+					title: this.options.persistence.confirmed.title,
+					choices: this.options.persistence.choices,
+					message: saveError(error, 'We couldn’t request approval. Try again.')
+				};
 		} finally {
 			if (this.active) this.requesting = false;
 		}
 	}
-	async resolveCompletion(notify = true) {
+
+	async resolveCompletion() {
 		if (
 			!this.active ||
 			!this.available ||
@@ -234,43 +262,42 @@ export class ContractReviewController {
 		)
 			return;
 		this.completionBusy = true;
-		this.completionError = null;
+		this._completionError = null;
+		let attemptedKey = this.completionKey;
 		try {
 			await this.options.preflight?.();
-			if (!this.active || !this.available || !this.options.canReview()) return;
-			this.completionAttempt ??= {
+			if (!(await this.options.persistence.savePending())) return;
+			if (!this.active || !this.available || !this.options.canReview() || !this.completion) return;
+			if (
+				this.completionAttempt &&
+				(this.completionAttempt.expectedGeneration !== this.completion.generation ||
+					this.completionAttempt.expectedDecidedAt !== this.completion.decidedAt)
+			) {
+				this.completionAttempt = null;
+			}
+			const attempt = (this.completionAttempt ??= {
 				membershipId: this.options.membershipId,
 				id: this.options.contractId,
-				context: 'playbook',
-				expectedIdentity: this.completion!.reviewIdentity,
-				operationId: createOperationId(),
-				notify
-			};
-			const args = this.completionAttempt;
-			assertOperationRetryable(args.operationId);
-			const result: FunctionReturnType<typeof api.contractApprovals.confirmCompletion> =
-				await this.settle(
-					'review-completion',
-					args,
-					await this.options.client.mutation(api.contractApprovals.confirmCompletion, args)
-				);
+				expectedGeneration: this.completion.generation,
+				expectedDecidedAt: this.completion.decidedAt,
+				operationId: crypto.randomUUID()
+			});
+			attemptedKey = `${attempt.expectedGeneration}:${attempt.expectedDecidedAt}`;
+			await this.options.client.mutation(api.approvals.complete, attempt);
 			this.completionAttempt = null;
-			if (result.outcome === 'stale')
-				throw new ConvexError(
-					'The review changed. Review the current changes before sending results.'
-				);
 		} catch (error) {
-			if (error instanceof ConvexError && !isOperationRecovery(error))
-				this.completionAttempt = null;
-			if (this.active && this.available)
-				this.completionError = saveError(error, 'We couldn’t save your choice. Try again.');
+			if (error instanceof ConvexError) this.completionAttempt = null;
+			if (this.active && this.available && attemptedKey)
+				this._completionError = {
+					key: attemptedKey,
+					message: saveError(error, 'We couldn’t save your choice. Try again.')
+				};
 		} finally {
 			if (this.active) this.completionBusy = false;
 		}
 	}
+
 	destroy() {
 		this.active = false;
-		for (const waiter of this.waiters) waiter.abort();
-		this.waiters.clear();
 	}
 }

@@ -18,7 +18,7 @@
 		searchOpen = false,
 		searchEnabled = true,
 		helpEnabled = true,
-		helpLabel = 'How Dinu works',
+		helpLabel = 'Help',
 		desktopElement = $bindable(),
 		mobileElement = $bindable(),
 		onSearchToggle,
@@ -147,7 +147,10 @@
 	style:--desktop-tool-rail-inset={`${DESKTOP_TOOL_RAIL_INSET}px`}
 	style:--desktop-tool-rail-width={`${DESKTOP_TOOL_RAIL_WIDTH}px`}
 >
-	<nav class="pointer-events-none flex w-(--desktop-tool-rail-width) flex-col items-center" aria-label="Document tools">
+	<nav
+		class="pointer-events-none flex w-(--desktop-tool-rail-width) flex-col items-center"
+		aria-label="Document tools"
+	>
 		<div class="pointer-events-auto flex flex-col items-center gap-3.5">
 			{#if visible.has('search')}
 				<RailTool

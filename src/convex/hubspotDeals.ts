@@ -22,7 +22,7 @@ import {
 	HubSpotError
 } from './hubspotApi';
 import { activity, blockLink } from './hubspotRecords';
-import { actionKey, actorOf, receipt, remember, admitOperation } from './operationReceipts';
+import { actionKey, actorOf, receipt, remember, validateOperationId } from './operationReceipts';
 import { createContract, metadataOf } from './contracts';
 import { contractMetadata } from './savedContractValidators';
 import { env } from './_generated/server';
@@ -69,7 +69,7 @@ async function receiptOutcome(ctx: QueryCtx, value: string, access: CompanyAcces
 		? {
 				status: 'created' as const,
 				id: contract.root._id,
-				contract: await metadataOf(ctx, contract)
+				contract: metadataOf(contract)
 			}
 		: { status: 'deleted' as const };
 }
@@ -106,7 +106,7 @@ async function operationOutcome(
 	access: CompanyAccess,
 	actualConnectionId?: Doc<'hubspotConnections'>['_id']
 ) {
-	admitOperation(args.operationId);
+	validateOperationId(args.operationId);
 	const key = actionKey(access, args.contractId ? 'relink' : 'create', args.operationId);
 	const inputs = input(args);
 	const prior = await receipt(ctx, key, inputs);
@@ -204,8 +204,7 @@ export const commit = internalMutation({
 					dealId: args.dealId,
 					generation: (current.hubspot?.generation ?? 0) + 1,
 					availability: 'available' as const
-				},
-				stateRevision: current.root.stateRevision + 1
+				}
 			};
 			contract = await patchContract(ctx, current, changes);
 		} else {
@@ -219,11 +218,11 @@ export const commit = internalMutation({
 			await activity(ctx, contract, actorOf(access.profile), key, 'created');
 		}
 		await requestBuyerRefresh(ctx, contract.root);
-		await remember(ctx, access.companyId, key, inputs, contract.root._id);
+		await remember(ctx, access.companyId, key, inputs, contract.root._id, contract.root._id);
 		return {
 			status: 'created' as const,
 			id: contract.root._id,
-			contract: await metadataOf(ctx, contract)
+			contract: metadataOf(contract)
 		};
 	}
 });

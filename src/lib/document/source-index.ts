@@ -41,25 +41,17 @@ export interface StructuralBoundary {
 	readonly nextBlockKey?: string;
 }
 /** Copies display/coordinate data; generated display changes never change source coordinates. */
-export type SourceIndexOptions = {
-	/** Materialized contract snapshots retain aliases for merged legal numbering. */
-	aliases?: ReadonlyMap<string, string>;
-};
-export function buildSourceIndex(
-	blocks: readonly SourceBlock[],
-	options: SourceIndexOptions = {}
-): SourceIndex {
-	const iterator = iterateSourceIndex(blocks, options);
+export function buildSourceIndex(blocks: readonly SourceBlock[]): SourceIndex {
+	const iterator = iterateSourceIndex(blocks);
 	let next = iterator.next();
 	while (!next.done) next = iterator.next();
 	return next.value;
 }
 
 export function* iterateSourceIndex(
-	blocks: readonly SourceBlock[],
-	options: SourceIndexOptions = {}
+	blocks: readonly SourceBlock[]
 ): Generator<undefined, SourceIndex> {
-	const addresses = yield* iterateNumberAddresses(blocks, options.aliases);
+	const addresses = yield* iterateNumberAddresses(blocks);
 	const units: SourceUnit[] = [];
 	const byKey = new Map<string, SourceUnit>();
 	const containers = new Map<string, SourceContainer>();

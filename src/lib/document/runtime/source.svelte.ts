@@ -1,31 +1,25 @@
-import type { ContractItemId } from '$lib/contract/item-identity';
+import type { Id } from '../../../convex/_generated/dataModel';
 import type { DeepReadonly } from '$lib/immutable';
 import { measureStartupWork, recordColdStart, recordDomainWork } from './render-perf';
 import type { SourceBlock } from '$lib/document/model';
 import type { CompiledDocument } from '$lib/document/compiled-document';
-import type { DocumentItemRecord, ResolvedContractItem } from '$lib/contract/items';
 import type { PlaybookGeometryIndex } from '$lib/playbook/geometry-index';
 import { DocumentDomain } from '../domain/document-domain';
 import type { DocumentRenderSource, SourceIssue } from './types';
 import type { StructureSnapshot, StructureItem } from '$lib/playbook/structure';
-import type { ConcessionSelection } from '$lib/playbook/model';
+import type { ConcessionSelection, RepInstructionRecord } from '$lib/playbook/model';
 import type { DocumentAnnotationItem, DocumentOverlayItem } from '$lib/playbook/document-overlay';
 import { DocumentArtifacts } from './artifacts';
 
 type QueryValue<T> = { data?: T; error?: unknown };
-type CommonSourceInput =
-	| { blocks: QueryValue<SourceBlock[]>; contract?: false; materialized?: never }
-	| {
-			contract: true;
-			/** Only ready document + projection inputs may replace the accepted contract. */
-			materialized: QueryValue<NonNullable<DocumentRenderSource['materialized']>>;
-			blocks?: never;
-	  };
+type CommonSourceInput = {
+	blocks: QueryValue<SourceBlock[]>;
+	contract?: boolean;
+};
 export type DocumentSourceInput = CommonSourceInput &
 	(
 		| {
 				kind: 'prose';
-				contract?: false;
 				items?: never;
 				structure?: never;
 				details?: never;
@@ -34,7 +28,7 @@ export type DocumentSourceInput = CommonSourceInput &
 		  }
 		| {
 				kind: 'records';
-				items: QueryValue<DeepReadonly<DocumentItemRecord[]>>;
+				items: QueryValue<DeepReadonly<RepInstructionRecord[]>>;
 				structure?: never;
 				details?: never;
 				pendingRenderKey?: never;
@@ -43,7 +37,7 @@ export type DocumentSourceInput = CommonSourceInput &
 		| {
 				kind: 'structure';
 				structure: QueryValue<StructureSnapshot>;
-				details?: DeepReadonly<DocumentItemRecord[]>;
+				details?: DeepReadonly<RepInstructionRecord[]>;
 				pendingRenderKey?: string;
 				items?: never;
 				overlays?: never;
@@ -64,8 +58,8 @@ export class DocumentSourceController {
 	renderReady = $state(false);
 	private projectionIdentity?: string;
 	compactStructure = $state(false);
-	items = $state.raw<DeepReadonly<ResolvedContractItem[]> | null>(null);
-	structuralItems = $state.raw<DeepReadonly<StructureItem<ContractItemId>[]> | null>(null);
+	items = $state.raw<DeepReadonly<RepInstructionRecord[]> | null>(null);
+	structuralItems = $state.raw<DeepReadonly<StructureItem<Id<'playbookItems'>>[]> | null>(null);
 	annotations = $state.raw<readonly DocumentAnnotationItem[]>([]);
 	contentOverlays = $state.raw<readonly DocumentOverlayItem[]>([]);
 	compiled = $state.raw<CompiledDocument | null>(null);
@@ -75,7 +69,6 @@ export class DocumentSourceController {
 	issue = $state.raw<SourceIssue | null>(null);
 	private selection: ConcessionSelection = {};
 	private contentKey = '';
-	private materialized?: DocumentRenderSource['materialized'];
 	private artifacts?: DocumentArtifacts;
 
 	constructor(readonly domain = new DocumentDomain()) {}
@@ -95,24 +88,13 @@ export class DocumentSourceController {
 				item.concessions.filter((concession) => concession.id === this.selection[item.itemId])
 			])
 		);
-		if (
-			this.renderSource?.sourceIndex === this.compiled.index &&
-			this.renderSource.materialized?.document === this.materialized?.document &&
-			this.renderSource.materialized?.baseline === this.materialized?.baseline &&
-			key === this.contentKey
-		)
-			return;
+		if (this.renderSource?.sourceIndex === this.compiled.index && key === this.contentKey) return;
 		this.contentKey = key;
-		if (
-			this.artifacts?.source.sourceIndex !== this.compiled.index ||
-			this.artifacts?.source.materialized?.document !== this.materialized?.document ||
-			this.artifacts?.source.materialized?.baseline !== this.materialized?.baseline
-		) {
+		if (this.artifacts?.source.sourceIndex !== this.compiled.index) {
 			this.artifacts?.destroy();
 			this.artifacts = undefined;
 		}
 		const source: DocumentRenderSource = Object.freeze({
-			materialized: this.materialized,
 			revision: (this.renderSource?.revision ?? 0) + 1,
 			blocks: this.compiled.blocks,
 			items,
@@ -141,10 +123,7 @@ export class DocumentSourceController {
 	}
 
 	#accept(input: DocumentSourceInput) {
-		const materialized = input.contract ? input.materialized.data : undefined;
-		const blocks = input.contract
-			? { data: materialized?.document.blocks, error: input.materialized.error }
-			: input.blocks;
+		const blocks = input.blocks;
 		const itemError =
 			input.kind === 'records'
 				? input.items.error
@@ -157,7 +136,7 @@ export class DocumentSourceController {
 				? Boolean(input.items.data)
 				: input.kind === 'structure' && input.structure.data?.ready);
 		// Refresh/error inputs retain accepted geometry, artifacts and pages.
-		if (input.contract && (!materialized || !projectionReady || blocks.error || itemError)) {
+		if (input.contract && (!blocks.data || !projectionReady || blocks.error || itemError)) {
 			this.itemsCurrent = false;
 			this.issue =
 				blocks.error || itemError
@@ -195,8 +174,7 @@ export class DocumentSourceController {
 			try {
 				this.domain.acceptBlocks(
 					blocks.data,
-					input.kind === 'overlays' ? 'defer-to-overlays' : 'empty',
-					materialized?.document
+					input.kind === 'overlays' ? 'defer-to-overlays' : 'empty'
 				);
 			} catch {
 				blocksFailed = true;
@@ -211,7 +189,7 @@ export class DocumentSourceController {
 		}
 		if (input.kind === 'overlays') {
 			try {
-				this.domain.acceptOverlays(input.overlays, input.contract);
+				this.domain.acceptOverlays(input.overlays, Boolean(input.contract));
 			} catch {
 				itemsFailed = true;
 			}
@@ -225,7 +203,7 @@ export class DocumentSourceController {
 			}
 		} else if (input.kind === 'records' && input.items.data && !itemsFailed) {
 			try {
-				this.domain.acceptItems(input.items.data, input.contract);
+				this.domain.acceptItems(input.items.data, Boolean(input.contract));
 			} catch {
 				itemsFailed = true;
 			}
@@ -235,10 +213,6 @@ export class DocumentSourceController {
 			this.itemsCurrent = false;
 			this.issue = { blocksFailed, itemsFailed };
 			return;
-		}
-		if (!blocksFailed && blocks.data) {
-			if (this.materialized?.document !== materialized?.document) this.contentKey = '';
-			this.materialized = materialized;
 		}
 		this.projectionIdentity = projectionIdentity;
 		this.compactStructure = input.kind === 'structure';

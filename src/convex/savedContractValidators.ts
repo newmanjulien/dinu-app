@@ -1,12 +1,10 @@
 import { v } from 'convex/values';
-import { contractReviews, selections } from './contractValidators';
-import { playbookState } from '../lib/contract/changes';
+import { contractConcession, contractReview, workBlock } from '../lib/contract/changes';
+import { requestDeliveryStatus, selections } from './contractValidators';
 import { hubspotLink } from './hubspotValidators';
-import { sourceExpectation } from './contractSourceValidators';
+
 export { selections };
-const workBlock = v.optional(
-	v.union(v.null(), v.literal('association-required'), v.literal('deal-unavailable'))
-);
+
 export const contractCard = v.object({
 	_id: v.id('savedContracts'),
 	_creationTime: v.number(),
@@ -14,20 +12,20 @@ export const contractCard = v.object({
 	savedAt: v.number(),
 	hasUnreadComment: v.boolean(),
 	hubspot: v.optional(hubspotLink),
-	workBlock,
+	workBlock: v.optional(workBlock),
 	creator: v.object({ name: v.string(), avatarUrl: v.union(v.string(), v.null()) })
 });
+
 export const contractState = v.object({
 	title: v.string(),
-	documentId: v.id('contractDocuments'),
-	documentRevision: v.number(),
 	stateRevision: v.number(),
-	reviews: contractReviews,
-	playbook: v.array(playbookState),
+	metadataRevision: v.number(),
+	concessions: v.array(contractConcession),
+	review: contractReview,
 	hubspot: v.optional(hubspotLink),
-	workBlock,
 	lastOperationId: v.union(v.string(), v.null())
 });
+
 export const contractMetadata = contractState.extend({
 	_id: v.id('savedContracts'),
 	_creationTime: v.number(),
@@ -36,28 +34,20 @@ export const contractMetadata = contractState.extend({
 	templateVersionId: v.id('templateVersions'),
 	savedAt: v.number()
 });
+
 export const liveContractMetadata = contractMetadata.extend({
 	buyerName: v.union(v.string(), v.null()),
-	workBlock: v.union(v.null(), v.literal('association-required'), v.literal('deal-unavailable'))
+	workBlock,
+	requestDelivery: v.union(requestDeliveryStatus, v.null())
 });
-export const exportRequest = v.object({
-	expectedSource: sourceExpectation,
-	membershipId: v.id('memberships'),
-	id: v.id('savedContracts')
-});
-export const wordExportRequest = exportRequest.extend({
-	operationId: v.string(),
-	claim: v.optional(v.string())
-});
+
 export const wordExportResult = v.object({
 	url: v.string(),
-	filename: v.string(),
-	attemptId: v.id('hubspotExports'),
-	releasedAt: v.number()
+	filename: v.string()
 });
+
 export const saveResult = v.union(
 	v.object({ status: v.literal('saved'), state: contractState }),
 	v.object({ status: v.literal('conflict'), state: contractState }),
-	v.object({ status: v.literal('preparing'), operationId: v.string() }),
 	v.object({ status: v.literal('deleted') })
 );

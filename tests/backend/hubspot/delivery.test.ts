@@ -17,7 +17,7 @@ import {
 	NOW,
 	HOUR,
 	readyExport,
-	acknowledge,
+	events,
 	bytes,
 	relink
 } from '../../support/linked-contract';
@@ -114,7 +114,7 @@ describe('ambiguous provider writes', () => {
 	it('reconciles an uploaded file by exact private metadata and bytes, then attaches it without reupload', async () => {
 		const f = await fixture(),
 			attempt = await readyExport(f),
-			download = await acknowledge(f, attempt);
+			download = (await events(f)).find((row) => row.attemptId === attempt._id)!;
 		let uploaded: File | null = null,
 			options: unknown,
 			postedNote: Record<string, unknown> | undefined;

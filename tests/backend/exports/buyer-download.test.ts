@@ -1,13 +1,13 @@
 import { fixtureOperationId } from '../../support/operation';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getFunctionName, type FunctionReference } from 'convex/server';
+import { getFunctionName, type FunctionArgs, type FunctionReference } from 'convex/server';
 import type { RequestEvent } from '@sveltejs/kit';
 import {
 	api,
 	internal,
 	fixture,
 	integrationClock,
-	expectedSource,
+	currentContract,
 	NOW
 } from '../../support/linked-contract';
 import { POST } from '../../../src/routes/api/buyer/[token]/download/+server';
@@ -50,31 +50,41 @@ beforeEach(() => {
 });
 async function buyer() {
 	const f = await fixture();
-	const source = await expectedSource(f);
+	const contract = await currentContract(f);
 	const link = await f.t.mutation(internal.buyerLinks.capture, {
 		membershipId: f.owner.membershipId,
 		id: f.id,
 		token: buyerCode,
-		preparation: {
-			kind: 'prepared',
-			operationId: fixtureOperationId('first-link'),
-			expectedState: {
-				stateRevision: source.stateRevision,
-				documentId: source.documentId,
-				documentRevision: source.documentRevision
-			}
-		}
+		operationId: fixtureOperationId('first-link'),
+		expectedStateRevision: contract.root.stateRevision
 	});
 	boundary.query.mockImplementation(
-		(ref: FunctionReference<'query'>, args: { token: string; displayIdentity: string }) => {
-			if (getFunctionName(ref) === 'buyerLinks:currentDocument')
-				return f.root.query(api.buyerLinks.currentDocument, { token: args.token });
+		(
+			ref: FunctionReference<'query'>,
+			args: {
+				token: string;
+				displayIdentity?: string;
+				templateVersionId?: FunctionArgs<
+					typeof api.buyerLinks.templateContent
+				>['templateVersionId'];
+			}
+		) => {
+			if (getFunctionName(ref) === 'buyerLinks:currentState')
+				return f.root.query(api.buyerLinks.currentState, { token: args.token });
+			if (getFunctionName(ref) === 'buyerLinks:templateContent')
+				return f.root.query(
+					api.buyerLinks.templateContent,
+					args as { token: string; templateVersionId: never }
+				);
 			if (getFunctionName(ref) === 'buyerLinks:authorizeDownload')
-				return f.root.query(api.buyerLinks.authorizeDownload, args);
+				return f.root.query(
+					api.buyerLinks.authorizeDownload,
+					args as { token: string; displayIdentity: string }
+				);
 			throw new Error('Unexpected download query');
 		}
 	);
-	const snapshot = await f.root.query(api.buyerLinks.currentDocument, { token: link.token });
+	const snapshot = await f.root.query(api.buyerLinks.currentState, { token: link.token });
 	return { ...f, link, snapshot };
 }
 const request = (token: string, displayIdentity: unknown) =>
@@ -103,8 +113,8 @@ describe('buyer Word acquisition and final authorization', () => {
 		expect(elements(parts['word/document.xml'], 'w:t').map(textContent)).toEqual([
 			'Synthetic contract.'
 		]);
-		expect(boundary.query.mock.calls.map(([, , client]) => client)).toEqual([1, 2]);
-		expect(boundary.query.mock.calls[1].slice(0, 2)).toEqual([
+		expect(boundary.query.mock.calls.map(([, , client]) => client)).toEqual([1, 1, 2]);
+		expect(boundary.query.mock.calls[2].slice(0, 2)).toEqual([
 			api.buyerLinks.authorizeDownload,
 			{ token: f.link.token, displayIdentity: f.snapshot.displayIdentity }
 		]);

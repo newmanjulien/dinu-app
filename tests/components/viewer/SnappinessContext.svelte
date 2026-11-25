@@ -126,7 +126,7 @@
 	setStartupData(() => startup ?? null);
 	setStartupHome(() => startupHome ?? null);
 	untrack(() => {
-		if (authoring) setTemplateAuthoringSession(authoring);
+		if (authoring) setTemplateAuthoringSession(authoring, 'rep');
 		if (resources) {
 			setDocumentResources(resources);
 			setDocumentLayoutProfiles(resources.profiles);

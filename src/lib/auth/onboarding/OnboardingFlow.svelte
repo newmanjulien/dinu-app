@@ -13,6 +13,8 @@
 		useCsmOnboardingPreview
 	} from '$lib/components/chrome/csm-onboarding-preview.svelte';
 	import { browserTimeZone } from '$lib/components/chrome/csm-time';
+	import { walkthroughVideos } from '$lib/videos';
+	import { warmVideoPoster } from '$lib/ui/video.svelte';
 	import LoadingState from '$lib/ui/LoadingState.svelte';
 	import ArrowLeftIcon from 'phosphor-svelte/lib/ArrowLeftIcon';
 	import ChooseCompanyStep from './ChooseCompanyStep.svelte';
@@ -78,12 +80,14 @@
 		const generation = session.transportGeneration;
 		// Warm template setup after onboarding paints; other destinations load when requested.
 		return afterStartupPaint(() => {
-			if (canPreload && current(generation)) void preloadDestination('/template').catch(() => {});
+			if (canPreload && current(generation))
+				void preloadDestination('/template/setup').catch(() => {});
 		});
 	});
 	$effect(() => {
 		if (step !== 'create' || pending || session.blocked || session.closing || account()?.membership)
 			return;
+		warmVideoPoster(walkthroughVideos.templateSetup.poster, 'low');
 		const scope = csmPreviewScope(
 			session.userId,
 			session.preparedSessionId,
@@ -155,7 +159,7 @@
 				{error}
 				blocked={session.blocked}
 				onsubmit={(name) =>
-					void run(() => client.mutation(api.companies.create, { name }), '/template')}
+					void run(() => client.mutation(api.companies.create, { name }), '/template/setup')}
 			/>
 		{:else}
 			<JoinCompanyStep
@@ -172,7 +176,7 @@
 			type="button"
 			class="mt-1 cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted"
 			disabled={pending || session.blocked}
-			onclick={() => void session.signOut()}>Sign out</button
+			onclick={() => void session.signOut()}>Log out</button
 		>
 	{/snippet}
 </OnboardingLayout>

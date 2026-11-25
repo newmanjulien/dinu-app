@@ -178,19 +178,7 @@
 			<h1 class="text-sm font-medium">Contract not found</h1>
 			<p class="mt-2 text-ink-muted">This contract may have been deleted.</p>
 		{:else}
-			<p role="alert">
-				We couldn’t load this contract.
-				{#if editor.journal.recoveryError}<button
-						class="mt-3 block underline"
-						onclick={() => editor.journal.downloadRecovery()}>Save stored selections</button
-					><button
-						class="mt-3 block underline"
-						onclick={() => {
-							editor.discard();
-							editor.retry();
-						}}>Discard stored browser selections</button
-					>{/if}
-			</p>
+			<p role="alert">We couldn’t load this contract.</p>
 			<Button variant="secondary" class="mt-4" onclick={retry}>Try again</Button>
 		{/if}
 		<a href="/contracts" class="mt-6 block underline">Back to Contracts</a>

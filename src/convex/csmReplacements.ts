@@ -2,6 +2,7 @@ import { ConvexError, v, type Infer } from 'convex/values';
 import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import { liveProfile, type CompanyAccess } from './auth';
+import { permissionsForRole } from './permissions';
 import { setupReplacement } from './csmBookingValidators';
 import { safeFailedEvidence } from './csmAttemptState';
 import { validBookingUid } from './csmCal';
@@ -30,7 +31,7 @@ export function replacementAware(a: Appointment) {
 }
 export async function replacementSource(ctx: QueryCtx, owner: CompanyAccess, target: Replacement) {
 	if (
-		owner.membership.role !== 'admin' ||
+		!permissionsForRole(owner.membership.role, owner.isOwner).manageTemplate ||
 		owner.company.templateSourceId ||
 		!validBookingUid(target.currentUid)
 	)
@@ -83,7 +84,7 @@ export async function sharedReplacement(
 	const source = await ctx.db.get('csmSetupAppointments', target.appointmentId);
 	if (
 		!source ||
-		owner.membership.role !== 'admin' ||
+		!permissionsForRole(owner.membership.role, owner.isOwner).manageTemplate ||
 		source.companyId !== owner.companyId ||
 		!validBookingUid(target.currentUid)
 	)

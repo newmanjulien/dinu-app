@@ -1,9 +1,17 @@
-import type { TemplateAudience } from './model';
+import type {
+	ApprovalPolicy,
+	Concession,
+	Instructions,
+	TemplateAudience,
+	TemplateItem,
+	TextTrigger
+} from './model';
 import type { CompiledDocument } from '../document/compiled-document';
 import { immutable, type DeepReadonly } from '../immutable';
 import {
 	equalConcession,
 	semanticApprovalPolicy,
+	semanticConcession,
 	semanticInstructions,
 	semanticRepInstruction,
 	semanticTarget
@@ -11,7 +19,6 @@ import {
 import { type TemplateDraft, type ReadonlyDraft } from './draft';
 import { GeometryError } from './geometry';
 import type { PlaybookGeometryIndex } from './geometry-index';
-import type { ApprovalPolicy, Instructions, Concession, TemplateItem } from './model';
 import { instructionKeys, isRepItem } from './model';
 import type { TemplateItemRecord } from './structure';
 import { geometrySelectionIssue, selectionIssueMessage } from './source-picking';
@@ -20,21 +27,14 @@ import {
 	MAX_PLAYBOOK_ITEMS,
 	PlaybookValidationError,
 	validateChangeReferences,
-	validateConcessions,
 	validateTemplateItemContent
 } from './validation';
 
-type Composition = {
+export type ConcessionDraft = {
 	originalConcession: DeepReadonly<Concession>;
 	concession: Concession;
-	step: 'concession' | 'other-part';
 	affectsOtherParts: boolean;
 };
-export type Workflow =
-	| { kind: 'editing' }
-	| { kind: 'creating-item' }
-	| ({ kind: 'creating-concession' } & Composition)
-	| ({ kind: 'adding-concession'; triggerId: string } & Composition);
 export type OperationState = { kind: 'editing' } | { kind: 'missing' };
 
 /** State and projections only. The controller owns every mutation and lifecycle decision. */
@@ -53,12 +53,12 @@ export class AuthoringContext {
 	confirmed = $state.raw<DeepReadonly<TemplateItemRecord> | null>(null);
 	remote = $state.raw<DeepReadonly<TemplateItemRecord> | null>(null);
 	content = $state<
-		| { audience: 'rep'; instructions?: Instructions; approvalPolicy: ApprovalPolicy }
+		| { audience: 'rep'; instructions: Instructions; approvalPolicy: ApprovalPolicy }
 		| { audience: 'buyer'; explanation: string }
 	>()!;
 	trigger = $state.raw<DeepReadonly<TemplateDraft['trigger']>>()!;
 	concessions = $state.raw<DeepReadonly<Concession[]>>([]);
-	workflow: Workflow = $state({ kind: 'editing' });
+	concessionDraft = $state<ConcessionDraft | null>(null);
 	operation = $state.raw<OperationState>({ kind: 'editing' });
 	selectedAnnotationId = $state<string | null>(null);
 	previewConcessionId = $state<string | null>(null);
@@ -69,13 +69,13 @@ export class AuthoringContext {
 	geometry = $state.raw<PlaybookGeometryIndex | null>(null);
 	geometryVersion = $state(0);
 	itemCount = $state(0);
-	validateGeometry: ReturnType<PlaybookGeometryIndex['createDraftValidator']> | null = null;
+	private validateGeometry = $derived(this.geometry?.createDraftValidator() ?? null);
+	private validateComposerGeometry = $derived(this.geometry?.createDraftValidator() ?? null);
 
 	constructor(
 		draft: DeepReadonly<TemplateDraft>,
 		confirmed: DeepReadonly<TemplateItemRecord> | null,
-		workflow: Workflow,
-		readonly audience: TemplateAudience = 'rep'
+		readonly audience: TemplateAudience
 	) {
 		this.confirmed = this.remote = confirmed ? immutable(confirmed) : null;
 		// An existing editor opens from the domain's previously accepted query record.
@@ -89,25 +89,31 @@ export class AuthoringContext {
 					: draft.concessions
 				: []
 		);
-		this.workflow = workflow;
 	}
-	composer = $derived(
-		this.workflow.kind === 'creating-concession' || this.workflow.kind === 'adding-concession'
-			? this.workflow.concession
-			: undefined
-	);
 	// The draft owns source locations; highlighting is a projection of that structure.
 	initialSelection = $derived(
-		this.workflow.kind === 'editing'
-			? null
-			: (this.composer?.changes[0]?.target ?? this.trigger.target ?? null)
+		!this.confirmed || Boolean(this.concessionDraft) ? this.trigger.target : null
+	);
+	private buyerTrigger: DeepReadonly<TextTrigger> | null = $derived.by(() => {
+		if (this.content.audience !== 'buyer') return null;
+		if (this.trigger.target.kind !== 'text')
+			throw new Error('Buyer explanations require selected text.');
+		return { id: this.trigger.id, target: this.trigger.target };
+	});
+	private normalizedBuyerTrigger = $derived(
+		this.buyerTrigger
+			? immutable({
+					id: this.buyerTrigger.id,
+					target: semanticTarget(this.buyerTrigger.target)
+				})
+			: null
 	);
 	draft: ReadonlyDraft = $derived(
 		this.content.audience === 'buyer'
 			? {
 					audience: 'buyer',
 					explanation: this.content.explanation,
-					trigger: this.trigger,
+					trigger: this.buyerTrigger!,
 					...(this.confirmed ? { persistedId: this.confirmed._id } : {})
 				}
 			: {
@@ -131,25 +137,33 @@ export class AuthoringContext {
 	private persistedDirty = $derived.by(() => {
 		const content = this.content,
 			confirmed = this.confirmed;
-		if (content.audience === 'buyer')
-			return (
-				content.explanation !== (confirmed && !isRepItem(confirmed) ? confirmed.explanation : '')
-			);
+		if (content.audience === 'buyer') {
+			const explanation = content.explanation.trim() ? content.explanation : '';
+			return explanation !== (confirmed && !isRepItem(confirmed) ? confirmed.explanation : '');
+		}
 		const saved = confirmed && isRepItem(confirmed) ? confirmed : null;
+		const normalized = semanticInstructions(content.instructions);
+		const savedInstructions = saved ? semanticInstructions(saved.instructions) : undefined;
+		const approvalPolicy = semanticApprovalPolicy(content.approvalPolicy);
+		const savedApprovalPolicy = saved
+			? semanticApprovalPolicy(saved.approvalPolicy)
+			: { kind: 'none' as const };
 		return (
-			instructionKeys.some((key) => content.instructions?.[key] !== saved?.instructions?.[key]) ||
-			content.approvalPolicy.kind !== (saved?.approvalPolicy.kind ?? 'none') ||
-			(content.approvalPolicy.kind === 'required' &&
-				content.approvalPolicy.instructions !==
-					(saved?.approvalPolicy.kind === 'required' ? saved.approvalPolicy.instructions : '')) ||
+			instructionKeys.some((key) => normalized[key] !== savedInstructions?.[key]) ||
+			approvalPolicy.kind !== savedApprovalPolicy.kind ||
+			(approvalPolicy.kind === 'required' &&
+				savedApprovalPolicy.kind === 'required' &&
+				approvalPolicy.instructions !== savedApprovalPolicy.instructions) ||
 			this.concessions.length !== (saved?.concessions.length ?? 0) ||
 			this.concessions.some((concession, i) => concession.id !== saved?.concessions[i]?.id)
 		);
 	});
 	private compositionDirty = $derived(
-		this.workflow.kind === 'creating-concession' || this.workflow.kind === 'adding-concession'
-			? !equalConcession(this.workflow.concession, this.workflow.originalConcession) ||
-					this.workflow.affectsOtherParts
+		this.concessionDraft
+			? !equalConcession(
+					this.concessionDraft.concession,
+					this.concessionDraft.originalConcession
+				) || this.concessionDraft.affectsOtherParts
 			: false
 	);
 	dirty = $derived(this.persistedDirty || this.compositionDirty);
@@ -164,78 +178,61 @@ export class AuthoringContext {
 		immutable(
 			semanticRepInstruction({
 				trigger: this.trigger,
-				concessions:
-					this.workflow.kind === 'creating-concession'
-						? [this.workflow.concession]
-						: this.concessions
+				concessions: this.concessions
 			})
 		)
-	);
-	private normalizedTrigger = $derived(
-		immutable({
-			id: this.trigger.id,
-			target: semanticTarget(this.trigger.target)
-		})
 	);
 	payload: DeepReadonly<TemplateItem> = $derived(
 		immutable(
 			this.content.audience === 'buyer'
 				? {
 						audience: 'buyer' as const,
-						trigger: this.normalizedTrigger,
+						trigger: this.normalizedBuyerTrigger!,
 						explanation: this.content.explanation
 					}
 				: {
 						...this.structure,
-						...(this.content.instructions === undefined
-							? {}
-							: { instructions: semanticInstructions(this.content.instructions) }),
+						instructions: semanticInstructions(this.content.instructions),
 						approvalPolicy: semanticApprovalPolicy(this.content.approvalPolicy)
 					}
 		)
 	);
-	private stagedPayload = $derived(
-		this.workflow.kind === 'creating-concession'
-			? this.structure
-			: this.composer
-				? immutable(semanticRepInstruction({ trigger: this.trigger, concessions: [this.composer] }))
-				: null
-	);
-	private composerLimitReason = $derived(
-		this.composer ? this.validationReason(() => validateConcessions([this.composer!])) : ''
+	private proposedConcessionPayload = $derived(
+		this.concessionDraft && this.payload.audience === 'rep'
+			? immutable({
+					...this.payload,
+					concessions: [
+						...this.payload.concessions,
+						semanticConcession(this.concessionDraft.concession)
+					]
+				})
+			: null
 	);
 	private contentReason = $derived(
 		this.validationReason(() => validateTemplateItemContent(this.payload))
 	);
-	private referencesReason = $derived(this.references(this.concessions));
-	private composerReferencesReason = $derived(
-		this.references(this.composer ? [this.composer] : [])
-	);
-	private geometryReason = $derived(this.checkGeometry(this.concessions));
-	private composerGeometryReason = $derived(
-		this.composer ? this.checkGeometry([this.composer]) : ''
-	);
-	private capacityReason = $derived(this.capacity());
-	private stagedContentReason = $derived(
-		this.stagedPayload
-			? this.validationReason(() => {
-					validateTemplateItemContent(this.stagedPayload!);
-				})
+	private proposedConcessionContentReason = $derived(
+		this.proposedConcessionPayload
+			? this.validationReason(() => validateTemplateItemContent(this.proposedConcessionPayload!))
 			: ''
 	);
-	validation = $derived(
-		this.capacityReason ||
-			this.contentReason ||
-			this.geometryReason ||
-			this.referencesReason ||
-			(this.workflow.kind === 'creating-concession'
-				? this.composerGeometryReason || this.composerReferencesReason || this.composerLimitReason
-				: '')
+	private referencesReason = $derived(this.references(this.concessions));
+	private composerReferencesReason = $derived(
+		this.references(this.concessionDraft ? [this.concessionDraft.concession] : [])
 	);
-	additionValidation = $derived(
+	private geometryReason = $derived(this.checkGeometry(this.validateGeometry, this.concessions));
+	private composerGeometryReason = $derived(
+		this.concessionDraft
+			? this.checkGeometry(this.validateComposerGeometry, [this.concessionDraft.concession])
+			: ''
+	);
+	private capacityReason = $derived(this.capacity());
+	validation = $derived(
+		this.capacityReason || this.contentReason || this.geometryReason || this.referencesReason
+	);
+	concessionValidation = $derived(
 		this.capacityReason ||
-			this.composerLimitReason ||
-			this.stagedContentReason ||
+			this.proposedConcessionContentReason ||
 			this.composerGeometryReason ||
 			this.composerReferencesReason
 	);
@@ -259,11 +256,14 @@ export class AuthoringContext {
 				)
 			: 'Wait for the template source';
 	}
-	private checkGeometry(concessions: DeepReadonly<Concession[]>) {
-		if (!this.validateGeometry || !this.geometry) return 'Wait for the template source';
+	private checkGeometry(
+		validate: ReturnType<PlaybookGeometryIndex['createDraftValidator']> | null,
+		concessions: DeepReadonly<Concession[]>
+	) {
+		if (!validate || !this.geometry) return 'Wait for the template source';
 		void this.geometryVersion;
 		return this.validationReason(() =>
-			this.validateGeometry!(this.confirmed?._id, {
+			validate(this.confirmed?._id, {
 				audience: this.audience,
 				trigger: this.trigger,
 				concessions

@@ -8,7 +8,7 @@ import type { SelectionDocument } from './selection/selection-model';
 
 export type ReviewAnchor = {
 	key: string;
-	changeId: string;
+	itemId: string;
 	order: number;
 	page: number;
 	target: number;
@@ -17,7 +17,7 @@ export type ReviewAnchor = {
 type TextLocation = {
 	kind: 'text';
 	key: string;
-	changeId: string;
+	itemId: string;
 	range: SourceRange;
 	start: number;
 	end: number;
@@ -25,12 +25,12 @@ type TextLocation = {
 type BoundaryLocation = {
 	kind: 'boundary';
 	key: string;
-	changeId: string;
+	itemId: string;
 	afterBlockKey: string;
 	start: number;
 	end: number;
 };
-type EdgeLocation = { kind: 'edge'; key: string; changeId: string; start: number; end: number };
+type EdgeLocation = { kind: 'edge'; key: string; itemId: string; start: number; end: number };
 type Location = TextLocation | BoundaryLocation | EdgeLocation;
 type Token = {
 	span: HTMLElement;
@@ -77,7 +77,7 @@ export class ReviewAnchorProjector {
 
 	project(
 		host: HTMLElement,
-		tags: readonly Pick<ReviewTag, 'changeId' | 'target'>[],
+		tags: readonly Pick<ReviewTag, 'itemId' | 'targets'>[],
 		document: SelectionDocument,
 		pages: readonly PaginatedPage[],
 		geometryKey: string
@@ -92,36 +92,52 @@ export class ReviewAnchorProjector {
 		if (this.geometryKey !== geometryKey) {
 			this.geometryKey = geometryKey;
 			this.locations = tags.flatMap<Location>((tag): Location[] => {
-				try {
-					const key = tag.changeId;
-					if (!tag.target) return [{ kind: 'edge', key, changeId: tag.changeId, start: 0, end: 0 }];
-					if (!isTextTarget(tag.target)) {
-						const position = targetPosition(index, tag.target);
-						return [
-							{
-								kind: 'boundary' as const,
+				const seen = new Set<string>();
+				const locations: Location[] = [];
+				for (const target of tag.targets) {
+					try {
+						const bucket = isTextTarget(target)
+							? (index.byKey.get(target.range.start.sourceKey)?.blockKey ??
+								JSON.stringify(target.range.start))
+							: `boundary:${target.afterBlockKey}`;
+						if (seen.has(bucket)) continue;
+						seen.add(bucket);
+						const key = locations.length === 0 ? tag.itemId : `${tag.itemId}:${locations.length}`;
+						if (!isTextTarget(target)) {
+							const position = targetPosition(index, target);
+							locations.push({
+								kind: 'boundary',
 								key,
-								changeId: tag.changeId,
-								afterBlockKey: tag.target.afterBlockKey,
+								itemId: tag.itemId,
+								afterBlockKey: target.afterBlockKey,
 								start: position,
 								end: position
-							}
-						];
-					}
-					return [
-						{
-							kind: 'text' as const,
-							key,
-							changeId: tag.changeId,
-							range: tag.target.range,
-							start: pointPosition(index, tag.target.range.start),
-							end: pointPosition(index, tag.target.range.end)
+							});
+						} else {
+							locations.push({
+								kind: 'text',
+								key,
+								itemId: tag.itemId,
+								range: target.range,
+								start: pointPosition(index, target.range.start),
+								end: pointPosition(index, target.range.end)
+							});
 						}
-					];
-				} catch {
-					// Retained applied evidence stays reachable after its visible source disappears.
-					return [{ kind: 'edge', key: tag.changeId, changeId: tag.changeId, start: 0, end: 0 }];
+					} catch {
+						if (!locations.length) {
+							locations.push({
+								kind: 'edge',
+								key: tag.itemId,
+								itemId: tag.itemId,
+								start: 0,
+								end: 0
+							});
+						}
+					}
 				}
+				return locations.length
+					? locations
+					: [{ kind: 'edge', key: tag.itemId, itemId: tag.itemId, start: 0, end: 0 }];
 			});
 		}
 		if (!this.locations.length) {
@@ -261,7 +277,7 @@ export class ReviewAnchorProjector {
 				const target = top + local;
 				anchors.push({
 					key: location.key,
-					changeId: location.changeId,
+					itemId: location.itemId,
 					order: location.start,
 					page: cached.page.number,
 					target,

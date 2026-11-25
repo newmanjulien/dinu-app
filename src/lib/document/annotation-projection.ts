@@ -152,10 +152,7 @@ export class DocumentAnnotationProjection {
 						ownerKeys.push(key);
 						owner.annotation = membership;
 						const state = this.updateState(owner, selected, capable, enabled);
-						if (
-							cached.annotation.pending !== annotation.pending ||
-							cached.annotation.passive !== annotation.passive
-						)
+						if (cached.annotation.pending !== annotation.pending)
 							this.updateOwnerLabel(
 								owner.element,
 								annotation,
@@ -253,7 +250,7 @@ export class DocumentAnnotationProjection {
 						annotation.highlightKind,
 						ranges,
 						undefined,
-						annotation.passive ? undefined : element,
+						element,
 						{ rebindFromSource: true }
 					);
 					positioned.add(owner);
@@ -281,10 +278,6 @@ export class DocumentAnnotationProjection {
 		annotation: DocumentAnnotation,
 		ranges: readonly Range[]
 	) {
-		if (annotation.passive) {
-			element.removeAttribute('aria-label');
-			return;
-		}
 		const text = ranges
 			.map((range) => range.toString())
 			.join(' ')
@@ -314,15 +307,10 @@ export class DocumentAnnotationProjection {
 		element.dataset.annotationSelected = state;
 		element.dataset.annotationPending = pending;
 		element.dataset.annotationPriority = priority;
-		const actionable = capable && !annotation.passive;
-		element.setAttribute('role', actionable ? 'button' : 'presentation');
-		element.tabIndex = actionable ? 0 : -1;
+		element.setAttribute('role', capable ? 'button' : 'presentation');
+		element.tabIndex = capable ? 0 : -1;
 		element.setAttribute('aria-pressed', state);
-		element.setAttribute(
-			'aria-disabled',
-			String(!enabled || Boolean(annotation.pending) || Boolean(annotation.passive))
-		);
-		if (annotation.passive) element.removeAttribute('aria-label');
+		element.setAttribute('aria-disabled', String(!enabled || Boolean(annotation.pending)));
 		return { changed, orderChanged };
 	}
 	private layer(page: HTMLElement) {

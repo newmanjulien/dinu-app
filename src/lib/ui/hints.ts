@@ -7,7 +7,10 @@ export const hints = {
 		text: 'Create and manage buyer contracts using your company’s template and instructions.'
 	},
 	firstBuyerLink: {
-		text: 'Buyer links appear here. Open one to preview the buyer’s view, or copy it from the contract to share it.'
+		text: 'Send this link to the buyer, then open it yourself to exchange comments with them'
+	},
+	sellerCommentName: {
+		text: 'Add your name in Settings so buyers see it instead of your email.'
 	},
 	concessionAutoApproved: {
 		text: 'This option applies immediately to the current contract.'

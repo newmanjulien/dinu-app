@@ -10,6 +10,15 @@ export class AccountContext {
 	loading = $state(true);
 	rejected = $state(false);
 	identity = $state<string>();
+
+	clear() {
+		this.account = undefined;
+		this.client = undefined;
+		this.authenticated = false;
+		this.loading = true;
+		this.rejected = false;
+		this.identity = undefined;
+	}
 }
 const key = Symbol('account-context');
 export const setAccountContext = () => setContext(key, new AccountContext());

@@ -5,7 +5,7 @@ const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
 export const POST: RequestHandler = async ({ locals, request, url }) => {
 	const token = await locals.auth?.().getToken({ template: 'convex' });
-	if (!token) return new Response('Sign in required.', { status: 401 });
+	if (!token) return new Response('Log in required.', { status: 401 });
 	if (!env.PUBLIC_CONVEX_URL)
 		return new Response('Missing backend configuration.', { status: 503 });
 	const contentType = request.headers.get('content-type') ?? '';

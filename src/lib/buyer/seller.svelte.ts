@@ -1,48 +1,15 @@
-import { createOperationId } from '$lib/contract/operation-identity';
-import {
-	assertOperationRetryable,
-	isOperationRecovery,
-	OperationResultFailure
-} from '$lib/contract/operation-recovery';
 import { getContext, setContext } from 'svelte';
 import { ConvexClient } from 'convex/browser';
-import { ConvexError } from 'convex/values';
 import type { FunctionReturnType } from 'convex/server';
 import { env } from '$env/dynamic/public';
 import { api } from '../../convex/_generated/api';
-import type { Id } from '../../convex/_generated/dataModel';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
-import { workBlockMessage } from '$lib/contract/work-policy';
 import type { SeenMessage } from '$lib/discussions/reads.svelte';
-import { awaitContractOperation } from '$lib/contract/operation-result';
-import { reviewOperationInputs } from '$lib/contract/changes';
-import type { Value } from 'convex/values';
 
 type Clerk = NonNullable<Window['Clerk']>;
 type AccountSession = NonNullable<Clerk['session']>;
 type Seller = NonNullable<FunctionReturnType<typeof api.buyerLinks.sellerContext>>;
 type SellerAvatar = FunctionReturnType<typeof api.profiles.currentAvatar>;
-type SellerOperationKind =
-	| 'change-decision'
-	| 'proposal-support'
-	| 'approval-request'
-	| 'review-completion'
-	| 'discussion-mark-seen';
-type SellerCommand = {
-	kind: SellerOperationKind;
-	inputs: string;
-	send: (client: ConvexClient) => Promise<{ status: 'complete' | 'preparing' }>;
-};
-type SellerIntent = SellerCommand & {
-	operationId: string;
-	dispatched: boolean;
-	uncertain: boolean;
-};
-export const nativeSellerCommand = <T extends { status: 'complete' | 'preparing' }>(
-	kind: Exclude<SellerOperationKind, 'discussion-mark-seen'>,
-	args: Value,
-	send: (client: ConvexClient) => Promise<T>
-) => ({ kind, inputs: reviewOperationInputs({ kind, args }), send });
 const key = Symbol('buyer-seller');
 
 /** Classifies the audience and owns the separate authenticated seller transport. */
@@ -58,7 +25,6 @@ export class BuyerSeller {
 	}
 	set preview(preview: boolean) {
 		if (this.buyerPreview === preview) return;
-		for (const waiter of this.operationWaiters) waiter.abort();
 		this.previewGeneration++;
 		this.buyerPreview = preview;
 	}
@@ -77,8 +43,6 @@ export class BuyerSeller {
 	private generation = $state(0);
 	private contextGeneration = $state(0);
 	private prepared?: { token: string; expiresAt: number; sessionId: string; generation: number };
-	private intents = new Map<string, SellerIntent>();
-	private operationWaiters = new Set<AbortController>();
 	constructor(readonly token: string) {}
 	get userId() {
 		const session = this.clerk?.session;
@@ -152,7 +116,6 @@ export class BuyerSeller {
 			this.clerk?.session?.id !== session.id
 		)
 			throw new Error('Your account session changed.');
-		// This expiry is a flush optimization, never an authorization decision.
 		const payload: { exp?: unknown } = JSON.parse(
 			atob(token.split('.')[1].replace(/-/gu, '+').replace(/_/gu, '/'))
 		);
@@ -165,7 +128,7 @@ export class BuyerSeller {
 		return token;
 	}
 	get visible() {
-		return !!this.viewer && !this.preview;
+		return Boolean(this.viewer && !this.preview);
 	}
 	async signOut() {
 		if (!this.clerk) throw new Error('Authentication is unavailable.');
@@ -226,7 +189,6 @@ export class BuyerSeller {
 	}
 	private clear() {
 		this.generation++;
-		for (const waiter of this.operationWaiters) waiter.abort();
 		this.prepared = undefined;
 		this.attempt?.abort();
 		this.stopContext?.();
@@ -235,9 +197,6 @@ export class BuyerSeller {
 		this.stopAvatar = undefined;
 		this.avatar = undefined;
 		this.avatarUnavailable = false;
-		for (const [key, intent] of this.intents) {
-			if (!intent.dispatched) this.intents.delete(key);
-		}
 		this.viewer = null;
 		this.preview = false;
 		if (this.client) void this.client.close();
@@ -303,7 +262,6 @@ export class BuyerSeller {
 							this.viewer?.role !== viewer?.role;
 						if (changed) {
 							this.contextGeneration++;
-							for (const waiter of this.operationWaiters) waiter.abort();
 							this.preview = false;
 						}
 						if (this.viewer?.profile.id !== viewer?.profile.id) {
@@ -349,134 +307,29 @@ export class BuyerSeller {
 			!client ||
 			identity !== this.identity ||
 			accountIdentity !== this.accountIdentity ||
+			!this.visible ||
 			!client.connectionState().isWebSocketConnected
 		)
 			return false;
-		await this.perform(
-			`seen:${JSON.stringify(messages)}`,
-			(original, operationId) => {
-				const args = {
-					token: this.token,
-					operationId,
-					messages: messages.map((message) => ({ ...message }))
-				};
-				return {
-					kind: 'discussion-mark-seen',
-					inputs: JSON.stringify(args),
-					send: (transport) =>
-						transport.mutation(api.discussions.markSeen, {
-							membershipId: original.membershipId,
-							id: original.contractId,
-							...args
-						})
-				};
-			},
-			false
-		);
-		return (
-			identity === this.identity &&
-			accountIdentity === this.accountIdentity &&
-			client === this.client
-		);
-	}
-	async perform<
-		T extends { status: 'complete' | 'preparing' } = { status: 'complete' | 'preparing' }
-	>(
-		key: string,
-		create: (viewer: Seller, operationId: string) => SellerCommand,
-		checkWork = true
-	): Promise<T> {
-		const viewer = this.viewer,
-			client = this.client,
-			identity = this.identity,
-			accountIdentity = this.accountIdentity,
-			previewGeneration = this.previewGeneration;
-		if (!viewer || !client || !identity || !this.visible)
-			throw new Error('Open the dashboard and sign in to handle proposals.');
-		const intentKey = JSON.stringify([identity, key]);
-		let intent = this.intents.get(intentKey);
-		if (!intent) {
-			const operationId = createOperationId();
-			intent = { operationId, dispatched: false, uncertain: false, ...create(viewer, operationId) };
-			this.intents.set(intentKey, intent);
-		}
-		const captured = intent;
-		const retire = () => {
-			if (this.intents.get(intentKey) === captured) this.intents.delete(intentKey);
-		};
-		const current = () =>
-			identity === this.identity &&
-			accountIdentity === this.accountIdentity &&
-			client === this.client &&
-			previewGeneration === this.previewGeneration &&
-			this.visible;
-		const lifetime = new AbortController();
-		this.operationWaiters.add(lifetime);
-		const attempt = new ReadAttempt(15_000, AbortSignal.any([lifetime.signal, this.root!.signal]));
-		const receipt = () =>
-			awaitContractOperation<T>(
-				client,
-				{
+		const attempt = new ReadAttempt(15_000, this.root?.signal);
+		try {
+			await waitForRead(
+				client.mutation(api.discussions.markSeen, {
 					membershipId: viewer.membershipId,
 					id: viewer.contractId,
-					kind: captured.kind,
-					operationId: captured.operationId,
-					inputs: captured.inputs
-				},
+					token: this.token,
+					operationId: crypto.randomUUID(),
+					messages: messages.map((message) => ({ ...message }))
+				}),
 				attempt.signal
 			);
-		try {
-			if (!current()) throw new Error('Your seller session changed.');
-			if (!captured.dispatched && checkWork) {
-				const checked = await waitForRead(
-					client.action(api.hubspotDeals.check, {
-						membershipId: viewer.membershipId,
-						contractId: viewer.contractId
-					}),
-					attempt.signal
-				);
-				if (checked.outcome === 'unavailable')
-					throw new ConvexError({
-						code: 'deal-unavailable',
-						message: workBlockMessage('deal-unavailable')
-					});
-			}
-			if (!current()) throw new Error('Your seller session changed.');
-			attempt.signal.throwIfAborted();
-			assertOperationRetryable(captured.operationId);
-			captured.dispatched = true;
-			let result: T;
-			try {
-				result = await waitForRead(
-					captured.send(client).then((value) => {
-						if (value.status === 'complete') retire();
-						return value as T;
-					}),
-					attempt.signal
-				);
-			} catch (error) {
-				if (error instanceof ConvexError) throw error;
-				captured.uncertain = true;
-				result = await receipt();
-			}
-			if (result.status === 'preparing') {
-				captured.uncertain = true;
-				result = await receipt();
-			}
-			retire();
-			return result;
-		} catch (error) {
-			if (
-				!isOperationRecovery(error) &&
-				(!captured.dispatched ||
-					error instanceof OperationResultFailure ||
-					(error instanceof ConvexError && !captured.uncertain))
-			)
-				retire();
-			throw error;
+			return (
+				identity === this.identity &&
+				accountIdentity === this.accountIdentity &&
+				client === this.client
+			);
 		} finally {
 			attempt.complete();
-			this.operationWaiters.delete(lifetime);
 		}
 	}
 }

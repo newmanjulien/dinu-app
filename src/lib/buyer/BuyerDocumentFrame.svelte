@@ -19,7 +19,7 @@
 	style:--document-section-bottom-padding="80px"
 >
 	{#if loading}
-		<DocumentSkeleton reserveReviewGutter label={loadingLabel} />
+		<DocumentSkeleton label={loadingLabel} />
 	{:else}
 		{@render children?.()}
 	{/if}

@@ -40,9 +40,7 @@ export async function markDealUnavailable(ctx: MutationCtx, contract: Contract) 
 	if (!contract.hubspot) return;
 	await blockLink(ctx, contract.root.companyId, contract.root._id, contract.hubspot.generation);
 	if (contract.hubspot.availability === 'unavailable') return;
-	const changes = {
-		hubspot: { ...contract.hubspot, availability: 'unavailable' as const },
-		stateRevision: contract.root.stateRevision + 1
-	};
-	await patchContract(ctx, contract, changes);
+	await patchContract(ctx, contract, {
+		hubspot: { ...contract.hubspot, availability: 'unavailable' as const }
+	});
 }

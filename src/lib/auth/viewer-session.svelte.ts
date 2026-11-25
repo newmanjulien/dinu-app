@@ -17,6 +17,7 @@ export type SessionPhase =
 	| 'saving-before-logout'
 	| 'saving-before-company-exit'
 	| 'signing-out'
+	| 'completing-deletion'
 	| 'authentication-error'
 	| 'signed-out';
 export type SessionEditor = {
@@ -55,8 +56,7 @@ type Session = {
 	discardAndSignOut: () => void;
 	dismissError: () => void;
 	returnToLogin: () => void;
-	reset: () => void;
-	completeAccountDeletion: (context: { sessionId: string; userId: string }) => void;
+	completeAccountDeletion: (context: { sessionId: string; userId: string }) => Promise<void>;
 	signOut: () => Promise<void>;
 	exitCompany: (action: () => Promise<unknown>, discard?: boolean) => Promise<void>;
 };

@@ -18,7 +18,7 @@
 	} = $props();
 </script>
 
-<OnboardingStepFrame title="Your company's name">
+<OnboardingStepFrame title="Your company’s name">
 	<form
 		class="mx-auto grid max-w-85 gap-3.5 text-left"
 		onsubmit={(event) => {
@@ -27,7 +27,7 @@
 		}}
 	>
 		<AuthTextInput
-			label="Type your company's name"
+			label="Type your company’s name"
 			bind:value={name}
 			autocomplete="organization"
 			maxlength={120}

@@ -26,7 +26,7 @@ async function outsider(f: Awaited<ReturnType<typeof fixture>>) {
 	};
 	const membershipId = await f.t.run(async ({ db }) => {
 		const profileId = await db.insert('profiles', {
-			helpPreferences: { rep: false, buyer: false },
+			helpPreferences: { contract: false, buyerLink: false },
 			identity: auth.tokenIdentifier,
 			issuer: auth.issuer,
 			clerkId: auth.subject,
@@ -37,7 +37,12 @@ async function outsider(f: Awaited<ReturnType<typeof fixture>>) {
 			name: 'Other company',
 			ownerProfileId: profileId
 		});
-		return db.insert('memberships', { companyId, profileId, role: 'admin' });
+		return db.insert('memberships', {
+			companyId,
+			profileId,
+			role: 'admin',
+			supportWidgetCollapsed: false
+		});
 	});
 	return { client: f.root.withIdentity(auth), membershipId };
 }
@@ -59,17 +64,17 @@ describe('integration authorization', () => {
 		const fetcher = vi.fn();
 		vi.stubGlobal('fetch', fetcher);
 		const args = { membershipId: f.owner.membershipId, search: '' };
-		await expect(f.root.action(api.hubspotDeals.list, args)).rejects.toThrow('Sign in');
+		await expect(f.root.action(api.hubspotDeals.list, args)).rejects.toThrow('Log in');
 		await expect(other.client.action(api.hubspotDeals.list, args)).rejects.toThrow('access');
 		await expect(
 			f.t.action(api.hubspotDeals.list, { ...args, membershipId: other.membershipId })
 		).rejects.toThrow('access');
 		expect(fetcher).not.toHaveBeenCalled();
 	});
-	it('refuses another company’s relink and export acknowledgment/release without modifying its records', async () => {
+	it('refuses another company’s relink and word export preparation without modifying its records', async () => {
 		const f = await fixture(),
-			other = await outsider(f),
-			attempt = await readyExport(f);
+			other = await outsider(f);
+		await readyExport(f);
 		await markUnavailable(f);
 		const before = await currentContract(f);
 		await expect(
@@ -110,23 +115,18 @@ describe('integration authorization', () => {
 			})
 		).rejects.toThrow('deleted');
 		await expect(
-			other.client.mutation(internal.hubspotExports.release, { id: attempt._id })
-		).rejects.toThrow('expired');
-		await expect(
-			other.client.mutation(api.hubspotExports.acknowledge, {
+			other.client.query(internal.contractExports.prepare, {
 				membershipId: other.membershipId,
-				id: attempt._id,
-				initiatedAt: NOW
+				id: f.id,
+				operationId: fixtureOperationId('download'),
+				expectedStateRevision: 0
 			})
 		).rejects.toThrow('unavailable');
 		expect(await currentContract(f)).toEqual(before);
-		expect(
-			(await f.t.run(({ db }) => db.get('hubspotExports', attempt._id)))?.acknowledgedAt
-		).toBeUndefined();
 	});
-	it('allows another member of the same company to repair the link but not retrieve the original member’s export', async () => {
-		const f = await fixture(),
-			attempt = await readyExport(f);
+	it('allows another member of the same company to repair the link without accessing another member’s export key', async () => {
+		const f = await fixture();
+		await readyExport(f);
 		await markUnavailable(f);
 		await f.repClient.mutation(internal.hubspotDeals.commit, {
 			...f.creation,
@@ -139,16 +139,13 @@ describe('integration authorization', () => {
 		expect(await currentContract(f)).toMatchObject({
 			hubspot: { dealId: '202', availability: 'available' }
 		});
-		await expect(
-			f.repClient.mutation(internal.hubspotExports.release, { id: attempt._id })
-		).rejects.toThrow('expired');
-		await expect(
-			f.repClient.mutation(api.hubspotExports.acknowledge, {
-				membershipId: f.rep.membershipId,
-				id: attempt._id,
-				initiatedAt: NOW
-			})
-		).rejects.toThrow('unavailable');
+		const prepared = await f.repClient.query(internal.contractExports.prepare, {
+			membershipId: f.rep.membershipId,
+			id: f.id,
+			operationId: fixtureOperationId('download'),
+			expectedStateRevision: (await currentContract(f)).root.stateRevision
+		});
+		expect(prepared.kind).toBe('generate');
 	});
 	it('returns installation status without exposing credentials', async () => {
 		const f = await fixture();
@@ -179,7 +176,9 @@ describe('integration authorization', () => {
 describe('OAuth installation authority', () => {
 	it('allows only admins to start installation and binds expiring, single-use state to its initiator', async () => {
 		const f = await fixture();
-		await expect(f.repClient.action(api.hubspotOAuth.start, {})).rejects.toThrow('Only admins');
+		await expect(f.repClient.action(api.hubspotOAuth.start, {})).rejects.toThrow(
+			'You do not have permission to perform this action.'
+		);
 		expect(await f.t.run(({ db }) => db.query('hubspotOAuthStates').collect())).toEqual([]);
 		const start = await f.t.action(api.hubspotOAuth.start, {}),
 			url = new URL(start.url);

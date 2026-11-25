@@ -1,11 +1,10 @@
-import { settleQuoteOutput } from './outputLifecycle';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
 import { ConvexError, v, type Infer } from 'convex/values';
 import type { WorkId } from '@convex-dev/workpool';
 import { internal } from './_generated/api';
 import type { Doc, Id } from './_generated/dataModel';
 import { internalAction, internalMutation, mutation, type MutationCtx } from './_generated/server';
-import { availableCompany, requireMembership } from './auth';
+import { availableCompany, requirePermission } from './auth';
 import { lifecycle, otherAttachments, portalLifecycle } from './hubspotInstallation';
 import { pool } from './hubspotDelivery';
 import { hubspotRemovalOutcome } from './hubspotValidators';
@@ -84,9 +83,7 @@ export const uninstall = mutation({
 	args: { membershipId: v.id('memberships'), connectionId: v.id('hubspotConnections') },
 	returns: v.id('hubspotRemovals'),
 	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
-		if (access.membership.role !== 'admin')
-			throw new ConvexError('Only admins can uninstall HubSpot.');
+		const access = await requirePermission(ctx, 'manageIntegrations', args.membershipId);
 		const connection = await ctx.db.get('hubspotConnections', args.connectionId);
 		if (connection) {
 			if (connection.companyId !== access.companyId)
@@ -199,7 +196,6 @@ export const progress = internalMutation({
 				.paginate({ cursor: removal.cursor, numItems: 25 });
 			let wait = 0;
 			for (const row of page.page) {
-				if (row.format !== 'full') continue;
 				if (row.workId) await pool.cancel(ctx, row.workId as WorkId);
 				const remaining = quoteRunningUntil(row) - Date.now();
 				if (remaining > 0) {
@@ -218,7 +214,6 @@ export const progress = internalMutation({
 								? 'HubSpot may have created this quote. Contact Dinu support before pushing this version again.'
 								: 'HubSpot was removed. Existing quotes stay in HubSpot.'
 					});
-				await settleQuoteOutput(ctx, row._id);
 			}
 			if (!wait)
 				await ctx.db.patch('hubspotRemovals', id, {

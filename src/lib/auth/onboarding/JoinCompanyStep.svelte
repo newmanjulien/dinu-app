@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { useReadQuery } from '$lib/auth/read-query.svelte';
-	import { untrack } from 'svelte';
 	import UsersIcon from 'phosphor-svelte/lib/UsersIcon';
 	import { api } from '../../../convex/_generated/api';
 	import type { Id } from '../../../convex/_generated/dataModel';

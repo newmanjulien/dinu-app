@@ -3,6 +3,7 @@ import { HelpSession } from '$lib/components/ui/modal/help-session.svelte';
 import type { SnapshotClient } from '$lib/query-once';
 import type { FunctionReturnType } from 'convex/server';
 import { api } from '../../convex/_generated/api';
+import type { Id } from '../../convex/_generated/dataModel';
 import { queryOnce } from '$lib/query-once';
 import { ReadAttempt } from '$lib/auth/attempt';
 import { afterPaint, DocumentScheduler, type Priority } from '$lib/document/runtime/scheduler';
@@ -11,7 +12,14 @@ import { recordColdStart } from '$lib/document/runtime/render-perf';
 import { BuyerDownload } from './download.svelte';
 import type { DocumentToolControls } from '$lib/components/document/document-tools';
 
-type Content = FunctionReturnType<typeof api.buyerLinks.currentDocument>;
+export type BuyerDocumentState = FunctionReturnType<typeof api.buyerLinks.currentState>;
+export type BuyerTemplateContent = FunctionReturnType<typeof api.buyerLinks.templateContent>;
+export type BuyerDocumentContent = BuyerDocumentState & {
+	blocks: BuyerTemplateContent['blocks'];
+	rawExplanations: BuyerTemplateContent['explanations'];
+};
+
+type Content = BuyerDocumentContent;
 type Host = typeof import('./BuyerDocumentHost.svelte').default;
 type FailureStage =
 	'content' | 'code' | 'construction' | 'source' | 'preparation' | 'page-mount' | 'opening';
@@ -54,9 +62,9 @@ export class BuyerContract {
 	readonly priority: Priority = () => 'foreground';
 	readonly download: BuyerDownload;
 	private stopDocument?: () => void;
-	private readContent(signal: AbortSignal) {
-		return queryOnce(this.client, api.buyerLinks.currentDocument, { token: this.token }, signal);
-	}
+	private templates = new Map<Id<'templateVersions'>, BuyerTemplateContent>();
+	private templateReads = new Map<Id<'templateVersions'>, Promise<BuyerTemplateContent>>();
+	private latestStateSeq = 0;
 	tools = $state.raw<DocumentToolControls>();
 	private toolsOwner?: symbol;
 	private lifetime?: AbortController;
@@ -111,12 +119,39 @@ export class BuyerContract {
 		}
 		return this.code;
 	}
+	private loadTemplate(
+		templateVersionId: Id<'templateVersions'>,
+		signal: AbortSignal
+	): Promise<BuyerTemplateContent> {
+		const cached = this.templates.get(templateVersionId);
+		if (cached) return Promise.resolve(cached);
+		const existing = this.templateReads.get(templateVersionId);
+		if (existing) return existing;
+		const read = queryOnce(
+			this.client,
+			api.buyerLinks.templateContent,
+			{ token: this.token, templateVersionId },
+			signal
+		)
+			.then((value) => {
+				this.templates.set(templateVersionId, value);
+				return value;
+			})
+			.finally(() => {
+				if (this.templateReads.get(templateVersionId) === read)
+					this.templateReads.delete(templateVersionId);
+			});
+		this.templateReads.set(templateVersionId, read);
+		return read;
+	}
 	setAccess(allowed: boolean) {
 		if (this.allowed === allowed) return;
 		this.allowed = allowed;
 		if (!allowed) {
 			this.release();
 			this.content = undefined;
+			this.templates.clear();
+			this.templateReads.clear();
 			this.Host = undefined;
 			this.error = null;
 		} else if (this.foreground) this.start();
@@ -152,7 +187,7 @@ export class BuyerContract {
 		);
 	}
 	private start() {
-		if (this.content && this.foreground) this.subscribeDocument();
+		if (this.content && this.foreground) this.subscribeState(this.generation);
 		if (!this.allowed || this.error || this.lifetime) return;
 		const lifetime = (this.lifetime = new AbortController());
 		const generation = this.generation;
@@ -161,17 +196,23 @@ export class BuyerContract {
 		if (!this.content) recordColdStart('buyer-content-start');
 		const content = this.content
 			? Promise.resolve(this.content)
-			: this.readContent(lifetime.signal)
-					.then((value) => {
-						if (this.isCurrent(generation, lifetime)) {
-							this.content = value;
-							this.subscribeDocument();
+			: new Promise<void>((resolve, reject) => {
+					const onAbort = () => reject(lifetime.signal.reason ?? new Error('Aborted'));
+					lifetime.signal.addEventListener('abort', onAbort, { once: true });
+					this.subscribeState(generation, {
+						onFirstReady: () => {
+							lifetime.signal.removeEventListener('abort', onAbort);
 							recordColdStart('buyer-content-ready', startedAt);
+							resolve();
+						},
+						onFirstError: (error) => {
+							lifetime.signal.removeEventListener('abort', onAbort);
+							reject(error);
 						}
-					})
-					.catch(() => {
-						if (this.isCurrent(generation, lifetime)) this.fail(generation, 'content');
 					});
+				}).catch(() => {
+					if (this.isCurrent(generation, lifetime)) this.fail(generation, 'content');
+				});
 		const code = this.Host
 			? Promise.resolve(this.Host)
 			: this.loadCode()
@@ -202,42 +243,95 @@ export class BuyerContract {
 				if (this.isCurrent(generation, lifetime)) this.fail(generation, 'construction');
 			});
 	}
-	private subscribeDocument() {
-		if (this.stopDocument || !this.allowed || !this.foreground || !this.content) return;
-		const generation = this.generation;
+	private subscribeState(
+		generation: number,
+		initial?: { onFirstReady: () => void; onFirstError: (error: unknown) => void }
+	) {
+		if (this.stopDocument || !this.allowed || !this.foreground) return;
 		let active = true;
+		let settledInitial = !initial;
 		let unsubscribe: (() => void) | undefined;
+		const subscriptionAbort = new AbortController();
 		this.stopDocument = () => {
 			active = false;
+			subscriptionAbort.abort();
 			unsubscribe?.();
 		};
-		const receive = (value: Content) => {
-			if (
-				!active ||
-				generation !== this.generation ||
-				!this.allowed ||
-				!this.foreground ||
-				!this.content
-			)
-				return;
+		const applyState = (state: BuyerDocumentState) => {
+			if (!active || generation !== this.generation || !this.allowed || !this.foreground) return;
 			this.refreshError = null;
-			if (value.displayIdentity === this.content.displayIdentity) return;
-			this.content = value;
+			if (this.content && state.displayIdentity === this.content.displayIdentity) return;
+			const cachedTemplate = this.templates.get(state.templateVersionId);
+			if (cachedTemplate) {
+				this.content = {
+					...state,
+					blocks: cachedTemplate.blocks,
+					rawExplanations: cachedTemplate.explanations
+				};
+				if (!settledInitial) {
+					settledInitial = true;
+					initial?.onFirstReady();
+				}
+				return;
+			}
+			const seq = ++this.latestStateSeq;
+			const readAttempt = new ReadAttempt(15_000, subscriptionAbort.signal);
+			void this.loadTemplate(state.templateVersionId, readAttempt.signal)
+				.then((template) => {
+					if (
+						!active ||
+						seq !== this.latestStateSeq ||
+						generation !== this.generation ||
+						!this.allowed ||
+						!this.foreground
+					)
+						return;
+					this.content = {
+						...state,
+						blocks: template.blocks,
+						rawExplanations: template.explanations
+					};
+					if (!settledInitial) {
+						settledInitial = true;
+						initial?.onFirstReady();
+					}
+				})
+				.catch((error) => {
+					if (!active || generation !== this.generation || !this.allowed || !this.foreground)
+						return;
+					if (!settledInitial) {
+						settledInitial = true;
+						initial?.onFirstError(error);
+					} else {
+						this.refreshError = 'We couldn’t refresh this contract. Try again.';
+					}
+				})
+				.finally(() => readAttempt.complete());
 		};
-		const fail = () => {
-			if (active && generation === this.generation && this.allowed && this.foreground)
+		const fail = (error: unknown) => {
+			if (!active || generation !== this.generation || !this.allowed || !this.foreground) return;
+			if (!settledInitial) {
+				settledInitial = true;
+				initial?.onFirstError(error);
+			} else {
 				this.refreshError = 'We couldn’t refresh this contract. Try again.';
+			}
 		};
-		const args = { token: this.token };
-		unsubscribe = this.client.onUpdate(api.buyerLinks.currentDocument, args, receive, fail);
+		unsubscribe = this.client.onUpdate(
+			api.buyerLinks.currentState,
+			{ token: this.token },
+			applyState,
+			fail
+		);
 		if (!active) unsubscribe();
 	}
 
 	retryDocument() {
 		this.stopDocument?.();
 		this.stopDocument = undefined;
+		this.templateReads.clear();
 		this.refreshError = null;
-		this.subscribeDocument();
+		this.subscribeState(this.generation);
 	}
 	private isCurrent(generation: number, lifetime: AbortController) {
 		return (
@@ -318,6 +412,7 @@ export class BuyerContract {
 		const opening = this.opening;
 		this.opening = undefined;
 		opening?.abort();
+		this.templateReads.clear();
 		this.lifetime?.abort();
 		this.lifetime = undefined;
 		this.mountReady = false;
@@ -335,6 +430,8 @@ export class BuyerContract {
 		this.toolsOwner = undefined;
 		this.scheduler.destroy();
 		this.content = undefined;
+		this.templates.clear();
+		this.templateReads.clear();
 		this.Host = undefined;
 		this.target = undefined;
 	}

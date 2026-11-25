@@ -69,14 +69,10 @@ describe('buyer link preparation', () => {
 			} else {
 				expect(b.action).toHaveBeenCalledOnce();
 				expect(b.action.mock.calls[0][1]).toMatchObject({
-					preparation: {
-						kind: 'prepared',
-						expectedState: {
-							stateRevision: 2,
-							documentId: 'contract-a-document',
-							documentRevision: 0
-						}
-					}
+					membershipId: 'membership',
+					id: 'contract-a',
+					operationId: expect.any(String),
+					expectedStateRevision: 2
 				});
 				expect(b.writeText).toHaveBeenCalledExactlyOnceWith(`${location.origin}/${b.latest.token}`);
 				expect(b.onCopied).toHaveBeenCalledOnce();

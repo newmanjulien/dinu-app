@@ -145,7 +145,7 @@ export const data = internalQuery({
 	returns: v.union(
 		v.object({
 			event: schema.doc('hubspotEvents'),
-			attempt: v.union(schema.doc('hubspotExports'), v.null()),
+			attempt: v.union(schema.doc('wordExports'), v.null()),
 			delivery: v.union(schema.doc('hubspotExportDeliveries'), v.null())
 		}),
 		v.null()
@@ -153,7 +153,7 @@ export const data = internalQuery({
 	handler: async (ctx, { id }) => {
 		const event = await ctx.db.get('hubspotEvents', id);
 		if (!event || !(await availableCompany(ctx, event.companyId))) return null;
-		const attempt = event.attemptId ? await ctx.db.get('hubspotExports', event.attemptId) : null;
+		const attempt = event.attemptId ? await ctx.db.get('wordExports', event.attemptId) : null;
 		const delivery = attempt ? await exportDelivery(ctx, attempt) : null;
 		return { event, attempt, delivery };
 	}

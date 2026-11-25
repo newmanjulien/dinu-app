@@ -42,7 +42,7 @@ export type WorkspaceReadSnapshot<K extends WorkspaceReadKey> = Readonly<{
 	rows: Readonly<WorkspaceReadRows[K]>;
 }>;
 export function workspaceReadDatabaseName(scope: WorkspaceReadScope) {
-	return `dinu:workspace-read:v1:${env.PUBLIC_CONVEX_URL ?? ''}:${scope.profileId}:${scope.membershipId}:${scope.companyId}`;
+	return `dinu:workspace-read:v2:${env.PUBLIC_CONVEX_URL ?? ''}:${scope.profileId}:${scope.membershipId}:${scope.companyId}`;
 }
 const record = (value: unknown): value is Record<string, unknown> =>
 	!!value && typeof value === 'object' && !Array.isArray(value);

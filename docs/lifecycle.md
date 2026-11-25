@@ -2,9 +2,9 @@
 
 Current names and ownership are documented in [the data model](data-model.md).
 
-One current contract root owns editing and review state for its whole lifetime. Its approved document is shared by the seller dashboard and buyer link. Word and HubSpot reserve immutable evidence on durable `contractOutputs` owners, independently of bounded retry receipts. Full evidence, compact facts and shared document retention have separate [lifetimes](retention.md). `prepareContractAction` flushes the initiating editor, waits for acknowledgment and fetches current source expectations before first share or seller output. Unresolved intent/conflicts block. Copying an existing buyer link retains its small fast path.
+One `savedContracts` root owns editing (`concessions[]`) and review (`review`) state for its whole lifetime. Seller dashboard and buyer link views compose the contract directly from its frozen `templateVersions` snapshot and applied concessions. Word (`wordExports`) and HubSpot Quotes (`hubspotQuotePushes`) use 2-step `prepare` → Node generation/storage → `commit` with flat `operationReceipts` replay protection. See [retention](retention.md). `prepareContractAction` flushes the initiating editor and waits for acknowledgment before first share or seller output; unresolved intent or conflicts block. Copying an existing buyer link retains its small fast path.
 
-Mutable source pointers refresh on open; approved document/template caches follow immutable identities. The shared bounded cache prefetches current transport and focused preview bases while preserving coherent content during refresh. Current intent uses `dinu:drafts:v6`, envelope 11, with user/deployment/membership/contract ownership. Old version/intent namespaces are never translated or replayed. Preserve current pending bytes and original operation IDs across reloads and account/deployment boundaries. Exceptional preparation remains owned by that same operation until its business commit.
+Confirmed snapshots use namespace `dinu:v9` / IndexedDB 17; tab-scoped draft recovery uses `dinu:drafts:v7`, envelope version 1 (`{ version: 1, baseStateRevision, selections, request, conflict }`), scoped to deployment, user, membership, and contract. Pending selections and original operation IDs survive reloads.
 
 Successful clipboard writes follow `BuyerLinkController.onCopied` through
 `BuyerLinkCopyFeedback.show` to the single `WorkspaceShell.CopyConfirmation` host.
@@ -463,13 +463,11 @@ once independently of parent content. The geometry memo retains original failure
 the context derives safe loading/size, translated geometry or fallback reason
 strings. Revalidation does not erase transport outcomes.
 
-## Contract change reviews
+## Contract concession reviews
 
-Native Playbook options and buyer proposals share immutable changes, exact current/applied heads and admin decisions. Permitted actions apply immediately. Restricted additions, removals and switches leave their applied predecessor visible until approved. Withdrawing pending/declined transitions restores that predecessor. Admin approval and undo check exact current change/decision/document expectations and inverse/dependency eligibility; applied buyer undo never requires its source thread. Pending alternatives stay in focused comparisons while every main view renders approved text.
+Playbook concessions live directly on `savedContracts.concessions[]`. Options with `approvalPolicy.kind === 'none'` and selections made by company admins apply immediately as `approved`; rep selections on `required` rules enter `pending` status. Removing a concession deletes its entry from `concessions[]`.
 
-The `playbook` and `buyer-link` contexts have independent semantic freshness tokens, requests and completions. Explicit submission freezes exact pending entries; cancellation intersects each entry with its effective current head, preserving unrelated coverage. Completion checks the current token/counts and retains the existing notification choice. Delivery filters bounded immutable snapshot pages and rechecks its source/support fences before the send lease. No-op/replay receipts preserve original operation ownership without adding a second semantic decision.
-
-Approved changes synchronously update document identity, effective cancellations, context counts and the exact unread projection. Discussion source edits/deletion withdraw only the exact pending support; replies do not. Physical cleanup later normalizes stale heads before maps retire. First link and seller output require exact readiness; existing links and buyer displayed-byte downloads remain usable independently of private pending work. Output reservations own paged proof separately from the contract and source discussions.
+`savedContracts.review` owns a single monotonic `generation`, optional active `request`, and optional pending/queued `completion`. Explicit approval submission (`approvals.request`) counts pending, reviewed, and non-required concessions and schedules Loops email delivery. Admins approve or decline pending concessions strictly from the left-margin `ReviewTags` menu (`approvals.decide`); `RepPlaybookPanel` provides a single `Apply option` / `Remove option` toggle. When a save or decision leaves zero pending and zero rejected concessions, `syncBuyerLink` automatically updates `buyerLinks.currentView` and silently removes any buyer-link comments overlapped by the changed concessions. First buyer link creation and seller exports require zero pending and zero rejected concessions.
 
 Each applied concession owns one review state and one tab per affected part. Edits
 owned by the same instruction trigger share a location; changes outside its triggers
@@ -488,17 +486,9 @@ coordinates. Status changes update labels without remeasuring text, and only the
 open review menu is mounted.
 Admins can change either decision using the same menu; reps see read-only status and
 remove a rejected choice to clear it. Reviews are disabled until the current change
-is saved. Word download requires every selected required concession to be approved.
+is saved. Word download and HubSpot Quotes require every selected concession to be approved.
 
-An explicit approval request freezes the pending native changes and reviewed context
-into the existing recoverable email dispatch. Sending an email never changes review
-status. Its `?review=1` link waits for current state and mounted pages, then focuses the
-first pending concession's tab. A stale link reports that nothing is waiting and focuses the first
-remaining tab or document. After a decision, navigation advances to the next pending
-application in source order and wraps. Navigation consumes each request by identity,
-including when a workspace reopens a retained viewer. The stale-link message clears
-when another concession starts waiting. Decision history is retained without a UI and
-removed in bounded batches when the contract is deleted.
+An explicit approval request snapshots the pending counts into `emailDeliveries`. Sending an email never changes review status. Its `?review=1` link waits for current state and mounted pages, then focuses the first pending concession's tab. A stale link reports that nothing is waiting and focuses the first remaining tab or document. After a decision, navigation advances to the next pending concession in source order and wraps. Navigation consumes each request by identity, including when a workspace reopens a retained viewer. The stale-link message clears when another concession starts waiting.
 
 Admin acceptance also needs first-instruction Save with unchanged pages/scroll/selection,
 pending-to-confirmed identity, navigation during Saving, exact-operation retry after a lost

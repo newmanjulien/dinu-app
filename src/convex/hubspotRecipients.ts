@@ -14,10 +14,8 @@ import {
 import { availableCompany, requireMembership, accessibleContract } from './auth';
 import { activeDestination } from './hubspotInstallation';
 import { connectionToken, HubSpotError, resolveRecipient } from './hubspotApi';
-import { resolveAccess } from './buyerLinks';
+import { resolveAccess, syncBuyerLinkMetadata } from './buyerLinks';
 import { documentBytes, assertStorageCapacity } from './storageCapacity';
-import { currentRoot, type CurrentContractRoot } from './contractState';
-import { prepareBuyerCurrentView } from './buyerCurrent';
 
 const LEASE_MS = 240_000;
 const target = contractBuyerRefresh.omit('leaseUntil', 'dueAt', 'suppressed');
@@ -167,7 +165,7 @@ export const commit = internalMutation({
 	handler: async (ctx, args) => {
 		const current = await currentAttempt(ctx, args.target);
 		if (!current || current.refresh.leaseUntil <= Date.now()) return null;
-		let nextRoot: CurrentContractRoot | null = null;
+		let nextRoot: Doc<'savedContracts'> | null = null;
 		if (args.outcome === 'resolved' || args.outcome === 'empty') {
 			if ((args.outcome === 'resolved') !== (args.company !== null))
 				throw new Error('Invalid buyer observation.');
@@ -182,16 +180,13 @@ export const commit = internalMutation({
 				prior.kind === 'hubspot' &&
 				(prior.company?.id !== args.company?.id || prior.company?.name !== args.company?.name)
 			) {
-				nextRoot = currentRoot({
+				nextRoot = {
 					...current.root,
 					buyer,
-					stateRevision: current.root.stateRevision + 1
-				});
+					metadataRevision: current.root.metadataRevision + 1
+				};
 			}
 		}
-		const buyerCurrent = nextRoot
-			? await prepareBuyerCurrentView(ctx, currentRoot(current.root), nextRoot)
-			: null;
 		const successful = args.outcome === 'resolved' || args.outcome === 'empty';
 		const refreshPatch = {
 			leaseUntil: 0,
@@ -200,19 +195,18 @@ export const commit = internalMutation({
 			suppressed: args.outcome === 'missing-capability'
 		};
 		await assertStorageCapacity(ctx, {
-			documents: 1 + (nextRoot ? 1 : 0) + (buyerCurrent?.work.documents ?? 0),
+			documents: 1 + (nextRoot ? 2 : 0),
 			bytes:
 				documentBytes({ ...current.refresh, ...refreshPatch }) +
-				(nextRoot ? documentBytes(nextRoot) : 0) +
-				(buyerCurrent?.work.bytes ?? 0),
-			queries: 1 + (nextRoot ? 1 : 0) + (buyerCurrent?.work.queries ?? 0)
+				(nextRoot ? documentBytes(nextRoot) + 4096 : 0),
+			queries: 1 + (nextRoot ? 2 : 0)
 		});
-		if (nextRoot && buyerCurrent) {
+		if (nextRoot) {
 			await ctx.db.patch('savedContracts', nextRoot._id, {
 				buyer: nextRoot.buyer,
-				stateRevision: nextRoot.stateRevision
+				metadataRevision: nextRoot.metadataRevision
 			});
-			await buyerCurrent.commit(nextRoot);
+			await syncBuyerLinkMetadata(ctx, nextRoot);
 		}
 		await ctx.db.patch('contractBuyerRefreshes', current.refresh._id, refreshPatch);
 		return null;

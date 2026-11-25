@@ -2,7 +2,6 @@ import { measureStructuralBoundaryTarget } from './highlights/geometry';
 import { characterBounds } from './character-bounds';
 import { validateTarget } from './ranges';
 import { pointPosition } from './source-index';
-import { buildPanelSourceFacts, matchingPanelSourceFacts } from './panel-source-facts';
 import { isTextTarget, sameSourceTarget, type SourceTarget } from './source-model';
 import type { RenderSnapshot } from './runtime/types';
 import {
@@ -69,23 +68,6 @@ export function panelTargetBounds(
 	const start = pointPosition(index, target.range.start);
 	const end = pointPosition(index, target.range.end);
 	const candidates: Candidate[] = [];
-	const facts =
-		snapshot.view === 'effective'
-			? undefined
-			: matchingPanelSourceFacts(snapshot.panelSourceFacts, snapshot.source)
-				? snapshot.panelSourceFacts
-				: buildPanelSourceFacts(snapshot.source);
-	const baseline = facts?.baseline;
-	const originalRanges = facts
-		? facts.originalFootprints.flatMap(({ unit, ranges }) => {
-				const selected =
-					start === end
-						? unit.sourceKey === target.range.start.sourceKey ||
-							unit.sourceKey === target.range.end.sourceKey
-						: unit.position < end && unit.position + unit.length > start;
-				return selected ? ranges : [];
-			})
-		: [];
 	for (const occurrence of context.occurrences) {
 		if (occurrence.kind !== 'text') continue;
 		const token = occurrence.token;
@@ -111,23 +93,6 @@ export function panelTargetBounds(
 			from = pointPosition(index, range.start);
 			to = pointPosition(index, range.end);
 		} catch {
-			// Removed baseline text has its own coordinates. It can position a current
-			// empty/deleted target only through that target's exact original footprint.
-			if (!baseline || token.revision !== 'removed') continue;
-			try {
-				const before = pointPosition(baseline, range.start);
-				const after = pointPosition(baseline, range.end);
-				const related = originalRanges.find((value) => before < value.end && after > value.start);
-				if (related)
-					candidates.push({
-						occurrence,
-						priority: 2,
-						position: Math.max(before, related.start),
-						offset: token.sourceKind === 'text' ? Math.max(0, related.start - before) : 0
-					});
-			} catch {
-				/* A presentation-only token has no current or original target. */
-			}
 			continue;
 		}
 		const matches =

@@ -7,12 +7,11 @@ import { api } from '../../../src/convex/_generated/api';
 import { AccountLifecycle } from '../../../src/lib/auth/account-lifecycle.svelte';
 import { BuyerLinkController } from '../../../src/lib/buyer/links.svelte';
 import type { SessionEditor } from '../../../src/lib/auth/viewer-session.svelte';
-import type { PlaybookState, PlaybookCommand } from '../../../src/lib/contract/changes';
+import type { ContractConcession } from '../../../src/lib/contract/changes';
 import type { ContractDraft } from '../../../src/lib/contract/draft-recovery.svelte';
 import { discoverContractDrafts } from '../../../src/lib/contract/draft-recovery.svelte';
 import { ContractEditors } from '../../../src/lib/contract/editors.svelte';
-import { resolveTemplateItem } from '../../../src/lib/contract/items';
-import { isRepItem } from '../../../src/lib/playbook/model';
+import type { LiveContractState } from '../../../src/lib/contract/saved';
 import { WorkspaceFeedback } from '../../../src/lib/components/chrome/workspace-feedback.svelte';
 import type { ContractSaveRequest } from '../../../src/lib/contract/persistence.svelte';
 import type { TemplateContent } from '../../../src/lib/template/model';
@@ -38,7 +37,6 @@ vi.mock('convex-svelte', () => ({
 				: { versionId: 'version' }
 	})
 }));
-vi.mock('$lib/auth/DocumentBody.svelte', () => import('../../support/DocumentBody.svelte'));
 vi.mock('$lib/components/workspace/SavedDocumentFrame.svelte', () => import('./Viewer.svelte'));
 vi.mock('$lib/components/ui/modal/CompanyNameDialog.svelte', () => import('./NameDialog.svelte'));
 vi.mock('$lib/contract/snapshot-cache', () => ({
@@ -49,52 +47,38 @@ vi.mock('$lib/contract/snapshot-cache', () => ({
 const contract = (
 	id = 'contract-a',
 	stateRevision = 1,
-	playbook: PlaybookState[] = [],
-	operation: string | null = null
-) => ({
+	concessions: ContractConcession[] = [],
+	operation: string | null = null,
+	metadataRevision = stateRevision
+): LiveContractState => ({
 	_id: id as Id<'savedContracts'>,
 	_creationTime: 1,
 	companyId: 'company' as Id<'company'>,
 	creatorId: 'profile' as Id<'profiles'>,
 	templateVersionId: 'version' as Id<'templateVersions'>,
-	documentId: `${id}-document` as Id<'contractDocuments'>,
-	documentRevision: 0,
 	stateRevision,
+	metadataRevision,
 	title: 'Buyer',
 	savedAt: 1,
-	playbook,
-	reviews: {
-		playbook: { identity: `playbook:${stateRevision}` },
-		buyerLink: { identity: 'buyer-link:0' }
-	},
-	lastOperationId: operation
+	concessions,
+	review: { generation: 0 },
+	lastOperationId: operation,
+	workBlock: null
 });
-/** Native server acknowledgment fixture allocates heads; client commands carry no predicted IDs. */
-function headsAfter(base: readonly PlaybookState[], commands: readonly PlaybookCommand[]) {
-	const heads = new Map(base.map((head) => [head.itemId, head]));
-	for (const command of commands) {
-		const previous = heads.get(command.itemId),
-			action = command.action;
-		if (action.kind === 'withdraw') {
-			if (previous)
-				heads.set(command.itemId, {
-					...previous,
-					currentChangeId: previous.appliedChangeId,
-					currentOptionId: previous.appliedOptionId
-				});
-		} else
-			heads.set(command.itemId, {
-				itemId: command.itemId,
-				currentChangeId: `server:${command.id}` as Id<'contractChanges'>,
-				appliedChangeId: `server:${command.id}` as Id<'contractChanges'>,
-				currentOptionId: action.optionId,
-				appliedOptionId: action.optionId,
-				status: 'approved',
-				decisionId: null
-			});
-	}
-	return [...heads.values()];
+
+function concessionsAfter(
+	selections: Readonly<Record<string, string>>,
+	approval = false
+): ContractConcession[] {
+	return Object.entries(selections)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([itemId, optionId]) => ({
+			itemId: itemId as Id<'playbookItems'>,
+			optionId,
+			status: approval ? 'pending' : 'approved'
+		}));
 }
+
 const template = (approval = false): TemplateContent => ({
 	blockCount: 0,
 	itemCount: 1,
@@ -106,6 +90,7 @@ const template = (approval = false): TemplateContent => ({
 			_creationTime: 1,
 			companyId: 'company' as Id<'company'>,
 			contentRevision: 1,
+			instructions: {},
 			approvalPolicy: approval
 				? { kind: 'required', instructions: 'Approval required' }
 				: { kind: 'none' },
@@ -119,40 +104,53 @@ const template = (approval = false): TemplateContent => ({
 					}
 				}
 			},
-			concessions: [{ id: 'preferred', tier: 'preferred', description: 'Choice', changes: [] }]
+			concessions: [
+				{
+					id: 'preferred',
+					tier: 'preferred',
+					description: 'Choice',
+					changes: [
+						{
+							target: {
+								kind: 'text',
+								range: {
+									start: { sourceKey: 'text', offset: 0 },
+									end: { sourceKey: 'text', offset: 1 }
+								}
+							},
+							replacement: [{ kind: 'text', text: 'Updated' }]
+						}
+					]
+				}
+			]
 		}
 	]
 });
+
 function draft(id = 'contract-a'): ContractDraft {
-	const commands: PlaybookCommand[] = [
-		{
-			id: fixtureOperationId('original-command'),
-			itemId: 'item-a' as Id<'playbookItems'>,
-			expectedCurrentChangeId: null,
-			action: { kind: 'set', optionId: 'preferred' },
-			occurredAt: 1
-		}
-	];
+	const base = contract(id);
+	const selections = { ['item-a' as Id<'playbookItems'>]: 'preferred' };
 	return {
-		version: 12,
-		commands,
-		base: contract(id),
+		version: 1,
+		baseStateRevision: base.stateRevision,
+		selections,
 		conflict: false,
-		blocked: false,
 		request: {
 			id: id as Id<'savedContracts'>,
 			operationId: fixtureOperationId('original-operation'),
-			commands: structuredClone(commands)
+			selections: { ...selections },
+			expectedStateRevision: base.stateRevision
 		}
 	};
 }
+
 type Options = ConstructorParameters<typeof ContractEditors>[0];
 const owners: { destroy(): void }[] = [];
 const controllers: AccountLifecycle[] = [];
 const mounted: ReturnType<typeof mount>[] = [];
+
 async function settle() {
 	flushSync();
-	// Route assertions need these modules; background code warming may continue independently.
 	await Promise.all([
 		import('../../../src/lib/components/workspace/ContractCreation.svelte'),
 		import('../../../src/lib/components/workspace/SavedContract.svelte')
@@ -163,57 +161,33 @@ async function settle() {
 		await tick();
 	}
 }
+
 function fixture({
 	approval = false,
 	read = true,
-	selectedRead = true,
 	start = true,
 	controller
 }: {
 	approval?: boolean;
 	read?: boolean;
-	selectedRead?: boolean;
 	start?: boolean;
 	controller?: AccountLifecycle;
 } = {}) {
-	const states = new Map<string, ReturnType<typeof contract> | null>();
-	const selectedPayload = (
-		id: string
-	): FunctionReturnType<typeof api.contractDefinitions.current> => ({
-		document: { blocks: [], pieceGroups: [], aliasGroups: [], removedBlockGroups: [] },
-		documentId: (states.get(id) ?? contract(id)).documentId,
-		documentRevision: (states.get(id) ?? contract(id)).documentRevision,
-		displayIdentity: `${id}:approved:0`,
-		hiddenItemIds: [],
-		projectedTargets: template(approval)
-			.items.filter(isRepItem)
-			.map(resolveTemplateItem)
-			.map((item) => ({
-				itemId: item._id,
-				trigger: item.primary.target,
-				choices: item.choices.map((choice) => ({
-					id: choice.id,
-					targets: choice.changes.map((change) => change.target)
-				}))
-			}))
-	});
-	const approvedReads = new Map<
-		string,
-		ReturnType<typeof deferred<ReturnType<typeof selectedPayload>>>
-	>();
+	const states = new Map<string, LiveContractState | null>();
 	const writes: { request: ContractSaveRequest; result: ReturnType<typeof deferred<any>> }[] = [];
 	let aggregate!: SessionEditor;
 	let initialRead = read;
 	let failures = 0;
 	let removal = deferred<null>();
+	const liveState = (id: string) => {
+		const value = states.has(id) ? states.get(id) : contract(id);
+		return value ? { ...value, buyerName: null, requestDelivery: null } : null;
+	};
 	const network = controlledClient((observation) => {
 		queueMicrotask(() => {
 			if (observation.released) return;
 			const id = observation.args.id!;
 			switch (observation.name) {
-				case 'contractDefinitions:current':
-					if (selectedRead) observation.update(selectedPayload(id));
-					break;
 				case 'templateSources:authoringSource':
 					observation.update({
 						blocks: template(approval).blocks,
@@ -225,15 +199,10 @@ function fixture({
 					if (failures > 0) {
 						failures--;
 						observation.error(new Error('Read failed'));
-					} else observation.update(states.has(id) ? states.get(id) : contract(id));
+					} else observation.update(liveState(id));
 			}
 		});
 	});
-	const publishSelected = (id?: string) => {
-		for (const observation of network.live('contractDefinitions:current'))
-			if (id === undefined || observation.args.id === id)
-				observation.update(selectedPayload(observation.args.id!));
-	};
 	const client = {
 		onUpdate: network.onUpdate,
 		mutation: vi.fn((ref, args) => {
@@ -256,17 +225,6 @@ function fixture({
 		restore: vi.fn(async () => undefined),
 		restoreMetadata: vi.fn(async () => undefined),
 		invalidate: vi.fn(),
-		peekApproved: vi.fn(() => undefined),
-		rememberApproved: vi.fn((_id, data) => data),
-		loadApproved: vi.fn(async (id: string) => {
-			if (selectedRead) return selectedPayload(id);
-			let read = approvedReads.get(id);
-			if (!read) {
-				read = deferred<ReturnType<typeof selectedPayload>>();
-				approvedReads.set(id, read);
-			}
-			return read.promise;
-		}),
 		loadFrozenVersion: vi.fn(async () => template(approval)),
 		seedConfirmed: vi.fn((data) => data),
 		updateState: vi.fn(),
@@ -315,18 +273,13 @@ function fixture({
 		failNext() {
 			failures++;
 		},
-		publish(id: string, state: ReturnType<typeof contract> | null) {
+		publish(id: string, state: LiveContractState | null) {
 			states.set(id, state);
 			for (const observation of network.live('contracts:state'))
-				if (observation.args.id === id) observation.update(state);
-			if (selectedRead) publishSelected(id);
+				if (observation.args.id === id) observation.update(liveState(id));
 		},
-		setState(id: string, state: ReturnType<typeof contract> | null) {
+		setState(id: string, state: LiveContractState | null) {
 			states.set(id, state);
-		},
-		publishApproved(id = 'contract-a') {
-			approvedReads.get(id)?.resolve(selectedPayload(id));
-			publishSelected(id);
 		},
 		active(id?: string) {
 			return network.live('contracts:state').filter((o) => id === undefined || o.args.id === id)
@@ -337,16 +290,16 @@ function fixture({
 			const state = contract(
 				write.request.id,
 				(states.get(write.request.id)?.stateRevision ?? 1) + 1,
-				headsAfter(states.get(write.request.id)?.playbook ?? [], write.request.commands),
+				concessionsAfter(write.request.selections, approval),
 				write.request.operationId
 			);
 			states.set(write.request.id, state);
-			if (selectedRead) publishSelected(write.request.id);
 			write.result.resolve({ status: 'saved', state });
 			return state;
 		}
 	};
 }
+
 function show(f: ReturnType<typeof fixture>) {
 	context.client = f.client;
 	context.cache = f.cache;
@@ -356,9 +309,10 @@ function show(f: ReturnType<typeof fixture>) {
 	mounted.push(component);
 	return target;
 }
+
 function buyerLinkFixture(owner: ContractEditors, current = () => contract()) {
 	type Client = ConstructorParameters<typeof BuyerLinkController>[0];
-	const latest: FunctionReturnType<typeof api.buyerLinkActions.ensureLatest> = {
+	const latest: FunctionReturnType<typeof api.buyerLinks.ensureLatest> = {
 		id: 'link' as Id<'buyerLinks'>,
 		token: 'Ab3Cd4Ef5Gh6I',
 		createdAt: 0,
@@ -366,19 +320,12 @@ function buyerLinkFixture(owner: ContractEditors, current = () => contract()) {
 	};
 	const query = vi.fn<Client['query']>().mockImplementation(async (ref) => {
 		if (getFunctionName(ref) === 'buyerLinks:latest') return null;
-		expect(getFunctionName(ref)).toBe('contracts:readiness');
+		expect(getFunctionName(ref)).toBe('contracts:state');
 		const state = current();
 		return {
-			ready: true,
-			workBlock: null,
-			blockers: [],
-			blockerCount: 0,
-			pagination: { isDone: true, continueCursor: '' },
-			expectation: {
-				stateRevision: state.stateRevision,
-				documentId: state.documentId,
-				documentRevision: state.documentRevision
-			}
+			...state,
+			buyerName: null,
+			requestDelivery: null
 		} as FunctionReturnType<typeof ref>;
 	});
 	const action = vi.fn<Client['action']>().mockResolvedValue(latest);
@@ -408,6 +355,7 @@ function buyerLinkFixture(owner: ContractEditors, current = () => contract()) {
 	owners.push(links);
 	return { links, latest, query, action, writeText, onCopied };
 }
+
 beforeEach(() => {
 	HTMLDialogElement.prototype.showModal = function () {
 		this.open = true;
@@ -444,7 +392,7 @@ afterEach(async () => {
 
 export {
 	contract,
-	headsAfter,
+	concessionsAfter,
 	template,
 	draft,
 	controllers,

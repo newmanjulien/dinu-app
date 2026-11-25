@@ -3,20 +3,17 @@
 	import { resolve } from '$app/paths';
 	import { CaretRightIcon } from 'phosphor-svelte';
 	import { findIntegrationDetails } from '$lib/integrations';
-	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import IntegrationAccess from './IntegrationAccess.svelte';
 	import IntegrationScreenshots from './IntegrationScreenshots.svelte';
 
 	let {
-		role,
 		integration,
 		loading = true,
 		heading = $bindable<HTMLHeadingElement>(),
 		actions,
 		notice
 	}: {
-		role?: 'admin' | 'rep';
 		integration?: ReturnType<typeof findIntegrationDetails>;
 		loading?: boolean;
 		heading?: HTMLHeadingElement;
@@ -33,10 +30,10 @@
 			<ol class="flex items-center gap-2">
 				<li>
 					<a
-						href={role === 'admin' ? resolve('/integrations') : resolve('/contracts')}
+						href={resolve('/integrations')}
 						class="rounded-button-sm text-ink-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 					>
-						{role === 'admin' ? 'Integrations' : 'Contracts'}
+						Integrations
 					</a>
 				</li>
 				<li class="flex items-center gap-2">
@@ -45,12 +42,8 @@
 				</li>
 			</ol>
 		</nav>
-		{#if role && role !== 'admin'}
+		{#if !integration}
 			<IntegrationAccess />
-		{:else if !role}
-			<SkeletonBlock class="h-7 w-36" />
-		{:else if !integration}
-			<IntegrationAccess reason="unavailable" />
 		{:else}
 			<article>
 				<header class="border-b border-edge/50 pb-5 md:pb-6">

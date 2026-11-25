@@ -245,15 +245,6 @@
 	stroke-dasharray: 3 2;
 }
 
-.document-highlight--discussion-proposal {
-	fill: var(--document-highlight-revision-removed);
-}
-
-.document-highlight--discussion-proposal[data-trigger-state='hover'],
-.document-highlight--discussion-proposal[data-trigger-state='selected'] {
-	fill: color-mix(in srgb, var(--color-ink-muted) 18%, transparent);
-}
-
 .document-highlight--revision-added {
 	fill: var(--document-highlight-revision-added);
 }

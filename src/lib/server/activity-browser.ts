@@ -4,8 +4,7 @@ import { ACTIVITY_RETENTION, validTrackingId, type ActivityBrowser } from '$lib/
 
 const COOKIE = 'dinu_activity_browsers_v1';
 type Entry = NonNullable<ActivityBrowser> & { scope: string };
-export const scopeFor = (token: string) =>
-	createHash('sha256').update(token).digest('hex').slice(0, 24);
+const scopeFor = (token: string) => createHash('sha256').update(token).digest('hex').slice(0, 24);
 function entries(cookies: Cookies): Entry[] {
 	try {
 		const value: unknown = JSON.parse(cookies.get(COOKIE) ?? '[]');

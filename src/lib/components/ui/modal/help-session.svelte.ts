@@ -2,19 +2,19 @@ import {
 	createDocumentLoadingOpeningId,
 	recordDocumentLoadingMilestone
 } from '$lib/document/runtime/render-perf';
+import { helpContent, type HelpContent, type HelpVariant } from './help-content';
 
-type Audience = { identity: string };
 export type HelpPolicy =
 	| { kind: 'pending' }
-	| { kind: 'manual' }
-	| (Audience & { kind: 'preview' })
-	| (Audience & {
+	| { kind: 'manual'; variant: HelpVariant; identity?: string }
+	| {
 			kind: 'preference';
-			confirmation: 'subscription' | 'save';
+			variant: HelpVariant;
+			identity: string;
 			hidden: boolean;
 			save: (hidden: boolean) => Promise<unknown>;
 			current: () => boolean;
-	  });
+	  };
 
 /** One document/link opening, retained through renderer and presentation changes. */
 export class HelpSession {
@@ -24,7 +24,6 @@ export class HelpSession {
 	private admittedOnce = $state(false);
 	private active = $state(true);
 	private identity?: string;
-	private preview = false;
 	private destroyed = false;
 	private write?: { current: () => boolean };
 	open = $state(false);
@@ -34,24 +33,24 @@ export class HelpSession {
 
 	configure(policy: HelpPolicy) {
 		if (this.destroyed) return;
+		const previousVariant = this.variant;
 		const firstResolution = this.policy.kind === 'pending' && policy.kind !== 'pending';
-		if ('identity' in policy) {
+		if ('identity' in policy && policy.identity !== undefined) {
 			if (this.identity !== undefined && this.identity !== policy.identity) {
 				this.handled = false;
 				this.admittedOnce = false;
 				this.open = false;
 				this.hidden = false;
-				this.preview = false;
 				this.clearWrite();
 			}
 			this.identity = policy.identity;
 		}
 		if (this.write && !this.write.current()) this.clearWrite();
-		if (policy.kind === 'preview') {
-			if (!this.preview) this.close();
-			this.preview = true;
-			this.handled = true;
-		} else if (policy.kind !== 'pending') this.preview = false;
+		if (
+			policy.kind === 'pending' ||
+			(previousVariant !== undefined && previousVariant !== policy.variant)
+		)
+			this.close();
 		if (policy.kind === 'preference') this.hidden = policy.hidden;
 		this.policy = policy;
 		if (firstResolution)
@@ -61,6 +60,15 @@ export class HelpSession {
 		if (this.handled && policy.kind !== 'pending') this.admittedOnce = true;
 	}
 
+	get variant(): HelpVariant | undefined {
+		return this.policy.kind === 'pending' ? undefined : this.policy.variant;
+	}
+	get content(): HelpContent | undefined {
+		return this.policy.kind === 'pending' ? undefined : helpContent[this.policy.variant];
+	}
+	get title(): string {
+		return this.content?.title ?? 'Help';
+	}
 	get resolved() {
 		return this.policy.kind !== 'pending';
 	}
@@ -77,7 +85,7 @@ export class HelpSession {
 		}
 	}
 	get showCheckbox() {
-		return this.policy.kind === 'preference' || this.policy.kind === 'pending';
+		return this.policy.kind === 'preference';
 	}
 	get checkboxDisabled() {
 		return !this.active || this.policy.kind !== 'preference' || this.pending;
@@ -94,9 +102,9 @@ export class HelpSession {
 		}
 	}
 	openManually() {
-		if (this.destroyed || !this.active) return;
+		if (this.destroyed || !this.active || !this.resolved) return;
 		this.handled = true;
-		if (this.resolved) this.admittedOnce = true;
+		this.admittedOnce = true;
 		this.open = true;
 	}
 	close() {
@@ -124,7 +132,6 @@ export class HelpSession {
 		const current = () => this.write === write && this.identity === identity && policy.current();
 		try {
 			await policy.save(hidden);
-			if (current() && policy.confirmation === 'save') this.hidden = hidden;
 		} catch {
 			if (current()) this.error = 'Could not save your preference. Please try again.';
 		} finally {

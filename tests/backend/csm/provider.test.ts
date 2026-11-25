@@ -108,7 +108,7 @@ it('rejects ranges with a different duration than the validated event', async ()
 	);
 	await expect(t.action(api.csmBookings.availability, args)).rejects.toThrow('duration');
 });
-it('allows admin setup and support before template upload; rep calls and foreign reads stay restricted', async () => {
+it('gates setup to pre-release and support to post-release; rep calls and foreign reads stay restricted', async () => {
 	const { t, owner, args } = await fixture();
 	const fetcher = vi.fn(async (input: string) =>
 		response(input.includes('event-types') ? event : times)
@@ -125,16 +125,38 @@ it('allows admin setup and support before template upload; rep calls and foreign
 		})
 	).resolves.toMatchObject({ operationId: 'synthetic-operation' });
 	fetcher.mockClear();
-	expect((await t.action(api.csmBookings.availability, { ...args, mode: 'support' })).status).toBe(
-		'ready'
-	);
-	expect(fetcher).toHaveBeenCalledTimes(2);
-	fetcher.mockClear();
+	await expect(
+		t.action(api.csmBookings.availability, { ...args, mode: 'support' })
+	).rejects.toThrow('template');
+	expect(fetcher).not.toHaveBeenCalled();
 	await expect(
 		t
 			.withIdentity({ ...identity, tokenIdentifier: 'foreign' })
 			.action(api.csmBookings.availability, args)
 	).rejects.toThrow();
+	await t.run(async (ctx) => {
+		const templateSourceId = await ctx.db.insert('templateSources', {
+			companyId: owner.companyId,
+			source: 'seed',
+			state: 'active',
+			bootstrapKey: 'synthetic',
+			activatedAt: +now,
+			fingerprint: 'synthetic',
+			issues: [],
+			blockCount: 1,
+			chunkCount: 1,
+			blocksJsonBytes: 64,
+			chunkReadBytes: 64
+		});
+		await ctx.db.patch('company', owner.companyId, { templateSourceId });
+	});
+	await expect(t.action(api.csmBookings.availability, args)).rejects.toThrow('already set up');
+	expect(fetcher).not.toHaveBeenCalled();
+	expect((await t.action(api.csmBookings.availability, { ...args, mode: 'support' })).status).toBe(
+		'ready'
+	);
+	expect(fetcher).toHaveBeenCalledTimes(2);
+	fetcher.mockClear();
 	await t.run(async (ctx) => ctx.db.patch('memberships', owner.membershipId, { role: 'rep' }));
 	await expect(t.action(api.csmBookings.availability, args)).rejects.toThrow();
 	expect(fetcher).not.toHaveBeenCalled();
@@ -233,10 +255,11 @@ it('missing local credentials and deleted companies perform no provider work', a
 			companyId: owner.companyId,
 			issuer: identity.issuer,
 			clerkId: identity.subject,
-			attemptId: 'synthetic-deletion',
+			executionId: 'synthetic-deletion',
 			requestedAt: +now,
 			cleanupGeneration: 0,
-			status: 'prepared',
+			status: 'deleting',
+			inFlight: false,
 			phase: 'invitations'
 		});
 	});

@@ -6,7 +6,7 @@ import { assertPermission, type Permission } from './permissions';
 export async function verifiedIdentity(ctx: Pick<QueryCtx, 'auth'>) {
 	const identity = await ctx.auth.getUserIdentity();
 	if (!identity || !identity.email || identity.emailVerified !== true)
-		throw new ConvexError('Sign in with a verified email address.');
+		throw new ConvexError('Log in with a verified email address.');
 	return { ...identity, email: identity.email };
 }
 /** Viewer/initialization may observe a missing profile; all paths reject deleted accounts. */
@@ -18,7 +18,11 @@ export async function readAccount(ctx: QueryCtx) {
 			q.eq('issuer', identity.issuer).eq('clerkId', identity.subject)
 		)
 		.unique();
-	if (deleted) throw new ConvexError('This account has been deleted.');
+	if (deleted)
+		throw new ConvexError({
+			code: 'account-deleted',
+			message: 'This account has been deleted.'
+		});
 	const profile = await ctx.db
 		.query('profiles')
 		.withIndex('by_identity', (q) => q.eq('identity', identity.tokenIdentifier))
@@ -84,9 +88,7 @@ export async function requireCompany(ctx: QueryCtx, companyId: Id<'company'>) {
 	const { company, deletion } = await readCompany(ctx, companyId);
 	if (!company) throw new ConvexError('This company is unavailable.');
 	if (deletion)
-		throw new ConvexError(
-			'Company activity is paused while account deletion is confirmed. Open Settings to finish or cancel deletion.'
-		);
+		throw new ConvexError('Company activity is paused while account deletion finishes.');
 	return company;
 }
 export type CompanyAccess = Awaited<ReturnType<typeof requireMembership>>;

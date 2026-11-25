@@ -1,4 +1,4 @@
-import { activityBrowser, scopeFor } from '$lib/server/activity-browser';
+import { activityBrowser } from '$lib/server/activity-browser';
 import { env } from '$env/dynamic/public';
 import { api } from '../../convex/_generated/api';
 import { readRouteData } from '$lib/server/route-title';
@@ -49,7 +49,6 @@ export const load: LayoutServerLoad = async ({ cookies, params, locals, request 
 		hasAccountSession: cookies
 			.getAll()
 			.some(({ name }) => /^(?:__session|__client_uat)(?:_[^=;]+)?$/u.test(name)),
-		buyerPreferenceScope: params.token ? scopeFor(params.token) : null,
 		activityBrowser: params.token ? activityBrowser(cookies, params.token) : null
 	};
 };

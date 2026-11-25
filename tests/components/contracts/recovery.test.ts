@@ -1,5 +1,13 @@
 import { fixtureOperationId } from '../../support/operation';
-import { contract, headsAfter, template, draft, controllers, settle, fixture } from './fixtures';
+import {
+	contract,
+	concessionsAfter,
+	template,
+	draft,
+	controllers,
+	settle,
+	fixture
+} from './fixtures';
 import { getFunctionName } from 'convex/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { Id } from '../../../src/convex/_generated/dataModel';
@@ -39,9 +47,7 @@ describe('recovery and account exits', () => {
 		await settle();
 		expect(f.owner.accessAvailable).toBe(true);
 		expect(f.client.onUpdate.mock.calls.map(([ref]) => getFunctionName(ref))).toEqual([
-			'contractDefinitions:current',
 			'contracts:state',
-			'contractDefinitions:current',
 			'contracts:state'
 		]);
 		expect(f.writes[1].request).toEqual(original);
@@ -56,11 +62,9 @@ describe('recovery and account exits', () => {
 		await settle();
 		expect(f.owner.pending).toBe(false);
 	});
-	it('retains immutable journal operation and command IDs through failed initialization, logout and retry', async () => {
+	it('retains immutable journal operation IDs through failed initialization, logout and retry', async () => {
 		vi.useFakeTimers();
 		const recovery = draft();
-		recovery.commands[0].id = fixtureOperationId('original-command-identity');
-		recovery.request!.commands = structuredClone(recovery.commands);
 		new DraftJournal('user', 'contract-a', 'membership').write(recovery);
 		const f = fixture({ approval: true, read: false });
 		expect(f.aggregate.pending).toBe(true);
@@ -80,10 +84,7 @@ describe('recovery and account exits', () => {
 		await settle();
 		expect(f.writes).toHaveLength(1);
 		expect(f.writes[0].request.operationId).toBe(fixtureOperationId('original-operation'));
-		expect(f.writes[0].request.commands[0].id).toBe(
-			fixtureOperationId('original-command-identity')
-		);
-		expect(f.writes[0].request.commands[0]).toEqual(recovery.commands[0]);
+		expect(f.writes[0].request.selections).toEqual(recovery.selections);
 		expect(f.owner.entries[0].snapshot).toBeUndefined();
 		f.ack();
 		await settle();
@@ -147,7 +148,7 @@ describe('recovery and account exits', () => {
 		expect(f.owner.pending).toBe(true);
 		f.setState(
 			'contract-a',
-			contract('contract-a', 2, headsAfter([], request.commands), request.operationId)
+			contract('contract-a', 2, concessionsAfter(request.selections), request.operationId)
 		);
 		f.owner.configure(true, false, 1);
 		await settle();
@@ -167,7 +168,6 @@ describe('recovery and account exits', () => {
 		await settle();
 		expect(f.owner.accessAvailable).toBe(false);
 		expect(f.active()).toBe(0);
-		// Previously checkpointed intent is discovered while the company is paused.
 		new DraftJournal('user', 'contract-b', 'membership').write(draft('contract-b'));
 		const b = f.owner.acquire('contract-b');
 		expect(b.editor.pending).toBe(true);
@@ -204,7 +204,7 @@ describe('recovery and account exits', () => {
 		});
 		reopened.editor.persistence!.applyRecovered();
 		await settle();
-		expect(f.writes[1].request.commands[0].expectedCurrentChangeId).toBeNull();
+		expect(f.writes[1].request.expectedStateRevision).toBe(2);
 		expect(f.writes[1].request.operationId).not.toBe(f.writes[0].request.operationId);
 	});
 	it('explicit discard invalidates late responses and clears the journal', async () => {

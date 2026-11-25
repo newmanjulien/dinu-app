@@ -700,69 +700,11 @@ export class DocumentRenderController {
 		} finally {
 			selection.return(undefined as never);
 		}
-		// Source-only panel facts follow pagination and the initial readable batch.
-		// Compatible artifacts retain them across layout and concession snapshots.
-		let panelSourceFacts =
-			this.view === 'redline' && artifacts.compatible(request.source)
-				? artifacts.panelSourceFacts
-				: undefined;
-		if (
-			this.view === 'redline' &&
-			request.source.materialized?.baseline.length &&
-			artifacts.compatible(request.source)
-		) {
-			if (panelSourceFacts) {
-				if (perf) perf.panelSourceFactsReused++;
-			} else {
-				const panelPreparation = artifacts.preparePanelSourceFacts();
-				let result: ReturnType<typeof panelPreparation.next> | undefined;
-				try {
-					while (!result?.done)
-						await request.profiler.scheduler.run(
-							priority,
-							(deadline) => {
-								checkCurrent();
-								const started = performance.now();
-								try {
-									do {
-										result = panelPreparation.next();
-									} while (
-										!result.done &&
-										performance.now() < Math.min(deadline ?? Infinity, started + 4)
-									);
-								} finally {
-									if (perf) {
-										const duration = performance.now() - started;
-										perf.panelSourcePrepareMs += duration;
-										perf.panelSourcePreparationSlices++;
-										perf.maxPanelSourcePreparationSliceMs = Math.max(
-											perf.maxPanelSourcePreparationSliceMs,
-											duration
-										);
-									}
-								}
-							},
-							request.abort.signal,
-							undefined,
-							'preparation',
-							perf
-						);
-					panelSourceFacts = result?.value;
-				} catch {
-					checkCurrent(); // Cancellation still cancels rendering; optional facts never fail it.
-					if (perf) perf.panelSourcePreparationFailed++;
-				} finally {
-					panelPreparation.return(undefined);
-				}
-			}
-			if (perf && panelSourceFacts) perf.panelSourceReadyAt = performance.now();
-		}
 		checkCurrent();
 		const snapshot = Object.freeze({
 			id: request.generation,
 			view: this.view,
 			selectionDocument: selectionResult.value!,
-			panelSourceFacts,
 			source: request.source,
 			concessions: request.concessions,
 			previewChanges: request.previewChanges,

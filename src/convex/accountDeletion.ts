@@ -5,22 +5,20 @@ import { cancelAppointmentJobs } from './csmSetupAppointments';
 import { clearSetupAppointment } from './csmSetupState';
 import { preserveErasedInitial } from './csmErasureGuards';
 import { eraseProfileEvidence } from './csmEvidence';
-import { retireAccountOperations } from './accountOperationCleanup';
 import { eraseReplacementAttempt } from './csmReplacements';
 import { paginationResultValidator } from 'convex/server';
 import { ConvexError, v } from 'convex/values';
 import { internal } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
-import { internalMutation, internalQuery, mutation, query } from './_generated/server';
+import { internalMutation, internalQuery, query } from './_generated/server';
 import { companyDeletion, liveProfile, membershipForProfile, requireProfile } from './auth';
 import { CLEANUP_DISCOVERY_PAGE_SIZE, cleanupBudget } from './cleanup';
 import { confirmAccountDeletion } from './companyDeletion';
 import {
 	ACCOUNT_DELETION_BATCH_SIZE,
-	DELETION_ATTEMPT_MAX_LENGTH,
+	DELETING_RECOVERY_DELAY,
 	MEMBERSHIP_ELIGIBILITY_SCAN_LIMIT,
-	PREPARATION_TTL,
 	RECONCILIATION_PAGE_SIZE
 } from './deletionPolicy';
 import { deletionIdentity } from './deletionValidators';
@@ -64,13 +62,15 @@ async function deletionOptions(ctx: QueryCtx) {
 	const profile = await requireProfile(ctx);
 	const membership = await membershipForProfile(ctx, profile._id);
 	const company = membership ? await ctx.db.get('company', membership.companyId) : null;
+	if (!membership || !company)
+		throw new ConvexError('Your company access has changed. Reload to continue.');
 	const owned = await ctx.db
 		.query('company')
 		.withIndex('by_ownerProfileId', (q) => q.eq('ownerProfileId', profile._id))
 		.first();
-	let mode: 'account' | 'accountAndCompany' | 'transferOwnership' = 'account';
-	if (owned && owned._id !== company?._id) mode = 'transferOwnership';
-	else if (company) {
+	let mode: 'account' | 'accountAndCompany' | 'transferOwnership';
+	if (owned && owned._id !== company._id) mode = 'transferOwnership';
+	else {
 		// The range read conflicts with a concurrent join or leave. Invitations are not members.
 		const members = ctx.db
 			.query('memberships')
@@ -89,151 +89,162 @@ async function deletionOptions(ctx: QueryCtx) {
 		}
 		mode = hasColleague ? (owned ? 'transferOwnership' : 'account') : 'accountAndCompany';
 	}
-	const pending = company ? await companyDeletion(ctx, company._id) : null;
+	const marker = await companyDeletion(ctx, company._id);
+	const hold: 'none' | 'inProgress' | 'deleting' | 'cleaning' = !marker
+		? 'none'
+		: marker.status === 'deleting' &&
+			  marker.issuer === profile.issuer &&
+			  marker.clerkId === profile.clerkId
+			? marker.inFlight
+				? 'inProgress'
+				: 'deleting'
+			: 'cleaning';
 	return {
 		profile,
 		mode,
-		companyId: company?._id ?? null,
-		companyName: company?.name ?? null,
-		marker: pending,
-		pending: pending?.status === 'prepared' || pending?.status === 'dispatched'
+		companyId: company._id,
+		companyName: company.name,
+		marker,
+		hold
 	};
 }
 export const options = query({
 	args: {},
 	returns: v.object({
 		mode: deletionMode,
-		companyId: v.union(v.id('company'), v.null()),
-		companyName: v.union(v.string(), v.null()),
-		pending: v.boolean()
+		companyId: v.id('company'),
+		companyName: v.string(),
+		hold: v.union(
+			v.literal('none'),
+			v.literal('inProgress'),
+			v.literal('deleting'),
+			v.literal('cleaning')
+		)
 	}),
 	handler: async (ctx) => {
 		const { profile: _profile, marker: _marker, ...options } = await deletionOptions(ctx);
 		return options;
 	}
 });
-const preparationArgs = {
+const executionArgs = {
 	mode: v.union(v.literal('account'), v.literal('accountAndCompany')),
-	companyId: v.union(v.id('company'), v.null()),
+	companyId: v.id('company'),
 	confirmation: v.string(),
-	attemptId: v.string()
+	executionId: v.string(),
+	retryHold: v.optional(v.boolean())
 };
-const requestState = v.union(v.literal('prepared'), v.literal('dispatched'));
-const request = v.object({
+const executionHold = v.object({
 	id: v.id('companyDeletions'),
-	attemptId: v.string(),
-	requestedAt: v.number(),
-	status: requestState
+	executionId: v.string()
 });
-function requestResult(marker: Doc<'companyDeletions'>, status: 'prepared' | 'dispatched') {
-	return { id: marker._id, attemptId: marker.attemptId, requestedAt: marker.requestedAt, status };
-}
-async function validateDeletion(
-	ctx: QueryCtx,
-	args: {
-		mode: 'account' | 'accountAndCompany';
-		companyId: Doc<'company'>['_id'] | null;
-		confirmation: string;
-		attemptId: string;
-	}
-) {
-	const options = await deletionOptions(ctx);
-	if (options.mode === 'transferOwnership')
-		throw new ConvexError('Transfer company ownership before deleting your account.');
-	if (args.mode !== options.mode || args.companyId !== options.companyId)
-		throw new ConvexError(
-			'Your company membership changed. Review the deletion confirmation again.'
-		);
-	const phrase =
-		options.mode === 'accountAndCompany' ? 'delete my account and company' : 'delete my account';
-	if (args.confirmation.trim() !== phrase) throw new ConvexError(`Type "${phrase}" to continue.`);
-	if (!args.attemptId || args.attemptId.length > DELETION_ATTEMPT_MAX_LENGTH)
-		throw new ConvexError('Invalid deletion attempt.');
-	return options;
-}
-export const prepare = mutation({
-	// Older clients must fail before calling Clerk without durable dispatch.
-	args: { ...preparationArgs, protocol: v.literal('dispatch') },
-	returns: v.union(request, v.null()),
+export const beginExecution = internalMutation({
+	args: executionArgs,
+	returns: v.object({
+		issuer: v.string(),
+		clerkId: v.string(),
+		hold: v.union(executionHold, v.null())
+	}),
 	handler: async (ctx, args) => {
-		const options = await validateDeletion(ctx, args);
-		if (options.mode === 'accountAndCompany' && options.companyId) {
-			const existing = options.marker;
-			if (
-				existing &&
-				((existing.status !== 'prepared' && existing.status !== 'dispatched') ||
-					existing.issuer !== options.profile.issuer ||
-					existing.clerkId !== options.profile.clerkId)
-			)
+		const options = await deletionOptions(ctx);
+		if (options.mode === 'transferOwnership')
+			throw new ConvexError('Transfer company ownership before deleting your account.');
+		if (args.mode !== options.mode || args.companyId !== options.companyId)
+			throw new ConvexError(
+				'Your company membership changed. Review the deletion confirmation again.'
+			);
+		const existing = options.marker;
+		const ownsActiveHold =
+			existing?.status === 'deleting' &&
+			existing.issuer === options.profile.issuer &&
+			existing.clerkId === options.profile.clerkId;
+		if (args.retryHold) {
+			if (!ownsActiveHold || options.mode !== 'accountAndCompany')
+				throw new ConvexError('There is no pending deletion to retry.');
+		} else {
+			const phrase =
+				options.mode === 'accountAndCompany'
+					? 'delete my account and company'
+					: 'delete my account';
+			if (args.confirmation.trim() !== phrase)
+				throw new ConvexError(`Type "${phrase}" to continue.`);
+		}
+		if (!args.executionId) throw new ConvexError('Invalid deletion request.');
+		if (options.mode === 'accountAndCompany') {
+			if (existing && !ownsActiveHold)
 				throw new ConvexError('Company deletion is already in progress.');
-			if (existing?.status === 'dispatched') return requestResult(existing, 'dispatched');
-			if (existing?.attemptId === args.attemptId) return requestResult(existing, 'prepared');
-			const consent = {
-				attemptId: args.attemptId,
-				requestedAt: Date.now(),
-				issuer: options.profile.issuer,
-				clerkId: options.profile.clerkId
-			};
+			const requestedAt = Date.now();
 			const id =
 				existing?._id ??
 				(await ctx.db.insert('companyDeletions', {
-					...consent,
 					companyId: options.companyId,
-					status: 'prepared',
+					issuer: options.profile.issuer,
+					clerkId: options.profile.clerkId,
+					executionId: args.executionId,
+					requestedAt,
+					status: 'deleting',
+					inFlight: true,
 					phase: 'invitations',
 					cleanupGeneration: 0
 				}));
-			if (existing) await ctx.db.patch('companyDeletions', id, consent);
-			await ctx.scheduler.runAfter(PREPARATION_TTL, internal.companyDeletion.expirePreparation, {
+			if (existing)
+				await ctx.db.patch('companyDeletions', id, {
+					executionId: args.executionId,
+					requestedAt,
+					inFlight: true
+				});
+			await ctx.scheduler.runAfter(DELETING_RECOVERY_DELAY, internal.clerk.resolveDeleting, {
 				id,
-				attemptId: consent.attemptId,
-				requestedAt: consent.requestedAt
+				executionId: args.executionId
 			});
 			return {
-				id,
-				attemptId: consent.attemptId,
-				requestedAt: consent.requestedAt,
-				status: 'prepared' as const
+				issuer: options.profile.issuer,
+				clerkId: options.profile.clerkId,
+				hold: { id, executionId: args.executionId }
 			};
 		}
+		return {
+			issuer: options.profile.issuer,
+			clerkId: options.profile.clerkId,
+			hold: null
+		};
+	}
+});
+export const markExecutionUncertain = internalMutation({
+	args: { id: v.id('companyDeletions'), executionId: v.string() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const marker = await ctx.db.get('companyDeletions', args.id);
+		if (marker?.status === 'deleting' && marker.executionId === args.executionId)
+			await ctx.db.patch('companyDeletions', marker._id, { inFlight: false });
 		return null;
 	}
 });
-export const dispatch = mutation({
-	args: { ...preparationArgs, requestId: v.union(v.id('companyDeletions'), v.null()) },
-	returns: v.union(request, v.null()),
+export const abortExecution = internalMutation({
+	args: { id: v.id('companyDeletions'), executionId: v.string() },
+	returns: v.boolean(),
 	handler: async (ctx, args) => {
-		const options = await validateDeletion(ctx, args);
-		if (options.mode === 'account') {
-			if (args.requestId !== null)
-				throw new ConvexError('Your deletion request changed. Try again.');
-			return null;
-		}
-		const marker = options.marker;
-		if (
-			!marker ||
-			marker._id !== args.requestId ||
-			marker.attemptId !== args.attemptId ||
-			marker.issuer !== options.profile.issuer ||
-			marker.clerkId !== options.profile.clerkId
-		)
-			throw new ConvexError('Your deletion request changed. Review the confirmation again.');
-		if (marker.status === 'dispatched') return requestResult(marker, 'dispatched');
-		if (marker.status !== 'prepared' || marker.requestedAt + PREPARATION_TTL <= Date.now())
-			throw new ConvexError('Your deletion preparation expired. Try again.');
-		await ctx.db.patch('companyDeletions', marker._id, { status: 'dispatched' });
-		return requestResult(marker, 'dispatched');
+		const marker = await ctx.db.get('companyDeletions', args.id);
+		if (!marker || marker.status !== 'deleting' || marker.executionId !== args.executionId)
+			return false;
+		await ctx.db.delete('companyDeletions', marker._id);
+		return true;
 	}
 });
-export const cancel = mutation({
-	args: { request: v.optional(v.object({ id: v.id('companyDeletions'), attemptId: v.string() })) },
+export const readOwnedHold = internalQuery({
+	args: {},
 	returns: v.union(
-		v.literal('cancelled'),
-		v.literal('none'),
-		v.literal('superseded'),
-		v.literal('dispatched')
+		v.null(),
+		v.object({
+			id: v.id('companyDeletions'),
+			executionId: v.string(),
+			requestedAt: v.number(),
+			inFlight: v.boolean(),
+			issuer: v.string(),
+			clerkId: v.string(),
+			status: v.union(v.literal('deleting'), v.literal('cleaning'), v.literal('complete'))
+		})
 	),
-	handler: async (ctx, args) => {
+	handler: async (ctx) => {
 		const profile = await requireProfile(ctx);
 		const marker = await ctx.db
 			.query('companyDeletions')
@@ -241,15 +252,16 @@ export const cancel = mutation({
 				q.eq('issuer', profile.issuer).eq('clerkId', profile.clerkId)
 			)
 			.unique();
-		if (!marker) return 'none' as const;
-		if (
-			args.request &&
-			(marker._id !== args.request.id || marker.attemptId !== args.request.attemptId)
-		)
-			return 'superseded' as const;
-		if (marker.status !== 'prepared') return 'dispatched' as const;
-		await ctx.db.delete('companyDeletions', marker._id);
-		return 'cancelled' as const;
+		if (!marker) return null;
+		return {
+			id: marker._id,
+			executionId: marker.executionId,
+			requestedAt: marker.requestedAt,
+			inFlight: marker.status === 'deleting' ? marker.inFlight : false,
+			issuer: marker.issuer,
+			clerkId: marker.clerkId,
+			status: marker.status
+		};
 	}
 });
 async function markDeleted(ctx: MutationCtx, issuer: string, clerkId: string) {
@@ -337,10 +349,6 @@ export const clean = internalMutation({
 		if (!marker || marker.complete || generation !== marker.cleanupGeneration) return null;
 		const profileId = marker.profileId;
 		const budget = cleanupBudget(ctx);
-		if (!(await retireAccountOperations(ctx, profileId, budget))) {
-			await scheduleCleanup(ctx, marker);
-			return null;
-		}
 		if (!(await eraseProfileEvidence(ctx, profileId))) {
 			await scheduleCleanup(ctx, marker);
 			return null;
@@ -453,12 +461,6 @@ export const clean = internalMutation({
 		if (membership) {
 			await cleanupMembershipShowings(ctx, membership._id, membership.companyId);
 			await ctx.db.delete('memberships', membership._id);
-		}
-		// Recheck after succession/other cleanup: earlier phases may have admitted
-		// children before the deleted-user fence became visible to their callbacks.
-		if (!(await retireAccountOperations(ctx, profileId, budget))) {
-			await scheduleCleanup(ctx, marker);
-			return null;
 		}
 		const profile = await ctx.db.get('profiles', profileId);
 		if (profile) await ctx.db.delete('profiles', profile._id);

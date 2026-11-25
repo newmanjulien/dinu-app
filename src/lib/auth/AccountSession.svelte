@@ -7,6 +7,7 @@
 	import { useViewerSession } from './viewer-session.svelte';
 	import { loadComponent } from './component-loader.svelte';
 	import { preloadDestination } from './destination-code';
+	import { isAccountEntryPath } from './navigation';
 	import { useStartupPreparation } from './startup-preparation';
 	import { useStartupData } from './startup-data';
 	import { WorkspaceHints, setWorkspaceHints } from './workspace-hints.svelte';
@@ -27,13 +28,19 @@
 				: csmPreviewScope(session.userId, session.preparedSessionId, session.transportGeneration)
 		);
 	});
-	setAccount(() => (owner.identity === identity ? (owner.account ?? undefined) : undefined));
+	setAccount(() =>
+		!session.closing && owner.identity === identity ? (owner.account ?? undefined) : undefined
+	);
 	// Seed only this initial render. Later identities must establish their own hints.
 	const initialHints = untrack(() => page.data.workspaceHints ?? undefined);
 	const hints = new WorkspaceHints(initialHints);
 	let initialHintsRetired = $state(false);
 	const startup = useStartupData();
 	session.registerResources(hints);
+	session.registerResources({
+		cancelReads: () => {},
+		clear: () => owner.clear()
+	});
 	setWorkspaceHints({
 		get presentation() {
 			if (session.closing) return undefined;
@@ -83,9 +90,11 @@
 		if (clerk.isLoaded || session.closing) initialHintsRetired = true;
 	});
 	const workspaceViewer = $derived(
-		owner.identity === identity && owner.account !== undefined ? owner.account : startup()?.viewer
+		!session.closing && owner.identity === identity && owner.account !== undefined
+			? owner.account
+			: startup()?.viewer
 	);
-	const required = $derived(!['/login', '/join'].includes(page.url.pathname));
+	const required = $derived(!isAccountEntryPath(page.url.pathname));
 	const workspaceRoute = $derived(page.route.id?.startsWith('/(workspace)') ?? false);
 	const account = loadComponent(
 		() => import('./AuthenticatedAccount.svelte'),
@@ -128,6 +137,7 @@
 		});
 	});
 	onDestroy(() => {
+		owner.clear();
 		hints.clear();
 		csmPreview.retain();
 	});

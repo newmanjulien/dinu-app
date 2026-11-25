@@ -6,24 +6,17 @@ import { accessibleContract, requireMembership, type CompanyAccess } from './aut
 import { hubspotLink } from './hubspotValidators';
 import { writeDirectory } from './contractDirectory';
 import { canonicalJson } from '../lib/document/canonical-json';
-import {
-	prepareBuyerCurrentView,
-	admitBuyerCurrentView,
-	type PreparedBuyerCurrentView
-} from './buyerCurrent';
+import { syncBuyerLinkMetadata } from './buyerLinks';
 
 export type ContractHubspotLink = Infer<typeof hubspotLink>;
-export type CurrentContractRoot = Doc<'savedContracts'> & { documentId: Id<'contractDocuments'> };
+
 /** The root owns business state; the association is independent provider state. */
 export type Contract = {
-	root: CurrentContractRoot;
+	root: Doc<'savedContracts'>;
 	hubspot?: ContractHubspotLink;
 	hubspotAssociationId: Id<'contractHubspotAssociations'> | null;
 };
-export function currentRoot(root: Doc<'savedContracts'>): CurrentContractRoot {
-	if (!root.documentId) throw new Error('A readable contract must own its current document.');
-	return { ...root, documentId: root.documentId };
-}
+
 export async function readContract(ctx: QueryCtx, root: Doc<'savedContracts'>): Promise<Contract> {
 	const association = await ctx.db
 		.query('contractHubspotAssociations')
@@ -32,7 +25,7 @@ export async function readContract(ctx: QueryCtx, root: Doc<'savedContracts'>): 
 	if (association && association.companyId !== root.companyId)
 		throw new Error('Contract association ownership is invalid.');
 	return {
-		root: currentRoot(root),
+		root,
 		hubspot: association
 			? {
 					connectionId: association.connectionId,
@@ -45,6 +38,7 @@ export async function readContract(ctx: QueryCtx, root: Doc<'savedContracts'>): 
 		hubspotAssociationId: association?._id ?? null
 	};
 }
+
 export async function accessibleContractState(
 	ctx: QueryCtx,
 	id: Id<'savedContracts'>,
@@ -53,6 +47,7 @@ export async function accessibleContractState(
 	const root = accessibleContract(await ctx.db.get('savedContracts', id), access);
 	return root ? readContract(ctx, root) : null;
 }
+
 /** Generic seller authorization belongs to the contract domain, independent of buyer links. */
 export async function seller(
 	ctx: QueryCtx,
@@ -63,6 +58,7 @@ export async function seller(
 	if (!contract) throw new ConvexError('This contract is unavailable.');
 	return { access, contract };
 }
+
 export async function hasOtherHubspotAssociation(
 	ctx: QueryCtx,
 	companyId: Id<'company'>,
@@ -77,6 +73,7 @@ export async function hasOtherHubspotAssociation(
 		.take(2);
 	return owners.some((owner) => owner.contractId !== contractId);
 }
+
 export async function assertHubspotAssociationAvailable(
 	ctx: QueryCtx,
 	companyId: Id<'company'>,
@@ -89,15 +86,17 @@ export async function assertHubspotAssociationAvailable(
 			message: 'This deal is already linked to another contract.'
 		});
 }
+
 type ContractChanges = Partial<
 	Omit<
-		CurrentContractRoot,
-		'_id' | '_creationTime' | 'companyId' | 'creatorId' | 'templateVersionId'
+		Doc<'savedContracts'>,
+		'_id' | '_creationTime' | 'companyId' | 'creatorId' | 'templateVersionId' | 'metadataRevision'
 	>
 > & {
 	hubspot?: ContractHubspotLink;
 };
-/** One root write and only changed listing fields; never persists derived change projections. */
+
+/** One root write and only changed listing/link metadata fields. */
 export async function patchContract(
 	ctx: MutationCtx,
 	contract: Contract,
@@ -105,7 +104,6 @@ export async function patchContract(
 	options: {
 		hasUnreadComment?: boolean;
 		directoryRow?: Doc<'contractDirectory'>;
-		buyerCurrent?: PreparedBuyerCurrentView;
 	} = {}
 ): Promise<Contract> {
 	const { hubspot, ...fields } = changes;
@@ -113,15 +111,9 @@ export async function patchContract(
 		Object.entries(fields).filter(
 			([key, value]) =>
 				canonicalJson(value ?? null) !==
-				canonicalJson(contract.root[key as keyof CurrentContractRoot] ?? null)
+				canonicalJson(contract.root[key as keyof Doc<'savedContracts'>] ?? null)
 		)
 	) as typeof fields;
-	if ('documentId' in rootChanges && !rootChanges.documentId)
-		throw new Error('A committed contract must own its current document.');
-	const buyerCurrent =
-		options.buyerCurrent ??
-		(await prepareBuyerCurrentView(ctx, contract.root, { ...contract.root, ...rootChanges }));
-	if (!options.buyerCurrent) await admitBuyerCurrentView(ctx, buyerCurrent);
 	const associationChanged =
 		'hubspot' in changes &&
 		canonicalJson(hubspot ?? null) !== canonicalJson(contract.hubspot ?? null);
@@ -150,11 +142,16 @@ export async function patchContract(
 		}
 		contract.hubspot = hubspot;
 	}
-	if (Object.keys(rootChanges).length) {
-		await ctx.db.patch('savedContracts', contract.root._id, rootChanges);
-		contract.root = currentRoot({ ...contract.root, ...rootChanges });
+	if (Object.keys(rootChanges).length || associationChanged) {
+		const nextRootChanges = {
+			...rootChanges,
+			metadataRevision: contract.root.metadataRevision + 1
+		};
+		await ctx.db.patch('savedContracts', contract.root._id, nextRootChanges);
+		contract.root = { ...contract.root, ...nextRootChanges };
 	}
-	await buyerCurrent.commit(contract.root);
+	if ('title' in rootChanges || 'buyer' in rootChanges)
+		await syncBuyerLinkMetadata(ctx, contract.root);
 	if (
 		associationChanged ||
 		'title' in rootChanges ||

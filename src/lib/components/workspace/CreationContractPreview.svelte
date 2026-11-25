@@ -58,7 +58,6 @@
 		annotationsVisible={false}
 		selectedConcessions={{}}
 		allowPlaybookNavigation={false}
-		onRemoveConcession={() => {}}
 		onSelect={() => false}
 		panelContent={emptyPanel}
 	/>

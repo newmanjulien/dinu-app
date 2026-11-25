@@ -30,6 +30,7 @@ import schema from './schema';
 import { canonicalState, confirmedEvidence, validOperator } from './csmAttemptState';
 import { assertHistoricalAdmission } from './csmHistory';
 import { retireSupersededSetupAppointment } from './csmSetupLifecycle';
+import { permissionsForRole } from './permissions';
 import { pendingInitialSetup, resolveSetupBooking } from './csmSetupState';
 import {
 	seedSetupAppointment,
@@ -144,6 +145,8 @@ async function assertAccess(
 ) {
 	if (mode !== 'setup') {
 		if (replacement) throw new ConvexError('This setup call is unavailable.');
+		if (!a.company.templateSourceId)
+			throw new ConvexError('Support booking is available once your template is ready.');
 		return;
 	}
 	if (a.company.templateSourceId)
@@ -175,9 +178,9 @@ async function stillEligible(ctx: QueryCtx, a: Attempt) {
 		!!company &&
 		member?.profileId === a.profileId &&
 		member.companyId === a.companyId &&
-		member.role === 'admin';
+		permissionsForRole(member.role).manageTemplate;
 	if (!memberEligible || !company) return false;
-	if (a.mode !== 'setup') return !a.replacement;
+	if (a.mode !== 'setup') return !a.replacement && Boolean(company.templateSourceId);
 	if (company.templateSourceId) return false;
 	const booking = await resolveSetupBooking(ctx, company);
 	if (!a.replacement)
@@ -1309,7 +1312,10 @@ async function setupProgressFor(
 	replacement?: Replacement
 ): Promise<Infer<typeof replacementProgress>> {
 	if (replacement) return sharedReplacement(ctx, owner, replacement);
-	if (owner.membership.role !== 'admin' || owner.company.templateSourceId)
+	if (
+		!permissionsForRole(owner.membership.role, owner.isOwner).manageTemplate ||
+		owner.company.templateSourceId
+	)
 		return { state: 'unavailable' };
 	if (await blockingInitialGuard(ctx, owner.companyId)) return { state: 'uncertain' };
 	const booking = await resolveSetupBooking(ctx, owner.company);

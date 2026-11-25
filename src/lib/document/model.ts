@@ -4,8 +4,6 @@ export type DocumentView = 'effective' | 'redline';
 export interface ResolvedRun {
 	text: string;
 	source?: import('./source-model').SourceRange;
-	/** Immutable discussion coordinates when materialized pieces have new local keys. */
-	sourceOrigin?: import('./source-model').SourceRange;
 	sourceKind?: 'text' | 'reference' | 'number';
 	generated?: 'replacement' | 'number' | 'separator' | 'empty-hit-target';
 	revision?: 'removed' | 'added';
@@ -24,7 +22,6 @@ export interface ResolvedRun {
 export type ResolvedBlock =
 	| {
 			kind: 'paragraph';
-			discussionRemoved?: true;
 			role: import('./source-model').ParagraphRole;
 			anchor?: string;
 			/** Legal depth is independent of the flat presentation role. */

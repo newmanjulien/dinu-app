@@ -63,9 +63,10 @@ export class DocumentSelectionController {
 	constructor(
 		readonly root: HTMLElement,
 		readonly snapshot: RenderSnapshot,
-		readonly highlights: DocumentHighlightController
+		readonly highlights: DocumentHighlightController,
+		readonly allowBoundarySelection = true
 	) {
-		this.surface = new SelectionSurface(root, snapshot);
+		this.surface = new SelectionSurface(root, snapshot, allowBoundarySelection);
 		controllers.set(root, this);
 		root.setAttribute('data-source-selection-enabled', '');
 		this.#interaction = createSelectionInteraction({
@@ -198,8 +199,10 @@ export class DocumentSelectionController {
 		}
 		if (!page || !this.root.contains(page)) return null;
 		// The break owner is the interaction source for the existing paragraph margin.
-		const gap = this.surface.breakAt(page, y);
-		if (gap) return this.surface.breakPosition(gap);
+		if (this.allowBoundarySelection) {
+			const gap = this.surface.breakAt(page, y);
+			if (gap) return this.surface.breakPosition(gap);
+		}
 		const bounds = page.getBoundingClientRect();
 		const hit = this.highlights.selectionHit(
 			page,

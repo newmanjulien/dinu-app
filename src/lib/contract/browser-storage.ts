@@ -11,7 +11,7 @@ export function createCacheScope(
 	identity: { profileId: Id<'profiles'>; membershipId: Id<'memberships'> } | null
 ): CacheScope {
 	return Object.freeze({
-		namespace: `dinu:v8:${env.PUBLIC_CONVEX_URL ?? ''}:${identity ? `${identity.profileId}:${identity.membershipId}` : 'anonymous'}`,
+		namespace: `dinu:v9:${env.PUBLIC_CONVEX_URL ?? ''}:${identity ? `${identity.profileId}:${identity.membershipId}` : 'anonymous'}`,
 		membershipId: identity?.membershipId ?? null
 	});
 }

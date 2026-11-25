@@ -1,13 +1,8 @@
 import { cronJobs } from 'convex/server';
 import { internal } from './_generated/api';
-import { maintenanceResumeDue } from './discussionOperationReferences';
+
 const crons = cronJobs();
-crons.interval(
-	'collect expired contract evidence',
-	{ hours: 1 },
-	internal.retentionMaintenance.pump,
-	{}
-);
+crons.cron('prune expired receipts', '30 3 * * *', internal.operationReceipts.pruneExpired, {});
 crons.interval(
 	'recover meeting preparation',
 	{ minutes: 1 },
@@ -23,7 +18,6 @@ crons.interval(
 	{}
 );
 crons.cron('clean completed booking evidence', '15 3 * * *', internal.csmEvidence.cleanup, {});
-crons.interval('resume discussion maintenance', { minutes: 1 }, maintenanceResumeDue, {});
 crons.cron('expire buyer activity', '0 3 * * *', internal.buyerActivity.expire, {});
 crons.interval(
 	'expire buyer activity quotas',
@@ -40,7 +34,7 @@ crons.interval(
 crons.interval(
 	'expire unfinished template source uploads',
 	{ minutes: 30 },
-	internal.templateUploads.expirePending,
+	internal.templateSetup.expirePending,
 	{}
 );
 crons.cron(

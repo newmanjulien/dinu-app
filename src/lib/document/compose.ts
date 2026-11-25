@@ -29,6 +29,7 @@ import { isTextTarget, type InlineSource, type ReplacementAtom } from './source-
 import {
 	planStructuralChanges,
 	type ChangeOrigin,
+	type GeneratedBlockAnchor,
 	type GeneratedParagraph,
 	type ReplacementAnnotation
 } from './structural-changes';
@@ -83,6 +84,7 @@ export class DocumentCompositionEngine {
 	#initialized = false;
 	#blocks: readonly SourceBlock[];
 	#numberingBlocks: readonly SourceBlock[] = [];
+	#generatedAnchors: ReadonlyMap<string, GeneratedBlockAnchor> = new Map();
 	#atomsByKey = new Map<string, InlineSource>();
 	#items?: readonly DocumentOverlayItem[];
 	#triggers: { text: OwnedTrigger[]; boundary: OwnedTrigger[] } = { text: [], boundary: [] };
@@ -104,8 +106,7 @@ export class DocumentCompositionEngine {
 	constructor(
 		blocks: readonly SourceBlock[],
 		index?: SourceIndex,
-		readonly artifacts?: CompositionArtifactStore,
-		readonly baseAliases: ReadonlyMap<string, string> = new Map()
+		readonly artifacts?: CompositionArtifactStore
 	) {
 		this.artifacts?.useSource(blocks);
 		this.#blocks = blocks;
@@ -146,6 +147,10 @@ export class DocumentCompositionEngine {
 	get numberingBlocks(): readonly SourceBlock[] {
 		return this.#numberingBlocks;
 	}
+	/** Exact source anchors for concession-generated paragraphs accepted by the latest composition. */
+	get generatedAnchors(): ReadonlyMap<string, GeneratedBlockAnchor> {
+		return this.#generatedAnchors;
+	}
 	/** Numbering accepted by the most recent composition, including inserted paragraphs. */
 	get addresses(): ReadonlyMap<string, Address> {
 		return this.#current;
@@ -182,7 +187,6 @@ export class DocumentCompositionEngine {
 		for (const item of items) {
 			const concession = item.concessions.find((c) => c.id === activeConcessions[item.itemId]);
 			for (const [changeIndex, change] of (concession?.changes ?? []).entries()) {
-				if (change.suppressed) continue;
 				authoredChanges.push({
 					change,
 					origin: { itemId: item.itemId, concessionId: concession!.id, changeIndex },
@@ -219,7 +223,7 @@ export class DocumentCompositionEngine {
 			structural.generated.size || structural.removed.size
 				? structural.numberingBlocks.map((block) => [block.blockKey, block.numbering])
 				: undefined;
-		const aliases = new Map([...this.baseAliases, ...structural.aliases]);
+		const aliases = structural.aliases;
 		const activeKey = JSON.stringify([topology, [...aliases]]);
 		const current =
 			!topology && !aliases.size
@@ -228,21 +232,27 @@ export class DocumentCompositionEngine {
 					? previousAddresses
 					: yield* iterateNumberAddresses(structural.numberingBlocks, aliases);
 		// Resolve displayed offsets once per authored replacement, after numbering is known.
+		// Discussion offsets count references as logical length 1 so cross-reference renumbering
+		// never shifts comment coordinates inside applied concessions.
 		for (const { annotations, paragraphs } of structural.replacementGroups) {
 			let offset = 0;
+			let discussionOffset = 0;
 			for (const [i, atoms] of paragraphs.entries()) {
-				if (annotations[i]) annotations[i].replacementOffset = offset;
-				offset +=
-					atoms.reduce(
-						(length, atom) =>
-							length +
-							(atom.kind === 'text'
-								? atom.text.length
-								: atom.kind === 'reference'
-									? referenceText(atom, current).length
-									: 0),
-						0
-					) + 1;
+				if (annotations[i]) {
+					annotations[i].replacementOffset = offset;
+					annotations[i].discussionOffset = discussionOffset;
+				}
+				for (const atom of atoms) {
+					if (atom.kind === 'text') {
+						offset += atom.text.length;
+						discussionOffset += atom.text.length;
+					} else if (atom.kind === 'reference') {
+						offset += referenceText(atom, current).length;
+						discussionOffset += 1;
+					}
+				}
+				offset += 1;
+				discussionOffset += 1;
 			}
 		}
 		const triggers = items === this.#items ? this.#triggers : { text: [], boundary: [] };
@@ -350,9 +360,19 @@ export class DocumentCompositionEngine {
 			patches.set(key, items);
 			yield undefined;
 		}
+		const generatedAnchors = new Map<string, GeneratedBlockAnchor>();
+		for (const paragraphs of structural.generated.values()) {
+			for (const paragraph of paragraphs) {
+				generatedAnchors.set(paragraph.block.blockKey, {
+					afterBlockKey: paragraph.anchorBlockKey,
+					kind: paragraph.anchorKind
+				});
+			}
+		}
 		// Accepted cursor metadata contains no completed content or alternative token arrays.
 		this.#current = current;
 		this.#numberingBlocks = structural.numberingBlocks;
+		this.#generatedAnchors = generatedAnchors;
 		this.#activeKey = activeKey;
 		this.#items = items;
 		this.#triggers = triggers;
@@ -409,9 +429,11 @@ export class DocumentCompositionEngine {
 		function replacement(
 			atoms: readonly DeepReadonly<ReplacementAtom>[],
 			owner: Annotation,
-			baseOffset = owner.generatedOffset ?? 0
+			baseOffset = owner.generatedOffset ?? 0,
+			baseDiscussionOffset = baseOffset
 		): ResolvedRun[] {
 			let offset = baseOffset;
+			let discussionOffset = baseDiscussionOffset;
 			return (
 				atoms.length ? atoms : owner.generatedOrigin ? [{ kind: 'text' as const, text: '' }] : []
 			).map((atom) => {
@@ -425,13 +447,14 @@ export class DocumentCompositionEngine {
 					discussion: owner.generatedOrigin
 						? {
 								origin: owner.generatedOrigin,
-								offset,
+								offset: discussionOffset,
 								...(atom.kind === 'reference' ? { atomic: true as const } : {})
 							}
 						: undefined,
 					...(view === 'redline' ? { revision: 'added' as const } : {})
 				};
 				offset += text.length;
+				discussionOffset += atom.kind === 'reference' ? 1 : text.length;
 				return run;
 			});
 		}
@@ -588,16 +611,21 @@ export class DocumentCompositionEngine {
 			);
 			const source = yield* tokenize(sourceAtoms, true);
 			const inserted = yield* tokenize(change.replacement);
-			function offsets(tokens: readonly Token[]) {
+			function offsets(tokens: readonly Token[], logical = false) {
 				const result = [0];
-				for (const token of tokens) result.push(result.at(-1)! + token.length);
+				for (const token of tokens)
+					result.push(
+						result.at(-1)! + (logical && token.atom.kind === 'reference' ? 1 : token.length)
+					);
 				return result;
 			}
 			const sourceOffsets = offsets(source),
-				replacementOffsets = offsets(inserted);
+				replacementOffsets = offsets(inserted),
+				discussionOffsets = offsets(inserted, true);
 			if (sourceOffsets.at(-1) !== end - start) return null;
 			const parts = yield* iterateRedlineDiff(source, inserted);
 			if (!parts) return null;
+			const baseDiscussionOffset = patch.annotation.discussionOffset ?? 0;
 			const runs: ResolvedRun[] = [];
 			for (const [i, part] of parts.entries()) {
 				if (part.kind !== 'insert') {
@@ -607,7 +635,7 @@ export class DocumentCompositionEngine {
 						start + sourceOffsets[part.sourceEnd],
 						part.kind === 'delete'
 					);
-					let offset = (owner.generatedOffset ?? 0) + replacementOffsets[part.replacementStart];
+					let discussionOffset = baseDiscussionOffset + discussionOffsets[part.replacementStart];
 					for (const run of equalRuns) {
 						runs.push(
 							part.kind === 'equal' && owner.generatedOrigin
@@ -615,13 +643,13 @@ export class DocumentCompositionEngine {
 										...run,
 										discussion: {
 											origin: owner.generatedOrigin,
-											offset,
+											offset: discussionOffset,
 											...(run.sourceKind === 'reference' ? { atomic: true as const } : {})
 										}
 									}
 								: run
 						);
-						offset += run.text.length;
+						discussionOffset += run.sourceKind === 'reference' ? 1 : run.text.length;
 					}
 					continue;
 				}
@@ -651,7 +679,8 @@ export class DocumentCompositionEngine {
 					...replacement(
 						atoms,
 						owner,
-						(owner.generatedOffset ?? 0) + replacementOffsets[part.replacementStart]
+						(owner.generatedOffset ?? 0) + replacementOffsets[part.replacementStart],
+						baseDiscussionOffset + discussionOffsets[part.replacementStart]
 					)
 				);
 			}
@@ -724,7 +753,14 @@ export class DocumentCompositionEngine {
 						)
 							result.push(separator(owner));
 					}
-					result.push(...replacement(change.replacement, owner));
+					result.push(
+						...replacement(
+							change.replacement,
+							owner,
+							owner.generatedOffset ?? 0,
+							patch.annotation.discussionOffset ?? 0
+						)
+					);
 				}
 				// Replacing only a generated label keeps its separator before the untouched
 				// body. A deleted label still needs that spacing in redline view.
@@ -760,7 +796,7 @@ export class DocumentCompositionEngine {
 			const prefix = runs.slice(0, prefixEnd);
 			const body = runs.slice(prefixEnd);
 			const first = body.findIndex((run) => /\S/u.test(run.text));
-			// An empty replacement still addresses a later proposal at the deletion.
+			// Keep zero-length discussion anchors at the leading boundary of an empty replacement.
 			const boundaries = body
 				.slice(0, first < 0 ? body.length : first)
 				.filter((run) => !run.text.length && run.discussion);
@@ -905,11 +941,12 @@ export class DocumentCompositionEngine {
 					if (atom.endTargetItemKey) targets.add(atom.endTargetItemKey);
 				}
 			const version = JSON.stringify([
-				'generated-discussion-v2',
+				'generated-discussion-v3',
 				view,
 				block,
 				atoms,
 				owner,
+				paragraph.annotation.discussionOffset ?? 0,
 				[...targets].map((target) => [target, current.get(target)])
 			]);
 			const cached = request.getRuns(version);
@@ -919,7 +956,12 @@ export class DocumentCompositionEngine {
 			}
 			return request.putRuns(version, [
 				...numberPrefix(block.numbering, owner),
-				...replacement(atoms, owner)
+				...replacement(
+					atoms,
+					owner,
+					owner.generatedOffset ?? 0,
+					paragraph.annotation.discussionOffset ?? 0
+				)
 			]);
 		}
 		function resolved(
@@ -976,7 +1018,6 @@ export class DocumentCompositionEngine {
 					const boundary = index.structuralBoundaries.get(block.blockKey);
 					return {
 						kind: 'paragraph' as const,
-						...(removed ? { discussionRemoved: true as const } : {}),
 						...(block.anchor ? { anchor: block.anchor } : {}),
 						blockKey: block.blockKey,
 						role: role === 'title' && numbering ? 'body' : role,

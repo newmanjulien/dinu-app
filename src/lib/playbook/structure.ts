@@ -1,5 +1,3 @@
-import type { ResolvedContractItem } from '../contract/items';
-import type { ContractItemId } from '../contract/item-identity';
 import type { DeepReadonly } from '../immutable';
 import type { Id } from '../../convex/_generated/dataModel';
 import { hasMeaningfulReplacement } from '../document/replacement-content';
@@ -37,7 +35,7 @@ export function changeStructure({
 		meaningful: hasMeaningfulReplacement(replacement)
 	};
 }
-export type StructureItem<ItemId extends ContractItemId = Id<'playbookItems'>> = ItemStructure & {
+export type StructureItem<ItemId extends string = Id<'playbookItems'>> = ItemStructure & {
 	_id: ItemId;
 	_creationTime: number;
 	contentRevision: number;
@@ -71,7 +69,7 @@ export type TemplateItemRecord = ItemIdentity & TemplateItem;
 type DetailIdentity = {
 	_id: Id<'playbookItems'>;
 	companyId: Id<'company'>;
-	currentRevisionId?: Id<'playbookItemRevisions'>;
+	currentRevisionId: Id<'playbookItemRevisions'>;
 	lastOperation?: { id: string; callerId: Id<'profiles'> };
 	renderKey: string;
 };
@@ -100,30 +98,20 @@ export function playbookStructure(item: {
 		}))
 	};
 }
-export function itemStructure<ItemId extends ContractItemId>(
-	item:
-		| DeepReadonly<
-				Pick<
-					RepInstructionRecord<ItemId>,
-					'_id' | '_creationTime' | 'contentRevision' | 'renderKey' | 'trigger'
-				> & { audience: TemplateAudience; concessions?: import('./model').Concession[] }
-		  >
-		| DeepReadonly<ResolvedContractItem>,
-	renderKey = ('renderKey' in item ? item.renderKey : undefined) ?? item._id
+export function itemStructure<ItemId extends string = Id<'playbookItems'>>(
+	item: DeepReadonly<
+		Pick<
+			RepInstructionRecord<ItemId>,
+			'_id' | '_creationTime' | 'contentRevision' | 'renderKey' | 'trigger'
+		> & { audience: TemplateAudience; concessions?: import('./model').Concession[] }
+	>,
+	renderKey = item.renderKey ?? item._id
 ): StructureItem<ItemId> {
 	return {
 		_id: item._id as ItemId,
 		_creationTime: item._creationTime,
 		contentRevision: item.contentRevision,
 		renderKey,
-		...playbookStructure(
-			'primary' in item
-				? {
-						audience: 'rep',
-						trigger: item.primary,
-						concessions: item.choices
-					}
-				: item
-		)
+		...playbookStructure(item)
 	};
 }

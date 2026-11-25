@@ -10,6 +10,7 @@
 	import { createCacheScope } from '$lib/contract/browser-storage';
 	import { contractCacheResources, replaceContractCacheScope } from '$lib/contract/snapshot-cache';
 	import { setAccount, useViewerSession, type AccountViewer } from './viewer-session.svelte';
+	import { getErrorMessage, isAccountDeletedError } from './account-errors';
 	import { AccountPreparation } from './account-preparation';
 	import { ReadAttempt, waitForRead } from './attempt';
 	import { recordStartup } from './startup-perf';
@@ -58,8 +59,17 @@
 		try {
 			await waitForRead(client.mutation(api.profiles.initialize, {}), read.signal);
 		} catch (e) {
-			if (alive && current === epoch && session.transportGeneration === transportGeneration)
-				error = e instanceof Error ? e.message : 'Unable to initialize your account.';
+			if (alive && current === epoch && session.transportGeneration === transportGeneration) {
+				if (isAccountDeletedError(e)) {
+					const sessionId = session.preparedSessionId;
+					const userId = session.userId;
+					if (sessionId && userId) {
+						void session.completeAccountDeletion({ sessionId, userId });
+						return;
+					}
+				}
+				error = getErrorMessage(e, 'Unable to initialize your account.');
+			}
 		} finally {
 			read.complete();
 		}
@@ -76,9 +86,21 @@
 	$effect(() => {
 		const value = data;
 		const nextGeneration = session.transportGeneration;
-		const failure = (generation === nextGeneration ? error : '') || viewer.error?.message || '';
-		const ready = Boolean(auth.isAuthenticated && value && !value.needsInitialization && !failure);
+		const deleted = isAccountDeletedError(viewer.error);
+		const failure = deleted
+			? ''
+			: (generation === nextGeneration ? error : '') ||
+				(viewer.error ? getErrorMessage(viewer.error, viewer.error.message) : '');
+		const ready = Boolean(
+			auth.isAuthenticated && value && !value.needsInitialization && !failure && !deleted
+		);
 		untrack(() => {
+			if (deleted) {
+				const sessionId = session.preparedSessionId;
+				const userId = session.userId;
+				if (sessionId && userId) void session.completeAccountDeletion({ sessionId, userId });
+				return;
+			}
 			if (
 				account?.membership &&
 				account.company &&

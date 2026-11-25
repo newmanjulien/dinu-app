@@ -1,4 +1,3 @@
-import { settleQuoteOutput } from './outputLifecycle';
 import { ConvexError, v } from 'convex/values';
 import { internalAction, internalMutation, internalQuery } from './_generated/server';
 import { internal } from './_generated/api';
@@ -7,7 +6,6 @@ import { installation } from './hubspotInstallation';
 import { connectionToken, hubspot } from './hubspotApi';
 import schema from './schema';
 import { activeQuote, numericQuoteId, quotePath, quoteUrl } from './hubspotQuoteProvider';
-import { outputReservation } from './outputProof';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
 
 const evidence = (value: string) => {
@@ -31,7 +29,6 @@ export const data = internalQuery({
 			!['unknown', 'attention', 'verified'].includes(push.state)
 		)
 			throw new ConvexError('This push is not available for operator recovery.');
-		if (push.format === 'full') await outputReservation(ctx, push);
 		const connection = await installation(ctx, push.companyId);
 		if (!connection || connection.accountId !== push.destination.accountId)
 			throw new ConvexError('Connect the original HubSpot account before reconciliation.');
@@ -129,7 +126,7 @@ export const resolve = internalMutation({
 			!(
 				args.disposition === 'archived' ? ['verified', 'attention'] : ['unknown', 'attention']
 			).includes(row.state) ||
-			(row.format === 'full' && quoteRunningUntil(row) > Date.now())
+			quoteRunningUntil(row) > Date.now()
 		)
 			throw new ConvexError('Wait for the push to settle before operator recovery.');
 		if (
@@ -143,21 +140,10 @@ export const resolve = internalMutation({
 			throw new ConvexError(
 				'A known quote cannot be cleared without a separate verified deletion procedure.'
 			);
+		const now = Date.now();
 		if (args.disposition === 'archived') {
 			if (args.quoteId !== row.quoteId)
 				throw new ConvexError('The original quote identity is required.');
-			if (row.format === 'compact') {
-				await ctx.db.patch('hubspotQuotePushes', row._id, {
-					state: 'retired',
-					previousQuoteId: row.quoteId,
-					quoteId: undefined,
-					url: undefined,
-					updatedAt: Date.now(),
-					message:
-						'HubSpot confirmed the original quote is archived. Push again to create a replacement draft.'
-				});
-				return null;
-			}
 			await ctx.db.patch('hubspotQuotePushes', row._id, {
 				state: 'retired',
 				previousQuoteId: row.quoteId,
@@ -168,18 +154,17 @@ export const resolve = internalMutation({
 				workId: undefined,
 				leaseUntil: undefined,
 				dueAt: undefined,
-				updatedAt: Date.now(),
+				updatedAt: now,
+				settledAt: now,
 				message:
 					'HubSpot confirmed the original quote is archived. Push again to create a replacement draft.'
 			});
-			await settleQuoteOutput(ctx, row._id);
 			return null;
 		}
-		if (row.format !== 'full')
-			throw new ConvexError('Historical quote evidence cannot be rechecked.');
 		const verify = Boolean(args.quoteId && row.fileId);
+		const nextState = args.quoteId ? (verify ? 'verifying' : 'attention') : 'rejected';
 		await ctx.db.patch('hubspotQuotePushes', row._id, {
-			state: args.quoteId ? (verify ? 'verifying' : 'attention') : 'rejected',
+			state: nextState,
 			...(args.quoteId
 				? {
 						quoteId: args.quoteId,
@@ -191,13 +176,13 @@ export const resolve = internalMutation({
 			workId: undefined,
 			leaseUntil: undefined,
 			readAttempts: 0,
-			dueAt: verify ? Date.now() : undefined,
-			updatedAt: Date.now(),
+			dueAt: verify ? now : undefined,
+			updatedAt: now,
+			...(nextState === 'rejected' ? { settledAt: now } : {}),
 			message: args.quoteId
 				? 'An operator identified the quote. Review it in HubSpot while the transfer is checked.'
 				: 'An operator confirmed the original request was not created. You can push again.'
 		});
-		await settleQuoteOutput(ctx, row._id);
 		if (verify) await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
 		return null;
 	}

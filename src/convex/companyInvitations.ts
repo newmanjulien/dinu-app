@@ -18,8 +18,7 @@ import {
 	requirePermission
 } from './auth';
 import { sellerAuthorName } from './authorPresentation';
-import { activeDelivery, cancelJob, createDelivery } from './emailDeliveries';
-import { removeDelivery } from './emailDisposal';
+import { activeDelivery, cancelJob, createDelivery, removeDelivery } from './emailDeliveries';
 import { pendingInvitationDelivery } from './invitationDeliverySummary';
 import {
 	emailAddress,
@@ -123,7 +122,7 @@ export const accept = mutation({
 		const { identity, profile } = await requireAccount(ctx);
 		const invitation = await ctx.db.get('companyInvitations', args.invitationId);
 		if (!invitation || invitation.normalizedEmail !== emailAddress(identity.email))
-			throw new ConvexError('Sign in with the email address this invitation was sent to.');
+			throw new ConvexError('Log in with the email address this invitation was sent to.');
 		if (
 			args.deliveryGeneration !== undefined &&
 			args.deliveryGeneration !== invitation.deliveryGeneration
@@ -147,7 +146,8 @@ export const accept = mutation({
 		const id = await ctx.db.insert('memberships', {
 			companyId: invitation.companyId,
 			profileId: profile._id,
-			role: 'rep'
+			role: 'rep',
+			supportWidgetCollapsed: false
 		});
 		await ctx.db.patch('companyInvitations', invitation._id, {
 			status: 'accepted',

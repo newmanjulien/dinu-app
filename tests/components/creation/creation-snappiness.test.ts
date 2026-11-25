@@ -92,11 +92,11 @@ async function drive(done: () => boolean) {
 	}
 	expect(done(), document.body.textContent ?? '').toBe(true);
 }
-function fixture({ shared = true, authority = true, frozen = true } = {}) {
+function fixture({ shared = true, frozen = true } = {}) {
 	const state = csmState(),
 		controls = creationState(),
 		layout = layoutFixture();
-	state.viewer.helpPreferences.rep = true;
+	state.viewer.helpPreferences.contract = true;
 	const data = documentFixture(40),
 		saved = readyContract(data);
 	let liveTemplate = documentFixture(2).blocks;
@@ -105,16 +105,13 @@ function fixture({ shared = true, authority = true, frozen = true } = {}) {
 			if (observation.released) return;
 			switch (observation.name) {
 				case 'contracts:state':
-					observation.update(saved.contract);
+					observation.update({ ...saved.contract, buyerName: null, requestDelivery: null });
 					break;
 				case 'templateSources:authoringSource':
 					observation.update({ blocks: liveTemplate, templateSourceFingerprint: 'live' });
 					break;
 				case 'templates:frozenContent':
 					if (frozen) observation.update(saved.snapshot);
-					break;
-				case 'contractDefinitions:current':
-					if (authority) observation.update(saved.approved);
 					break;
 			}
 		})
@@ -257,11 +254,11 @@ async function create() {
 	await settle();
 }
 
-it('submits before host/factory, admits saved before authority, then constructs one canonical document', async () => {
+it('submits before host/factory, admits saved before frozen snapshot, then constructs one canonical document', async () => {
 	context.saved = Promise.resolve(
 		await import('../../../src/lib/components/workspace/SavedContract.svelte')
 	);
-	const f = fixture({ authority: false });
+	const f = fixture({ frozen: false });
 	f.mount();
 	await create();
 	expect(f.mutation).toHaveBeenCalledTimes(1);
@@ -269,8 +266,7 @@ it('submits before host/factory, admits saved before authority, then constructs 
 	expect(f.resources!.entries).toHaveLength(0);
 	f.changeLiveTemplate();
 	f.confirm();
-	await drive(() => screen.destination.kind === 'saved');
-	expect(screen.destination).toEqual({ kind: 'saved', id: f.saved.id });
+	await drive(() => f.network.live('templates:frozenContent').length === 1);
 	expect(document.querySelector('dialog')).not.toBeNull();
 	expect(f.editors.entries).toHaveLength(1);
 	expect(f.editors.entries[0].readable).toBeUndefined();
@@ -280,10 +276,11 @@ it('submits before host/factory, admits saved before authority, then constructs 
 	f.controls.factory.ready = true;
 	await settle();
 	expect(f.factory).not.toHaveBeenCalled();
-	f.network.publish('contractDefinitions:current', f.saved.approved);
+	f.network.publish('templates:frozenContent', f.saved.snapshot);
 	await drive(
 		() => !document.querySelector('dialog') && Boolean(document.querySelector('[data-page-number]'))
 	);
+	expect(screen.destination).toEqual({ kind: 'saved', id: f.saved.id });
 	expect(f.factory).toHaveBeenCalledTimes(1);
 	const entry = f.resources!.entries[0];
 	expect(entry.id).toBe(f.saved.id);
@@ -347,7 +344,7 @@ it('prepares while saved module is held and reuses real canonical pages through 
 	expect([...entry.target!.querySelectorAll('[data-page-number]')]).toEqual(nodes);
 	expect(f.layout.measure).toHaveBeenCalledTimes(measures);
 	expect(
-		f.factory.mock.calls.filter(([input]) => input.kind === 'records' && input.materialized?.data)
+		f.factory.mock.calls.filter(([input]) => input.kind === 'records' && input.contract)
 	).toHaveLength(1);
 	screen.home = true;
 	await settle();
@@ -386,7 +383,7 @@ it('retains confirmed id and leases through frozen/host waits without replaying 
 });
 
 it('retries a rejected frozen read with the confirmed id and lease before one canonical saved attachment', async () => {
-	const f = fixture({ frozen: false, authority: false });
+	const f = fixture({ frozen: false });
 	f.controls.runtime.hostReady = true;
 	f.controls.factory.ready = true;
 	f.mount();
@@ -432,16 +429,6 @@ it('retries a rejected frozen read with the confirmed id and lease before one ca
 	expect(retryRead.args).toEqual(frozenRead.args);
 	expect(f.resources!.hasOpening(f.saved.id)).toBe(true);
 	f.network.publish('templates:frozenContent', f.saved.snapshot);
-	await settle();
-	expect(document.querySelector('dialog')).toBeNull();
-	expect(screen.destination).toEqual({ kind: 'saved', id: f.saved.id });
-	expect(f.editors.entries).toEqual([editor]);
-	expect(editor.readable).toBeUndefined();
-	expect(f.resources!.hasOpening(f.saved.id)).toBe(true);
-	expect(f.resources!.entries).toHaveLength(0);
-	expect(document.body.textContent).not.toContain('Clause 0.');
-	expect(f.factory).not.toHaveBeenCalled();
-	f.network.publish('contractDefinitions:current', f.saved.approved);
 	await drive(() => Boolean(f.resources!.entries[0]?.workspace.viewer.layoutPrepared));
 	const entry = f.resources!.entries[0];
 	expect(entry.id).toBe(f.saved.id);
@@ -455,7 +442,7 @@ it('retries a rejected frozen read with the confirmed id and lease before one ca
 	expect(f.factory.mock.calls[0][0]).toEqual(
 		expect.objectContaining({
 			kind: 'records',
-			materialized: expect.objectContaining({ data: expect.anything() })
+			contract: true
 		})
 	);
 	expect(
@@ -537,8 +524,7 @@ it('releases the keyed resource on authoritative rejection and reacquires only a
 	f.confirm();
 	await drive(() => Boolean(f.resources!.entries[0]?.workspace.viewer.layoutPrepared));
 	const entry = f.resources!.entries[0];
-	for (const read of f.network.live('contractDefinitions:current'))
-		read.error(new Error('Access revoked'));
+	for (const read of f.network.live('contracts:state')) read.error(new Error('Access revoked'));
 	await settle();
 	expect(f.resources!.entries).not.toContain(entry);
 	expect(f.resources!.hasOpening(f.saved.id)).toBe(false);
@@ -555,20 +541,21 @@ it('releases the keyed resource on authoritative rejection and reacquires only a
 });
 
 it('creates one local canonical viewer when shared preparation is disabled', async () => {
-	const f = fixture({ shared: false, authority: false });
+	const f = fixture({ shared: false, frozen: false });
 	f.mount();
 	await create();
 	f.confirm();
-	await drive(() => screen.destination.kind === 'saved');
+	await drive(() => f.network.live('templates:frozenContent').length === 1);
 	expect(document.querySelector('dialog')).not.toBeNull();
 	expect(
 		document.querySelector('main[aria-label="Contract document"] [data-page-number]')
 	).not.toBeNull();
 	f.controls.runtime.hostReady = true;
-	f.network.publish('contractDefinitions:current', f.saved.approved);
+	f.network.publish('templates:frozenContent', f.saved.snapshot);
 	await drive(
 		() => !document.querySelector('dialog') && Boolean(document.querySelector('[data-page-number]'))
 	);
+	expect(screen.destination).toEqual({ kind: 'saved', id: f.saved.id });
 	expect(document.body.textContent).toContain('Clause 0.');
 	expect(document.querySelectorAll('[aria-label="Contract document"]')).toHaveLength(1);
 	expect(f.mutation).toHaveBeenCalledTimes(1);
@@ -765,12 +752,12 @@ it.each(['names-first', 'eligibility-first'] as const)(
 	}
 );
 
-it('owns first functioning help above saved module/host/authority, and preserves focus and dismissal through arrival and retry', async () => {
-	const f = fixture({ authority: false });
+it('owns first functioning help above saved module/host/frozen snapshot, and preserves focus and dismissal through arrival and retry', async () => {
+	const f = fixture({ frozen: false });
 	const search =
 		deferred<typeof import('../../../src/lib/components/document/DocumentSearchTools.svelte')>();
 	context.search = search.promise;
-	f.state.viewer.helpPreferences.rep = false;
+	f.state.viewer.helpPreferences.contract = false;
 	screen.destination = { kind: 'saved', id: f.saved.id };
 	const savedModule =
 		deferred<typeof import('../../../src/lib/components/workspace/SavedContract.svelte')>();
@@ -797,7 +784,7 @@ it('owns first functioning help above saved module/host/authority, and preserves
 	savedModule.resolve(await import('../../../src/lib/components/workspace/SavedContract.svelte'));
 	f.controls.runtime.hostReady = true;
 	f.controls.factory.ready = true;
-	f.network.publish('contractDefinitions:current', f.saved.approved);
+	f.network.publish('templates:frozenContent', f.saved.snapshot);
 	await drive(() =>
 		Boolean(
 			f.resources?.entries.find((entry) => entry.id === f.saved.id)?.workspace.viewer
@@ -826,7 +813,7 @@ it('owns first functioning help above saved module/host/authority, and preserves
 
 it('waits for resolved preference before saved admission and makes A→B→A separate openings with fenced old writes', async () => {
 	const f = fixture();
-	f.state.viewer.helpPreferences.rep = undefined as unknown as boolean;
+	f.state.viewer.helpPreferences.contract = undefined as unknown as boolean;
 	screen.destination = { kind: 'saved', id: f.saved.id };
 	const module =
 		deferred<typeof import('../../../src/lib/components/workspace/SavedContract.svelte')>();
@@ -837,7 +824,7 @@ it('waits for resolved preference before saved admission and makes A→B→A sep
 	module.resolve(await import('../../../src/lib/components/workspace/SavedContract.svelte'));
 	await settle();
 	expect(f.editors.entries[0].attachments).toBe(1);
-	f.state.viewer.helpPreferences.rep = false;
+	f.state.viewer.helpPreferences.contract = false;
 	await settle();
 	const first = document.querySelector('dialog')!;
 	expect(first).not.toBeNull();
@@ -870,7 +857,7 @@ it('waits for resolved preference before saved admission and makes A→B→A sep
 
 it('closes naming before automatic help and never reopens it on same-opening saved-module failure/retry', async () => {
 	const f = fixture();
-	f.state.viewer.helpPreferences.rep = false;
+	f.state.viewer.helpPreferences.contract = false;
 	const module =
 		deferred<typeof import('../../../src/lib/components/workspace/SavedContract.svelte')>();
 	context.saved = module.promise;
@@ -907,7 +894,7 @@ it('handles hidden preference once, fences transport-old writes, and confirms ch
 	f.mount();
 	await settle();
 	expect(document.querySelector('dialog')).toBeNull();
-	f.state.viewer.helpPreferences.rep = false;
+	f.state.viewer.helpPreferences.contract = false;
 	await settle();
 	expect(document.querySelector('dialog')).toBeNull();
 	// A true replacement opening gets a fresh automatic decision.
@@ -929,7 +916,7 @@ it('handles hidden preference once, fences transport-old writes, and confirms ch
 	checkbox.click();
 	await settle();
 	expect(checkbox.checked).toBe(false);
-	f.state.viewer.helpPreferences.rep = true;
+	f.state.viewer.helpPreferences.contract = true;
 	await settle();
 	expect(checkbox.checked).toBe(true);
 	expect(document.querySelector('dialog')).toBe(modal);
@@ -940,7 +927,7 @@ it.each(['automatic', 'manual'] as const)(
 	async (opening) => {
 		const configured = vi.spyOn(HelpSession.prototype, 'configure');
 		const f = fixture();
-		f.state.viewer.helpPreferences.rep = opening === 'manual';
+		f.state.viewer.helpPreferences.contract = opening === 'manual';
 		f.controls.runtime.hostReady = true;
 		f.controls.factory.ready = true;
 		screen.destination = { kind: 'saved', id: f.saved.id };
@@ -966,7 +953,7 @@ it.each(['automatic', 'manual'] as const)(
 		expect(modal.open).toBe(true);
 		expect(document.body.style.overflow).toBe('hidden');
 		f.controls.runtime.paused = true;
-		f.state.viewer.company.deletionPending = true;
+		f.state.viewer.company.deletion = { status: 'deleting', ownedByViewer: true };
 		// Exercise the synchronous current() fence before the activity effect can run.
 		await help.setHidden(!help.hidden);
 		expect(f.preference).not.toHaveBeenCalled();
@@ -988,7 +975,7 @@ it.each(['automatic', 'manual'] as const)(
 		expect(f.resources!.entries).toContain(entry);
 		expect(entry.opening).toBe(true);
 		f.controls.runtime.paused = false;
-		f.state.viewer.company.deletionPending = false;
+		f.state.viewer.company.deletion = null;
 		await settle();
 		expect(document.querySelector('dialog')).toBeNull();
 		expect(configured.mock.contexts.every((session) => session === help)).toBe(true);
@@ -1018,12 +1005,12 @@ it.each([
 ])(
 	'defers initially paused $preference preference (hidden=$hidden) until the first active decision before saved admission',
 	async ({ preference, hidden }) => {
-		const f = fixture({ authority: false });
-		f.state.viewer.helpPreferences.rep =
+		const f = fixture({ frozen: false });
+		f.state.viewer.helpPreferences.contract =
 			preference === 'known' ? hidden : (undefined as unknown as boolean);
 		f.controls.runtime.paused = true;
 		f.controls.runtime.hostReady = true;
-		f.state.viewer.company.deletionPending = true;
+		f.state.viewer.company.deletion = { status: 'deleting', ownedByViewer: true };
 		screen.destination = { kind: 'saved', id: f.saved.id };
 		context.saved = Promise.resolve(
 			await import('../../../src/lib/components/workspace/SavedContract.svelte')
@@ -1047,7 +1034,7 @@ it.each([
 		expect(editor.attachments).toBe(1);
 		expect(document.querySelector('dialog')).toBeNull();
 		expect(document.querySelector('nav[aria-label="Document tools"]')).toBeNull();
-		f.state.viewer.helpPreferences.rep = hidden;
+		f.state.viewer.helpPreferences.contract = hidden;
 		await settle();
 		expect(help.resolved).toBe(true);
 		expect(help.admitted).toBe(false);
@@ -1060,7 +1047,7 @@ it.each([
 		expect(help.open).toBe(false);
 		expect(f.preference).not.toHaveBeenCalled();
 		f.controls.runtime.paused = false;
-		f.state.viewer.company.deletionPending = false;
+		f.state.viewer.company.deletion = null;
 		await settle();
 		expect(decisions).toEqual([{ attachments: 1, open: !hidden }]);
 		expect(help.admitted).toBe(true);
@@ -1073,7 +1060,7 @@ it.each([
 			await settle();
 		}
 		// A hidden decision is consumed too: a later subscription cannot interrupt the viewer.
-		f.state.viewer.helpPreferences.rep = !hidden;
+		f.state.viewer.helpPreferences.contract = !hidden;
 		f.state.session.transportGeneration++;
 		f.controls.runtime.paused = true;
 		await settle();
@@ -1093,7 +1080,7 @@ it.each(['resolve', 'reject'] as const)(
 	async (completion) => {
 		const configured = vi.spyOn(HelpSession.prototype, 'configure');
 		const f = fixture();
-		f.state.viewer.helpPreferences.rep = false;
+		f.state.viewer.helpPreferences.contract = false;
 		f.controls.runtime.hostReady = true;
 		f.controls.factory.ready = true;
 		screen.destination = { kind: 'saved', id: f.saved.id };
@@ -1142,7 +1129,7 @@ it.each(['resolve', 'reject'] as const)(
 		expect(checkbox.disabled).toBe(false);
 		expect(help.hidden).toBe(false);
 		expect(checkbox.checked).toBe(false);
-		f.state.viewer.helpPreferences.rep = true;
+		f.state.viewer.helpPreferences.contract = true;
 		await settle();
 		expect(help.hidden).toBe(true);
 		expect(checkbox.checked).toBe(true);

@@ -3,22 +3,13 @@ import { documentFixture, readyContract } from '../../support/document';
 
 export function downloadState() {
 	const ready = readyContract(documentFixture(0));
-	const expectedSource = {
-		stateRevision: ready.contract.stateRevision,
-		documentId: ready.contract.documentId,
-		documentRevision: ready.contract.documentRevision,
-		title: ready.contract.title,
-		templateVersionId: ready.contract.templateVersionId
-	};
 	const state = $state({
 		auth: { authenticated: true },
 		session: { blocked: false, transportGeneration: 0, closing: false },
 		runtime: { paused: false },
-		status: { data: { canExport: true, expectedSource }, error: undefined as Error | undefined },
 		persistence: {
 			confirmed: ready.contract,
 			choices: {},
-			intent: {},
 			pending: false,
 			deleted: false,
 			conflict: false,
@@ -41,12 +32,11 @@ export function downloadState() {
 		renderChoices: {},
 		definitionsReady: true,
 		documentInput: { kind: 'records' },
-		currentDocumentReady: true,
+		buyerName: null,
+		requestDelivery: null,
 		notice: null,
 		pending: false,
-		savePending,
-		preparePreview: vi.fn(),
-		focusPreview: vi.fn()
+		savePending
 	};
 	return { state, ready, editor, savePending };
 }

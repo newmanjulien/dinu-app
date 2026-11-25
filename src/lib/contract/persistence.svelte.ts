@@ -1,22 +1,9 @@
-import { createOperationId } from './operation-identity';
-import {
-	assertOperationRetryable,
-	isOperationRecovery,
-	OPERATION_RECOVERY_MESSAGE
-} from './operation-recovery';
-import type { ContractItemId } from './item-identity';
+import { ConvexError } from 'convex/values';
 import type { Id } from '../../convex/_generated/dataModel';
-import {
-	commandsMatch,
-	currentHead,
-	projectCommands,
-	selectedOptions,
-	MAX_ACTIVITY_COMMANDS,
-	MAX_SAVE_COMMANDS,
-	type ActivityCommand
-} from './activity-commands';
-import type { PlaybookCommand } from './changes';
-import type { ContractDraft } from './draft-recovery.svelte';
+import { MAX_SELECTED_CONCESSIONS } from '../document/selection-limits';
+import { sameSelection } from '../playbook/model';
+import { concessionSelectionMap } from './changes';
+import type { ContractDraft, ContractSaveRequest } from './draft-values';
 import {
 	olderContractState,
 	saveError,
@@ -24,28 +11,30 @@ import {
 	type ContractState,
 	type LiveContractState
 } from './saved';
-import { MAX_SELECTED_CONCESSIONS } from '../document/selection-limits';
 import { workBlockFromError, workBlockMessage, type ContractWorkBlock } from './work-policy';
 
-export type ContractSaveRequest = {
-	id: Id<'savedContracts'>;
-	commands: ActivityCommand[];
-	operationId: string;
-};
+export type { ContractSaveRequest } from './draft-values';
+
 type Resolution =
 	| { kind: 'current' }
 	| { kind: 'conflict'; message?: string }
 	| { kind: 'failed'; message: string }
 	| { kind: 'deleted' };
 
-/** One durable ordered journal. Only the server allocates change and approval identities. */
+/** Flat selection persistence backed by single-transaction contracts.save mutations. */
 export class ContractPersistence {
 	confirmed: ContractState;
-	private commands = $state.raw<ActivityCommand[]>([]);
-	intent = $derived(projectCommands(this.commands));
-	choices = $derived.by(() => selectedOptions(this.confirmed.playbook, this.intent));
+	private draftSelections = $state.raw<Record<string, string> | null>(null);
+	private baseStateRevision: number;
+	private stableChoices: Record<string, string> = {};
+	choices = $derived.by(() => {
+		const next = this.draftSelections
+			? this.draftSelections
+			: concessionSelectionMap(this.confirmed.concessions);
+		if (!sameSelection(next, this.stableChoices)) this.stableChoices = next;
+		return this.stableChoices;
+	});
 	request = $state.raw<ContractSaveRequest | null>(null);
-	recoveryBlocked = $state(false);
 	private policy = $state<ContractWorkBlock | null>(null);
 	private policyRefused = false;
 	private resolution = $state.raw<Resolution>({ kind: 'current' });
@@ -59,6 +48,7 @@ export class ContractPersistence {
 	private transportGeneration = 0;
 	private transport = new AbortController();
 	private recovery = $state.raw<ContractDraft | null>(null);
+
 	get workBlock() {
 		return this.policy;
 	}
@@ -79,27 +69,18 @@ export class ContractPersistence {
 	}
 	get pending() {
 		return (
-			this.recoveryBlocked ||
 			this.recoveryPending ||
 			this.conflict ||
 			Boolean(this.request) ||
-			this.commands.length > 0
+			this.draftSelections !== null
 		);
 	}
 	get editable() {
-		return (
-			this.canSave &&
-			!this.recoveryBlocked &&
-			!this.policy &&
-			!this.conflict &&
-			!this.frozen &&
-			this.commands.length < MAX_ACTIVITY_COMMANDS
-		);
+		return this.canSave && !this.policy && !this.conflict && !this.frozen;
 	}
 	private get canSave() {
 		return (
 			this.active &&
-			!this.recoveryBlocked &&
 			!this.paused &&
 			!this.adoptingConfirmed &&
 			(!this.conflict || Boolean(this.request)) &&
@@ -110,7 +91,7 @@ export class ContractPersistence {
 
 	constructor(
 		private id: Id<'savedContracts'>,
-		initial: ContractState,
+		initial: ContractState | LiveContractState,
 		private save: (
 			request: ContractSaveRequest,
 			signal: AbortSignal
@@ -119,10 +100,12 @@ export class ContractPersistence {
 		recovery: ContractDraft | null = null
 	) {
 		this.confirmed = $state.raw(initial);
-		this.policy = initial.workBlock ?? null;
+		this.baseStateRevision = recovery?.baseStateRevision ?? initial.stateRevision;
+		this.policy = 'workBlock' in initial ? (initial.workBlock ?? null) : null;
 		this.recovery = recovery;
-		if (recovery) this.commands = structuredClone(recovery.commands);
+		if (recovery) this.draftSelections = { ...recovery.selections };
 	}
+
 	private clearError() {
 		if (this.resolution.kind === 'failed') this.resolution = { kind: 'current' };
 		else if (this.conflict) this.resolution = { kind: 'conflict' };
@@ -139,50 +122,49 @@ export class ContractPersistence {
 	private record() {
 		if (this.recoveryPending) return;
 		this.checkpoint(
-			this.deleted || !this.pending
+			this.deleted || !this.pending || !this.draftSelections
 				? null
 				: {
-						version: 12,
-						commands: this.commands,
-						base: this.confirmed,
+						version: 1,
+						baseStateRevision: this.baseStateRevision,
+						selections: { ...this.draftSelections },
 						request: this.request,
-						conflict: this.conflict,
-						blocked: this.recoveryBlocked
+						conflict: this.conflict
 					}
 		);
 	}
-	setOption(itemId: ContractItemId, optionId: string | null) {
-		this.enqueue(itemId, { kind: 'set', optionId });
-	}
-	withdraw(itemId: ContractItemId) {
-		this.enqueue(itemId, { kind: 'withdraw' });
-	}
-	private enqueue(itemId: ContractItemId, action: PlaybookCommand['action']) {
+
+	setOption(itemId: Id<'playbookItems'>, optionId: string | null) {
 		if (!this.editable) return;
-		const choices = selectedOptions(this.confirmed.playbook, { ...this.intent, [itemId]: action });
-		if (Object.keys(choices).length > MAX_SELECTED_CONCESSIONS) {
+		const next: Record<string, string> = { ...this.choices };
+		if (optionId === null) delete next[itemId];
+		else next[itemId] = optionId;
+		if (Object.keys(next).length > MAX_SELECTED_CONCESSIONS) {
 			this.selectionLimitError = `You can select up to ${MAX_SELECTED_CONCESSIONS.toLocaleString('en-US')} Playbook options. Remove a selection before adding another.`;
 			return;
 		}
 		this.selectionLimitError = null;
-		this.commands = [
-			...this.commands,
-			{
-				id: createOperationId(),
-				itemId,
-				expectedCurrentChangeId: currentHead(this.confirmed.playbook, itemId),
-				action,
-				occurredAt: Date.now()
-			}
-		];
+		const confirmedMap = concessionSelectionMap(this.confirmed.concessions);
+		if (sameSelection(next, confirmedMap) && !this.request) {
+			this.draftSelections = null;
+			this.baseStateRevision = this.confirmed.stateRevision;
+			this.clearError();
+			this.record();
+			return;
+		}
+		if (this.draftSelections === null) this.baseStateRevision = this.confirmed.stateRevision;
+		this.draftSelections = next;
+		this.clearError();
 		this.record();
 		this.start();
 	}
+
 	acceptLive(next: LiveContractState | null) {
 		if (!this.active || this.deleted) return;
 		if (next) this.acceptPolicy(next.workBlock);
 		this.accept(next);
 	}
+
 	accept(next: ContractState | null) {
 		if (!this.active || this.deleted) return;
 		if (next === null) {
@@ -190,7 +172,7 @@ export class ContractPersistence {
 			this.request = null;
 			this.resolution = { kind: 'deleted' };
 			this.recovery = null;
-			this.commands = [];
+			this.draftSelections = null;
 			this.selectionLimitError = null;
 			this.record();
 			return;
@@ -200,91 +182,106 @@ export class ContractPersistence {
 			this.restore(next);
 			return;
 		}
-		if (this.recoveryBlocked) {
-			this.confirmed = { ...next, workBlock: this.policy };
-			this.record();
-			return;
-		}
 		const own =
 			this.request && next.lastOperationId === this.request.operationId ? this.request : null;
-		this.confirmed = { ...next, workBlock: this.policy };
+		this.confirmed = next;
 		if (own) {
-			this.acknowledgeCommands(own, next);
+			this.acknowledgeRequest(next);
 			this.request = null;
 			this.clearError();
-		} else if (this.commands.length && !commandsMatch(next.playbook, this.commands))
-			this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
+		} else if (this.draftSelections !== null) {
+			const confirmedMap = concessionSelectionMap(next.concessions);
+			if (sameSelection(this.draftSelections, confirmedMap)) {
+				this.draftSelections = null;
+				this.baseStateRevision = next.stateRevision;
+				this.request = null;
+				this.resolution = { kind: 'current' };
+			} else if (next.stateRevision > this.baseStateRevision && !this.request) {
+				this.resolution = { kind: 'conflict', ...(this.error ? { message: this.error } : {}) };
+			}
+		} else {
+			this.baseStateRevision = next.stateRevision;
+		}
 		this.record();
 		this.start();
 	}
+
 	private restore(next: ContractState) {
 		const draft = this.recovery!;
 		this.recovery = null;
-		this.confirmed = { ...next, workBlock: this.policy };
-		this.commands = structuredClone(draft.commands);
+		this.confirmed = next;
+		this.draftSelections = { ...draft.selections };
+		this.baseStateRevision = draft.baseStateRevision;
 		this.request = draft.request ? structuredClone(draft.request) : null;
 		this.resolution = draft.conflict ? { kind: 'conflict' } : { kind: 'current' };
-		if (draft.blocked) {
-			this.blockStoredRecovery();
-			this.record();
-			return;
-		}
-		if (!this.retryable()) return;
+		const confirmedMap = concessionSelectionMap(next.concessions);
 		if (this.request && next.lastOperationId === this.request.operationId) {
-			this.acknowledgeCommands(this.request, next);
+			this.acknowledgeRequest(next);
 			this.request = null;
-		} else if (!commandsMatch(next.playbook, this.commands)) this.resolution = { kind: 'conflict' };
+		} else if (sameSelection(this.draftSelections, confirmedMap)) {
+			this.draftSelections = null;
+			this.baseStateRevision = next.stateRevision;
+			this.request = null;
+			this.resolution = { kind: 'current' };
+		} else if (next.stateRevision > this.baseStateRevision && !this.request) {
+			this.resolution = { kind: 'conflict' };
+		}
 		this.record();
 		this.start();
 	}
+
 	recoverDraft(draft: ContractDraft) {
 		if (!this.active || this.pending || this.running) return false;
 		this.recovery = draft;
 		this.restore(this.confirmed);
 		return true;
 	}
+
 	applyRecovered() {
 		if (
 			!this.active ||
 			this.policy ||
 			this.frozen ||
-			(!this.conflict && !this.recoveryBlocked) ||
-			(this.request && !this.recoveryBlocked) ||
+			!this.conflict ||
+			this.request ||
 			this.deleted ||
 			this.running ||
 			this.recoveryPending ||
 			this.adoptingConfirmed
 		)
 			return;
-		// Explicit review and reapply gets new command identities. Original submitted bytes are never rewritten.
-		this.request = null;
-		this.recoveryBlocked = false;
-		this.commands = this.commands.map((command) => ({
-			...command,
-			id: createOperationId(),
-			expectedCurrentChangeId: currentHead(this.confirmed.playbook, command.itemId),
-			occurredAt: Date.now()
-		}));
+		this.baseStateRevision = this.confirmed.stateRevision;
 		this.resolution = { kind: 'current' };
 		this.record();
 		this.start();
 	}
-	blockStoredRecovery() {
-		this.recoveryBlocked = true;
-		this.fail(OPERATION_RECOVERY_MESSAGE);
-	}
-	private retryable() {
-		try {
-			for (const command of this.commands) assertOperationRetryable(command.id);
-			if (this.request) assertOperationRetryable(this.request.operationId);
-			return true;
-		} catch {
-			this.recoveryBlocked = true;
-			this.fail(OPERATION_RECOVERY_MESSAGE);
-			this.record();
-			return false;
+
+	private acknowledgeRequest(committed: ContractState) {
+		this.baseStateRevision = committed.stateRevision;
+		const confirmedMap = concessionSelectionMap(committed.concessions);
+		if (this.draftSelections && sameSelection(this.draftSelections, confirmedMap)) {
+			this.draftSelections = null;
 		}
+		this.resolution = { kind: 'current' };
 	}
+
+	private clearDraftToConfirmed() {
+		this.draftSelections = null;
+		this.baseStateRevision = this.confirmed.stateRevision;
+		this.resolution = { kind: 'current' };
+	}
+
+	private adoptConfirmedIfMatching() {
+		if (
+			!this.draftSelections ||
+			sameSelection(this.draftSelections, concessionSelectionMap(this.confirmed.concessions))
+		) {
+			this.clearDraftToConfirmed();
+			return true;
+		}
+		return false;
+	}
+
 	private start() {
 		if (
 			!this.canSave ||
@@ -294,19 +291,20 @@ export class ContractPersistence {
 			(this.policy && !this.request)
 		)
 			return;
-		if (!this.retryable()) return;
 		if (!this.request) {
-			if (!this.commands.length) return;
-			this.request = structuredClone({
+			if (this.draftSelections === null) return;
+			this.request = {
 				id: this.id,
-				commands: this.commands.slice(0, MAX_SAVE_COMMANDS),
-				operationId: createOperationId()
-			});
+				operationId: crypto.randomUUID(),
+				expectedStateRevision: this.baseStateRevision,
+				selections: { ...this.draftSelections }
+			};
 		}
 		const request = this.request;
 		this.record();
 		this.running = this.send(request, this.transportGeneration, this.transport.signal);
 	}
+
 	private async send(request: ContractSaveRequest, generation: number, signal: AbortSignal) {
 		await Promise.resolve();
 		if (!this.active || generation !== this.transportGeneration || this.paused) {
@@ -314,7 +312,6 @@ export class ContractPersistence {
 			return;
 		}
 		try {
-			if (!this.retryable()) return;
 			const result = await this.save(request, signal);
 			if (
 				!this.active ||
@@ -322,15 +319,26 @@ export class ContractPersistence {
 				this.request?.operationId !== request.operationId
 			)
 				return;
-			if (result.status === 'preparing')
-				throw new Error('This contract change is still being prepared. Retry to check its result.');
-			if (result.status === 'deleted') this.accept(null);
-			else {
-				// Receipts acknowledge exactly their commands, even after later subscription updates.
-				if (!olderContractState(result.state, this.confirmed))
-					this.confirmed = { ...result.state, workBlock: this.policy };
-				if (result.status === 'saved') this.acknowledgeCommands(request, result.state);
-				else this.resolution = { kind: 'conflict' };
+			if (result.status === 'deleted') {
+				this.accept(null);
+			} else {
+				if (!olderContractState(result.state, this.confirmed)) this.confirmed = result.state;
+				if (result.status === 'saved') {
+					if (result.state.stateRevision < this.confirmed.stateRevision) {
+						const replayedMap = concessionSelectionMap(result.state.concessions);
+						if (!this.adoptConfirmedIfMatching()) {
+							if (this.draftSelections && sameSelection(this.draftSelections, replayedMap)) {
+								this.clearDraftToConfirmed();
+							} else {
+								this.resolution = { kind: 'conflict' };
+							}
+						}
+					} else {
+						this.acknowledgeRequest(result.state);
+					}
+				} else if (!this.adoptConfirmedIfMatching()) {
+					this.resolution = { kind: 'conflict' };
+				}
 				this.request = null;
 			}
 		} catch (cause) {
@@ -340,17 +348,19 @@ export class ContractPersistence {
 				this.request?.operationId !== request.operationId
 			)
 				return;
-			if (isOperationRecovery(cause)) {
-				this.recoveryBlocked = true;
-				this.fail(OPERATION_RECOVERY_MESSAGE);
-			} else if (this.confirmed.lastOperationId === request.operationId) {
-				this.acknowledgeCommands(request, this.confirmed);
+			if (this.confirmed.lastOperationId === request.operationId) {
+				this.acknowledgeRequest(this.confirmed);
 				this.request = null;
 			} else if (workBlockFromError(cause)) {
+				this.request = null;
 				this.policyRefused = true;
 				this.fail(workBlockMessage(workBlockFromError(cause)!));
-			} else
+			} else if (cause instanceof ConvexError) {
+				this.request = null;
 				this.fail(saveError(cause, 'We couldn’t save this contract. Your changes are still here.'));
+			} else {
+				this.fail(saveError(cause, 'We couldn’t save this contract. Your changes are still here.'));
+			}
 		} finally {
 			if (generation === this.transportGeneration) {
 				this.running = null;
@@ -359,26 +369,14 @@ export class ContractPersistence {
 			}
 		}
 	}
-	private acknowledgeCommands(request: ContractSaveRequest, committed: ContractState) {
-		const ids = new Set(request.commands.map((command) => command.id));
-		const touched = new Set(request.commands.map((command) => command.itemId));
-		this.commands = this.commands
-			.filter((command) => !ids.has(command.id))
-			.map((command) =>
-				touched.has(command.itemId)
-					? { ...command, expectedCurrentChangeId: currentHead(committed.playbook, command.itemId) }
-					: command
-			);
-		this.resolution = commandsMatch(this.confirmed.playbook, this.commands)
-			? { kind: 'current' }
-			: { kind: 'conflict' };
-	}
+
 	retry() {
 		if (!this.canSave || this.running) return;
 		this.policyRefused = false;
 		this.clearError();
 		this.start();
 	}
+
 	async useConfirmedState() {
 		if (
 			!this.active ||
@@ -397,12 +395,12 @@ export class ContractPersistence {
 				this.deleted ||
 				generation !== this.transportGeneration ||
 				this.recoveryPending ||
-				(this.request && !this.recoveryBlocked)
+				this.request
 			)
 				return false;
 			this.request = null;
-			this.recoveryBlocked = false;
-			this.commands = [];
+			this.draftSelections = null;
+			this.baseStateRevision = this.confirmed.stateRevision;
 			this.resolution = { kind: 'current' };
 			this.selectionLimitError = null;
 			this.record();
@@ -412,6 +410,7 @@ export class ContractPersistence {
 			this.start();
 		}
 	}
+
 	freeze(frozen: boolean) {
 		this.frozen = frozen;
 	}
@@ -425,23 +424,22 @@ export class ContractPersistence {
 		if (this.deleted) return;
 		this.replaceTransport();
 		this.clearError();
-		if (this.pending && !this.recoveryPending)
+		if (this.pending && !this.recoveryPending && this.draftSelections)
 			this.recovery = {
-				version: 12,
-				commands: this.commands,
-				base: this.confirmed,
+				version: 1,
+				baseStateRevision: this.baseStateRevision,
+				selections: { ...this.draftSelections },
 				request: this.request,
-				conflict: this.conflict,
-				blocked: this.recoveryBlocked
+				conflict: this.conflict
 			};
 	}
 	discard() {
 		this.replaceTransport();
 		this.recovery = null;
-		this.recoveryBlocked = false;
 		this.request = null;
+		this.draftSelections = null;
+		this.baseStateRevision = this.confirmed.stateRevision;
 		if (!this.deleted) this.resolution = { kind: 'current' };
-		this.commands = [];
 		this.checkpoint(null);
 	}
 	pause() {

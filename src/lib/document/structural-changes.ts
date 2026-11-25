@@ -19,6 +19,7 @@ export type ReplacementAnnotation = {
 	target: SourceTarget;
 	effect?: AnnotationMembership;
 	replacementOffset?: number;
+	discussionOffset?: number;
 };
 export type ChangeOrigin = {
 	change: DeepReadonly<ContractChange>;
@@ -26,10 +27,16 @@ export type ChangeOrigin = {
 	/** Transient patches share the authored range, without carrying its whole replacement. */
 	annotation: ReplacementAnnotation;
 };
+export interface GeneratedBlockAnchor {
+	readonly afterBlockKey: string;
+	readonly kind: 'split' | 'boundary';
+}
 export interface GeneratedParagraph {
 	block: Extract<SourceBlock, { kind: 'paragraph' }>;
 	atoms: DeepReadonly<ReplacementAtom>[];
 	annotation: ReplacementAnnotation;
+	anchorBlockKey: string;
+	anchorKind: GeneratedBlockAnchor['kind'];
 }
 export interface StructuralPlan {
 	changes: ChangeOrigin[];
@@ -93,6 +100,8 @@ export function planStructuralChanges(
 		atoms: DeepReadonly<ReplacementAtom>[],
 		paragraphIndex: number,
 		template: SourceBlock['numbering'],
+		anchorBlockKey: string,
+		anchorKind: 'split' | 'boundary',
 		role: ParagraphRole = 'body'
 	): GeneratedParagraph {
 		const key = `insert:${JSON.stringify([owner.origin ?? owner.change.target, paragraphIndex])}`;
@@ -108,7 +117,9 @@ export function planStructuralChanges(
 				...(numbering ? { numbering } : {})
 			},
 			atoms,
-			annotation: { ...owner.annotation, replacementOffset: 0 }
+			annotation: { ...owner.annotation, replacementOffset: 0 },
+			anchorBlockKey,
+			anchorKind
 		};
 	}
 	// Source order determines paragraph order even when the second selection is earlier.
@@ -145,7 +156,15 @@ export function planStructuralChanges(
 					after?.role === 'title'
 						? 'title'
 						: 'body';
-				const paragraph = generated(owner, atoms, i, template, role);
+				const paragraph = generated(
+					owner,
+					atoms,
+					i,
+					template,
+					boundary.afterBlockKey,
+					'boundary',
+					role
+				);
 				annotations[i] = paragraph.annotation;
 				add(boundary.afterBlockKey, paragraph);
 			}
@@ -206,7 +225,7 @@ export function planStructuralChanges(
 				});
 		}
 		for (let i = containers.length; i < paragraphs.length; i++) {
-			const paragraph = generated(owner, paragraphs[i], i, template, role);
+			const paragraph = generated(owner, paragraphs[i], i, template, last, 'split', role);
 			annotations[i] = paragraph.annotation;
 			add(last, paragraph);
 			destination = paragraph.block.blockKey;

@@ -2,6 +2,7 @@ import { env as privateEnv } from '$env/dynamic/private';
 import { env } from '$env/dynamic/public';
 import { withClerkHandler } from 'svelte-clerk/server';
 import { redirect, type Handle } from '@sveltejs/kit';
+import { CLERK_AUTH_URLS, LOGIN_PATH, isAccountEntryPath } from '$lib/auth/navigation';
 import { isBuyerPath } from '$lib/buyer/urls';
 import { buyerPageCredential } from '$lib/server/buyer-token';
 
@@ -30,7 +31,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 	if (!env.PUBLIC_CLERK_PUBLISHABLE_KEY || !privateEnv.CLERK_SECRET_KEY) return resolve(event);
 	const callback = callbackParameters.some((name) => event.url.searchParams.has(name));
-	if (!callback && ['/login', '/join'].includes(event.url.pathname)) {
+	if (!callback && isAccountEntryPath(event.url.pathname)) {
 		return resolve(event);
 	}
 	// Cookie presence selects a route only. Protected loads still verify identity.
@@ -46,12 +47,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 		event.request.method === 'GET' &&
 		event.request.headers.get('sec-fetch-dest') === 'document'
 	)
-		redirect(303, '/login');
+		redirect(303, LOGIN_PATH);
 	return withClerkHandler({
 		publishableKey: env.PUBLIC_CLERK_PUBLISHABLE_KEY,
 		secretKey: privateEnv.CLERK_SECRET_KEY,
-		signInUrl: '/login',
-		signUpUrl: '/join',
+		...CLERK_AUTH_URLS,
 		authorizedParties: [event.url.origin]
 	})({ event, resolve });
 };

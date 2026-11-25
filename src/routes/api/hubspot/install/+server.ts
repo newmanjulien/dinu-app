@@ -6,7 +6,7 @@ export const POST: RequestHandler = async ({ locals, request, url, cookies }) =>
 	if (request.headers.get('origin') !== url.origin)
 		return new Response('Invalid origin.', { status: 403 });
 	const token = await locals.auth?.().getToken({ template: 'convex' });
-	if (!token) return new Response('Sign in required.', { status: 401 });
+	if (!token) return new Response('Log in required.', { status: 401 });
 	if (!env.PUBLIC_CONVEX_URL)
 		return new Response('Missing backend configuration.', { status: 503 });
 	const purpose = url.searchParams.get('purpose') === 'quotes' ? 'quotes' : 'base';

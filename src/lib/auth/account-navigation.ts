@@ -1,7 +1,7 @@
 import { localReturn } from './navigation';
 import { ReadAttempt, waitForRead } from './attempt';
 
-/** Sign-in requests for the same session share one replaceable navigation. */
+/** Log-in requests for the same session share one replaceable navigation. */
 export class AccountNavigation {
 	private sessionId: string | undefined;
 	private pending: Promise<void> | undefined;

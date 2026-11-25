@@ -75,9 +75,10 @@
 		panelTarget={bindings?.panelTarget}
 		picking={bindings?.picking}
 		sourceSelectionEnabled={bindings?.sourceSelectionEnabled}
+		allowBoundarySelection={bindings?.allowBoundarySelection}
 		allowPlaybookNavigation={bindings?.allowPlaybookNavigation ?? false}
 		playbookNavigationReady={bindings?.playbookNavigationReady}
-		onRemoveConcession={bindings?.onRemoveConcession ?? (() => {})}
+		onRemoveConcession={bindings?.onRemoveConcession}
 		onSelect={bindings?.onSelect ?? (() => false)}
 		onDocumentBackground={bindings?.onDocumentBackground}
 		onPresentation={entry.active && readyToShow ? bindings?.onPresentation : undefined}

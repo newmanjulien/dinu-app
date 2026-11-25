@@ -14,8 +14,8 @@
 		if (
 			session.blocked ||
 			session.closing ||
-			viewer().company.deletionPending ||
-			viewer().membership.role !== 'admin' ||
+			viewer().company.deletion ||
+			!viewer().permissions.manageTemplate ||
 			!viewer().templateReady
 		)
 			return;
@@ -42,7 +42,7 @@
 </script>
 
 <AppHeaderLayout
-	role={viewer().membership.role}
+	permissions={viewer().permissions}
 	templateReady={viewer().templateReady}
 	loading={false}
 	bind:element

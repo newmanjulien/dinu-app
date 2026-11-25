@@ -189,12 +189,13 @@ it('blocks retry for unsafe historical failures and preserves their guards throu
 			clerkId: 'departing-user',
 			email: 'departing@example.com',
 			name: 'Departing admin',
-			helpPreferences: { rep: false, buyer: false }
+			helpPreferences: { contract: false, buyerLink: false }
 		});
 		const membershipId = await ctx.db.insert('memberships', {
 			companyId: owner.companyId,
 			profileId,
-			role: 'admin'
+			role: 'admin',
+			supportWidgetCollapsed: false
 		});
 		const appointmentId = await ctx.db.insert('csmSetupAppointments', {
 			companyId: owner.companyId,

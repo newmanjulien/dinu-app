@@ -145,7 +145,6 @@
 			reserveReviewGutter
 			panelContent={emptyPanel}
 			selectedConcessions={editor.renderChoices}
-			onRemoveConcession={() => {}}
 			onSelect={() => false}
 			{...bindings}
 			reviewTags={interactionAdmitted ? bindings?.reviewTags : []}

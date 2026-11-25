@@ -41,7 +41,7 @@
 					? {
 							message: 'Your company needs a contract template.',
 							label: 'Set up template',
-							href: '/template'
+							href: '/template/setup'
 						}
 					: { message: 'An admin needs to set up your company’s contract template.' };
 			case 'instructions':

@@ -136,7 +136,7 @@
 {:else if result?.status === 'available'}
 	<AuthStepFrame
 		title={`Join ${result.companyName}`}
-		description={`You we’re invited to join ${result.companyName} and you’ll be joining their workspace.`}
+		description={`You were invited to join ${result.companyName} and you’ll be joining their workspace.`}
 	>
 		<div class="grid gap-3.5">
 			<AuthButton disabled={pending || session.blocked} onclick={() => void accept()}

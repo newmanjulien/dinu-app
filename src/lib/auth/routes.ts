@@ -1,4 +1,6 @@
+import type { Permission } from '../../convex/permissions';
 import { buyerDestination } from '$lib/buyer/urls';
+import { CREATE_ACCOUNT_PATH, INVITATION_PATH, LOGIN_PATH, ONBOARDING_PATH } from './navigation';
 export interface RouteDescription {
 	title: string;
 	presentation:
@@ -6,6 +8,7 @@ export interface RouteDescription {
 		| 'settings'
 		| 'contract-settings'
 		| 'team'
+		| 'template-setup'
 		| 'document'
 		| 'integrations'
 		| 'integration'
@@ -16,7 +19,9 @@ export interface RouteDescription {
 		| 'neutral';
 	navigation?: '/contracts' | '/template' | '/integrations' | '/guides';
 	document?: 'template' | 'new' | 'saved';
-	requiresTemplate?: boolean;
+	permission?: Permission;
+	template?: 'required' | 'pending-only';
+	requiresInstructions?: boolean;
 	availableDuringHold?: boolean;
 	description?: string;
 }
@@ -28,26 +33,36 @@ const routes: Record<string, RouteDescription> = {
 		navigation: '/contracts',
 		description: 'Find, save, and negotiate your contracts.'
 	},
+	'/template/setup': {
+		title: 'Set up your template',
+		presentation: 'template-setup',
+		navigation: '/template',
+		permission: 'manageTemplate',
+		template: 'pending-only'
+	},
 	'/template': {
 		title: 'Edit template instructions',
 		presentation: 'document',
 		navigation: '/template',
 		document: 'template',
-		requiresTemplate: true
+		permission: 'manageTemplate',
+		template: 'required'
 	},
 	'/template/buyers': {
 		title: 'Edit buyer template explanations',
 		presentation: 'document',
 		navigation: '/template',
 		document: 'template',
-		requiresTemplate: true
+		permission: 'manageTemplate',
+		template: 'required'
 	},
 	'/contracts/new': {
 		title: 'Create a contract',
 		presentation: 'document',
 		navigation: '/contracts',
 		document: 'new',
-		requiresTemplate: true
+		template: 'required',
+		requiresInstructions: true
 	},
 	'/contracts/[id]': {
 		title: 'Negotiate a contract',
@@ -69,12 +84,14 @@ const routes: Record<string, RouteDescription> = {
 		title: 'Manage integrations',
 		presentation: 'integrations',
 		navigation: '/integrations',
+		permission: 'manageIntegrations',
 		description: 'Explore integrations for your contracts.'
 	},
 	'/integrations/[slug]': {
 		title: 'Manage your integration',
 		presentation: 'integration',
 		navigation: '/integrations',
+		permission: 'manageIntegrations',
 		description: 'Explore integrations for your contracts.'
 	},
 	'/guides': {
@@ -84,10 +101,10 @@ const routes: Record<string, RouteDescription> = {
 	},
 	'/team': { title: 'Manage your team', presentation: 'team' },
 	'/[token]': { title: 'Review your contract', presentation: 'buyer-document' },
-	'/login': { title: 'Sign in', presentation: 'entry' },
-	'/join': { title: 'Create your account', presentation: 'entry' },
-	'/invitation': { title: 'Join your team', presentation: 'onboarding' },
-	'/onboarding': { title: 'Set up your workspace', presentation: 'onboarding' }
+	[LOGIN_PATH]: { title: 'Log in', presentation: 'entry' },
+	[CREATE_ACCOUNT_PATH]: { title: 'Create account', presentation: 'entry' },
+	[INVITATION_PATH]: { title: 'Join your team', presentation: 'onboarding' },
+	[ONBOARDING_PATH]: { title: 'Set up your workspace', presentation: 'onboarding' }
 };
 const fallback: RouteDescription = { title: 'Welcome', presentation: 'neutral' };
 

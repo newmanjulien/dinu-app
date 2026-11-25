@@ -7,15 +7,13 @@
 		onSend,
 		busy = false,
 		disabled = false,
-		error = null,
-		buyerChanges = false
+		error = null
 	}: {
 		onClose: () => void;
 		onSend: () => void;
 		busy?: boolean;
 		disabled?: boolean;
 		error?: string | null;
-		buyerChanges?: boolean;
 	} = $props();
 </script>
 
@@ -28,8 +26,7 @@
 	dismissible={!busy}
 >
 	<p class="text-sm leading-6 text-ink-secondary">
-		All {buyerChanges ? 'supported buyer proposals' : 'Playbook changes requiring approval'} have been
-		reviewed. Send the results to the rep.
+		All concessions requiring approval have been reviewed. Send the results to the rep.
 	</p>
 	{#if error}<p class="mt-3 text-sm text-ink-secondary" role="alert">{error}</p>{/if}
 	{#snippet footer()}

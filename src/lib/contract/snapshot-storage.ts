@@ -1,5 +1,3 @@
-import type { ApprovedContractDocument } from './document-preview';
-import { validApprovedDocument } from './persisted-values';
 import type { TemplateContent } from '../template/model';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import type { CacheScope } from './browser-storage';
@@ -18,7 +16,6 @@ type LruEntry = { id: string; versionId: string; bytes: number; immutableBytes: 
 type Write = (
 	| { kind: 'put'; entry: SnapshotEntry }
 	| { kind: 'update'; contract: ReadyContract['contract']; bytes: number }
-	| { kind: 'approved'; contractId: string; data: ApprovedContractDocument; bytes: number }
 	| { kind: 'delete' }
 	| { kind: 'repair'; target: RepairTarget }
 ) & { valid: () => boolean };
@@ -29,11 +26,8 @@ const writeContract = (write: Write) =>
 			? write.contract
 			: undefined;
 const writeBytes = (write: Write) =>
-	write.kind === 'put'
-		? write.entry.bytes
-		: write.kind === 'update' || write.kind === 'approved'
-			? write.bytes
-			: 0;
+	write.kind === 'put' ? write.entry.bytes : write.kind === 'update' ? write.bytes : 0;
+
 /** Disk payload must pass validation before entering shared memory. */
 type StoredSnapshot = { id: string; snapshot: TemplateContent };
 type StoredMetadata = {
@@ -72,7 +66,8 @@ function completed(transaction: IDBTransaction) {
 		transaction.onabort = transaction.onerror = () => reject(transaction.error);
 	});
 }
-/** Independent disk LRU. Immutable content and frequently updated metadata have separate stores. */
+
+/** Independent disk LRU. Immutable template versions and mutable metadata have separate stores. */
 export class SnapshotStorage {
 	constructor(private readonly scope: CacheScope) {}
 	private closed = false;
@@ -101,17 +96,12 @@ export class SnapshotStorage {
 			opening.signal.addEventListener('abort', failed, { once: true });
 			this.lifetime.signal.addEventListener('abort', failed, { once: true });
 			try {
-				const request = indexedDB.open(`${this.scope.namespace}:snapshots`, 16);
+				const request = indexedDB.open(`${this.scope.namespace}:snapshots`, 17);
 				request.onupgradeneeded = () => {
-					// Retire obsolete confirmed history/metadata only. The sessionStorage
-					// intent journal has independent ownership and is never migrated here.
 					for (const name of ['snapshots', 'metadata', 'approved'])
 						if (request.result.objectStoreNames.contains(name))
 							request.result.deleteObjectStore(name);
 					request.result.createObjectStore('snapshots', { keyPath: 'id' });
-					request.result
-						.createObjectStore('approved', { keyPath: 'id' })
-						.createIndex('lru', ['usedAt', 'id', 'bytes']);
 					request.result
 						.createObjectStore('metadata', { keyPath: 'id' })
 						.createIndex('lru', [
@@ -150,7 +140,7 @@ export class SnapshotStorage {
 		};
 		try {
 			signal.throwIfAborted();
-			tx = db.transaction(['snapshots', 'metadata', 'approved'], mode);
+			tx = db.transaction(['snapshots', 'metadata'], mode);
 			signal.addEventListener('abort', abort, { once: true });
 			const done = completed(tx);
 			done.catch(() => {});
@@ -165,7 +155,7 @@ export class SnapshotStorage {
 			signal.removeEventListener('abort', abort);
 		}
 	}
-	/** Restore the target's coherent saved wording in one optional transaction. */
+	/** Restore the target's coherent saved snapshot in one optional transaction. */
 	async getOpening(id: string, signal?: AbortSignal) {
 		try {
 			const db = await this.open();
@@ -177,26 +167,15 @@ export class SnapshotStorage {
 					const metadata = readMetadata(await result(tx.objectStore('metadata').get(id)), id);
 					if (!metadata || signal?.aborted) return;
 					const contract = metadata.contract;
-					const [version, approved] = await Promise.all([
-						result<StoredSnapshot | undefined>(
-							tx.objectStore('snapshots').get(contract.templateVersionId)
-						),
-						result<{ contractId: string; data: unknown } | undefined>(
-							tx.objectStore('approved').get(contract.documentId)
-						)
-					]);
+					const version = await result<StoredSnapshot | undefined>(
+						tx.objectStore('snapshots').get(contract.templateVersionId)
+					);
 					return {
 						metadata,
 						snapshot:
 							version?.id === contract.templateVersionId &&
 							validTemplate(version.snapshot, contract.companyId)
 								? version.snapshot
-								: undefined,
-						approved:
-							approved?.contractId === id &&
-							validApprovedDocument(approved.data, contract.documentId) &&
-							approved.data.documentRevision === contract.documentRevision
-								? approved.data
 								: undefined
 					};
 				},
@@ -253,46 +232,6 @@ export class SnapshotStorage {
 			valid: () => true
 		});
 	}
-
-	async getApproved(
-		contractId: string,
-		documentId: string,
-		signal?: AbortSignal
-	): Promise<ApprovedContractDocument | undefined> {
-		try {
-			const db = await this.open();
-			if (!db || signal?.aborted) return;
-			const row = await this.transaction(
-				db,
-				'readonly',
-				(tx) =>
-					result<{ contractId: string; data: unknown } | undefined>(
-						tx.objectStore('approved').get(documentId)
-					),
-				signal
-			);
-			if (row?.contractId === contractId && validApprovedDocument(row.data, documentId))
-				return row.data;
-		} catch {
-			/* Optional storage cannot block authorized network acquisition. */
-		}
-	}
-	putApproved(
-		contractId: string,
-		data: ApprovedContractDocument,
-		bytes: number,
-		valid: () => boolean
-	) {
-		if (bytes <= SNAPSHOT_BYTES)
-			this.enqueue(`approved:${data.documentId}`, {
-				kind: 'approved',
-				contractId,
-				data,
-				bytes,
-				valid
-			});
-	}
-
 	close() {
 		this.closed = true;
 		this.pending.clear();
@@ -308,7 +247,6 @@ export class SnapshotStorage {
 		const incoming = writeContract(write);
 		const current = previous && writeContract(previous);
 		if (incoming && current && olderContractState(incoming, current)) {
-			// A full payload can supply missing immutable content for a newer metadata update.
 			if (
 				write.kind !== 'put' ||
 				previous?.kind !== 'update' ||
@@ -338,7 +276,6 @@ export class SnapshotStorage {
 		}
 		this.pending.delete(id);
 		this.pending.set(id, write);
-		// Include the active payload: stalled storage must not retain an unbounded write backlog.
 		while (
 			this.pending.size &&
 			(this.pending.size + this.active.size > SNAPSHOT_ENTRIES ||
@@ -352,7 +289,6 @@ export class SnapshotStorage {
 	private async drain() {
 		this.writing = true;
 		try {
-			// Open before taking a payload out of the bounded queue.
 			const db = await this.open();
 			if (!db) {
 				this.pending.clear();
@@ -393,7 +329,6 @@ export class SnapshotStorage {
 		const store = tx.objectStore('metadata');
 		const snapshots = tx.objectStore('snapshots');
 		if (write.kind === 'repair') {
-			// Recheck under the write lock: a newer valid record must survive delayed repair.
 			const repair = write.target;
 			const target = tx.objectStore(repair.store);
 			const current = await result(target.get(repair.id));
@@ -404,23 +339,6 @@ export class SnapshotStorage {
 					: current.id === repair.id && validTemplate(current.snapshot, repair.companyId))
 			)
 				target.delete(repair.id);
-		} else if (write.kind === 'approved') {
-			const current = await result<
-				{ contractId: string; data: ApprovedContractDocument } | undefined
-			>(tx.objectStore('approved').get(write.data.documentId));
-			if (
-				current?.contractId === write.contractId &&
-				current.data.displayIdentity === write.data.displayIdentity
-			)
-				return;
-			if (write.valid())
-				tx.objectStore('approved').put({
-					id: write.data.documentId,
-					contractId: write.contractId,
-					data: write.data,
-					bytes: write.bytes,
-					usedAt: Date.now()
-				});
 		} else if (write.kind === 'delete') store.delete(id);
 		else if (write.kind === 'put') {
 			const { data, bytes, immutableBytes } = write.entry;
@@ -447,39 +365,7 @@ export class SnapshotStorage {
 			});
 		}
 	}
-
 	private async enforceLimits(tx: IDBTransaction) {
-		const approved = tx.objectStore('approved');
-		const documents = await new Promise<{ id: string; bytes: number }[]>((resolve, reject) => {
-			const rows: { id: string; bytes: number }[] = [];
-			const request = approved.index('lru').openKeyCursor();
-			request.onerror = () => reject(request.error);
-			request.onsuccess = () => {
-				const cursor = request.result;
-				if (!cursor) return resolve(rows);
-				const [usedAt, id, bytes] = cursor.key as [number, string, number];
-				if (
-					Number.isFinite(usedAt) &&
-					typeof id === 'string' &&
-					id === cursor.primaryKey &&
-					Number.isFinite(bytes) &&
-					bytes >= 0 &&
-					bytes <= SNAPSHOT_BYTES
-				)
-					rows.push({ id, bytes });
-				else approved.delete(cursor.primaryKey);
-				cursor.continue();
-			};
-		});
-		let documentBytes = documents.reduce((sum, row) => sum + row.bytes, 0);
-		let documentCount = documents.length;
-		for (const row of documents) {
-			if (documentCount <= SNAPSHOT_ENTRIES && documentBytes <= SNAPSHOT_BYTES) break;
-			approved.delete(row.id);
-			documentCount--;
-			documentBytes -= row.bytes;
-		}
-
 		const store = tx.objectStore('metadata');
 		const entries = await new Promise<LruEntry[]>((resolve, reject) => {
 			const entries: LruEntry[] = [];
@@ -512,12 +398,11 @@ export class SnapshotStorage {
 				cursor.continue();
 			};
 		});
-		// Missing index fields are corruption too. Inspect keys, never full contract payloads.
 		const indexed = new Set(entries.map((entry) => entry.id));
 		for (const id of await result(store.getAllKeys()))
 			if (typeof id !== 'string' || !indexed.has(id)) store.delete(id);
 		const versions = new Map<string, { bytes: number; references: number }>();
-		let total = documentBytes;
+		let total = 0;
 		for (const entry of entries) {
 			total += entry.bytes - entry.immutableBytes;
 			const id = entry.versionId;
@@ -541,7 +426,6 @@ export class SnapshotStorage {
 			}
 			count--;
 		}
-		// Remove orphaned versions after deletion, replacement or LRU eviction.
 		const snapshots = tx.objectStore('snapshots');
 		for (const id of await result(snapshots.getAllKeys()))
 			if (!versions.has(String(id))) snapshots.delete(id);

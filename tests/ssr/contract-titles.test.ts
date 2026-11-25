@@ -103,9 +103,7 @@ it.each([
 		routeRead.mockResolvedValue(current);
 		const data = await loadBuyer(credential);
 		expect(data.resolvedRouteTitle.title).toBe(title);
-		expect(
-			firstResponseTitle(`/${buyerCode}`, '/(buyer)/[token=buyerCode]', data)
-		).toBe(title);
+		expect(firstResponseTitle(`/${buyerCode}`, '/(buyer)/[token=buyerCode]', data)).toBe(title);
 		expect(routeRead.mock.calls[0][3]).toBe(
 			credential.kind === 'account' ? credential.token : undefined
 		);
@@ -123,7 +121,7 @@ it('reports account verification and route-read failures as final error titles',
 	routeRead.mockRejectedValue(new Error('read failed'));
 	const failed = await loadBuyer({ kind: 'anonymous' });
 	expect(failed.resolvedRouteTitle).toEqual({ kind: 'error', title: 'Couldn’t open contract' });
-	expect(
-		firstResponseTitle(`/${buyerCode}`, '/(buyer)/[token=buyerCode]', failed)
-	).toBe('Couldn’t open contract');
+	expect(firstResponseTitle(`/${buyerCode}`, '/(buyer)/[token=buyerCode]', failed)).toBe(
+		'Couldn’t open contract'
+	);
 });

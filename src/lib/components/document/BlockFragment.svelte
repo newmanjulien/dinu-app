@@ -31,9 +31,6 @@
 		class:is-title={fragment.role === 'title'}
 		class:is-final={fragment.isFinal}
 		data-block-key={fragment.blockKey}
-		data-discussion-removed={fragment.type === 'paragraph' && fragment.discussionRemoved
-			? ''
-			: undefined}
 		data-selection-collapsed={collapsed ? '' : undefined}
 		data-source-fragment-key={fragmentKey(fragment)}
 		style:--document-block-margin-before={`${fragment.interval?.start ? 0 : (fragment.gapBefore ?? 0)}px`}

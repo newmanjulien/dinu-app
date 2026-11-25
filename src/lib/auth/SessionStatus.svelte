@@ -4,11 +4,13 @@
 	let { controller }: { controller: AccountLifecycle } = $props();
 	const saving = $derived(controller.phase === 'saving-before-logout');
 	const signingOut = $derived(controller.phase === 'signing-out');
+	const completingDeletion = $derived(controller.phase === 'completing-deletion');
 	const authFailure = $derived(controller.phase === 'authentication-error');
 	const waiting = $derived(['loading', 'authenticating', 'preparing'].includes(controller.phase));
 	const show = $derived(
 		saving ||
 			signingOut ||
+			(completingDeletion && (controller.delayed || Boolean(controller.error))) ||
 			(controller.workspaceAdmitted && (authFailure || (waiting && controller.delayed))) ||
 			(Boolean(controller.error) &&
 				(controller.workspaceAdmitted || controller.phase === 'signed-out'))
@@ -18,11 +20,15 @@
 			? 'Saving before logout'
 			: signingOut
 				? 'Logging out'
-				: authFailure
-					? 'Unable to connect your account'
-					: controller.error
-						? 'Please try again'
-						: 'Still connecting'
+				: completingDeletion
+					? controller.error
+						? 'Unable to finish signing out'
+						: 'Finishing account deletion'
+					: authFailure
+						? 'Unable to connect your account'
+						: controller.error
+							? 'Please try again'
+							: 'Still connecting'
 	);
 	function closeStatus() {
 		if (saving) controller.cancelSignOut();
@@ -49,7 +55,9 @@
 						? controller.delayed
 							? 'Logout is taking longer than usual. Waiting for your account provider.'
 							: 'Waiting for your account provider…'
-						: 'This is taking longer than usual. You can retry the connection or log out.')}
+						: completingDeletion
+							? 'Account deletion is taking longer than usual to clear your session. Waiting for your account provider.'
+							: 'This is taking longer than usual. You can retry the connection or log out.')}
 	</p>
 	<div class="mt-5 flex flex-wrap gap-4 text-sm">
 		{#if saving}
@@ -60,6 +68,11 @@
 			{#if controller.error || controller.delayed}<button
 					class="underline"
 					onclick={() => controller.discardAndSignOut()}>Discard changes and log out</button
+				>{/if}
+		{:else if completingDeletion}
+			{#if controller.error}<button
+					class="underline"
+					onclick={() => void controller.completeAccountDeletion()}>Try again</button
 				>{/if}
 		{:else if controller.phase === 'signed-out'}
 			<button class="underline" onclick={() => controller.returnToLogin()}>Return to login</button>

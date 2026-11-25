@@ -1,4 +1,3 @@
-import { fixtureOperationId } from './operation';
 import type { RepInstruction } from '../../src/lib/playbook/model';
 import type { MutationCtx } from '../../src/convex/_generated/server';
 import type { SourceBlock } from '../../src/lib/document/source-model';
@@ -13,6 +12,7 @@ export const block: SourceBlock = {
 
 export const item: RepInstruction = {
 	audience: 'rep',
+	instructions: {},
 	approvalPolicy: { kind: 'none' },
 	trigger: {
 		id: 'trigger',
@@ -22,7 +22,23 @@ export const item: RepInstruction = {
 		}
 	},
 	concessions: [
-		{ id: 'preferred', tier: 'preferred', description: 'Synthetic choice.', changes: [] }
+		{
+			id: 'preferred',
+			tier: 'preferred',
+			description: 'Synthetic choice.',
+			changes: [
+				{
+					target: {
+						kind: 'text',
+						range: {
+							start: { sourceKey: 'text-1', offset: 0 },
+							end: { sourceKey: 'text-1', offset: 9 }
+						}
+					},
+					replacement: [{ kind: 'text', text: 'Negotiated' }]
+				}
+			]
+		}
 	]
 };
 
@@ -33,9 +49,10 @@ export const identity = {
 	email: 'rep@example.com',
 	emailVerified: true
 };
+
 export async function initializeViewer(ctx: MutationCtx) {
 	const id = await ctx.db.insert('profiles', {
-		helpPreferences: { rep: false, buyer: false },
+		helpPreferences: { contract: false, buyerLink: false },
 		identity: identity.tokenIdentifier,
 		issuer: identity.issuer,
 		clerkId: identity.subject,
@@ -50,27 +67,8 @@ export async function initializeViewer(ctx: MutationCtx) {
 	const membershipId = await ctx.db.insert('memberships', {
 		companyId,
 		profileId: id,
-		role: 'admin'
+		role: 'admin',
+		supportWidgetCollapsed: false
 	});
 	return { profileId: id, companyId, membershipId };
-}
-
-/** Ordered native commands compare server-returned current heads. */
-export function commandsFor(
-	base: readonly import('../../src/lib/contract/changes').PlaybookState[],
-	choices: Record<string, string>,
-	operation: string
-): import('../../src/lib/contract/activity-commands').ActivityCommand[] {
-	return [...new Set([...base.map((item) => item.itemId), ...Object.keys(choices)])]
-		.filter(
-			(id) =>
-				(base.find((item) => item.itemId === id)?.currentOptionId ?? null) !== (choices[id] ?? null)
-		)
-		.map((id, index) => ({
-			id: fixtureOperationId(`${operation}:${index}`),
-			itemId: id as import('../../src/convex/_generated/dataModel').Id<'playbookItems'>,
-			expectedCurrentChangeId: base.find((item) => item.itemId === id)?.currentChangeId ?? null,
-			action: { kind: 'set', optionId: choices[id] ?? null },
-			occurredAt: 123
-		}));
 }

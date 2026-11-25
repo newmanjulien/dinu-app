@@ -4,7 +4,7 @@ The repository owns three Loops transactional templates. [templates.json](../ema
 
 The user approved short contract notifications with summary counts and a contract link. Approval mail reports pending, previously reviewed and non-required counts; completed-review mail reports approved and not-approved counts. Zero counts are shown. Concession descriptions and individual reviewer labels are omitted from email; users open the saved contract for the concession details. On 2026-10-28 the user narrowed completed-review CC to the reviewer whose action triggered that notification. Subjects, link destinations, invitation copy and delivery/retry workflows retain their existing behavior.
 
-[emailNotifications.ts](../src/convex/emailNotifications.ts) prepares a typed notification containing its kind and scalar data: names, URLs and counts. Counts come from captured review statuses, so sending needs no concession-description queries. Delivery snapshots remain necessary for approval coverage and frozen counts. The pending completion captures the triggering reviewer ID atomically with that decision, and confirmation copies it into the delivery event; snapshots contain no reviewer IDs, and claims read no snapshot or attribution rows for CC. Immutable decision receipts retain historical reviewer identity. Current attribution storage and reconciliation are absent; current reviews keep only concession, lifecycle and status.
+[emailNotifications.ts](../src/convex/emailNotifications.ts) prepares a typed notification containing its kind and scalar data: names, URLs and counts. Counts are captured inline on the `emailDeliveries` event at submission/confirmation time, so sending needs no concession-description or snapshot queries. The pending completion captures the triggering reviewer ID and `decidedAt` timestamp atomically with that decision, and confirmation copies `reviewerId` into the delivery event; claims resolve live recipients directly without secondary snapshot or attribution rows.
 
 [emailSender.ts](../src/convex/emailSender.ts) coordinates preparation, native provider quota, a fresh guarded claim, one external request and outcome persistence. [loopsEmail.ts](../src/convex/loopsEmail.ts) owns provider configuration, template selection, HTTP requests and safe response classification. Only completed-review sends include the `cc` variable. Each notification checks its own configured template ID, so an absent approval ID does not block invitations.
 
@@ -43,34 +43,11 @@ Verify provider rejection, timeout/connection loss, late result persistence, exp
 
 ## Outcomes and recovery
 
-Explicit review decisions hold completed results for confirmation under their selected
-contract and dashboard/buyer review context. Admins can send results; dismissing the modal
-leaves confirmation pending. Approvals take effect immediately while email is held. There
-is no global review reset. Dashboard applications and accepted buyer changes have independent
-generations/completions, and only their current active requests contribute to results.
+Explicit review decisions (`approvals.decide`) hold completed results for confirmation in `savedContracts.review.completion` under the current `review.generation`. Admins can send results (`approvals.complete`); dismissing the modal leaves confirmation pending. Approvals take effect immediately while email is held.
 
-Confirmation creates the delivery and consumes the pending completion atomically. A retry
-reuses its delivery; stale generation confirmations do nothing. Claims preserve the triggering
-reviewer for CC even when another admin confirms. Editing a completed decision requires
-confirmation before another notification.
+Confirmation creates the `emailDeliveries` row and transitions `review.completion` to `queued` atomically. A retry reuses its delivery via `operationReceipts`; stale `expectedDecidedAt` or stale generation confirmations return `{ status: 'skipped' }`. Claims resolve the primary recipient (live contract creator) and triggering reviewer CC directly from the event record. Changing a selection that requires approval bumps `review.generation` and clears stale request/completion state.
 
-Live subscriptions own review state. `stateVersion` orders mutable metadata; `editRevision`,
-`approvedRevision`, review generations and immutable application/operation identities serve
-their respective workflows. Save concurrency uses each ordered command's expected widget
-state, with one retained immutable batch across uncertainty and receipt reconciliation.
-A newer global edit revision is not a save veto. Browser persistence preserves local intent,
-contract ownership, subscription-before-response acknowledgment and account-exit draining.
-New review email captures carry model 2, the exact contract/context generation and
-current change/application IDs; an omitted context means dashboard. Legacy model-less
-captures are disposed rather than dispatched. Invitations retain their separate lifecycle.
-
-Seller export release retains current readiness and reserved capture/decision authorization
-checks independently of publication; buyer download retains final capability/publication checks. Review metadata
-updates do not reconstruct approved wording. Queued results deliveries must match the
-current completion and generation; dispatched emails cannot be recalled. Provider delivery
-recovery remains independent of document saving.
-
-Approval requests capture selected concessions and statuses against the contract's immutable template. Completed-review notifications retain the triggering reviewer captured during the decision transaction; confirmed deliveries capture review statuses during preparation while their generation remains eligible. Claims resolve current recipient eligibility: approval mail goes to the configured request recipient; decision mail goes to the live contract creator with at most the triggering reviewer in CC, excluding the primary mailbox. Invitation plaintext tokens exist only in the inline action and outgoing message; the database stores their hash.
+Approval requests (`approvals.request`) record `pendingCount`, `reviewedCount`, and `notRequiredCount` directly on the `emailDeliveries` event at submission time. Completed-review notifications record `approvedCount`, `rejectedCount`, and `reviewerId` on the `decision` event. Claims resolve current recipient eligibility: approval mail goes to the company's configured `approvalEmail`; decision mail goes to the live contract creator with at most the triggering reviewer in CC, excluding the primary mailbox. Invitation plaintext tokens exist only in the inline action and outgoing message; the database stores their hash.
 
 Loops returns `{ success: true }` after accepting the send request. It does not return a message ID or separate primary/CC acceptance results. Stored `sent` means provider acceptance, not inbox delivery. Explicit request rejections are failed; HTTP 429 is retryable. HTTP 409, server errors, unexpected success bodies and network/timeout failures after dispatch are uncertain. Idempotency keys include deployment, delivery ID and attempt; a duplicate-key conflict is never interpreted as proof of successful delivery.
 
@@ -78,7 +55,7 @@ Uncertain outcomes never authorize automatic resend. Approvals expose the existi
 
 The native rate limiter reserves this deployment's provider work at eight per second with capacity one and a one-minute waiting budget before claims. This gives headroom below Loops' ten-per-second team template source; reservations do not guarantee the exact spacing of subsequent HTTP dispatches. Other deployments/tools can consume the shared team quota, and provider 429 handling remains necessary. No separate application queue is introduced.
 
-Replaced deliveries cancel old native jobs and drain snapshots under the shared transaction budget. Retired deliveries retain a complete disposal marker and are ineligible for prepare/claim/complete/retry/recovery. Continuations carry the generation; an indexed quarter-hour resumer discovers failed jobs independently of Clerk credentials. Company/contract cleanup shares nested snapshot budgets and cancels disposal jobs before deleting the parent. No snapshot body is needed merely to discover disposal work.
+Replaced or deleted contract-scoped deliveries (`approval` and `decision`, never `invitation`) cancel pending scheduled jobs and delete orphaned rows before scheduling retries or cooldowns; `beginDispatch` marks missing recipients `skipped` and cancels `recoveryJobId`. Deliveries already across the provider-dispatch barrier are preserved until their outcome settles.
 
 ## Provider references
 

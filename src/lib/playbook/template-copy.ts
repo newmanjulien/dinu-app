@@ -6,8 +6,9 @@ const copy = {
 		editingTitle: 'Edit the instructions reps see',
 		editingHelpLabel: 'About rep instructions',
 		editingHelp: 'These are the instructions your reps use when they negotiate a contract',
-		creationTitle: 'Add instructions for reps',
 		addAction: 'Add instructions',
+		addActionDescription:
+			'Add negotiation guidance, talk tracks, or approval rules for reps on this clause.',
 		editorLabel: 'Instructions editor',
 		optionsLabel: 'Instructions options',
 		deleteAction: 'Delete instructions',
@@ -39,15 +40,15 @@ const copy = {
 		submittedDeleted: 'These instructions were deleted. Your submitted draft is retained.',
 		refreshFailed: 'Unable to refresh instructions. Your submitted work is retained.',
 		loadFailed: 'Unable to load these instructions. Retry the refresh or select the clause again.',
-		denied: 'Only admins can edit template instructions.',
 		selectionOverlap: "You can't highlight text that already has instructions attached"
 	},
 	buyer: {
 		editingTitle: 'Edit the explanations buyers see',
 		editingHelpLabel: 'About buyer explanations',
 		editingHelp: 'When your reps send a link to buyers, these explanations will be included',
-		creationTitle: 'Add an explanation for buyers',
 		addAction: 'Add explanation',
+		addActionDescription:
+			'Add a plain-English explanation for this clause that buyers see when you share a link.',
 		editorLabel: 'Explanation editor',
 		optionsLabel: 'Explanation options',
 		deleteAction: 'Delete explanation',
@@ -78,9 +79,8 @@ const copy = {
 		submittedDeleted: 'This explanation was deleted. Your submitted draft is retained.',
 		refreshFailed: 'Unable to refresh explanations. Your submitted work is retained.',
 		loadFailed: 'Unable to load this explanation. Retry the refresh or select the clause again.',
-		denied: 'Only admins can edit template explanations.',
 		selectionOverlap: "You can't highlight text that already has an explanation attached"
 	}
 } as const;
 
-export const templateCopy = (audience: TemplateAudience = 'rep') => copy[audience];
+export const templateCopy = (audience: TemplateAudience) => copy[audience];

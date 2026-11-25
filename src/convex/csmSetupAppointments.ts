@@ -11,7 +11,7 @@ import {
 	type MutationCtx,
 	type QueryCtx
 } from './_generated/server';
-import { companyDeletion, liveProfile, requireMembership } from './auth';
+import { companyDeletion, liveProfile, requirePermission } from './auth';
 import { cancelJob } from './emailDeliveries';
 import {
 	calRead,
@@ -83,9 +83,7 @@ export async function ownerState(ctx: QueryCtx, a: Pick<Appointment, 'companyId'
 	return deletion ? 'paused' : company.templateSourceId ? 'released' : 'active';
 }
 async function authorize(ctx: QueryCtx, membershipId: Id<'memberships'>) {
-	const owner = await requireMembership(ctx, membershipId);
-	if (owner.membership.role !== 'admin') throw new ConvexError('Administrator access is required.');
-	return owner;
+	return requirePermission(ctx, 'manageTemplate', membershipId);
 }
 export async function cancelAppointmentJobs(ctx: MutationCtx, a: Appointment) {
 	await cancelJob(ctx, a.refreshJobId);

@@ -4,7 +4,7 @@ import type { Doc } from './_generated/dataModel';
 import { internal } from './_generated/api';
 import { resolve, seller } from './buyerLinks';
 import { deviceCategory } from './buyerActivityValidators';
-import { contractReader } from './contractReader';
+import { versionReader } from './templates';
 import { assertStorageCapacity } from './storageCapacity';
 import { ACTIVITY_RETENTION } from '../lib/buyer/tracking';
 import { activityRequest, validActivity } from '../lib/buyer/activity-transport';
@@ -92,7 +92,7 @@ export const record = internalMutation({
 		if (!validActivity(request)) throw new ConvexError('Invalid activity.');
 		const resolved = await resolve(ctx, request.token);
 		if (!resolved) return { kind: 'unavailable' as const };
-		const { link, contract } = resolved;
+		const { link, view, contract } = resolved;
 		const member = await memberForCompany(ctx, contract.companyId);
 		const profileId = member?.profile._id;
 		const now = Date.now();
@@ -181,8 +181,11 @@ export const record = internalMutation({
 		// Only a clause on the currently accessible publication may be reported.
 		const itemId = ctx.db.normalizeId('playbookItems', request.itemId);
 		if (!itemId) return { kind: 'unavailable' as const };
-		const item = await (await contractReader(ctx, contract)).buyerExplanation(itemId);
-		if (!item?.explanation.trim()) return { kind: 'unavailable' as const };
+		const item = await (
+			await versionReader(ctx, view.templateVersionId, link.companyId, true)
+		).item(itemId);
+		if (!item || item.audience !== 'buyer' || !item.explanation.trim())
+			return { kind: 'unavailable' as const };
 		if (visit.eventCount >= MAX_OPENING_EVENTS) return { kind: 'limited' as const, retryAfter: 60 };
 		const previous = await ctx.db
 			.query('buyerActivityReceipts')
