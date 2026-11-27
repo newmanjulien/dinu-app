@@ -14,14 +14,17 @@ export function setCompanySetup(canStart: () => boolean = () => true) {
 	const startup = useStartupSetup();
 	const client = useConvexClient();
 	let retry = $state(0);
+	let settled = $state(0);
 	let completedMembership = $state<string>();
+	const attempted = new Map<string, string>();
+	const inFlight = new Set<string>();
 	const hints = useReadQuery(api.accounts.setupHints, () =>
 		canStart() &&
 		session.workspaceAdmitted &&
 		!session.blocked &&
 		!session.closing &&
 		!viewer().company.deletion
-			? { membershipId: viewer().membership.id }
+			? {}
 			: 'skip'
 	);
 	const progress = () => {
@@ -43,23 +46,46 @@ export function setCompanySetup(canStart: () => boolean = () => true) {
 		return () => window.removeEventListener('focus', refresh);
 	});
 	$effect(() => {
-		void retry;
-		void session.transportGeneration;
+		void settled;
+		const transportGeneration = session.transportGeneration;
 		const current = progress();
+		const membership = viewer().membership;
 		if (
 			!current ||
 			current.complete ||
 			current.nextStep !== null ||
 			session.blocked ||
 			session.closing
-		)
+		) {
+			if (!current || current.nextStep !== null || session.blocked || session.closing)
+				attempted.delete(membership.id);
 			return;
-		// Idempotent mutation rechecks the entire checklist; no client completion flag is trusted.
-		const membershipId = viewer().membership.id;
+		}
+		if (completedMembership === membership.id) return;
+		const membershipId = membership.id;
+		const attemptKey = JSON.stringify([
+			transportGeneration,
+			retry,
+			membership.role,
+			current.contractId
+		]);
+		if (inFlight.has(membershipId) || attempted.get(membershipId) === attemptKey) return;
+		attempted.set(membershipId, attemptKey);
+		inFlight.add(membershipId);
+		// The mutation rechecks the checklist; its successful result stops duplicate detection.
 		untrack(() => {
-			void client.mutation(api.accounts.completeSetup, { membershipId }).catch(() => {
-				// A reconnect or focus retries detection without interrupting the current task.
-			});
+			void (async () => {
+				try {
+					const complete = await client.mutation(api.accounts.completeSetup, { membershipId });
+					if (complete && viewer().membership.id === membershipId)
+						completedMembership = membershipId;
+				} catch {
+					// A reconnect or focus retries detection without interrupting the current task.
+				} finally {
+					inFlight.delete(membershipId);
+					settled++;
+				}
+			})();
 		});
 	});
 	return setContext(key, {

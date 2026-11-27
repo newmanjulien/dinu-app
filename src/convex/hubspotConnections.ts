@@ -1,15 +1,20 @@
 import { ConvexError, v } from 'convex/values';
-import { internalMutation, internalQuery, query, env, type MutationCtx } from './_generated/server';
+import { env, internalMutation, internalQuery, query, type MutationCtx } from './_generated/server';
 import { availableCompany, requireMembership } from './auth';
-import { hubspotConnection } from './hubspotValidators';
-import schema from './schema';
+import {
+	attachCredentials,
+	connectionWithCredentials,
+	credentialConnection,
+	credentialFields,
+	credentialsFor
+} from './hubspotCredentials';
+import { lifecycle, otherAttachments } from './hubspotInstallation';
 import { quoteInstallationFor } from './hubspotQuotesInstallation';
 import { hasQuoteScopes } from './hubspotQuoteValidators';
-import { lifecycle, otherAttachments } from './hubspotInstallation';
 import { hubspotRemovalOutcome } from './hubspotValidators';
 
 export const status = query({
-	args: { membershipId: v.id('memberships') },
+	args: {},
 	returns: v.object({
 		quotes: v.object({
 			installationId: v.union(v.id('hubspotQuoteInstallations'), v.null()),
@@ -43,18 +48,23 @@ export const status = query({
 			v.null()
 		)
 	}),
-	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
-		const row = await ctx.db
-			.query('hubspotConnections')
-			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
-			.unique();
-		const state = await lifecycle(ctx, access.companyId);
-		const removal = state?.removalId ? await ctx.db.get('hubspotRemovals', state.removalId) : null;
+	handler: async (ctx) => {
+		const access = await requireMembership(ctx);
+		const [row, state, quotes] = await Promise.all([
+			ctx.db
+				.query('hubspotConnections')
+				.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
+				.unique(),
+			lifecycle(ctx, access.companyId),
+			quoteInstallationFor(ctx, access.companyId)
+		]);
+		const [removal, shared] = await Promise.all([
+			state?.removalId ? ctx.db.get('hubspotRemovals', state.removalId) : null,
+			row ? otherAttachments(ctx, row.accountId, access.companyId) : false
+		]);
 		const provider = removal
 			? await ctx.db.get('hubspotAccountRemovals', removal.providerId)
 			: null;
-		const quotes = await quoteInstallationFor(ctx, access.companyId);
 		const installed = Boolean(
 			quotes?.enabled &&
 			row &&
@@ -86,7 +96,7 @@ export const status = query({
 			accountId: row?.accountId ?? null,
 			installedAt: row?.installedAt ?? null,
 			companyReadGranted: Boolean(row?.scopes.includes('crm.objects.companies.read')),
-			shared: row ? await otherAttachments(ctx, row.accountId, access.companyId) : false,
+			shared,
 			removal: removal
 				? {
 						id: removal._id,
@@ -101,7 +111,7 @@ export const status = query({
 });
 export const forMember = internalQuery({
 	args: { membershipId: v.id('memberships') },
-	returns: schema.doc('hubspotConnections'),
+	returns: connectionWithCredentials,
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		const row = await ctx.db
@@ -110,14 +120,16 @@ export const forMember = internalQuery({
 			.unique();
 		if (!row || row.status !== 'connected' || env.HUBSPOT_ENABLED !== 'true')
 			throw new ConvexError('HubSpot is not connected. Ask an admin to install or reconnect it.');
-		return row;
+		const connection = await attachCredentials(ctx, row);
+		if (!connection) throw new ConvexError('HubSpot credentials are unavailable.');
+		return connection;
 	}
 });
 export const read = internalQuery({
 	args: { id: v.id('hubspotConnections') },
-	returns: v.union(schema.doc('hubspotConnections'), v.null()),
+	returns: v.union(connectionWithCredentials, v.null()),
 	handler: async (ctx, { id }) => {
-		const row = await ctx.db.get('hubspotConnections', id);
+		const row = await credentialConnection(ctx, id);
 		return row && (await availableCompany(ctx, row.companyId)) ? row : null;
 	}
 });
@@ -125,7 +137,7 @@ export const claimRefresh = internalMutation({
 	args: { id: v.id('hubspotConnections'), generation: v.number(), claim: v.string() },
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
-		const row = await ctx.db.get('hubspotConnections', args.id);
+		const row = await credentialConnection(ctx, args.id);
 		if (
 			!row ||
 			row.generation !== args.generation ||
@@ -134,7 +146,9 @@ export const claimRefresh = internalMutation({
 		)
 			return false;
 		if (row.refreshUntil && row.refreshUntil > Date.now()) return false;
-		await ctx.db.patch('hubspotConnections', row._id, {
+		const credentials = await credentialsFor(ctx, row._id);
+		if (!credentials) return false;
+		await ctx.db.patch('hubspotCredentials', credentials._id, {
 			refreshClaim: args.claim,
 			refreshUntil: Date.now() + 60_000
 		});
@@ -146,11 +160,11 @@ export const refreshed = internalMutation({
 		id: v.id('hubspotConnections'),
 		generation: v.number(),
 		claim: v.string(),
-		tokens: v.union(hubspotConnection.pick('accessToken', 'refreshToken', 'expiresAt'), v.null())
+		tokens: v.union(credentialFields.pick('accessToken', 'refreshToken', 'expiresAt'), v.null())
 	},
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
-		const row = await ctx.db.get('hubspotConnections', args.id);
+		const row = await credentialConnection(ctx, args.id);
 		if (
 			!row ||
 			row.generation !== args.generation ||
@@ -158,8 +172,12 @@ export const refreshed = internalMutation({
 			!(await availableCompany(ctx, row.companyId))
 		)
 			return false;
-		await ctx.db.patch('hubspotConnections', row._id, {
-			...(args.tokens ?? (row.status === 'retiring' ? {} : { status: 'reconnect' as const })),
+		const credentials = await credentialsFor(ctx, row._id);
+		if (!credentials) return false;
+		if (!args.tokens && row.status !== 'retiring')
+			await ctx.db.patch('hubspotConnections', row._id, { status: 'reconnect' });
+		await ctx.db.patch('hubspotCredentials', credentials._id, {
+			...(args.tokens ?? {}),
 			generation: row.generation + 1,
 			refreshClaim: undefined,
 			refreshUntil: undefined
@@ -178,7 +196,7 @@ export async function requireReconnect(
 		generation: number;
 	}
 ) {
-	const row = await ctx.db.get('hubspotConnections', args.id);
+	const row = await credentialConnection(ctx, args.id);
 	if (
 		!row ||
 		row.status === 'retiring' ||

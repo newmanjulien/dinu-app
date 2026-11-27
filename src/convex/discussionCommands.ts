@@ -1,8 +1,9 @@
 import { ConvexError, type Infer } from 'convex/values';
-import type { Doc, Id } from './_generated/dataModel';
+import type { Id } from './_generated/dataModel';
 import type { MutationCtx } from './_generated/server';
 import { anchorPassage, extractFootprint, validDiscussionAnchor } from '../lib/discussions/anchors';
 import { validDiscussionText } from '../lib/discussions/limits';
+import { accountMessage, accountMessageEdit, accountThread } from './discussionCapacity';
 import {
 	discussionCommand,
 	markSeenResult,
@@ -20,12 +21,10 @@ import { actionKey, receipt, remember, scopedKey, validateOperationId } from './
 import { versionReader } from './templates';
 
 export type WriteInput = {
-	token: string;
 	operationId: string;
 	command: Infer<typeof discussionCommand>;
 };
 export type SeenInput = {
-	token: string;
 	operationId: string;
 	messages: Infer<typeof seenMessages>;
 };
@@ -112,6 +111,8 @@ export async function writeDiscussion(
 			revision: 1,
 			unreadByTeam
 		});
+		await accountThread(ctx, (await ctx.db.get('discussionThreads', threadId))!, 1);
+		await accountMessage(ctx, (await ctx.db.get('discussionMessages', messageId))!, 1);
 		if (unreadByTeam) await refreshDirectoryUnread(ctx, root._id);
 
 		const result = {
@@ -144,6 +145,7 @@ export async function writeDiscussion(
 			revision: 1,
 			unreadByTeam
 		});
+		await accountMessage(ctx, (await ctx.db.get('discussionMessages', messageId))!, 1);
 		if (unreadByTeam) {
 			const nextUnread = thread.unreadMessageCount + 1;
 			await ctx.db.patch('discussionThreads', thread._id, {
@@ -176,6 +178,12 @@ export async function writeDiscussion(
 			throw new ConvexError('Enter a message of 20,000 characters or fewer.');
 		await quota.commit();
 		const unreadByTeam = !actor.profileId;
+		await accountMessageEdit(ctx, message, {
+			...message,
+			text: command.text,
+			revision: message.revision + 1,
+			unreadByTeam
+		});
 		await ctx.db.patch('discussionMessages', message._id, {
 			text: command.text,
 			revision: message.revision + 1,
@@ -207,6 +215,7 @@ export async function writeDiscussion(
 		await deleteThreadAndMessages(ctx, thread._id);
 		await refreshDirectoryUnread(ctx, root._id);
 	} else {
+		await accountMessage(ctx, message, -1);
 		await ctx.db.delete('discussionMessages', message._id);
 		if (message.unreadByTeam) {
 			const nextUnread = Math.max(0, thread.unreadMessageCount - 1);
@@ -251,29 +260,43 @@ export async function markDiscussionSeen(
 		return JSON.parse(prior.result) as Infer<typeof markSeenResult>;
 	}
 
-	const affected = new Map<
-		Id<'discussionThreads'>,
-		{ thread: Doc<'discussionThreads'>; count: number }
-	>();
-	for (const seen of input.messages) {
-		const message = await ctx.db.get('discussionMessages', seen.messageId);
-		if (!message) continue;
+	const loaded = await Promise.all(
+		input.messages.map(async (seen) => ({
+			seen,
+			message: await ctx.db.get('discussionMessages', seen.messageId)
+		}))
+	);
+	const unread = loaded.flatMap(({ seen, message }) => {
+		if (!message) return [];
 		if (!ownsDiscussion(context, message)) throw new ConvexError('This message is unavailable.');
-		const thread = await ctx.db.get('discussionThreads', message.threadId);
-		if (!thread || !ownsDiscussion(context, thread)) continue;
-		if (message.profileId || !message.unreadByTeam || message.revision !== seen.revision) continue;
-		await ctx.db.patch('discussionMessages', message._id, { unreadByTeam: false });
-		const entry = affected.get(thread._id) ?? { thread, count: thread.unreadMessageCount };
-		entry.count = Math.max(0, entry.count - 1);
-		affected.set(thread._id, entry);
-	}
-	for (const { thread, count } of affected.values()) {
-		await ctx.db.patch('discussionThreads', thread._id, {
-			unreadMessageCount: count,
-			hasUnread: count > 0
-		});
-	}
-	if (affected.size > 0) await refreshDirectoryUnread(ctx, context.root._id);
+		return !message.profileId && message.unreadByTeam && message.revision === seen.revision
+			? [message]
+			: [];
+	});
+	const threadIds = [...new Set(unread.map((message) => message.threadId))];
+	const threads = await Promise.all(threadIds.map((id) => ctx.db.get('discussionThreads', id)));
+	const affected = threads.filter(
+		(thread): thread is NonNullable<typeof thread> =>
+			thread !== null && ownsDiscussion(context, thread)
+	);
+	const ownedIds = new Set(affected.map((thread) => thread._id));
+	const accepted = unread.filter((message) => ownedIds.has(message.threadId));
+	const counts = new Map<Id<'discussionThreads'>, number>();
+	for (const message of accepted)
+		counts.set(message.threadId, (counts.get(message.threadId) ?? 0) + 1);
+	await Promise.all([
+		...accepted.map((message) =>
+			ctx.db.patch('discussionMessages', message._id, { unreadByTeam: false })
+		),
+		...affected.map((thread) => {
+			const count = Math.max(0, thread.unreadMessageCount - (counts.get(thread._id) ?? 0));
+			return ctx.db.patch('discussionThreads', thread._id, {
+				unreadMessageCount: count,
+				hasUnread: count > 0
+			});
+		})
+	]);
+	if (accepted.length) await refreshDirectoryUnread(ctx, context.root._id);
 
 	const result = { status: 'complete' as const, operationId: input.operationId };
 	await remember(

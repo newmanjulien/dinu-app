@@ -45,10 +45,16 @@ function emailHash(value: string) {
 
 async function schedule(ctx: MutationCtx, p: Preparation, delay: number) {
 	await cancelJob(ctx, p.jobId);
-	const jobId = await ctx.scheduler.runAfter(delay, internal.csmMeetingPreparation.prepare, {
+	const startAt = Date.now() + delay;
+	const dueAt = startAt + LEASE;
+	const jobId = await ctx.scheduler.runAt(startAt, internal.csmMeetingPreparation.prepare, {
 		preparationId: p._id
 	});
-	await ctx.db.patch('csmMeetingPreparations', p._id, { jobId, dueAt: Date.now() + delay + LEASE });
+	await ctx.db.patch('csmMeetingPreparations', p._id, { jobId, dueAt });
+	await ctx.scheduler.runAt(dueAt, internal.csmMeetingPreparation.wake, {
+		preparationId: p._id,
+		dueAt
+	});
 }
 export async function cancelPreparationJobs(ctx: MutationCtx, p: Preparation) {
 	await cancelJob(ctx, p.jobId);
@@ -163,8 +169,9 @@ export const begin = internalMutation({
 		}
 		await cancelPreparationJobs(ctx, p);
 		const revision = p.revision + 1;
-		const watchdogId = await ctx.scheduler.runAfter(
-			LEASE,
+		const leaseUntil = Date.now() + LEASE;
+		const watchdogId = await ctx.scheduler.runAt(
+			leaseUntil,
 			internal.csmMeetingPreparation.expireClaim,
 			{ preparationId, revision }
 		);
@@ -173,8 +180,8 @@ export const begin = internalMutation({
 			refreshRequested: undefined,
 			revision,
 			passes: p.passes + 1,
-			leaseUntil: Date.now() + LEASE,
-			dueAt: Date.now() + LEASE,
+			leaseUntil,
+			dueAt: leaseUntil,
 			watchdogId,
 			jobId: undefined,
 			updatedAt: Date.now()
@@ -715,6 +722,17 @@ export const repair = internalMutation({
 			updatedAt: Date.now()
 		});
 		await schedule(ctx, p, 0);
+		return null;
+	}
+});
+
+export const wake = internalMutation({
+	args: { preparationId: v.id('csmMeetingPreparations'), dueAt: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const p = await ctx.db.get('csmMeetingPreparations', args.preparationId);
+		if (p?.dueAt === args.dueAt && args.dueAt <= Date.now())
+			await ctx.scheduler.runAfter(0, internal.csmMeetingPreparation.pump, {});
 		return null;
 	}
 });

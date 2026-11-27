@@ -5,6 +5,7 @@
 	import { page } from '$app/state';
 	import {
 		ContractsSearchSession,
+		HOME_SEARCH_SETTLE_MS,
 		setContractsSearch
 	} from '$lib/components/workspace/contracts-search.svelte';
 	let { children } = $props();
@@ -16,7 +17,11 @@
 		const current = session;
 		if (!current) return;
 		const value = current.value.trim();
-		const timer = setTimeout(() => (current.query = value), 200);
+		if (!value) {
+			current.query = '';
+			return;
+		}
+		const timer = setTimeout(() => (current.query = value), HOME_SEARCH_SETTLE_MS);
 		return () => clearTimeout(timer);
 	});
 </script>

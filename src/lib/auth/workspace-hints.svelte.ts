@@ -1,6 +1,5 @@
 import { getContext, setContext } from 'svelte';
 import type { Role } from '../../convex/permissions';
-import { ReadAttempt, waitForRead } from './attempt';
 import {
 	readWorkspaceHints,
 	rememberWorkspaceHints,
@@ -11,6 +10,7 @@ import {
 } from './workspace-hints-storage';
 
 import type { WorkspaceHintSeed } from './workspace-hint-cookie';
+import type { MembershipRetirement } from './viewer-session.svelte';
 
 type ConfirmedMembership = WorkspaceMembership & WorkspacePresentation & { templateReady: boolean };
 
@@ -19,9 +19,8 @@ export class WorkspaceHints {
 	private identity = $state.raw<{ userId: string; sessionId: string }>();
 	private membership = $state.raw<WorkspaceHintState | null>();
 	private confirmed = false;
-	private attemptedGeneration: number | undefined;
-	private request: ReadAttempt | undefined;
 	private storageRead = false;
+	private membershipGeneration = 0;
 
 	constructor(seed?: WorkspaceHintSeed) {
 		if (seed) {
@@ -51,7 +50,7 @@ export class WorkspaceHints {
 			: undefined;
 	}
 
-	private activate(userId: string, sessionId: string) {
+	activate(userId: string, sessionId: string) {
 		if (this.identity?.userId !== userId || this.identity.sessionId !== sessionId) {
 			this.clear();
 			this.identity = { userId, sessionId };
@@ -60,38 +59,6 @@ export class WorkspaceHints {
 			this.storageRead = true;
 			this.membership = readWorkspaceHints(userId, sessionId) ?? this.membership;
 		}
-	}
-
-	prepare(
-		userId: string,
-		sessionId: string,
-		generation: number,
-		getToken: () => Promise<string | null>
-	) {
-		this.activate(userId, sessionId);
-		if (this.membership !== undefined || this.attemptedGeneration === generation) return;
-		this.cancelReads();
-		this.attemptedGeneration = generation;
-		const request = new ReadAttempt(5_000);
-		this.request = request;
-		void (async () => {
-			const [{ fetchWorkspaceRole }, token] = await waitForRead(
-				Promise.all([import('./workspace-role-query'), getToken()]),
-				request.signal
-			);
-			if (!token) return;
-			const value = await waitForRead(fetchWorkspaceRole(token, request.signal), request.signal);
-			if (this.request !== request || request.signal.aborted || this.confirmed) return;
-			this.membership = value;
-			rememberWorkspaceHints(userId, sessionId, value);
-		})()
-			.catch(() => {
-				/* Full account startup and its recovery controls remain active. */
-			})
-			.finally(() => {
-				request.complete();
-				if (this.request === request) this.request = undefined;
-			});
 	}
 
 	confirm(userId: string, sessionId: string, membership: ConfirmedMembership | null) {
@@ -109,30 +76,50 @@ export class WorkspaceHints {
 			this.membership?.instructionsReady === membership?.instructionsReady
 		)
 			return;
-		this.cancelReads();
 		this.confirmed = true;
+		if (
+			this.membership?.membershipId !== membership?.membershipId ||
+			this.membership?.companyId !== membership?.companyId
+		)
+			this.membershipGeneration++;
 		this.membership = membership;
 		rememberWorkspaceHints(userId, sessionId, this.membership);
 	}
 
-	cancelReads() {
-		const request = this.request;
-		this.request = undefined;
-		request?.abort();
+	cancelReads() {}
+
+	captureMembershipRetirement({ userId, sessionId, membershipId }: MembershipRetirement) {
+		const generation = this.membershipGeneration;
+		const identity = this.identity;
+		return () => {
+			if (
+				this.identity !== identity ||
+				this.membershipGeneration !== generation ||
+				this.membership?.membershipId !== membershipId
+			)
+				return;
+			if (
+				identity?.userId === userId &&
+				(sessionId === undefined || identity.sessionId === sessionId)
+			) {
+				this.confirmed = true;
+				this.membership = null;
+				this.membershipGeneration++;
+			}
+		};
 	}
 
-	forgetMembership(userId: string) {
+	forgetAccount(userId: string) {
 		if (this.identity?.userId === userId) this.confirm(userId, this.identity.sessionId, null);
 	}
 
 	clear() {
-		this.cancelReads();
+		this.membershipGeneration++;
 		if (this.identity) cancelWorkspaceHintWrites(this.identity.userId, this.identity.sessionId);
 		this.storageRead = false;
 		this.identity = undefined;
 		this.membership = undefined;
 		this.confirmed = false;
-		this.attemptedGeneration = undefined;
 	}
 }
 

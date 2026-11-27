@@ -69,6 +69,11 @@ async function buyer() {
 				>['templateVersionId'];
 			}
 		) => {
+			if (getFunctionName(ref) === 'buyerLinks:downloadSnapshot')
+				return f.root.query(
+					api.buyerLinks.downloadSnapshot,
+					args as { token: string; displayIdentity: string }
+				);
 			if (getFunctionName(ref) === 'buyerLinks:currentState')
 				return f.root.query(api.buyerLinks.currentState, { token: args.token });
 			if (getFunctionName(ref) === 'buyerLinks:templateContent')
@@ -85,6 +90,7 @@ async function buyer() {
 		}
 	);
 	const snapshot = await f.root.query(api.buyerLinks.currentState, { token: link.token });
+	if (snapshot.kind !== 'current') throw new Error('Expected an available buyer snapshot.');
 	return { ...f, link, snapshot };
 }
 const request = (token: string, displayIdentity: unknown) =>
@@ -113,8 +119,8 @@ describe('buyer Word acquisition and final authorization', () => {
 		expect(elements(parts['word/document.xml'], 'w:t').map(textContent)).toEqual([
 			'Synthetic contract.'
 		]);
-		expect(boundary.query.mock.calls.map(([, , client]) => client)).toEqual([1, 1, 2]);
-		expect(boundary.query.mock.calls[2].slice(0, 2)).toEqual([
+		expect(boundary.query.mock.calls.map(([, , client]) => client)).toEqual([1, 2]);
+		expect(boundary.query.mock.calls[1].slice(0, 2)).toEqual([
 			api.buyerLinks.authorizeDownload,
 			{ token: f.link.token, displayIdentity: f.snapshot.displayIdentity }
 		]);

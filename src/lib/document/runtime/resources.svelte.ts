@@ -6,7 +6,6 @@ import type {
 import { concessionSelectionMap } from '$lib/contract/changes';
 import type { ReviewDecision, ReviewNavigation, ReviewTag } from '$lib/contract/approval';
 import type { ReadyContract } from '$lib/contract/saved';
-import { getContractOpenings } from '$lib/contract/snapshot-cache';
 import {
 	isRepItem,
 	sameSelection,
@@ -152,7 +151,6 @@ const RESOURCES = Symbol('document-resources');
 
 /** Layout-owned document work; route-owned interaction bindings never outlive their route. */
 export class DocumentResources {
-	private readonly openings = getContractOpenings();
 	entries = $state.raw<readonly DocumentResource[]>([]);
 	active = $state.raw<DocumentResource>();
 	warming = $state(true);
@@ -172,6 +170,8 @@ export class DocumentResources {
 	#preparationBudget = 0;
 	#failed = new Set<string>();
 	#clock = 0;
+	// Keep prepared reopening local to this bounded resource owner.
+	#lastOpened: DocumentResource | undefined;
 	#destroyed = false;
 	#attachments = new Map<DocumentResource, DocumentAttachment>();
 	#release: () => void;
@@ -415,6 +415,7 @@ export class DocumentResources {
 		this.active = entry;
 		entry.active = true;
 		entry.allowed = true;
+		if (!isTemplateResource(entry.id)) this.#lastOpened = entry;
 		// Protect the incoming owner before releasing an attachment that may trim resources.
 		// On the same entry, replacing the map token makes the old cleanup inert.
 		if (previous && previous.entry !== entry) previous.release();
@@ -454,13 +455,11 @@ export class DocumentResources {
 	candidates(ranked: readonly string[], budget = this.#preparationBudget) {
 		if (!sameOrder(this.#rank, ranked)) this.#rank = [...ranked];
 		this.#preparationBudget = budget;
-		const recent = this.openings
-			.read()
-			.find((opening) => this.entries.some((entry) => entry.id === opening.id))?.id;
 		const reserved = this.entries
 			.filter(
 				(entry) =>
-					!isTemplateResource(entry.id) && (entry.active || entry.opening || entry.id === recent)
+					!isTemplateResource(entry.id) &&
+					(entry.active || entry.opening || entry === this.#lastOpened)
 			)
 			.map((entry) => entry.id);
 		const ids = ranked
@@ -546,15 +545,15 @@ export class DocumentResources {
 		if (!entry) return;
 		this.entries = this.entries.filter((current) => current !== entry);
 		if (this.active === entry) this.active = undefined;
+		if (this.#lastOpened === entry) this.#lastOpened = undefined;
 		entry.destroy();
 		this.#attachments.delete(entry);
 		recordColdStart('document-resource-evicted');
 	}
 	#removable(saved: readonly DocumentResource[]) {
-		const recent = this.openings.read()[0]?.id;
 		const rank = (entry: DocumentResource) => {
 			const index = this.#rank.indexOf(entry.id);
-			return entry.id === recent ? -1 : index < 0 ? Number.MAX_SAFE_INTEGER : index;
+			return entry === this.#lastOpened ? -1 : index < 0 ? Number.MAX_SAFE_INTEGER : index;
 		};
 		return saved
 			.filter((entry) => !entry.active && !entry.opening)
@@ -596,6 +595,7 @@ export class DocumentResources {
 		for (const entry of this.entries) entry.destroy();
 		this.entries = [];
 		this.active = undefined;
+		this.#lastOpened = undefined;
 		this.#pending = [];
 		this.#attachments.clear();
 		this.#leases = new Map();

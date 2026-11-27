@@ -3,7 +3,10 @@ import { env } from '../../support/browser-inputs';
 import { DocumentResources } from '../../../src/lib/document/runtime/resources.svelte';
 import { createDocumentWorkspace } from '../../../src/lib/document/runtime/workspace-factory';
 import { prewarmSavedConcessions } from '../../../src/lib/document/runtime/prewarm';
-import { ContractPersistence } from '../../../src/lib/contract/persistence.svelte';
+import {
+	CONTRACT_CHOICE_SAVE_DELAY_MS,
+	ContractPersistence
+} from '../../../src/lib/contract/persistence.svelte';
 import { deferred } from '../../support/transport';
 import { documentFixture, readyContract } from '../../support/document';
 import { settle } from '../../support/svelte';
@@ -95,6 +98,8 @@ it('a concession updates local intent and rendered wording without waiting for i
 	expect(persistence.choices[record._id]).toBe('preferred');
 	expect(checkpoint).toHaveBeenCalled();
 	await settle();
+	expect(save).not.toHaveBeenCalled();
+	await vi.advanceTimersByTimeAsync(CONTRACT_CHOICE_SAVE_DELAY_MS);
 	expect(save).toHaveBeenCalledTimes(1);
 	expect(persistence.inFlight).toBe(true);
 	const next = await render(f.workspace, f, persistence.choices);

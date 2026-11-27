@@ -1,8 +1,6 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import type { FunctionReturnType } from 'convex/server';
-	import { useConvexClient } from 'convex-svelte';
-	import { waitForRead } from '$lib/auth/attempt';
+	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { useViewer } from '$lib/auth/viewer-session.svelte';
 	import FloatingSurface from '$lib/components/ui/FloatingSurface.svelte';
 	import Tooltip from '$lib/components/ui/Tooltip.svelte';
@@ -15,56 +13,9 @@
 	const panelId = $props.id();
 	let open = $state(false);
 	let trigger = $state<HTMLButtonElement>();
-	const client = useConvexClient();
-	const scope = $derived(
-		JSON.stringify([viewer().profile.id, viewer().membership.id, viewer().company.id, id])
-	);
-	let data = $state.raw<{
-		scope: string;
-		rows: FunctionReturnType<typeof api.buyerActivity.recent>;
-	}>();
-	let error = $state(false);
-	let refresh = $state(0);
-	const rows = $derived(
-		data?.scope === scope ? data.rows.filter((row) => row.expiresAt > now) : undefined
-	);
-	$effect(() => {
-		const key = scope;
-		untrack(() => {
-			if (data?.scope !== key) data = undefined;
-		});
-		if (!open) return;
-		error = false;
-		const args = { membershipId: viewer().membership.id, id };
-		void refresh;
-		let cancelled = false;
-		let request = 0;
-		let timer: ReturnType<typeof setTimeout>;
-		async function load() {
-			const currentRequest = ++request;
-			const current = () => !cancelled && currentRequest === request;
-			try {
-				// A delivered refusal clears history; only a local deadline may retain it.
-				const response = client.mutation(api.buyerActivity.recent, args).catch((cause) => {
-					if (current()) data = undefined;
-					throw cause;
-				});
-				const result = await waitForRead(response, AbortSignal.timeout(15_000));
-				if (current()) {
-					data = { scope: key, rows: result };
-					error = false;
-				}
-			} catch {
-				if (current()) error = true;
-			}
-			if (!cancelled) timer = setTimeout(load, 30_000);
-		}
-		void load();
-		return () => {
-			cancelled = true;
-			clearTimeout(timer);
-		};
-	});
+	const activity = useReadQuery(api.buyerActivity.recent, () => (open ? { id } : 'skip'));
+	const rows = $derived(activity.data?.filter((row) => row.expiresAt > now));
+	const error = $derived(activity.error);
 	let now = $state(Date.now());
 	let list = $state<HTMLUListElement>();
 	let listHeight = $state<number>();
@@ -127,7 +78,7 @@
 		<button
 			bind:this={trigger}
 			type="button"
-			class="-ml-0.5 inline-flex h-[18px] w-4 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-ink-secondary transition-colors hover:bg-field-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent aria-expanded:bg-field-hover aria-expanded:text-ink"
+			class="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-ink-secondary transition-colors hover:bg-field-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent aria-expanded:bg-field-hover aria-expanded:text-ink"
 			aria-label="See recent activity"
 			aria-describedby={descriptionId}
 			aria-expanded={open}
@@ -156,7 +107,7 @@
 	{open}
 	{trigger}
 	onClose={close}
-	placement="right-start"
+	placement="bottom-end"
 	gap={4}
 	id={panelId}
 	role="group"
@@ -171,7 +122,7 @@
 			<button
 				type="button"
 				class="cursor-pointer rounded-sm text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-				onclick={() => refresh++}>Try again</button
+				onclick={() => activity.retry()}>Try again</button
 			>
 		</p>
 	{/if}

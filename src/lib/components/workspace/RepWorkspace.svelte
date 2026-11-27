@@ -8,11 +8,9 @@
 	import type { Id } from '../../../convex/_generated/dataModel';
 	import { useAccountContext } from '$lib/auth/account-context.svelte';
 	import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
-	import type { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
-	import type { BuyerLinkBarVisit } from '$lib/buyer/bar-visit.svelte';
 	import HeaderContent from '$lib/components/chrome/HeaderContent.svelte';
 	import NoticeBar from '$lib/components/chrome/NoticeBar.svelte';
 	import type { OperationStatus } from '$lib/components/chrome/operation-status';
@@ -29,7 +27,6 @@
 	import { IdempotentAction } from '$lib/contract/idempotent-action.svelte';
 	import { ContractReviewController } from '$lib/contract/review-controller.svelte';
 	import { saveError } from '$lib/contract/saved';
-	import { getContractOpenings } from '$lib/contract/snapshot-cache';
 	import { workBlockMessage } from '$lib/contract/work-policy';
 	import { downloadWord } from '$lib/document/export/download';
 	import type { ViewerBindings } from '$lib/document/runtime/resources.svelte';
@@ -40,13 +37,11 @@
 	import Button from '$lib/ui/Button.svelte';
 	import Hint from '$lib/ui/Hint.svelte';
 	import type { HintId } from '$lib/ui/hints';
-	import BuyerLinkBarAdmission from './BuyerLinkBarAdmission.svelte';
 	import HubSpotRelink from './HubSpotRelink.svelte';
 
 	let {
 		editor: contractEditor,
-		buyerLinkVisit,
-		latestBuyerLink,
+		active: viewActive = true,
 		interactionAdmitted = true,
 		onVisible,
 		onFailure,
@@ -56,8 +51,7 @@
 		onChrome
 	}: {
 		editor: ContractEditor;
-		buyerLinkVisit?: BuyerLinkBarVisit;
-		latestBuyerLink: ReturnType<typeof useReadQuery<typeof api.buyerLinks.latest>>;
+		active?: boolean;
 		interactionAdmitted?: boolean;
 		onVisible?: () => void;
 		openingRevision?: unknown;
@@ -95,7 +89,6 @@
 			return contractEditor.error;
 		}
 	};
-	const openings = untrack(() => getContractOpenings());
 	const runtime = getWorkspaceRuntime();
 	const interactionOwner = getInteractionOwner()!;
 	const workspace = getDocumentWorkspace();
@@ -107,9 +100,6 @@
 	const accountViewer = useViewer();
 	const membershipId = accountViewer().membership.id;
 	const contractId = untrack(() => initialContract._id);
-	const buyerLinkAvailable = $derived(
-		!runtime.paused && !persistence.deleted && !persistence.workBlock
-	);
 
 	const hubspot = useHubSpotDeals();
 	const hubspotConnection = hubspot.connection;
@@ -125,11 +115,19 @@
 	>();
 	let quoteRunId = 0;
 	const quoteQuery = useQuery(api.hubspotQuotes.latest, () =>
-		auth.authenticated && quotesInstalled && !runtime.paused
-			? { membershipId, id: contractId, ...(quoteId ? { pushId: quoteId } : {}) }
+		auth.authenticated &&
+		quotesInstalled &&
+		!runtime.paused &&
+		quoteId &&
+		quoteId !== contractEditor.latestQuote?.id
+			? { id: contractId, pushId: quoteId }
 			: 'skip'
 	);
-	const quote = $derived(quoteQuery.data);
+	const quote = $derived(
+		quoteId && quoteId !== contractEditor.latestQuote?.id
+			? quoteQuery.data
+			: contractEditor.latestQuote
+	);
 	const quotePending = $derived(
 		Boolean(quote && ['queued', 'dispatched', 'verifying'].includes(quote.state))
 	);
@@ -203,7 +201,6 @@
 	let mounted = $state(false);
 	let notifiedVisible = $state(false);
 	let notifiedOpening: unknown;
-	let recordedOpening = false;
 	let viewerPresentation =
 		$state<import('$lib/auth/workspace-presentation.svelte').PresentationOutcome>('pending');
 	const exactDisplayReconciled = $derived.by(() => {
@@ -245,22 +242,6 @@
 	});
 	$effect(() => {
 		if (
-			displayedStateReconciled &&
-			viewer.interactionEnabled &&
-			!persistence.pending &&
-			!persistence.deleted &&
-			!workspace.renderer.error &&
-			!source.issue &&
-			!recordedOpening
-		) {
-			recordedOpening = true;
-			untrack(() => {
-				openings.record(contractId);
-			});
-		}
-	});
-	$effect(() => {
-		if (
 			(!notifiedVisible || notifiedOpening !== openingRevision) &&
 			(workspace.renderer.error ||
 				source.issue ||
@@ -285,45 +266,68 @@
 	);
 	let connected = $state(false);
 	let foreground = $state(false);
+	let foregroundVersion = $state(0);
 	let active = true;
-	let checkingDeal: Promise<void> | undefined;
-	async function checkDeal() {
-		if (!persistence.confirmed.hubspot) return;
-		if (checkingDeal) return checkingDeal;
-		const current = client
-			.action(api.hubspotDeals.check, { membershipId, contractId })
-			.then(() => {
-				if (active && persistence.workBlock) {
-					throw new ConvexError({
-						code: persistence.workBlock,
-						message: workBlockMessage(persistence.workBlock)
-					});
-				}
-			})
-			.finally(() => {
-				if (checkingDeal === current) checkingDeal = undefined;
-			});
-		checkingDeal = current;
+	const dealFreshMs = 30_000;
+	const recipientFreshMs = 45_000;
+	const dealChecks = new Map<string, Promise<void>>();
+	const recipientRequests = new Map<string, Promise<void>>();
+	let lastDealCheck: { destination: string; at: number } | undefined;
+	let lastRecipientRequest: { destination: string; at: number } | undefined;
+	let lastForegroundRun:
+		{ association: string; destination: string; version: number; transport: number } | undefined;
+	const associationKey = (link: NonNullable<typeof persistence.confirmed.hubspot>) =>
+		JSON.stringify([
+			link.connectionId,
+			link.accountId,
+			link.dealId,
+			link.generation,
+			link.availability
+		]);
+	const destinationKey = (link: NonNullable<typeof persistence.confirmed.hubspot>) =>
+		JSON.stringify([
+			associationKey(link),
+			hubspotConnection.data?.installedAt,
+			hubspotConnection.data?.companyReadGranted
+		]);
+	function checkDeal(): Promise<void> {
+		if (!persistence.confirmed.hubspot) return Promise.resolve();
+		return client.action(api.hubspotDeals.check, { membershipId, contractId }).then(() => {
+			if (active && persistence.workBlock) {
+				throw new ConvexError({
+					code: persistence.workBlock,
+					message: workBlockMessage(persistence.workBlock)
+				});
+			}
+		});
+	}
+	function checkForegroundDeal(destination: string): Promise<void> {
+		const pending = dealChecks.get(destination);
+		if (pending) return pending;
+		const current = checkDeal().finally(() => {
+			if (dealChecks.get(destination) === current) dealChecks.delete(destination);
+		});
+		dealChecks.set(destination, current);
 		return current;
 	}
 	onMount(() => {
 		mounted = true;
 		const observe = () => {
-			foreground = document.visibilityState === 'visible';
-			if (foreground) {
-				void checkDeal().catch(() => {});
-				if (auth.authenticated && !runtime.paused && connected)
-					void client
-						.mutation(api.hubspotRecipients.request, { membershipId, contractId })
-						.catch(() => {});
-			}
+			const next = document.visibilityState === 'visible' && document.hasFocus();
+			if (next && !foreground) foregroundVersion++;
+			foreground = next;
+		};
+		const blur = () => {
+			foreground = false;
 		};
 		observe();
 		document.addEventListener('visibilitychange', observe);
 		window.addEventListener('focus', observe);
+		window.addEventListener('blur', blur);
 		return () => {
 			document.removeEventListener('visibilitychange', observe);
 			window.removeEventListener('focus', observe);
+			window.removeEventListener('blur', blur);
 		};
 	});
 	$effect(() => {
@@ -351,7 +355,12 @@
 		)
 	);
 	$effect(() => {
-		const link = metadata.data?.hubspot;
+		const link = persistence.confirmed.hubspot;
+		const connection = hubspotConnection.data;
+		const association = link && associationKey(link);
+		const destination = link && destinationKey(link);
+		const version = foregroundVersion;
+		const transport = session.transportGeneration;
 		const eligible =
 			mounted &&
 			foreground &&
@@ -359,14 +368,62 @@
 			auth.authenticated &&
 			!runtime.paused &&
 			connected &&
-			!metadata.error &&
+			stateReconciled &&
 			!persistence.deleted &&
-			Boolean(link);
+			Boolean(
+				link &&
+				connection?.enabled &&
+				connection.status === 'connected' &&
+				connection.connectionId === link.connectionId &&
+				connection.accountId === link.accountId
+			);
 		untrack(() => {
-			if (eligible)
-				void client
-					.mutation(api.hubspotRecipients.request, { membershipId, contractId })
+			if (!eligible || !link || !association || !destination) return;
+			if (
+				lastForegroundRun?.destination === destination &&
+				lastForegroundRun.version === version &&
+				lastForegroundRun.transport === transport
+			)
+				return;
+			const changedAssociation = lastForegroundRun && lastForegroundRun.association !== association;
+			lastForegroundRun = { association, destination, version, transport };
+			if (link.availability !== 'available') return;
+			const now = Date.now();
+			if (lastDealCheck?.destination !== destination || now - lastDealCheck.at >= dealFreshMs)
+				void checkForegroundDeal(destination)
+					.then(() => {
+						if (
+							active &&
+							persistence.confirmed.hubspot &&
+							destinationKey(persistence.confirmed.hubspot) === destination
+						)
+							lastDealCheck = { destination, at: Date.now() };
+					})
 					.catch(() => {});
+			// Linking starts the new destination's recipient refresh in the backend mutation.
+			if (changedAssociation) {
+				lastRecipientRequest = { destination, at: now };
+				return;
+			}
+			if (!connection?.companyReadGranted) return;
+			if (
+				lastRecipientRequest?.destination === destination &&
+				now - lastRecipientRequest.at < recipientFreshMs
+			)
+				return;
+			if (recipientRequests.has(destination)) return;
+			const requested = { destination, at: now };
+			lastRecipientRequest = requested;
+			const current = client
+				.mutation(api.hubspotRecipients.request, { membershipId, contractId })
+				.then(() => {})
+				.catch(() => {
+					if (lastRecipientRequest === requested) lastRecipientRequest = undefined;
+				})
+				.finally(() => {
+					if (recipientRequests.get(destination) === current) recipientRequests.delete(destination);
+				});
+			recipientRequests.set(destination, current);
 		});
 	});
 	const editable = $derived(
@@ -433,6 +490,9 @@
 		selectedItemId = null;
 		selectedAnnotationId = null;
 	}
+	$effect(() => {
+		if (!viewActive) untrack(() => close(false));
+	});
 
 	const isAdmin = $derived(accountViewer().membership.role === 'admin');
 	const playbookHint = $derived<HintId | null>(
@@ -858,10 +918,10 @@
 		onClose={() => (repairHubSpot = false)}
 	/>{/if}
 
-<BoxDismissal owner={interactionOwner} active={inspectorVisible} onDismiss={close} />
+<BoxDismissal owner={interactionOwner} active={viewActive && inspectorVisible} onDismiss={close} />
 
 <WorkspacePresentationReporter
-	active={interactionAdmitted && !runtime.paused}
+	active={viewActive && interactionAdmitted && !runtime.paused}
 	outcome={presentationOutcome}
 />
 
@@ -1055,12 +1115,3 @@
 		/>
 	{/key}
 {/if}
-
-<BuyerLinkBarAdmission
-	id={contractId}
-	visit={buyerLinkVisit}
-	latest={latestBuyerLink}
-	{workspace}
-	available={buyerLinkAvailable}
-	{interactionAdmitted}
-/>

@@ -7,8 +7,6 @@ const copy = {
 		editingHelpLabel: 'About rep instructions',
 		editingHelp: 'These are the instructions your reps use when they negotiate a contract',
 		addAction: 'Add instructions',
-		addActionDescription:
-			'Add negotiation guidance, talk tracks, or approval rules for reps on this clause.',
 		editorLabel: 'Instructions editor',
 		optionsLabel: 'Instructions options',
 		deleteAction: 'Delete instructions',
@@ -47,8 +45,6 @@ const copy = {
 		editingHelpLabel: 'About buyer explanations',
 		editingHelp: 'When your reps send a link to buyers, these explanations will be included',
 		addAction: 'Add explanation',
-		addActionDescription:
-			'Add a plain-English explanation for this clause that buyers see when you share a link.',
 		editorLabel: 'Explanation editor',
 		optionsLabel: 'Explanation options',
 		deleteAction: 'Delete explanation',

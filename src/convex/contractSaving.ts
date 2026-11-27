@@ -46,7 +46,7 @@ export async function saveSelections(
 		return JSON.parse(prior.result) as ContractSaveResult;
 	}
 
-	await requireContractWork(ctx, contract);
+	const connection = await requireContractWork(ctx, contract);
 
 	if (contract.root.stateRevision !== args.expectedStateRevision)
 		return { status: 'conflict', state: stateOf(contract) };
@@ -148,26 +148,30 @@ export async function saveSelections(
 
 	const now = Date.now();
 	const savedAt = Math.max(now, contract.root.savedAt + 1);
-	for (const [itemId, optionId] of selectedEntries) {
-		if (prevByItem.get(itemId)?.optionId === optionId) continue;
-		const item = itemsById.get(itemId)!;
-		if (!isRepItem(item)) continue;
-		const option = item.concessions.find((c) => c.id === optionId)!;
-		await activity(
-			ctx,
-			contract,
-			actorOf(access.profile),
-			`${key}:applied:${itemId}:${optionId}`,
-			'applied',
-			JSON.stringify({
-				itemId,
-				contentRevision: item.contentRevision,
-				concessionId: optionId,
-				description: option.description
-			}),
-			now
-		);
-	}
+	await Promise.all(
+		selectedEntries.map(async ([itemId, optionId]) => {
+			if (prevByItem.get(itemId)?.optionId === optionId) return;
+			const item = itemsById.get(itemId)!;
+			if (!isRepItem(item)) return;
+			const option = item.concessions.find((c) => c.id === optionId)!;
+			await activity(
+				ctx,
+				contract,
+				actorOf(access.profile),
+				`${key}:applied:${itemId}:${optionId}`,
+				'applied',
+				JSON.stringify({
+					itemId,
+					contentRevision: item.contentRevision,
+					concessionId: optionId,
+					description: option.description
+				}),
+				now,
+				undefined,
+				{ knownActive: Boolean(connection) }
+			);
+		})
+	);
 
 	const updated = await patchContract(ctx, contract, {
 		concessions: nextConcessions,

@@ -40,7 +40,7 @@
 		textElement = $state<HTMLParagraphElement>(),
 		confirmationPanel = $state<HTMLDivElement>();
 	$effect(() => {
-		void session.transitionVersion;
+		void session.policyVersion;
 		menuOpen = false;
 	});
 	const deletionRequest = $derived.by(() => {
@@ -177,10 +177,10 @@
 				perspective={session.perspective()}
 				title="Edit message"
 				placeholder="Write a message…"
-					submitLabel={composer.awaitingConfirmation ? 'Retry' : 'Save'}
+				submitLabel={composer.awaitingConfirmation ? 'Retry' : 'Save'}
 				closeLabel="Cancel"
 				pending={composer.busy}
-					textLocked={composer.awaitingConfirmation}
+				textLocked={composer.awaitingConfirmation}
 				errorMessage={composer.error ?? ''}
 				onTextChange={(value) => session.updateComposerText(value)}
 				onClose={() => closeEdit(true)}

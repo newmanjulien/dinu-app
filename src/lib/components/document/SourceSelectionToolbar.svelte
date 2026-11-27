@@ -130,7 +130,6 @@
 		bind:element={toolbarElement}
 		{anchor}
 		label={controller.copy.addAction}
-		description={controller.copy.addActionDescription}
 		onSelect={confirm}
 		onClose={dismiss}
 	/>

@@ -1,5 +1,7 @@
-import { ConvexError, v, type Infer } from 'convex/values';
 import { RateLimiter } from '@convex-dev/rate-limiter';
+import { ConvexError, v, type Infer } from 'convex/values';
+import { BOOKING_WINDOW_MS, withinBookingWindow } from '../lib/booking-window';
+import { readTextBody } from '../lib/http-body';
 import { components, internal } from './_generated/api';
 import type { Doc, Id } from './_generated/dataModel';
 import {
@@ -11,9 +13,9 @@ import {
 	internalQuery,
 	mutation,
 	query,
+	type ActionCtx,
 	type MutationCtx,
-	type QueryCtx,
-	type ActionCtx
+	type QueryCtx
 } from './_generated/server';
 import {
 	availableCompany,
@@ -24,77 +26,78 @@ import {
 	verifiedIdentity,
 	type CompanyAccess
 } from './auth';
-import { readTextBody } from '../lib/http-body';
-import { BOOKING_WINDOW_MS, withinBookingWindow } from '../lib/booking-window';
-import schema from './schema';
 import { canonicalState, confirmedEvidence, validOperator } from './csmAttemptState';
-import { assertHistoricalAdmission } from './csmHistory';
-import { retireSupersededSetupAppointment } from './csmSetupLifecycle';
-import { permissionsForRole } from './permissions';
-import { pendingInitialSetup, resolveSetupBooking } from './csmSetupState';
-import {
-	seedSetupAppointment,
-	claimSetupAppointment,
-	claimResult,
-	applySetupProof,
-	setupProof,
-	readSetupProof
-} from './csmSetupAppointments';
-import {
-	replacementProgress,
-	replacementSource,
-	replacementState,
-	sharedReplacement,
-	sameReplacement,
-	type Replacement
-} from './csmReplacements';
 import {
 	attemptView,
 	availabilityResult,
+	bookingAck,
 	bookingError,
 	bookingMode,
-	providerBooking,
-	bookingAck,
 	failureBasis,
 	isSenderExecutionTerminal,
+	meetingPolicy,
+	providerBooking,
+	setupReplacement,
 	terminalProof
 } from './csmBookingValidators';
-import { setupReplacement, meetingPolicy } from './csmBookingValidators';
-import { seedMeetingPreparation } from './csmMeetingPreparation';
 import {
-	object,
-	iso,
-	validTimeZone,
-	validBookingUid,
-	configuration,
-	slots,
 	calRead,
 	calRequest,
-	parseBooking,
-	parseSetupLocator,
+	configuration,
+	iso,
 	noncreatingRejection,
-	bookingInScope,
-	type ProviderBooking,
-	type BookingMode
+	object,
+	parseBooking,
+	slots,
+	validBookingUid,
+	validTimeZone,
+	type BookingMode,
+	type ProviderBooking
 } from './csmCal';
-import { attemptReference, historicalAttemptLocators, historicalAttemptStart } from './csmHistory';
 import {
+	assertHistoricalAdmission,
+	attemptReference,
+	historicalAttemptLocators,
+	historicalAttemptStart
+} from './csmHistory';
+import {
+	attemptIdFromReference,
 	creationScope,
 	frozenAttemptReference,
 	newAttemptReference,
 	newDispatchId,
-	attemptIdFromReference,
 	verifySignature
 } from './csmIdentity';
+import { seedMeetingPreparation } from './csmMeetingPreparation';
+import {
+	replacementProgress,
+	replacementSource,
+	replacementState,
+	sameReplacement,
+	sharedReplacementWithAttempt,
+	type Replacement
+} from './csmReplacements';
+import {
+	applySetupProof,
+	claimResult,
+	claimSetupAppointment,
+	readSetupProof,
+	seedSetupAppointment,
+	setupProof
+} from './csmSetupAppointments';
+import { retireSupersededSetupAppointment } from './csmSetupLifecycle';
+import { pendingInitialSetup, resolveSetupBooking } from './csmSetupState';
+import { permissionsForRole } from './permissions';
+import schema from './schema';
 
 import { blockingInitialGuard } from './csmErasureGuards';
 import {
 	enrollAttemptRecovery,
-	recoveryDisposition,
-	RECOVERY_LEASE,
 	EVIDENCE_PASSES,
 	evidenceRetry,
-	readFailure
+	readFailure,
+	RECOVERY_LEASE,
+	recoveryDisposition
 } from './csmRecoveryPolicy';
 
 type Attempt = Doc<'csmBookingAttempts'>;
@@ -129,7 +132,7 @@ async function pending(ctx: QueryCtx, membershipId: Id<'memberships'>) {
 	for (const state of pendingStates) {
 		const row = await ctx.db
 			.query('csmBookingAttempts')
-			.withIndex('by_membershipId_and_state', (q) =>
+			.withIndex('by_membershipId_and_state_and_confirmation', (q) =>
 				q.eq('membershipId', membershipId).eq('state', state)
 			)
 			.first();
@@ -299,17 +302,16 @@ export const availability = action({
 });
 export const attempt = query({
 	args: {
-		...memberArgs,
 		mode: bookingMode,
 		attemptId: v.optional(v.id('csmBookingAttempts')),
 		replacement: v.optional(setupReplacement)
 	},
 	returns: v.union(attemptView, v.null()),
 	handler: async (ctx, a) => {
-		const owner = await requirePermission(ctx, 'manageTemplate', a.membershipId);
+		const owner = await requirePermission(ctx, 'manageTemplate');
 		const row = a.attemptId
-			? await owned(ctx, a.membershipId, a.attemptId, owner)
-			: await pending(ctx, a.membershipId);
+			? await owned(ctx, owner.membershipId, a.attemptId, owner)
+			: await pending(ctx, owner.membershipId);
 		if (row && (row.mode !== a.mode || !sameReplacement(row.replacement, a.replacement)))
 			return null;
 		return row ? view(row) : null;
@@ -658,10 +660,15 @@ export const beginRecovery = internalMutation({
 				return null;
 			}
 			const lease = (updated.recoveryLease ?? 0) + 1;
+			const recoveryDue = Date.now() + RECOVERY_LEASE;
 			await ctx.db.patch('csmBookingAttempts', attemptId, {
 				recoveryLease: lease,
-				recoveryLeaseUntil: Date.now() + RECOVERY_LEASE,
-				recoveryDue: Date.now() + RECOVERY_LEASE
+				recoveryLeaseUntil: recoveryDue,
+				recoveryDue
+			});
+			await ctx.scheduler.runAt(recoveryDue, internal.csmBookings.recoveryWake, {
+				attemptId,
+				dueAt: recoveryDue
 			});
 			return {
 				attempt: updated,
@@ -1169,13 +1176,18 @@ export async function requestAttemptRecovery(
 ) {
 	if (!(await liveAttempt(ctx, a)) || a.state === 'booked') return;
 	if (evidence) {
+		const recoveryDue = Math.max(Date.now(), a.recoveryLeaseUntil ?? 0);
 		await ctx.db.patch('csmBookingAttempts', a._id, {
 			recoveryGeneration: (a.recoveryGeneration ?? 0) + 1,
 			recoverySeedUid: seedUid ?? a.recoverySeedUid,
 			recoveryReview: undefined,
 			reviewRequired: undefined,
-			recoveryDue: Math.max(Date.now(), a.recoveryLeaseUntil ?? 0)
+			recoveryDue
 			// Preserve failure history. A failed pass with history >=10 returns immediately to review.
+		});
+		await ctx.scheduler.runAt(recoveryDue, internal.csmBookings.recoveryWake, {
+			attemptId: a._id,
+			dueAt: recoveryDue
 		});
 	} else {
 		if (a.state === 'unknown') await enrollAttemptRecovery(ctx, a);
@@ -1188,13 +1200,32 @@ export async function requestAttemptRecovery(
 	if (evidence && job?.state.kind === 'pending' && job.scheduledTime > updated.recoveryDue) {
 		await ctx.scheduler.cancel(job._id);
 	} else if (job && ['pending', 'inProgress'].includes(job.state.kind)) return;
-	const recoveryJobId = await ctx.scheduler.runAfter(
-		Math.max(0, updated.recoveryDue - Date.now()),
+	const recoveryJobId = await ctx.scheduler.runAt(
+		updated.recoveryDue,
 		internal.csmBookings.recoverAttempt,
 		{ attemptId: a._id }
 	);
 	await ctx.db.patch('csmBookingAttempts', a._id, { recoveryJobId });
 }
+export const recoveryWake = internalMutation({
+	args: { ...attemptArgs, dueAt: v.number() },
+	returns: v.null(),
+	handler: async (ctx, { attemptId, dueAt }) => {
+		const a = await ctx.db.get('csmBookingAttempts', attemptId);
+		if (
+			!a ||
+			a.recoveryDue !== dueAt ||
+			dueAt > Date.now() ||
+			(a.recoveryLeaseUntil ?? 0) > Date.now() ||
+			a.recoveryReview ||
+			a.reviewRequired ||
+			!(await liveAttempt(ctx, a))
+		)
+			return null;
+		await ctx.scheduler.runAfter(0, internal.csmBookings.recoverAttempt, { attemptId });
+		return null;
+	}
+});
 export const requestRecovery = internalMutation({
 	args: attemptArgs,
 	returns: v.null(),
@@ -1244,11 +1275,9 @@ export const finishRecovery = internalMutation({
 			recoveryDue: due
 		});
 		if (due !== undefined) {
-			const recoveryJobId = await ctx.scheduler.runAfter(
-				Math.max(0, due - Date.now()),
-				internal.csmBookings.recoverAttempt,
-				{ attemptId: a._id }
-			);
+			const recoveryJobId = await ctx.scheduler.runAt(due, internal.csmBookings.recoverAttempt, {
+				attemptId: a._id
+			});
 			await ctx.db.patch('csmBookingAttempts', a._id, { recoveryJobId });
 		}
 		return null;
@@ -1290,15 +1319,15 @@ export const repairRecovery = internalMutation({
 		return null;
 	}
 });
-export const checkStatus = action({
+export const checkStatus = mutation({
 	args: { ...memberArgs, ...attemptArgs },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const row: Attempt = await ctx.runQuery(internal.csmBookings.readOwned, args);
+		const row = await owned(ctx, args.membershipId, args.attemptId);
 		if (row.state === 'booked') return null;
 		await limiter.limit(ctx, 'status', { key: args.membershipId, throws: true });
 		try {
-			await ctx.runMutation(internal.csmBookings.requestRecovery, { attemptId: args.attemptId });
+			await requestAttemptRecovery(ctx, row);
 		} catch {
 			throw new ConvexError('Booking status could not be checked. Please try again shortly.');
 		}
@@ -1310,37 +1339,66 @@ async function setupProgressFor(
 	ctx: QueryCtx,
 	owner: CompanyAccess,
 	replacement?: Replacement
-): Promise<Infer<typeof replacementProgress>> {
-	if (replacement) return sharedReplacement(ctx, owner, replacement);
+): Promise<{ progress: Infer<typeof replacementProgress>; attempt: Attempt | null }> {
+	if (replacement) return sharedReplacementWithAttempt(ctx, owner, replacement);
 	if (
 		!permissionsForRole(owner.membership.role, owner.isOwner).manageTemplate ||
 		owner.company.templateSourceId
 	)
-		return { state: 'unavailable' };
-	if (await blockingInitialGuard(ctx, owner.companyId)) return { state: 'uncertain' };
+		return { progress: { state: 'unavailable' }, attempt: null };
+	if (await blockingInitialGuard(ctx, owner.companyId))
+		return { progress: { state: 'uncertain' }, attempt: null };
 	const booking = await resolveSetupBooking(ctx, owner.company);
-	if (booking.kind === 'confirmed') return { state: 'completed' };
-	if (booking.kind !== 'initial') return { state: 'unavailable' };
+	if (booking.kind === 'confirmed') return { progress: { state: 'completed' }, attempt: null };
+	if (booking.kind !== 'initial') return { progress: { state: 'unavailable' }, attempt: null };
 	const a = await pendingInitialSetup(ctx, owner.companyId);
-	if (!a) return { state: 'ready' };
+	if (!a) return { progress: { state: 'ready' }, attempt: null };
+	const ownedAttempt =
+		a.profileId === owner.profile._id && a.membershipId === owner.membership._id ? a : null;
 	return {
-		state: a.state === 'unknown' ? 'uncertain' : 'in-progress',
-		...(a.profileId === owner.profile._id && a.membershipId === owner.membership._id
-			? { attemptId: a._id }
-			: {})
+		progress: {
+			state: a.state === 'unknown' ? 'uncertain' : 'in-progress',
+			...(ownedAttempt ? { attemptId: ownedAttempt._id } : {})
+		},
+		attempt: ownedAttempt
 	};
 }
-export const setupStatus = query({
-	args: { ...memberArgs, replacement: v.optional(setupReplacement) },
-	returns: replacementProgress,
-	handler: async (ctx, a) =>
-		setupProgressFor(
-			ctx,
-			await requirePermission(ctx, 'manageTemplate', a.membershipId),
-			a.replacement
-		)
+/** One setup opening returns shared progress and the caller's private receipt. */
+export const setupOpening = query({
+	args: {
+		attemptId: v.optional(v.id('csmBookingAttempts')),
+		replacement: v.optional(setupReplacement)
+	},
+	returns: v.object({
+		progress: replacementProgress,
+		attempt: v.union(attemptView, v.null())
+	}),
+	handler: async (ctx, a) => {
+		const owner = await requirePermission(ctx, 'manageTemplate');
+		const [{ progress, attempt: progressAttempt }, explicitAttempt] = await Promise.all([
+			setupProgressFor(ctx, owner, a.replacement),
+			a.attemptId ? owned(ctx, owner.membershipId, a.attemptId, owner) : Promise.resolve(null)
+		]);
+		const row = a.attemptId
+			? explicitAttempt
+			: (progressAttempt ??
+				(['ready', 'completed', 'unavailable'].includes(progress.state)
+					? null
+					: await pending(ctx, owner.membershipId)));
+		return {
+			progress,
+			attempt:
+				row &&
+				row.companyId === owner.companyId &&
+				row.profileId === owner.profile._id &&
+				row.mode === 'setup' &&
+				sameReplacement(row.replacement, a.replacement)
+					? view(row)
+					: null
+		};
+	}
 });
-export const requestSetupRecovery = internalMutation({
+export const checkSetup = mutation({
 	args: { ...memberArgs, replacement: v.optional(setupReplacement) },
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1361,14 +1419,6 @@ export const requestSetupRecovery = internalMutation({
 		} else if ((await resolveSetupBooking(ctx, owner.company)).kind === 'initial')
 			attempt = await pendingInitialSetup(ctx, owner.companyId);
 		if (attempt) await requestAttemptRecovery(ctx, attempt);
-		return null;
-	}
-});
-export const checkSetup = action({
-	args: { ...memberArgs, replacement: v.optional(setupReplacement) },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		await ctx.runMutation(internal.csmBookings.requestSetupRecovery, args);
 		return null;
 	}
 });
@@ -1478,9 +1528,6 @@ export const readReference = internalQuery({
 		return a && reference === attemptReference(a) && (await liveAttempt(ctx, a)) ? a : null;
 	}
 });
-function referencedAttempt(ctx: ActionCtx, reference: string): Promise<Attempt | null> {
-	return ctx.runQuery(internal.csmBookings.readReference, { reference });
-}
 /** Drains old scheduled names into durable GET-only evidence; no provider IO here. */
 export const recoverWebhook = internalAction({
 	args: {

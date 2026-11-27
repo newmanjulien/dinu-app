@@ -27,7 +27,7 @@ export class AccountLifecycle {
 			signOut: () => Promise<void>;
 			signOutDeleted?: () => Promise<void>;
 			login: (recover: boolean) => Promise<void>;
-			clear: () => void;
+			clear: (departingUserId: string | null) => void;
 			cancelReads: () => void;
 		}
 	) {}
@@ -114,11 +114,12 @@ export class AccountLifecycle {
 		if (!loaded) return;
 		if (this.preparedSessionId === sessionId && this.userId === userId) return;
 		const previous = this.preparedSessionId;
+		const previousUserId = this.userId;
 		this.readFailed = false;
 		const voluntary = this.phase === 'signing-out' || this.phase === 'completing-deletion';
 		this.generation++;
 		this.actions.cancelReads();
-		if (previous && sessionId) this.actions.clear();
+		if (previous && sessionId) this.actions.clear(previousUserId);
 		this.transportGeneration++;
 		this.attempt = null;
 		for (const editor of this.editors) {
@@ -136,7 +137,7 @@ export class AccountLifecycle {
 		if (sessionId) {
 			this.setPhase('authenticating');
 			this.startReadAttempt();
-		} else if (previous) this.end(!voluntary);
+		} else if (previous) this.end(!voluntary, previousUserId);
 		else this.setPhase('signed-out');
 	}
 	reportAuth(loading: boolean, authenticated: boolean) {
@@ -333,7 +334,7 @@ export class AccountLifecycle {
 		for (const editor of this.editors) editor.discard();
 		void this.signOut();
 	}
-	private end(recover: boolean) {
+	private end(recover: boolean, departingUserId = this.userId) {
 		this.generation++;
 		this.attempt = null;
 		this.preparedSessionId = null;
@@ -342,7 +343,7 @@ export class AccountLifecycle {
 		this.readFailed = false;
 		this.error = '';
 		this.setPhase('signed-out');
-		this.actions.clear();
+		this.actions.clear(departingUserId);
 		this.navigate(recover);
 	}
 	private navigate(recover: boolean) {

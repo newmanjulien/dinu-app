@@ -5,6 +5,8 @@
 	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	let {
 		contract,
+		unread = false,
+		hasActivity = false,
 		observe = () => {},
 		onWarm,
 		onCool,
@@ -13,6 +15,8 @@
 		skeletonIndex
 	}: {
 		contract?: SavedContractCard;
+		unread?: boolean;
+		hasActivity?: boolean;
 		observe?: Action<HTMLElement, SavedContractCard>;
 		onWarm?: () => void;
 		onCool?: () => void;
@@ -71,8 +75,10 @@
 			focused = false;
 			if (!hovered) onCool?.();
 		}}
-		class="flex flex-1 flex-col justify-between gap-1.5 rounded-xl py-[9px] pr-[56px] pl-[11px] outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-1 focus-visible:after:ring-accent"
-		aria-label={contract ? `Open contract for ${contract.title}` : undefined}
+		class={`flex flex-1 flex-col justify-between gap-1.5 rounded-xl py-[9px] ${hasActivity ? 'pr-[76px]' : 'pr-[56px]'} pl-[11px] outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-1 focus-visible:after:ring-accent`}
+		aria-label={contract
+			? `Open contract for ${contract.title}${unread ? '. Unread.' : ''}`
+			: undefined}
 	>
 		{#if content}{@render content()}{:else}
 			<SkeletonBlock class="h-5 w-3/4" />
@@ -82,7 +88,7 @@
 			<SkeletonBlock class="h-4 w-2/3" />
 		{/if}
 	</svelte:element>
-	<div class="absolute top-[9px] right-[11px] z-10 inline-flex items-center">
+	<div class="absolute top-[9px] right-[11px] z-10 inline-flex items-center gap-1">
 		{#if action}{@render action()}{:else}<SkeletonBlock class="size-6 rounded-full" />{/if}
 	</div>
 </article>

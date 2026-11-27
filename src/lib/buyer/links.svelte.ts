@@ -6,11 +6,10 @@ import { api } from '../../convex/_generated/api';
 import type { ContractEditors } from '$lib/contract/editors.svelte';
 import { contractReadiness } from '$lib/contract/changes';
 import { IdempotentAction } from '$lib/contract/idempotent-action.svelte';
-import { saveError } from '$lib/contract/saved';
+import { saveError, type LiveContractMetadata } from '$lib/contract/saved';
 import { waitForRead } from '$lib/auth/attempt';
 import { buyerPath } from './urls';
 
-type Link = NonNullable<FunctionReturnType<typeof api.buyerLinks.latest>>;
 type CaptureArgs = FunctionArgs<typeof api.buyerLinks.ensureLatest>;
 type CaptureResult = FunctionReturnType<typeof api.buyerLinks.ensureLatest>;
 
@@ -25,7 +24,8 @@ export class BuyerLinkController {
 		private editors: Pick<ContractEditors, 'reserveForLink'>,
 		private membershipId: Id<'memberships'>,
 		private id: Id<'savedContracts'>,
-		private onCopied: (created: boolean) => void
+		private onCopied: (created: boolean) => void,
+		private currentToken: () => string | null | undefined = () => undefined
 	) {}
 	destroy() {
 		this.alive = false;
@@ -39,19 +39,32 @@ export class BuyerLinkController {
 			if (!this.client.connectionState().isWebSocketConnected)
 				throw new ConvexError('Reconnect to prepare a link.');
 			const args = { membershipId: this.membershipId, id: this.id };
-			let existingLink: Link | null = null;
+			let existingToken: string | null = null;
 			await this.capture.run({
 				timeoutMs: 20_000,
 				isCurrent: () => this.alive,
 				prepare: async (signal) => {
-					const reservation = this.editors.reserveForLink(this.id);
-					try {
-						const link = await waitForRead(this.client.query(api.buyerLinks.latest, args), signal);
-						if (link) {
-							existingLink = link;
+					const observedToken = this.currentToken();
+					if (typeof observedToken === 'string') {
+						existingToken = observedToken;
+						return null;
+					}
+					let fetchedState: LiveContractMetadata | null | undefined;
+					if (observedToken === undefined) {
+						fetchedState = await waitForRead(
+							this.client.query(api.contracts.state, { id: this.id }),
+							signal
+						);
+						if (fetchedState?.buyerLink) {
+							existingToken = fetchedState.buyerLink.token;
 							return null;
 						}
+					}
+					const reservation = this.editors.reserveForLink(this.id);
+					try {
+						let savedPending = false;
 						if (reservation.needsSave) {
+							savedPending = true;
 							this.busy = 'Saving changes…';
 							if (!(await waitForRead(reservation.editor.savePending(), signal)))
 								throw new ConvexError('Resolve unsaved changes before continuing.');
@@ -59,9 +72,20 @@ export class BuyerLinkController {
 						if (!this.alive) return null;
 						if (reservation.needsSave)
 							throw new ConvexError('Resolve unsaved changes before continuing.');
-						const state = await waitForRead(this.client.query(api.contracts.state, args), signal);
+						const state =
+							reservation.currentState ??
+							(!savedPending && fetchedState !== undefined
+								? fetchedState
+								: await waitForRead(
+										this.client.query(api.contracts.state, { id: this.id }),
+										signal
+									));
 						if (reservation.needsSave)
 							throw new ConvexError('Resolve unsaved changes before continuing.');
+						if (state?.buyerLink) {
+							existingToken = state.buyerLink.token;
+							return null;
+						}
 						if (!state || !contractReadiness(state.concessions, state.workBlock).ready)
 							throw new ConvexError(
 								'Approve or remove pending concessions before sharing a buyer link.'
@@ -79,16 +103,18 @@ export class BuyerLinkController {
 				onDispatch: () => {
 					this.busy = 'Creating link…';
 				},
-				invoke: (captureArgs) => this.client.action(api.buyerLinks.ensureLatest, captureArgs),
+				invoke: async (captureArgs) => {
+					const link = await this.client.action(api.buyerLinks.ensureLatest, captureArgs);
+					// A confirmed publication invalidates retained rows even if clipboard work
+					// fails or this action finishes after the UI's optional deadline.
+					return link;
+				},
 				finish: async (link) => {
 					await this.copyToClipboard(`${location.origin}${buyerPath(link.token)}`, link.created);
 				}
 			});
-			if (existingLink && this.alive) {
-				await this.copyToClipboard(
-					`${location.origin}${buyerPath((existingLink as Link).token)}`,
-					false
-				);
+			if (existingToken && this.alive) {
+				await this.copyToClipboard(`${location.origin}${buyerPath(existingToken)}`, false);
 			}
 		} catch (error) {
 			if (this.alive) this.error = saveError(error, 'We couldn’t prepare the link. Try again.');

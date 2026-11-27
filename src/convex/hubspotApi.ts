@@ -1,8 +1,8 @@
-import { ConvexError } from 'convex/values';
 import { RateLimiter } from '@convex-dev/rate-limiter';
+import { ConvexError } from 'convex/values';
 import { components, internal } from './_generated/api';
-import type { Doc } from './_generated/dataModel';
 import { env, type ActionCtx } from './_generated/server';
+import type { CredentialConnection } from './hubspotCredentials';
 
 const limiter = new RateLimiter(components.rateLimiter, {
 	hubspot: { kind: 'token bucket', rate: 80, period: 10_000, capacity: 80 },
@@ -58,9 +58,9 @@ export async function tokenExchange(parameters: Record<string, string>, signal?:
 }
 export async function connectionToken(
 	ctx: ActionCtx,
-	connection: Doc<'hubspotConnections'>,
+	connection: CredentialConnection,
 	signal?: AbortSignal
-): Promise<Doc<'hubspotConnections'>> {
+): Promise<CredentialConnection> {
 	if (connection.status !== 'connected') throw new HubSpotError(401);
 	if (connection.expiresAt > Date.now() + 60_000) return connection;
 	const claim = crypto.randomUUID();
@@ -103,19 +103,22 @@ export async function connectionToken(
 }
 export async function hubspot(
 	ctx: ActionCtx,
-	connection: Doc<'hubspotConnections'>,
+	connection: CredentialConnection,
 	path: string,
 	init: RequestInit = {},
 	search = false,
-	purpose: 'read' | 'create' = 'read'
+	purpose: 'read' | 'create' = 'read',
+	options: { skipLiveCheck?: boolean } = {}
 ): Promise<unknown> {
 	const quota = await limiter.limit(ctx, search ? 'search' : 'hubspot', {
 		key: connection.accountId
 	});
 	if (!quota.ok) throw new HubSpotError(429, quota.retryAfter, 'not-attempted', purpose);
-	const live = await ctx.runQuery(internal.hubspotConnections.read, { id: connection._id });
-	if (!live || live.generation !== connection.generation || live.status !== 'connected')
-		throw new HubSpotError(409, 2000, 'not-attempted', purpose);
+	if (!options.skipLiveCheck) {
+		const live = await ctx.runQuery(internal.hubspotConnections.read, { id: connection._id });
+		if (!live || live.generation !== connection.generation || live.status !== 'connected')
+			throw new HubSpotError(409, 2000, 'not-attempted', purpose);
+	}
 	let response: Response;
 	try {
 		response = await fetch(`https://api.hubapi.com${path}`, {
@@ -170,7 +173,7 @@ export async function hubspot(
 	}
 }
 /** Availability is object evidence, independent of a title's suitability for creation. */
-export async function readDeal(ctx: ActionCtx, connection: Doc<'hubspotConnections'>, id: string) {
+export async function readDeal(ctx: ActionCtx, connection: CredentialConnection, id: string) {
 	if (!/^\d+$/.test(id)) throw new HubSpotError(502);
 	let data;
 	try {
@@ -194,7 +197,7 @@ export async function readDeal(ctx: ActionCtx, connection: Doc<'hubspotConnectio
 }
 export async function resolveDeal(
 	ctx: ActionCtx,
-	connection: Doc<'hubspotConnections'>,
+	connection: CredentialConnection,
 	id: string
 ): Promise<{ id: string; name: string }> {
 	if (!/^\d+$/.test(id)) throw new ConvexError('Choose a valid HubSpot deal.');
@@ -226,7 +229,7 @@ export function objectId(value: unknown, purpose: 'read' | 'create' = 'read'): s
 /** Optional display metadata; failures never establish that the linked deal is unavailable. */
 export async function resolveRecipient(
 	ctx: ActionCtx,
-	connection: Doc<'hubspotConnections'>,
+	connection: CredentialConnection,
 	dealId: string,
 	signal?: AbortSignal
 ): Promise<{ id: string; name: string } | null> {

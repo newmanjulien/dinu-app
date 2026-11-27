@@ -13,6 +13,7 @@ import BuyerContractFailureHarness from './BuyerContractFailureHarness.svelte';
 
 const thread: DiscussionThread = {
 	id: 'thread' as Id<'discussionThreads'>,
+	replies: [],
 	contentRevision: 1,
 	anchor: {
 		start: { kind: 'source', point: { sourceKey: 'clause', offset: 0 } },
@@ -41,7 +42,7 @@ describe('buyer discussion regressions', () => {
 		const transport = controlledClient();
 		const session = new DiscussionSession(
 			transport.client as unknown as ConstructorParameters<typeof DiscussionSession>[0],
-			{ token: 'Ab3Cd4Ef5Gh6I' },
+			{ kind: 'buyer', token: 'Ab3Cd4Ef5Gh6I' },
 			() => 1
 		);
 		try {
@@ -60,13 +61,21 @@ describe('buyer discussion regressions', () => {
 
 	it('shows a retryable error when the contract renderer throws', async () => {
 		const transport = controlledClient();
-		const contract = new BuyerContract('Ab3Cd4Ef5Gh6I', transport.client);
+		const contract = new BuyerContract(
+			'Ab3Cd4Ef5Gh6I',
+			transport.client,
+			'version' as Id<'templateVersions'>
+		);
 		contract.help.configure({ kind: 'manual', variant: 'buyer-link-buyer' });
 		contract.help.considerAutomatic();
 		contract.headerPresented = true;
 		contract.allowed = true;
 		contract.content = {
 			templateVersionId: 'version' as Id<'templateVersions'>,
+			kind: 'current',
+			companyName: 'Ocean Company',
+			buyerName: 'Ocean Buyer',
+			buyerRefreshable: false,
 			displayIdentity: 'published:1',
 			title: 'Contract',
 			contentRevision: 1,

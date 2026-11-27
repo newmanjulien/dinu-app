@@ -16,11 +16,18 @@ export type ReadyContract = {
 };
 export type ContractState = Infer<typeof contractState>;
 export type LiveContractMetadata = Infer<typeof liveContractMetadata>;
-export type LiveContractState = Omit<LiveContractMetadata, 'buyerName' | 'requestDelivery'>;
+export type ContractBuyerLink = NonNullable<LiveContractMetadata['buyerLink']>;
+export type LiveContractState = Omit<
+	LiveContractMetadata,
+	'buyerName' | 'requestDelivery' | 'buyerLink' | 'hasUnreadComment' | 'latestQuote'
+>;
 
 export function persistedContractMetadata({
 	buyerName: _buyerName,
 	requestDelivery: _requestDelivery,
+	buyerLink: _buyerLink,
+	hasUnreadComment: _hasUnreadComment,
+	latestQuote: _latestQuote,
 	...metadata
 }: LiveContractMetadata): LiveContractState {
 	return metadata;

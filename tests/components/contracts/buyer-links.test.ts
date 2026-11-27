@@ -9,18 +9,30 @@ describe('buyer link preparation', () => {
 	it('copies an existing clean link through one request without opening its editor or loading its template', async () => {
 		const f = fixture();
 		const b = buyerLinkFixture(f.owner, f.current);
-		const capture = deferred<typeof b.latest>();
-		b.query.mockReturnValue(capture.promise);
+		const capture = deferred<unknown>();
+		b.query.mockReturnValue(capture.promise as ReturnType<typeof b.query>);
 		const copying = b.links.copy();
 		await settle();
 		expect(b.query).toHaveBeenCalledOnce();
-		expect(getFunctionName(b.query.mock.calls[0][0])).toBe('buyerLinks:latest');
-		expect(b.query.mock.calls[0][1]).toEqual({ membershipId: 'membership', id: 'contract-a' });
+		expect(getFunctionName(b.query.mock.calls[0][0])).toBe('contracts:state');
+		expect(b.query.mock.calls[0][1]).toEqual({ id: 'contract-a' });
 		expect(f.client.onUpdate).not.toHaveBeenCalled();
 		expect(f.cache.loadFrozenVersion).not.toHaveBeenCalled();
 		expect(f.client.mutation).not.toHaveBeenCalled();
 		expect(b.writeText).not.toHaveBeenCalled();
-		capture.resolve(b.latest);
+		capture.resolve({
+			...f.current(),
+			buyerName: null,
+			requestDelivery: null,
+			buyerLink: {
+				id: b.latest.id,
+				token: b.latest.token,
+				createdAt: b.latest.createdAt,
+				contentRevision: 0,
+				concessions: {}
+			},
+			hasUnreadComment: false
+		});
 		await copying;
 		await settle();
 		expect(b.query).toHaveBeenCalledOnce();
@@ -52,7 +64,7 @@ describe('buyer link preparation', () => {
 			const copying = b.links.copy();
 			await settle();
 			expect(b.query).toHaveBeenCalledOnce();
-			expect(getFunctionName(b.query.mock.calls[0][0])).toBe('buyerLinks:latest');
+			expect(getFunctionName(b.query.mock.calls[0][0])).toBe('contracts:state');
 			expect(f.writes).toHaveLength(1);
 			expect(b.action).not.toHaveBeenCalled();
 			expect(b.writeText).not.toHaveBeenCalled();
@@ -103,7 +115,7 @@ describe('buyer link preparation', () => {
 		expect(b.links.error).toBe('We couldn’t prepare the link. Try again.');
 		await b.links.copy();
 		expect(b.action).toHaveBeenCalledTimes(2);
-		expect(b.query).toHaveBeenCalledTimes(2);
+		expect(b.query).toHaveBeenCalledTimes(1);
 		expect(b.writeText).toHaveBeenCalledExactlyOnceWith(`${location.origin}/${b.latest.token}`);
 		expect(b.onCopied).toHaveBeenCalledOnce();
 		expect(b.links.error).toBeNull();

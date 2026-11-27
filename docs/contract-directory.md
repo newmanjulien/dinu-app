@@ -3,8 +3,10 @@
 Current architecture: [data model](data-model.md). Release mechanics: [production releases](deployment.md).
 
 `contractDirectory` is the sole source for Home browsing and customer-name search.
-It stores contract/company/creator IDs, displayed company name, save time and the
-contract's original creation time. Selections, review state and immutable template
+It stores contract/company/author IDs, the publisher ID of any active buyer link,
+displayed company name, save time and the contract's original creation time. The
+publisher ID is indexed by company so first-link and setup checks read at most two
+directory rows, even when inactive link history grows. Selections, review state and immutable template
 content remain outside the directory. There is no readiness flag, source-selection
 argument, fallback reader or backfill worker.
 
@@ -16,6 +18,10 @@ Creation, changed saving, renaming and deletion maintain the projection in the s
 transaction as the contract. Unchanged saves and replayed operations preserve their
 zero-write behavior. A source-contract company index remains for deletion; browse
 and search indexes belong only to the directory.
+
+Buyer-link publication writes its publisher ID to the directory in the same
+transaction as the link. Contract saves and renames preserve that ID; logical
+contract deletion revokes the link and removes the directory row in one transaction.
 
 Both startup and live browsing use the same authorized reader. Blank browsing sorts
 by descending save time and original creation time; nonblank search uses Convex's

@@ -4,10 +4,10 @@ import { internal } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
 import {
 	internalMutation,
-	internalQuery,
 	mutation,
 	query,
-	type MutationCtx
+	type MutationCtx,
+	type QueryCtx
 } from './_generated/server';
 import {
 	availableCompany,
@@ -22,8 +22,6 @@ import { activeDelivery, cancelJob, createDelivery, removeDelivery } from './ema
 import { pendingInvitationDelivery } from './invitationDeliverySummary';
 import {
 	emailAddress,
-	invitationPreviewData,
-	invitationResolutionData,
 	type InvitationPreviewData,
 	type InvitationResolutionData
 } from './invitationValidators';
@@ -51,12 +49,11 @@ export async function revokeInvitation(ctx: MutationCtx, invitation: Doc<'compan
 }
 export const list = query({
 	args: {
-		membershipId: v.id('memberships'),
 		paginationOpts: paginationOptsValidator
 	},
 	returns: paginationResultValidator(invitationView),
 	handler: async (ctx, args) => {
-		const access = await requirePermission(ctx, 'manageMembers', args.membershipId);
+		const access = await requirePermission(ctx, 'manageMembers');
 		const result = await ctx.db
 			.query('companyInvitations')
 			.withIndex('by_companyId_and_status', (q) =>
@@ -146,8 +143,7 @@ export const accept = mutation({
 		const id = await ctx.db.insert('memberships', {
 			companyId: invitation.companyId,
 			profileId: profile._id,
-			role: 'rep',
-			supportWidgetCollapsed: false
+			role: 'rep'
 		});
 		await ctx.db.patch('companyInvitations', invitation._id, {
 			status: 'accepted',
@@ -227,11 +223,6 @@ export const prepareDelivery = internalMutation({
 			existing.expiresAt > Date.now()
 		)
 			return null;
-		// Keep historical setup completion when a resend replaces the delivery status.
-		if (existing?.deliveryStatus === 'sent' && access.company.colleaguesInvitedAt === undefined)
-			await ctx.db.patch('company', access.companyId, {
-				colleaguesInvitedAt: existing.deliveryStartedAt ?? existing._creationTime
-			});
 		if (oldDelivery) await removeDelivery(ctx, oldDelivery);
 		await cancelJob(ctx, existing?.expiryJobId);
 		const generation = (existing?.deliveryGeneration ?? 0) + 1;
@@ -288,59 +279,59 @@ export const expire = internalMutation({
 });
 
 // The random email token permits a minimal preview, never membership access.
-export const previewHash = internalQuery({
-	args: { tokenHash: v.string() },
-	returns: invitationPreviewData,
-	handler: async (ctx, args): Promise<InvitationPreviewData> => {
-		const invitation = await ctx.db
-			.query('companyInvitations')
-			.withIndex('by_tokenHash', (q) => q.eq('tokenHash', args.tokenHash))
-			.unique();
-		if (!invitation) return { status: 'unavailable' };
-		const company = await availableCompany(ctx, invitation.companyId);
-		if (!company) return { status: 'unavailable' };
-		if (invitation.status !== 'pending') return { status: invitation.status };
-		return {
-			status: 'available',
-			companyName: company.name,
-			email: invitation.normalizedEmail,
-			expiresAt: invitation.expiresAt
-		};
-	}
-});
+export async function readInvitationPreview(
+	ctx: QueryCtx,
+	tokenHash: string
+): Promise<InvitationPreviewData> {
+	const invitation = await ctx.db
+		.query('companyInvitations')
+		.withIndex('by_tokenHash', (q) => q.eq('tokenHash', tokenHash))
+		.unique();
+	if (!invitation) return { status: 'unavailable' };
+	const company = await availableCompany(ctx, invitation.companyId);
+	if (!company) return { status: 'unavailable' };
+	if (invitation.status !== 'pending') return { status: invitation.status };
+	if (invitation.expired) return { status: 'expired' };
+	return {
+		status: 'available',
+		companyName: company.name,
+		email: invitation.normalizedEmail,
+		expiresAt: invitation.expiresAt
+	};
+}
 
-export const resolveHash = internalQuery({
-	args: { tokenHash: v.string() },
-	returns: invitationResolutionData,
-	handler: async (ctx, args): Promise<InvitationResolutionData> => {
-		const { identity, profile } = await requireAccount(ctx);
-		const invitation = await ctx.db
-			.query('companyInvitations')
-			.withIndex('by_tokenHash', (q) => q.eq('tokenHash', args.tokenHash))
-			.unique();
-		if (!invitation) return { status: 'unavailable', companyName: null };
-		if (invitation.normalizedEmail !== emailAddress(identity.email))
-			return { status: 'wrong-email', companyName: null };
-		const company = await availableCompany(ctx, invitation.companyId);
-		if (!company) return { status: 'unavailable', companyName: null };
-		const companyName = company.name;
-		if (invitation.status === 'revoked') return { status: 'revoked', companyName };
-		const membership = await membershipForProfile(ctx, profile._id);
-		const sameCompany = membership?.companyId === invitation.companyId;
-		if (invitation.status === 'accepted')
-			return { status: sameCompany ? 'already-member' : 'accepted', companyName };
-		if (membership)
-			return {
-				status: sameCompany ? 'already-member' : 'other-company',
-				companyName,
-				expiresAt: invitation.expiresAt
-			};
+export async function readInvitationResolve(
+	ctx: QueryCtx,
+	tokenHash: string
+): Promise<InvitationResolutionData> {
+	const { identity, profile } = await requireAccount(ctx);
+	const invitation = await ctx.db
+		.query('companyInvitations')
+		.withIndex('by_tokenHash', (q) => q.eq('tokenHash', tokenHash))
+		.unique();
+	if (!invitation) return { status: 'unavailable', companyName: null };
+	if (invitation.normalizedEmail !== emailAddress(identity.email))
+		return { status: 'wrong-email', companyName: null };
+	const company = await availableCompany(ctx, invitation.companyId);
+	if (!company) return { status: 'unavailable', companyName: null };
+	const companyName = company.name;
+	if (invitation.status === 'revoked') return { status: 'revoked', companyName };
+	const membership = await membershipForProfile(ctx, profile._id);
+	const sameCompany = membership?.companyId === invitation.companyId;
+	if (invitation.status === 'accepted')
+		return { status: sameCompany ? 'already-member' : 'accepted', companyName };
+	if (invitation.expired) return { status: 'expired', companyName };
+	if (membership)
 		return {
-			status: 'available',
-			invitationId: invitation._id,
+			status: sameCompany ? 'already-member' : 'other-company',
 			companyName,
-			deliveryGeneration: invitation.deliveryGeneration,
 			expiresAt: invitation.expiresAt
 		};
-	}
-});
+	return {
+		status: 'available',
+		invitationId: invitation._id,
+		companyName,
+		deliveryGeneration: invitation.deliveryGeneration,
+		expiresAt: invitation.expiresAt
+	};
+}

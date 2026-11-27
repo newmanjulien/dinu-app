@@ -4,13 +4,10 @@ import { preloadCode } from '$app/navigation';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import { recordColdStart } from '$lib/document/runtime/render-perf';
 import { api } from '../../convex/_generated/api';
+import type { FunctionReturnType } from 'convex/server';
 import type { Id } from '../../convex/_generated/dataModel';
-import {
-	clearConfirmedCache,
-	createCacheScope,
-	RecentOpenings,
-	type CacheScope
-} from './browser-storage';
+import { clearConfirmedCache, createCacheScope, type CacheScope } from './browser-storage';
+import { retirePersistentCaches } from '$lib/auth/persistent-cache-registry';
 import {
 	olderContractState,
 	persistedContractMetadata,
@@ -34,6 +31,9 @@ type VersionFlight = { result: Promise<TemplateContent>; attempt: ReadAttempt; c
 export type SavedOpening = { id: string };
 type ImmutableRead = { opening?: SavedOpening; diskChecked?: boolean };
 
+type LiveState = FunctionReturnType<typeof api.contracts.state>;
+type TemplateHint = { versionId: Id<'templateVersions'>; companyId: Id<'company'> };
+
 type Entry = SnapshotEntry & { contractJson: string };
 type Flight = {
 	result: Promise<ContractSnapshotResult>;
@@ -55,19 +55,8 @@ class ContractSnapshotCache {
 	}
 	private client: SnapshotClient | undefined;
 	private versionFlights = new Map<string, VersionFlight>();
-	private openingReads = new Map<
-		string,
-		{ attempt: ReadAttempt; result: ReturnType<SnapshotStorage['getOpening']> }
-	>();
-	private openingContexts = new WeakMap<
-		SavedOpening,
-		{
-			epoch: number | undefined;
-			generation: number;
-			result: ReturnType<SnapshotStorage['getOpening']>;
-		}
-	>();
-	private openingGeneration = 0;
+	private hints = new Map<string, TemplateHint>();
+	private backoff = new Map<string, { until: number; failures: number }>();
 	private epochs = new Map<string, number>();
 	private deleted = new Set<string>();
 	private entries = new Map<string, Entry>();
@@ -97,10 +86,7 @@ class ContractSnapshotCache {
 		if (document.hidden) this.releaseReservation();
 		this.pump();
 	};
-	constructor(
-		private readonly scope: CacheScope,
-		private readonly openings: RecentOpenings
-	) {
+	constructor(private readonly scope: CacheScope) {
 		this.disk = new SnapshotStorage(scope);
 		document.addEventListener('visibilitychange', this.visibility);
 	}
@@ -118,92 +104,33 @@ class ContractSnapshotCache {
 			this.failures.delete(failed);
 		};
 	}
+	hint(id: string, versionId: Id<'templateVersions'>, companyId: Id<'company'>) {
+		if (this.lifetime.signal.aborted || this.deleted.has(id)) return;
+		this.hints.delete(id);
+		this.hints.set(id, { versionId, companyId });
+		if (this.hints.size > 256) this.hints.delete(this.hints.keys().next().value!);
+	}
+	templateHint(id: string) {
+		return this.hints.get(id);
+	}
+	private canWarm(id: string) {
+		return (this.backoff.get(id)?.until ?? 0) <= Date.now();
+	}
 	peek(id: string) {
 		return this.entries.get(id)?.data;
 	}
-	/** Metadata-only callers never acquire immutable content or a document resource. */
-	async restoreMetadata(id: string, signal?: AbortSignal) {
-		const epoch = this.epochs.get(id);
-		const memory = this.peek(id)?.contract;
-		if (memory) return memory;
-		const attempt = new ReadAttempt(250, signal, this.lifetime.signal);
-		try {
-			const data = await waitForRead(this.disk.getMetadata(id, attempt.signal), attempt.signal);
-			if (!this.deleted.has(id) && epoch === this.epochs.get(id)) return data?.contract;
-		} catch {
-			/* A compact preview is optional. */
-		} finally {
-			attempt.complete();
-		}
-	}
-	private readOpening(id: string, opening?: SavedOpening) {
-		if (opening && opening.id !== id) return Promise.resolve(undefined);
-		const epoch = this.epochs.get(id);
-		const generation = this.openingGeneration;
-		const shared = this.flights.get(id)?.opening;
-		const retained =
-			(opening && this.openingContexts.get(opening)) ??
-			(shared && this.openingContexts.get(shared));
-		if (retained) {
-			if (opening) this.openingContexts.set(opening, retained);
-			return retained.epoch === epoch && retained.generation === generation && !this.deleted.has(id)
-				? retained.result
-				: Promise.resolve(undefined);
-		}
-		let flight = this.openingReads.get(id);
-		if (!flight) {
-			const attempt = new ReadAttempt(250, this.lifetime.signal);
-			const created = {
-				attempt,
-				result: waitForRead(this.disk.getOpening(id, attempt.signal), attempt.signal)
-					.then((stored) =>
-						!this.deleted.has(id) &&
-						epoch === this.epochs.get(id) &&
-						generation === this.openingGeneration
-							? stored
-							: undefined
-					)
-					.catch(() => undefined)
-					.finally(() => {
-						attempt.complete();
-						if (this.openingReads.get(id) === created) this.openingReads.delete(id);
-					})
-			};
-			this.openingReads.set(id, created);
-			flight = created;
-		}
-		if (opening) this.openingContexts.set(opening, { epoch, generation, result: flight.result });
-		return flight.result;
-	}
-	/** Cache-only restoration never starts a state/content query or constructs persistence. */
+	/** Mutable state is retained only in this workspace's memory. */
 	async restore(
 		id: string,
 		signal?: AbortSignal,
-		opening?: SavedOpening
+		_opening?: SavedOpening
 	): Promise<ReadyContract | undefined> {
-		const memory = this.peek(id);
-		if (memory) return memory;
-		const epoch = this.epochs.get(id);
-		const stored = await waitForRead(this.readOpening(id, opening), signal, this.lifetime.signal);
-		if (signal?.aborted || this.deleted.has(id) || epoch !== this.epochs.get(id)) return;
-		if (!stored?.snapshot) return;
-		const current = this.peek(id);
-		if (current) return current;
-		const data: ReadyContract = {
-			id,
-			status: 'ready',
-			contract: stored.metadata.contract,
-			snapshot: stored.snapshot
-		};
-		return this.peek(id) ?? this.remember(id, data)?.data ?? data;
+		if (!signal?.aborted && !this.lifetime.signal.aborted) return this.peek(id);
 	}
 	/** Delivered access rejection purges previews without treating a retry as a deletion. */
 	invalidate(id: string) {
 		this.epochs.set(id, (this.epochs.get(id) ?? 0) + 1);
-		this.openingReads.get(id)?.attempt.abort();
-		this.openingReads.delete(id);
 		this.evict(id);
-		this.disk.delete(id);
 		for (const listener of this.evictions) listener(id);
 	}
 	/** Callers supply frozen-loader content; metadata confirmation alone cannot certify a preview. */
@@ -218,7 +145,13 @@ class ContractSnapshotCache {
 		this.cancelFlight(id, false);
 		this.queued.delete(id);
 		const entry = this.remember(id, data);
-		if (entry) this.disk.put(entry, () => !this.deleted.has(id) && !this.lifetime.signal.aborted);
+		if (entry)
+			this.disk.put(
+				entry.data.contract.templateVersionId,
+				entry.data.snapshot,
+				entry.immutableBytes,
+				() => !this.lifetime.signal.aborted
+			);
 		const confirmed = entry?.data ?? data;
 		for (const listener of this.listeners) listener(confirmed);
 		return confirmed;
@@ -312,7 +245,7 @@ class ContractSnapshotCache {
 			this.displaced.set(id, { flight, timer });
 		}
 		const missing = ids.filter(
-			(id) => !this.deleted.has(id) && !this.touch(id) && !this.flights.has(id)
+			(id) => !this.deleted.has(id) && this.canWarm(id) && !this.touch(id) && !this.flights.has(id)
 		);
 		this.queued = new Set([
 			...missing.filter((id) => this.urgentIds.has(id)),
@@ -324,11 +257,9 @@ class ContractSnapshotCache {
 	remove(id: string) {
 		if (this.deleted.has(id) || this.lifetime.signal.aborted) return;
 		this.deleted.add(id);
+		this.hints.delete(id);
+		this.backoff.delete(id);
 		this.evict(id);
-		this.disk.delete(id);
-		this.openingReads.get(id)?.attempt.abort();
-		this.openingReads.delete(id);
-		this.openings.forget(id);
 		for (const listener of this.evictions) listener(id);
 	}
 	isDeleted(id: string) {
@@ -398,25 +329,16 @@ class ContractSnapshotCache {
 			const work = Promise.resolve().then(async () => {
 				let persisted: TemplateContent | undefined;
 				if (!diskChecked) {
-					if (opening) {
-						const bundle = await waitForRead(this.readOpening(opening.id, opening), readSignal);
-						if (
-							bundle?.metadata.contract.templateVersionId === versionId &&
-							bundle.metadata.contract.companyId === companyId
-						)
-							persisted = bundle.snapshot;
-					} else {
-						const diskAttempt = new ReadAttempt(250, readSignal);
-						try {
-							persisted = await waitForRead(
-								this.disk.getVersion(versionId, companyId, diskAttempt.signal),
-								diskAttempt.signal
-							);
-						} catch {
-							readSignal.throwIfAborted();
-						} finally {
-							diskAttempt.complete();
-						}
+					const diskAttempt = new ReadAttempt(250, readSignal);
+					try {
+						persisted = await waitForRead(
+							this.disk.getVersion(versionId, companyId, diskAttempt.signal),
+							diskAttempt.signal
+						);
+					} catch {
+						readSignal.throwIfAborted();
+					} finally {
+						diskAttempt.complete();
 					}
 				}
 				readSignal.throwIfAborted();
@@ -428,7 +350,6 @@ class ContractSnapshotCache {
 						this.client,
 						api.templates.frozenContent,
 						{
-							membershipId: this.membershipId,
 							versionId
 						},
 						readSignal
@@ -440,6 +361,8 @@ class ContractSnapshotCache {
 				if (this.versionFlights.get(versionId) !== created)
 					throw new Error('The request was replaced.');
 				const bytes = JSON.stringify(snapshot).length * 2;
+				if (!persisted)
+					this.disk.put(versionId, snapshot, bytes, () => !this.lifetime.signal.aborted);
 				if (bytes <= MAX_BYTES && !this.versions.has(versionId)) {
 					this.versions.set(versionId, { snapshot, bytes, references: 0 });
 					this.bytes += bytes;
@@ -489,17 +412,9 @@ class ContractSnapshotCache {
 		this.enforceLimits();
 		return this.entries.get(id);
 	}
-	/** Refresh confirmed metadata, including existing disk-only entries. */
+	/** Live metadata can update an existing in-memory preview. */
 	confirmMetadata(contract: ReadyContract['contract']) {
-		const id = contract._id;
-		if (this.deleted.has(id) || this.lifetime.signal.aborted) return;
-		if (this.entries.has(id)) return this.updateState(id, contract);
-		this.disk.updateContract(
-			id,
-			contract,
-			JSON.stringify(contract).length * 2,
-			() => !this.deleted.has(id) && !this.lifetime.signal.aborted
-		);
+		return this.updateState(contract._id, contract);
 	}
 	/** Only confirmed server state belongs here. Never inserts a missing entry. */
 	updateState(id: string, state: ContractState) {
@@ -516,12 +431,6 @@ class ContractSnapshotCache {
 		entry.bytes = bytes;
 		entry.contractJson = contractJson;
 		entry.data = { ...entry.data, contract };
-		this.disk.updateContract(
-			id,
-			contract,
-			contractBytes,
-			() => !this.deleted.has(id) && !this.lifetime.signal.aborted
-		);
 		this.enforceLimits();
 		if (this.entries.get(id) === entry) for (const listener of this.listeners) listener(entry.data);
 		return entry.data;
@@ -536,7 +445,6 @@ class ContractSnapshotCache {
 	}
 	/** Cancel reads and queued work without discarding confirmed snapshots or writes. */
 	cancelPending() {
-		this.openingGeneration++;
 		this.releaseReservation();
 		this.pauseBackground();
 		this.queued.clear();
@@ -545,10 +453,8 @@ class ContractSnapshotCache {
 		for (const id of this.flights.keys()) this.cancelFlight(id);
 		for (const flight of this.versionFlights.values()) flight.attempt.abort();
 		this.versionFlights.clear();
-		for (const flight of this.openingReads.values()) flight.attempt.abort();
-		this.openingReads.clear();
 	}
-	private fetchFull(id: string, background = false) {
+	private fetchFull(id: string, background = false, state?: Promise<LiveState>) {
 		if (this.deleted.has(id)) return Promise.resolve({ id, status: 'missing' } as const);
 		if (this.lifetime.signal.aborted) return Promise.resolve({ id, status: 'error' } as const);
 		const existing = this.flights.get(id);
@@ -559,22 +465,21 @@ class ContractSnapshotCache {
 		const opening: SavedOpening = { id };
 		const work = Promise.resolve().then(async () => {
 			signal.throwIfAborted();
-			const stored = await this.readOpening(id, opening);
-			const persisted = stored?.metadata;
-			signal.throwIfAborted();
 			if (this.deleted.has(id)) return { id, status: 'missing' } as const;
-			recordColdStart(persisted ? 'contract-disk-cache-hit' : 'contract-snapshot-fetch-start');
+			recordColdStart('contract-snapshot-fetch-start');
 			if (!this.membershipId) throw new Error('Company access is required.');
-			const live =
-				persisted?.contract ??
-				(this.client
-					? await queryOnce(
-							this.client,
-							api.contracts.state,
-							{ id, membershipId: this.membershipId },
-							signal
-						)
-					: undefined);
+			const hint = this.templateHint(id);
+			const hinted = hint
+				? this.loadFrozenVersion(hint.versionId, hint.companyId, signal).then(
+						(snapshot) => ({ snapshot }),
+						() => undefined
+					)
+				: undefined;
+			const live = state
+				? await waitForRead(state, signal)
+				: this.client
+					? await queryOnce(this.client, api.contracts.state, { id }, signal)
+					: undefined;
 			if (live === undefined) throw new Error('Contract client is unavailable.');
 			const contract = live
 				? persistedContractMetadata(live as Parameters<typeof persistedContractMetadata>[0])
@@ -585,13 +490,10 @@ class ContractSnapshotCache {
 						status: 'ready' as const,
 						contract,
 						snapshot:
-							stored?.snapshot ??
-							(await this.loadFrozenVersion(
-								contract.templateVersionId,
-								contract.companyId,
-								signal,
-								{ diskChecked: true }
-							))
+							(hint?.versionId === contract.templateVersionId
+								? (await hinted)?.snapshot
+								: undefined) ??
+							(await this.loadFrozenVersion(contract.templateVersionId, contract.companyId, signal))
 					}
 				: { id, status: 'missing' as const };
 			signal.throwIfAborted();
@@ -601,10 +503,16 @@ class ContractSnapshotCache {
 				this.remove(id);
 			}
 			if (result.status === 'ready') {
+				this.backoff.delete(id);
 				if (this.deleted.has(id)) return { id, status: 'missing' } as const;
 				const entry = this.remember(id, result);
 				if (entry)
-					this.disk.put(entry, () => !this.deleted.has(id) && !this.lifetime.signal.aborted);
+					this.disk.put(
+						entry.data.contract.templateVersionId,
+						entry.data.snapshot,
+						entry.immutableBytes,
+						() => !this.lifetime.signal.aborted
+					);
 				recordColdStart('contract-snapshot-cached');
 				for (const listener of this.listeners) listener(this.entries.get(id)?.data ?? result);
 			}
@@ -617,6 +525,13 @@ class ContractSnapshotCache {
 			demand: 0,
 			result: waitForRead(work, signal)
 				.catch(() => {
+					if (background && !signal.aborted) {
+						const failures = (this.backoff.get(id)?.failures ?? 0) + 1;
+						this.backoff.set(id, {
+							failures,
+							until: Date.now() + Math.min(60_000, 2000 * 2 ** Math.min(failures - 1, 5))
+						});
+					}
 					if (this.flights.get(id) === flight) for (const listener of this.failures) listener(id);
 					return { id, status: 'error' } as const;
 				})
@@ -633,29 +548,65 @@ class ContractSnapshotCache {
 		return flight.result;
 	}
 	private pump() {
-		if (this.lifetime.signal.aborted || !this.backgroundAllowed || document.hidden) return;
-		while (this.queued.size) {
-			const active = [...this.flights.values()].filter(
-				(flight) => flight.background && !flight.demand
+		if (
+			this.lifetime.signal.aborted ||
+			!this.backgroundAllowed ||
+			document.hidden ||
+			!this.client ||
+			!this.membershipId
+		)
+			return;
+		let active = [...this.flights.values()].filter(
+			(flight) => flight.background && !flight.demand
+		).length;
+		if (active >= BACKGROUND_CONCURRENCY && [...this.queued].some((id) => this.urgentIds.has(id))) {
+			const stale = [...this.displaced].find(
+				([id, { flight }]) =>
+					this.flights.get(id) === flight && !flight.demand && this.reservation?.flight !== flight
 			);
-			if (active.length >= BACKGROUND_CONCURRENCY) {
-				if (![...this.queued].some((id) => this.urgentIds.has(id))) return;
-				const stale = [...this.displaced].find(
-					([id, { flight }]) =>
-						this.flights.get(id) === flight && !flight.demand && this.reservation?.flight !== flight
-				);
-				if (!stale) return;
+			if (stale) {
 				this.cancelFlight(stale[0], false);
-				continue;
+				active--;
 			}
-			const id = this.queued.values().next().value!;
-			this.queued.delete(id);
-			if (this.deleted.has(id) || this.entries.has(id) || this.flights.has(id)) continue;
-			this.code ??= preloadCode(`/contracts/${id}`).catch(() => {
-				this.code = undefined;
-			});
-			void this.fetchFull(id, true);
 		}
+		const selected: string[] = [];
+		for (const id of this.queued) {
+			if (selected.length >= BACKGROUND_CONCURRENCY - active) break;
+			this.queued.delete(id);
+			if (this.deleted.has(id) || !this.canWarm(id) || this.entries.has(id) || this.flights.has(id))
+				continue;
+			selected.push(id);
+		}
+		if (!selected.length) return;
+		this.code ??= preloadCode(`/contracts/${selected[0]}`).catch(() => {
+			this.code = undefined;
+		});
+		const batch = new ReadAttempt(15_000, this.lifetime.signal);
+		const states = queryOnce(
+			this.client,
+			api.contracts.batchState,
+			{ ids: selected },
+			batch.signal
+		).finally(() => batch.complete());
+		for (const id of selected)
+			void this.fetchFull(
+				id,
+				true,
+				states.then((rows) => rows.find((row) => row?._id === id) ?? null)
+			);
+		const signals = selected.map((id) => this.flights.get(id)!.attempt.signal);
+		const canceled = () => {
+			if (signals.every((signal) => signal.aborted)) batch.abort();
+		};
+		for (const signal of signals) signal.addEventListener('abort', canceled, { once: true });
+		void states
+			.then(
+				() => {},
+				() => {}
+			)
+			.finally(() => {
+				for (const signal of signals) signal.removeEventListener('abort', canceled);
+			});
 	}
 	load(
 		id: string,
@@ -706,10 +657,10 @@ class ContractSnapshotCache {
 		this.disk.close();
 		this.flights.clear();
 		this.versionFlights.clear();
-		for (const flight of this.openingReads.values()) flight.attempt.abort();
-		this.openingReads.clear();
 		this.entries.clear();
 		this.versions.clear();
+		this.hints.clear();
+		this.backoff.clear();
 		this.queued.clear();
 		this.backgroundIds.clear();
 		this.urgentIds.clear();
@@ -722,29 +673,29 @@ class ContractSnapshotCache {
 function scopedResources(scope: CacheScope) {
 	return {
 		scope,
-		openings: new RecentOpenings(scope),
 		cache: undefined as ContractSnapshotCache | undefined
 	};
 }
 let resources = scopedResources(createCacheScope(null));
 
 export function replaceContractCacheScope(scope: CacheScope) {
-	if (resources.scope.namespace === scope.namespace) return;
+	if (resources.scope.namespace === scope.namespace && resources.scope.userId === scope.userId)
+		return;
 	releaseContractSnapshotCache();
-	resources.openings.close();
 	clearConfirmedCache(resources.scope);
+	retirePersistentCaches(
+		scope.userId && scope.membershipId
+			? { userId: scope.userId, membershipId: scope.membershipId }
+			: undefined
+	);
 	resources = scopedResources(scope);
 }
 export function getContractSnapshotCache(client?: SnapshotClient) {
 	if (!browser) throw new Error('Contract snapshot cache is browser-only.');
-	const cache = (resources.cache ??= new ContractSnapshotCache(
-		resources.scope,
-		resources.openings
-	));
+	const cache = (resources.cache ??= new ContractSnapshotCache(resources.scope));
 	if (client) cache.connect(client);
 	return cache;
 }
-export const getContractOpenings = () => resources.openings;
 export function cancelPendingContractSnapshots() {
 	resources.cache?.cancelPending();
 }
@@ -757,9 +708,33 @@ export const contractCacheResources = {
 	cancelReads: cancelPendingContractSnapshots,
 	clear: () => {
 		releaseContractSnapshotCache();
-		resources.openings.close();
-		clearConfirmedCache(resources.scope);
-		const scope = createCacheScope(null);
-		resources = scopedResources(scope);
+		resources = scopedResources(createCacheScope(null));
+	},
+	captureMembershipRetirement: ({
+		userId,
+		membershipId
+	}: {
+		userId: string;
+		membershipId: string;
+	}) => {
+		const retiring = resources;
+		const cache = retiring.cache;
+		return () => {
+			if (
+				resources !== retiring ||
+				resources.cache !== cache ||
+				retiring.scope.userId !== userId ||
+				retiring.scope.membershipId !== membershipId
+			)
+				return;
+			releaseContractSnapshotCache();
+			resources = scopedResources(createCacheScope(null));
+		};
+	},
+	forgetAccount: (userId: string) => {
+		if (resources.scope.userId === userId) {
+			releaseContractSnapshotCache();
+			resources = scopedResources(createCacheScope(null));
+		}
 	}
 };

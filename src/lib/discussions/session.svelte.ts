@@ -1,10 +1,10 @@
+import { untrack } from 'svelte';
 import type { ConvexClient } from 'convex/browser';
 import { ConvexError, type Infer } from 'convex/values';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
 import { ReadAttempt, waitForRead } from '../auth/attempt';
 import { saveError } from '../contract/saved';
-import { queryOnce } from '../query-once';
 import { validDiscussionText } from './limits';
 import { DiscussionReads } from './reads.svelte';
 import { DiscussionReadState } from './read-state.svelte';
@@ -21,6 +21,12 @@ import { coordinateDiscussionViewer } from './viewer-bootstrap';
 
 export type { DiscussionAccess, DiscussionMessage, DiscussionThread } from './validators';
 export type DiscussionAuthor = PublicAuthor;
+
+export type DiscussionSessionOptions = {
+	policy?: () => { readOnly: boolean; generation?: number };
+	buyerName?: () => string | null;
+	missingSellerName?: () => boolean;
+};
 
 export type CreateComposerState = {
 	kind: 'create';
@@ -87,19 +93,18 @@ function isDefiniteDiscussionError(error: unknown) {
 const UNCERTAIN_WRITE_MESSAGE =
 	'Couldn’t confirm this message. Retry to check whether it was saved before editing.';
 
+/** Single-audience discussion session: buyer sessions use HTTP ingress; seller sessions use Convex directly. */
 export class DiscussionSession {
 	readonly reads = new DiscussionReads();
 	activeComposer = $state<ActiveComposer | null>(null);
 	deletingMessageId = $state<Id<'discussionMessages'> | null>(null);
 
 	readonly feed: DiscussionReadState;
+	readonly policy: () => { readOnly: boolean; generation?: number };
+	readonly buyerName: () => string | null;
+	readonly missingSellerName: () => boolean;
 	private stopAccess: () => void;
-	private actorClient: ConvexClient;
-	private actorPrivateAccess?: { membershipId: Id<'memberships'>; id: Id<'savedContracts'> };
-	private actorKey = 'buyer';
-	private actorCurrent: () => boolean = () => true;
-	private actorGeneration = $state(0);
-	private actorDrafts = new Map<string, { composer: ActiveComposer; selected: string | null }>();
+	private releaseEffects: () => void;
 
 	private viewerIdentity = $state.raw<DiscussionAuthor>();
 	private viewerAccount = false;
@@ -122,93 +127,69 @@ export class DiscussionSession {
 	private alive = true;
 
 	constructor(
-		readClient: ConvexClient,
-		readonly access: DiscussionAccess,
+		readonly client: ConvexClient,
+		readonly access:
+			| Extract<DiscussionAccess, { kind: 'buyer' }>
+			| (Extract<DiscussionAccess, { kind: 'seller' }> & { membershipId: Id<'memberships'> }),
 		readonly contentRevision: () => number,
-		readonly policy: () => { readOnly: boolean; generation?: number } = () => ({ readOnly: false }),
-		readonly buyerName: () => string | null = () => null,
-		privateAccess?: { membershipId: Id<'memberships'>; id: Id<'savedContracts'> },
-		readonly perspective: () => 'buyer' | 'seller' = () => 'buyer',
-		readonly missingSellerName: () => boolean = () => false
+		options: DiscussionSessionOptions = {}
 	) {
-		this.actorClient = readClient;
-		this.actorPrivateAccess = privateAccess;
-		this.feed = new DiscussionReadState(readClient, access);
+		this.policy = options.policy ?? (() => ({ readOnly: false }));
+		this.buyerName = options.buyerName ?? (() => null);
+		this.missingSellerName = options.missingSellerName ?? (() => false);
+		this.feed = new DiscussionReadState(
+			client,
+			access.kind === 'seller' ? { kind: 'seller', id: access.id } : access
+		);
 		this.stopAccess = this.feed.onAccess(
 			() => this.bootstrapViewer(),
 			() => this.resetAfterDeauthorize()
 		);
+		this.releaseEffects = $effect.root(() => {
+			let lastReadOnly: boolean | undefined;
+			$effect(() => {
+				const active = this.active;
+				const authorized = this.authorized;
+				const readOnly = this.readOnly;
+				void this.policyVersion;
+				untrack(() => {
+					if (!active) {
+						lastReadOnly = undefined;
+						return;
+					}
+					if (readOnly) {
+						if (lastReadOnly === false) {
+							this.cancelAccountPreparation();
+							this.attempt?.abort();
+							this.attempt = undefined;
+							this.activeComposer = null;
+							this.deletingMessageId = null;
+							if (this.selectedThread === 'composer') this.selectedThread = null;
+						}
+					} else if (authorized) {
+						this.bootstrapViewer();
+					}
+					lastReadOnly = readOnly;
+				});
+			});
+		});
 	}
 
-	get client() {
-		return this.actorClient;
+	get isSeller() {
+		return this.access.kind === 'seller';
 	}
-	get privateAccess() {
-		return this.actorPrivateAccess;
+	perspective(): 'buyer' | 'seller' {
+		return this.access.kind;
 	}
-	get transitionVersion() {
-		return this.actorGeneration;
+	get policyVersion() {
+		return this.policy().generation ?? 0;
 	}
 
 	private bootstrapViewer() {
 		if (this.active && !this.readOnly && !this.viewerBootstrapped) {
 			this.viewerBootstrapped = true;
-			void this.loadBuyerViewer();
+			void this.loadViewer();
 		}
-	}
-
-	transitionActor(
-		key: string,
-		client: ConvexClient,
-		privateAccess?: { membershipId: Id<'memberships'>; id: Id<'savedContracts'> },
-		current: () => boolean = () => true
-	) {
-		this.actorCurrent = current;
-		if (
-			this.actorKey === key &&
-			this.actorClient === client &&
-			this.actorPrivateAccess?.membershipId === privateAccess?.membershipId &&
-			this.actorPrivateAccess?.id === privateAccess?.id
-		)
-			return;
-		if (this.activeComposer) {
-			this.actorDrafts.set(this.actorKey, {
-				composer: {
-					...$state.snapshot(this.activeComposer),
-					busy: false,
-					awaitingConfirmation:
-						this.activeComposer.busy || this.activeComposer.awaitingConfirmation,
-					error: this.activeComposer.busy ? UNCERTAIN_WRITE_MESSAGE : this.activeComposer.error
-				},
-				selected: this.selectedThread
-			});
-		}
-		const visibleThread = this.selectedThread === 'composer' ? null : this.selectedThread;
-		this.actorGeneration++;
-		this.activityGeneration++;
-		this.cancelAccountPreparation();
-		this.attempt?.abort();
-		this.attempt = undefined;
-		this.reads.configure();
-		this.actorKey = key;
-		this.actorClient = client;
-		this.actorPrivateAccess = privateAccess;
-		this.viewerIdentity = undefined;
-		this.viewerAccount = false;
-		this.viewerError = null;
-		this.viewerBootstrapped = false;
-		this.authRequired = false;
-		this.anonymous = false;
-		this.accountRefresh = false;
-		this.requiredAuthor = undefined;
-		this.requiredBuyer = false;
-		this.deletingMessageId = null;
-		const draft = this.actorDrafts.get(key);
-		this.actorDrafts.delete(key);
-		this.activeComposer = draft?.composer ?? null;
-		this.selectedThread =
-			draft?.selected === 'composer' ? 'composer' : (visibleThread ?? draft?.selected ?? null);
-		this.bootstrapViewer();
 	}
 
 	get threads() {
@@ -221,14 +202,14 @@ export class DiscussionSession {
 		return this.feed.loading;
 	}
 	get account() {
-		return Boolean(this.privateAccess || this.viewerAccount);
+		return this.isSeller || this.viewerAccount;
 	}
 	get viewer() {
-		const viewer = this.viewerIdentity;
+		const viewer = this.isSeller ? (this.feed.viewer ?? undefined) : this.viewerIdentity;
 		return viewer?.buyer ? { ...viewer, name: this.buyerName() || 'Buyer' } : viewer;
 	}
 	get readOnly() {
-		return this.policy().readOnly || !this.actorCurrent();
+		return this.policy().readOnly;
 	}
 	get viewerKey() {
 		return this.readOnly ? undefined : this.viewer?.key;
@@ -250,6 +231,7 @@ export class DiscussionSession {
 	}
 	get showReconnectCard() {
 		return (
+			!this.isSeller &&
 			this.authorized &&
 			!this.readOnly &&
 			this.authRequired &&
@@ -300,10 +282,6 @@ export class DiscussionSession {
 		return this.deletingMessageId === id;
 	}
 
-	acquireReplies(id: Id<'discussionThreads'>) {
-		return this.feed.acquireReplies(id);
-	}
-
 	setActive(active: boolean) {
 		if (!this.alive || this.active === active) return;
 		this.active = active;
@@ -340,33 +318,25 @@ export class DiscussionSession {
 		this.requiredAuthor = undefined;
 		this.requiredBuyer = false;
 		this.activeComposer = null;
-		this.actorDrafts.clear();
 		this.selectedThread = null;
 		this.deletingMessageId = null;
 	}
 
 	retry() {
 		if (!this.active) return;
-		if (!this.readOnly && this.viewerError) void this.loadBuyerViewer();
+		if (!this.readOnly && this.viewerError) void this.loadViewer();
 		this.feed.retry();
 	}
 
 	captureWriteAccess() {
 		const activityGeneration = this.activityGeneration;
-		const actorGeneration = this.actorGeneration;
-		const actorKey = this.actorKey;
-		const actorClient = this.actorClient;
 		const policyGeneration = this.policy().generation;
 		return () =>
 			this.alive &&
 			this.active &&
 			this.authorized &&
 			!this.readOnly &&
-			this.actorCurrent() &&
-			actorKey === this.actorKey &&
-			actorClient === this.actorClient &&
 			activityGeneration === this.activityGeneration &&
-			actorGeneration === this.actorGeneration &&
 			policyGeneration === this.policy().generation;
 	}
 
@@ -429,7 +399,7 @@ export class DiscussionSession {
 			awaitingConfirmation: false,
 			error: null
 		};
-		if (!this.viewerIdentity) void this.loadBuyerViewer();
+		if (!this.viewer) void this.loadViewer();
 	}
 
 	openEdit(message: DiscussionMessage, threadId: Id<'discussionThreads'>) {
@@ -462,7 +432,7 @@ export class DiscussionSession {
 				JSON.stringify(this.activeComposer.anchor) === JSON.stringify(anchor);
 			if (sameTarget) {
 				this.selectedThread = 'composer';
-				if (!this.viewerIdentity) void this.loadBuyerViewer();
+				if (!this.viewer) void this.loadViewer();
 				return;
 			}
 		}
@@ -477,7 +447,7 @@ export class DiscussionSession {
 			error: null
 		};
 		this.selectedThread = 'composer';
-		if (!this.viewerIdentity) void this.loadBuyerViewer();
+		if (!this.viewer) void this.loadViewer();
 	}
 
 	updateComposerText(text: string) {
@@ -493,10 +463,10 @@ export class DiscussionSession {
 
 	private preparePostAccount() {
 		if (
+			this.isSeller ||
 			this.accountPreparation ||
 			this.accountPreparedUntil > Date.now() + 10_000 ||
 			this.accountPreparationRetryAt > Date.now() ||
-			this.privateAccess ||
 			!this.viewerAccount ||
 			!this.viewer ||
 			!this.active ||
@@ -609,11 +579,11 @@ export class DiscussionSession {
 		}
 	}
 
-	async loadBuyerViewer(requiredAuthor = this.requiredAuthor) {
+	async loadViewer(requiredAuthor = this.requiredAuthor) {
 		const current = this.captureWriteAccess();
 		if (!current()) return;
-		const account = Boolean(requiredAuthor && !this.requiredBuyer);
-		const forceBuyer = Boolean(requiredAuthor && this.requiredBuyer);
+		const account = !this.isSeller && Boolean(requiredAuthor && !this.requiredBuyer);
+		const forceBuyer = !this.isSeller && Boolean(requiredAuthor && this.requiredBuyer);
 		const actor = account
 			? `account:${requiredAuthor}`
 			: forceBuyer || this.anonymous
@@ -623,9 +593,9 @@ export class DiscussionSession {
 		this.attempt?.abort();
 		const attempt = (this.attempt = new ReadAttempt(15_000));
 		try {
-			const access = this.access;
 			let promise: Promise<DiscussionAuthor & { account?: boolean }>;
-			if (!this.privateAccess) {
+			if (this.access.kind === 'buyer') {
+				const token = this.access.token;
 				while (this.viewerLoad && this.viewerLoad.mode !== mode) {
 					try {
 						await waitForRead(this.viewerLoad.promise, attempt.signal);
@@ -639,7 +609,7 @@ export class DiscussionSession {
 				if (!load) {
 					promise = coordinateDiscussionViewer((signal) =>
 						this.buyerRequest(
-							{ kind: 'viewer', ...access },
+							{ kind: 'viewer', token },
 							signal,
 							account,
 							forceBuyer,
@@ -657,18 +627,15 @@ export class DiscussionSession {
 				promise = load.promise;
 			} else {
 				this.requireWriteAccess(current);
-				promise = queryOnce(
-					this.client,
-					api.discussions.viewer,
-					{ ...access, ...this.privateAccess },
-					attempt.signal
-				);
+				const viewer = this.feed.viewer;
+				if (!viewer) throw new Error('Comments are unavailable. Please try again.');
+				promise = Promise.resolve(viewer);
 			}
 			const viewer = await waitForRead(promise, attempt.signal);
 			if (this.attempt !== attempt || !current()) return;
 			if (requiredAuthor && viewer.key !== requiredAuthor)
 				throw new Error('Reconnect as the original author.');
-			this.viewerAccount = Boolean(this.privateAccess || viewer.account);
+			this.viewerAccount = Boolean(this.isSeller || viewer.account);
 			this.viewerIdentity = viewer;
 			this.viewerBootstrapped = true;
 			this.viewerError = null;
@@ -684,9 +651,10 @@ export class DiscussionSession {
 			if (this.attempt !== attempt || !current()) return;
 			this.viewerIdentity = undefined;
 			this.authRequired =
-				account ||
-				this.authRequired ||
-				(error instanceof DiscussionRequestError && error.authenticationRequired);
+				!this.isSeller &&
+				(account ||
+					this.authRequired ||
+					(error instanceof DiscussionRequestError && error.authenticationRequired));
 			this.viewerError =
 				error instanceof Error ? error.message : 'Comments are unavailable. Try again.';
 		} finally {
@@ -696,7 +664,7 @@ export class DiscussionSession {
 
 	get canContinueAsBuyer() {
 		return (
-			!this.privateAccess &&
+			!this.isSeller &&
 			!this.readOnly &&
 			!this.activeComposer?.busy &&
 			!this.activeComposer?.awaitingConfirmation &&
@@ -713,7 +681,7 @@ export class DiscussionSession {
 		this.requiredAuthor = undefined;
 		this.viewerIdentity = undefined;
 		this.authRequired = false;
-		await this.loadBuyerViewer();
+		await this.loadViewer();
 	}
 
 	private async write(
@@ -729,12 +697,12 @@ export class DiscussionSession {
 		if (requiredAuthor && this.viewer?.key !== requiredAuthor) {
 			this.requiredAuthor = requiredAuthor;
 			this.requiredBuyer = requiredBuyer;
-			this.authRequired = true;
-			await this.loadBuyerViewer(requiredAuthor);
+			if (!this.isSeller) this.authRequired = true;
+			await this.loadViewer(requiredAuthor);
 		}
 		this.requireWriteAccess(current);
 		if (!this.viewer || (!requiredAuthor && this.anonymous && !this.viewer.buyer))
-			await this.loadBuyerViewer(requiredAuthor);
+			await this.loadViewer(requiredAuthor);
 		this.requireWriteAccess(current);
 		if (requiredAuthor && this.viewer?.key !== requiredAuthor)
 			throw new Error('Reconnect as the original author.');
@@ -742,23 +710,35 @@ export class DiscussionSession {
 
 		const authorKey = this.viewer.key;
 		const account = this.viewerAccount;
-		const original = { token: this.access.token, operationId, command };
 		try {
-			return !this.privateAccess
-				? ((await this.buyerRequest(
-						{ kind: 'write', expectedAuthorKey: authorKey, ...original },
-						AbortSignal.timeout(15_000),
-						account,
-						!account,
-						current,
-						current
-					)) as DiscussionWriteResult)
-				: await waitForRead(
-						this.client.mutation(api.discussions.write, { ...this.privateAccess, ...original }),
-						AbortSignal.timeout(15_000)
-					);
+			if (this.access.kind === 'seller') {
+				return await waitForRead(
+					this.client.mutation(api.discussions.write, {
+						membershipId: this.access.membershipId,
+						id: this.access.id,
+						operationId,
+						command
+					}),
+					AbortSignal.timeout(15_000)
+				);
+			}
+			return (await this.buyerRequest(
+				{
+					kind: 'write',
+					token: this.access.token,
+					expectedAuthorKey: authorKey,
+					operationId,
+					command
+				},
+				AbortSignal.timeout(15_000),
+				account,
+				!account,
+				current,
+				current
+			)) as DiscussionWriteResult;
 		} catch (error) {
 			if (
+				!this.isSeller &&
 				current() &&
 				((error instanceof DiscussionRequestError && error.authenticationRequired) ||
 					(error instanceof Error && 'status' in error && error.status === 401))
@@ -911,11 +891,11 @@ export class DiscussionSession {
 	destroy() {
 		this.setActive(false);
 		this.alive = false;
+		this.releaseEffects();
 		this.stopAccess();
 		this.feed.destroy();
 		this.cancelAccountPreparation();
 		this.activeComposer = null;
 		this.deletingMessageId = null;
-		this.actorDrafts.clear();
 	}
 }

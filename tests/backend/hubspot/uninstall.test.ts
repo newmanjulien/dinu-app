@@ -1,3 +1,4 @@
+import { insertTestConnection, readTestConnection } from '../../support/hubspot-credentials';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -68,7 +69,7 @@ describe('HubSpot removal and reinstallation', () => {
 		});
 		vi.stubGlobal('fetch', fetcher);
 		expect((await advance(f, removalId)).done).toBe(true);
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toBeNull();
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toBeNull();
 		expect((await currentContract(f)).root.templateVersionId).toBe(contract.root.templateVersionId);
 		expect((await events(f)).every((e) => e.status === 'retired')).toBe(true);
 		expect(await f.t.run(({ db }) => db.get('hubspotQuotePushes', push.id))).toMatchObject({
@@ -94,10 +95,11 @@ describe('HubSpot removal and reinstallation', () => {
 		const f = await fixture();
 		const otherId = await f.t.run(async ({ db }) => {
 			const companyId = await db.insert('company', {
+				hasRepInstructions: false,
 				name: 'Other workspace',
 				ownerProfileId: f.rep.profileId
 			});
-			return db.insert('hubspotConnections', {
+			return insertTestConnection(db, {
 				companyId,
 				accountId: '12345',
 				generation: 1,
@@ -110,7 +112,7 @@ describe('HubSpot removal and reinstallation', () => {
 				installerId: f.rep.profileId
 			});
 		});
-		const before = await f.t.run(({ db }) => db.get('hubspotConnections', otherId));
+		const before = await f.t.run(({ db }) => readTestConnection(db, otherId));
 		const id = await f.t.mutation(api.hubspotUninstall.uninstall, {
 			membershipId: f.owner.membershipId,
 			connectionId: f.connectionId
@@ -119,7 +121,7 @@ describe('HubSpot removal and reinstallation', () => {
 		expect(
 			await f.t.run(({ db }) => db.get('hubspotAccountRemovals', removal.providerId))
 		).toMatchObject({ provider: 'shared', blocking: false });
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', otherId))).toEqual(before);
+		expect(await f.t.run(({ db }) => readTestConnection(db, otherId))).toEqual(before);
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
@@ -132,7 +134,7 @@ describe('HubSpot removal and reinstallation', () => {
 			})
 		).rejects.toThrow('You do not have permission to perform this action.');
 		expect(await f.t.run(({ db }) => db.query('hubspotRemovals').collect())).toEqual([]);
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
 			status: 'connected'
 		});
 	});
@@ -145,7 +147,7 @@ describe('HubSpot removal and reinstallation', () => {
 			generation: 1,
 			claim: 'refresh-owner'
 		});
-		const connection = (await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId)))!;
+		const connection = (await f.t.run(({ db }) => readTestConnection(db, f.connectionId)))!;
 		const safeAfter = Math.max(running.leaseUntil!, connection.refreshUntil!) + 30_000;
 		const id = await f.t.mutation(api.hubspotUninstall.uninstall, {
 			membershipId: f.owner.membershipId,
@@ -157,7 +159,7 @@ describe('HubSpot removal and reinstallation', () => {
 			phase: 'events',
 			done: false
 		});
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
 			status: 'retiring',
 			accessToken: 'synthetic-access'
 		});
@@ -169,7 +171,7 @@ describe('HubSpot removal and reinstallation', () => {
 		vi.stubGlobal('fetch', fetcher);
 		await advance(f, id);
 		expect(fetcher).toHaveBeenCalledTimes(1);
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toBeNull();
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toBeNull();
 	});
 
 	it('never resends an ambiguous provider DELETE and blocks reinstall while retaining its removal evidence', async () => {
@@ -183,7 +185,7 @@ describe('HubSpot removal and reinstallation', () => {
 		});
 		vi.stubGlobal('fetch', fetcher);
 		const removal = await advance(f, id);
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toBeNull();
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toBeNull();
 		expect(
 			await f.t.run(({ db }) => db.get('hubspotAccountRemovals', removal.providerId))
 		).toMatchObject({ provider: 'unknown', blocking: true });

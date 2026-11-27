@@ -9,6 +9,7 @@
 		TemplateSource
 	} from '../../../src/lib/playbook/template-source.svelte';
 	import { useConvexClient } from 'convex-svelte';
+	import { setPageMetadata } from '../../../src/lib/auth/page-metadata.svelte';
 	import {
 		setDocumentLayoutProfiles,
 		type DocumentLayoutProfiles
@@ -36,6 +37,7 @@
 		profiles: DocumentLayoutProfiles;
 		deals?: HubSpotDeals;
 	} = $props();
+	setPageMetadata();
 	untrack(() => {
 		setContractEditors(editors);
 		setDocumentLayoutProfiles(profiles);

@@ -85,6 +85,8 @@ it('shows the anchored cold panel on the next update without loading copy, and s
 
 it('opens a warm panel without a busy intermediate state and closes Save with pending annotation before acknowledgement', async () => {
 	const f = await fixture();
+	session.itemPreload!([f.data.records[0]._id]);
+	await settle();
 	f.network.publishDetail(f.data.records[0]._id, f.data.detail(0));
 	await settle();
 	button('Open item-0').click();

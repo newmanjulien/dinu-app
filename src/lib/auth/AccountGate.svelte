@@ -1,12 +1,8 @@
 <script lang="ts">
-	import {
-		workspaceReadResources,
-		forgetWorkspaceReadScope
-	} from './workspace-read-snapshots.svelte';
+	import { workspaceReadResources } from './workspace-read-storage';
 	import { useAccountContext } from './account-context.svelte';
 	import { useAuth, useConvexClient, useQuery } from 'convex-svelte';
 	import { api } from '../../convex/_generated/api';
-	import { discardMembershipDrafts } from '$lib/contract/draft-recovery.svelte';
 	import { createCacheScope } from '$lib/contract/browser-storage';
 	import { contractCacheResources, replaceContractCacheScope } from '$lib/contract/snapshot-cache';
 	import { setAccount, useViewerSession, type AccountViewer } from './viewer-session.svelte';
@@ -23,10 +19,11 @@
 	const session = useViewerSession();
 	session.registerResources(contractCacheResources);
 	session.registerResources(workspaceReadResources);
-	const viewer = useQuery(api.accounts.viewer, () => (auth.isAuthenticated ? {} : 'skip'));
+	const viewer = useQuery(api.accounts.viewer, {});
 	const startup = useStartupData();
 	let receivedViewer = $state(false);
 	const data = $derived.by(() => {
+		if (!auth.isAuthenticated) return undefined;
 		if (viewer.data !== undefined) return viewer.data;
 		if (receivedViewer || !auth.isAuthenticated || viewer.error) return undefined;
 		const initial = startup()?.viewer;
@@ -36,6 +33,7 @@
 		if (auth.isAuthenticated && (viewer.data !== undefined || viewer.error)) receivedViewer = true;
 	});
 	let account = $state.raw<AccountViewer>();
+	let accountUserId: string | null = null;
 	setAccount(() => account);
 	const preparation = new AccountPreparation();
 	let error = $state('');
@@ -86,11 +84,12 @@
 	$effect(() => {
 		const value = data;
 		const nextGeneration = session.transportGeneration;
-		const deleted = isAccountDeletedError(viewer.error);
-		const failure = deleted
-			? ''
-			: (generation === nextGeneration ? error : '') ||
-				(viewer.error ? getErrorMessage(viewer.error, viewer.error.message) : '');
+		const deleted = auth.isAuthenticated && isAccountDeletedError(viewer.error);
+		const failure =
+			!auth.isAuthenticated || deleted
+				? ''
+				: (generation === nextGeneration ? error : '') ||
+					(viewer.error ? getErrorMessage(viewer.error, viewer.error.message) : '');
 		const ready = Boolean(
 			auth.isAuthenticated && value && !value.needsInitialization && !failure && !deleted
 		);
@@ -103,19 +102,19 @@
 			}
 			if (
 				account?.membership &&
-				account.company &&
+				accountUserId &&
 				(value === null ||
 					(value !== undefined &&
 						(account.profile.id !== value.profile.id ||
 							account.membership.id !== value.membership?.id ||
-							account.company.id !== value.company?.id)))
+							account.company?.id !== value.company?.id)))
 			)
-				forgetWorkspaceReadScope({
-					profileId: account.profile.id,
+				session.captureMembershipRetirement({
+					userId: accountUserId,
 					membershipId: account.membership.id,
-					companyId: account.company.id
-				});
-			if (viewer.error) workspaceReadResources.clear();
+					sessionId: session.preparedSessionId ?? undefined
+				})();
+			if (auth.isAuthenticated && viewer.error) workspaceReadResources.clear();
 			if (value) {
 				if (
 					account?.profile.id !== value.profile.id ||
@@ -123,21 +122,26 @@
 				) {
 					replaceContractCacheScope(
 						createCacheScope(
-							value.membership
-								? { profileId: value.profile.id, membershipId: value.membership.id }
+							value.membership && session.userId
+								? {
+										userId: session.userId,
+										profileId: value.profile.id,
+										membershipId: value.membership.id
+									}
 								: null
 						)
 					);
 				}
-				if (account?.membership && account.membership.id !== value.membership?.id && session.userId)
-					discardMembershipDrafts(session.userId, account.membership.id);
 				account = value;
+				accountUserId = session.userId;
 				if (publication) publication.account = value;
 			}
-			if (publication && viewer.error) publication.rejected = true;
+			if (publication && auth.isAuthenticated && viewer.error) publication.rejected = true;
 			else if (publication && value !== undefined) publication.rejected = false;
 			if (value === null) {
+				replaceContractCacheScope(createCacheScope(null));
 				account = undefined;
+				accountUserId = null;
 				if (publication) publication.account = null;
 			}
 			if (ready && !recorded) {

@@ -6,8 +6,6 @@
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getWorkspaceDestinations } from '$lib/auth/workspace-context.svelte';
 	import { afterStartupPaint, recordStartup } from '$lib/auth/startup-perf';
-	import { useReadQuery } from '$lib/auth/read-query.svelte';
-	import { FirstLinkHintVisit } from '$lib/buyer/first-link-hint-visit.svelte';
 	import { useCompanySetup } from '$lib/features/company-setup/company-setup.svelte';
 	import CompanySetupPrompt from '$lib/features/company-setup/CompanySetupPrompt.svelte';
 	import { getInteractionController, setInteractionOwner } from '$lib/components/ui/interactions';
@@ -15,15 +13,12 @@
 	import Button from '$lib/ui/Button.svelte';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	import ContractsLayout from './ContractsLayout.svelte';
-	import ContractsCachedResults from './ContractsCachedResults.svelte';
-	import { useContractsSearch } from './contracts-search.svelte';
+	import ContractsOpeningResults from './ContractsOpeningResults.svelte';
+	import { HOME_SEARCH_SETTLE_MS, useContractsSearch } from './contracts-search.svelte';
 	import { getContracts, loadContracts } from './contracts';
-	import { api } from '../../../convex/_generated/api';
-	import { useConvexClient } from 'convex-svelte';
 
 	setInteractionOwner(Symbol('contracts'));
 	const interactions = getInteractionController();
-	const client = useConvexClient();
 	const viewer = useViewer();
 	const session = useViewerSession();
 	const destinations = getWorkspaceDestinations();
@@ -31,31 +26,9 @@
 	const searchState = $derived(contractsSearch?.current);
 	const firstVisit = Boolean(contractsSearch && !contractsSearch.visited);
 	const setup = useCompanySetup();
-	const membershipId = viewer().membership.id;
-	const firstLinkHintVisit =
-		contractsSearch?.current?.firstLinkHintVisit(membershipId) ??
-		new FirstLinkHintVisit(membershipId);
-	const buyerLinkPresence = useReadQuery(api.buyerLinks.dashboardPresence, { membershipId });
-	const buyerLinksAvailable = $derived(buyerLinkPresence.data?.hasActive ?? undefined);
-	// Let the admitted headings paint before revealing rows already in memory.
+	// Let the admitted heading paint before revealing rows already in memory.
 	let headingsPainted = $state(false);
 	const showContent = $derived(!firstVisit || headingsPainted);
-	let buyerCardReady = $state(false);
-	const showFirstLinkHint = $derived(firstLinkHintVisit.shown);
-	$effect(() => {
-		if (
-			!buyerCardReady ||
-			!showContent ||
-			searchState?.value.trim() ||
-			buyerLinksAvailable !== true ||
-			!buyerLinkPresence.data?.hasCreatedOneLink
-		)
-			return;
-		firstLinkHintVisit.claim(client);
-	});
-	function onFirstLinkCardReady() {
-		buyerCardReady = true;
-	}
 	$effect(() => {
 		if (showContent && contractsSearch) contractsSearch.visited = true;
 	});
@@ -75,9 +48,7 @@
 	let searchInput = $state<HTMLInputElement | null>();
 	let resultsReady = $state(false);
 	const settled = $derived(search.trim() === query);
-	const searchLabel = $derived(
-		buyerLinksAvailable !== false ? 'Search contracts and buyer links' : 'Search contracts'
-	);
+	const searchLabel = 'Search contracts';
 	const canCreateContract = $derived(
 		session.workspaceAdmitted &&
 			!session.blocked &&
@@ -92,9 +63,18 @@
 	$effect(() => {
 		if (searchState) return;
 		const value = fallbackSearch.trim();
-		const timer = setTimeout(() => (fallbackQuery = value), 200);
+		if (!value) {
+			fallbackQuery = '';
+			return;
+		}
+		const timer = setTimeout(() => (fallbackQuery = value), HOME_SEARCH_SETTLE_MS);
 		return () => clearTimeout(timer);
 	});
+	function submitSearch(event: KeyboardEvent) {
+		if (event.key !== 'Enter' || event.isComposing) return;
+		if (searchState) searchState.query = searchState.value.trim();
+		else fallbackQuery = fallbackSearch.trim();
+	}
 	$effect(() => {
 		if (searchInput) searchState?.restoreFocus(searchInput);
 	});
@@ -144,6 +124,7 @@
 		{#if searchState}
 			<SearchField
 				bind:element={searchInput}
+				onkeydown={submitSearch}
 				label={searchLabel}
 				placeholder="Search by name of company"
 				maxlength={200}
@@ -152,6 +133,7 @@
 		{:else}
 			<SearchField
 				bind:element={searchInput}
+				onkeydown={submitSearch}
 				label={searchLabel}
 				placeholder="Search by name of company"
 				maxlength={200}
@@ -188,21 +170,13 @@
 				{search}
 				{query}
 				{settled}
-				{buyerLinksAvailable}
-				{showFirstLinkHint}
-				{onFirstLinkCardReady}
-				{firstVisit}
 				{showContent}
 				onSearch={updateSearch}
 				bind:ready={resultsReady}
 			/>
 		{:else}
-			<ContractsCachedResults
+			<ContractsOpeningResults
 				{search}
-				{buyerLinksAvailable}
-				{showFirstLinkHint}
-				{onFirstLinkCardReady}
-				{firstVisit}
 				{showContent}
 				role={viewer().membership.role}
 				failed={results.failed}

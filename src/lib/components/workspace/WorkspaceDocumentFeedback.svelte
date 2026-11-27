@@ -7,20 +7,20 @@
 	let {
 		workspace,
 		feedback = null
-	}: { workspace: DocumentWorkspace; feedback?: OperationStatus | null } = $props();
+	}: { workspace?: DocumentWorkspace; feedback?: OperationStatus | null } = $props();
 	onDestroy(
 		getWorkspaceFeedback().registerDocument({
 			get feedback() {
 				return feedback;
 			},
 			get renderError() {
-				return workspace.viewer.displayedSnapshot ? workspace.renderer.error : null;
+				return workspace?.viewer.displayedSnapshot ? workspace.renderer.error : null;
 			},
 			get sourceStale() {
-				return Boolean(workspace.viewer.displayedSnapshot && workspace.source.issue);
+				return Boolean(workspace?.viewer.displayedSnapshot && workspace.source.issue);
 			},
 			get onRetryRender() {
-				return workspace.viewer.retry;
+				return workspace?.viewer.retry;
 			}
 		})
 	);

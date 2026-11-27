@@ -1,52 +1,43 @@
 import { paginationResultValidator } from 'convex/server';
 import { v } from 'convex/values';
-import type { Id } from './_generated/dataModel';
 import { mutation, query, type QueryCtx } from './_generated/server';
-import { viewerResult } from './accountViews';
-import {
-	companyDeletion,
-	membershipForProfile,
-	readAccount,
-	requireMembership,
-	type CompanyAccess
-} from './auth';
-import { installation, lifecycle } from './hubspotInstallation';
+import { uiPreferencesView, viewerResult } from './accountViews';
+import { membershipForProfile, readAccount, requireMembership, type CompanyAccess } from './auth';
+import { hasActiveLinkForCreator } from './buyerLinks';
 import { readDirectory } from './contractDirectory';
-import { hasActiveLinkForCreator, liveLinkFor } from './buyerLinks';
-import { hasInvitedColleagues } from './invitationDeliverySummary';
-import { permissionsForRole, role } from './permissions';
-import { contractCard } from './savedContractValidators';
 import { resolveSetupBooking, setupCallFor } from './csmSetupState';
+import { installation, lifecycle } from './hubspotInstallation';
+import { hasInvitedColleagues } from './invitationDeliverySummary';
+import { completeMembershipSetup, readMembershipSetup } from './membershipSetupState';
+import { supportWidgetCollapsed } from './membershipUiPreferences';
+import { permissionsForRole } from './permissions';
+import { readHelpPreferences } from './profileUiPreferences';
+import { contractCard } from './savedContractValidators';
 
-async function hasRepInstructions(ctx: QueryCtx, companyId: Id<'company'>) {
-	const item = await ctx.db
-		.query('playbookItems')
-		.withIndex('by_companyId_and_audience', (q) =>
-			q.eq('companyId', companyId).eq('audience', 'rep')
-		)
-		.first();
-	return Boolean(item);
-}
-
-export async function readViewer(ctx: QueryCtx) {
+async function viewerAccount(ctx: QueryCtx) {
 	const { identity, profile } = await readAccount(ctx);
-	if (!profile) return null;
-	const membership = await membershipForProfile(ctx, profile._id);
+	const membership = profile ? await membershipForProfile(ctx, profile._id) : null;
 	const company = membership ? await ctx.db.get('company', membership.companyId) : null;
+	return { identity, profile, membership, company };
+}
+export async function readViewer(
+	ctx: QueryCtx,
+	account?: Awaited<ReturnType<typeof viewerAccount>>
+) {
+	const { identity, profile, membership, company } = account ?? (await viewerAccount(ctx));
+	if (!profile) return null;
 	const isOwner = company?.ownerProfileId === profile._id;
 	const memberRole = membership && company ? membership.role : 'rep';
 	const viewerPermissions = permissionsForRole(memberRole, isOwner);
-	const [profileAvatar, companyAvatar, deletion, instruction, setupBooking] = await Promise.all([
+	const deletion = company?.deletion;
+	const [profileAvatar, companyAvatar, setupBooking] = await Promise.all([
 		profile.avatarId ? ctx.storage.getUrl(profile.avatarId) : null,
 		company?.avatarId ? ctx.storage.getUrl(company.avatarId) : null,
-		company ? companyDeletion(ctx, company._id) : null,
-		company?.templateSourceId ? hasRepInstructions(ctx, company._id) : false,
 		company && viewerPermissions.manageTemplate && !company.templateSourceId
 			? resolveSetupBooking(ctx, company)
 			: null
 	]);
 	return {
-		helpPreferences: profile.helpPreferences,
 		profile: {
 			id: profile._id,
 			name: profile.name,
@@ -59,8 +50,7 @@ export async function readViewer(ctx: QueryCtx) {
 						id: membership._id,
 						companyId: company._id,
 						role: membership.role,
-						isOwner,
-						supportWidgetCollapsed: membership.supportWidgetCollapsed
+						isOwner
 					}
 				: null,
 		company: company
@@ -70,6 +60,10 @@ export async function readViewer(ctx: QueryCtx) {
 					avatarUrl: companyAvatar,
 					approvalEmail: company.approvalEmail ?? null,
 					setupCall: setupCallFor(setupBooking),
+					templateSource:
+						company.templateSourceId && company.templateSourceFingerprint
+							? { id: company.templateSourceId, fingerprint: company.templateSourceFingerprint }
+							: null,
 					deletion: deletion
 						? {
 								status:
@@ -87,54 +81,26 @@ export async function readViewer(ctx: QueryCtx) {
 		permissions: viewerPermissions,
 		needsInitialization: profile.email !== identity.email.trim().toLowerCase(),
 		templateReady: Boolean(company?.templateSourceId),
-		instructionsReady: Boolean(instruction)
+		instructionsReady: Boolean(company?.hasRepInstructions)
 	};
 }
 
 export const viewer = query({
 	args: {},
 	returns: viewerResult,
-	handler: readViewer
+	handler: (ctx) => readViewer(ctx)
 });
 
-/** Minimal presentation hint for startup; never substitutes for requireMembership. */
-export const workspaceRole = query({
+export const uiPreferences = query({
 	args: {},
-	returns: v.union(
-		v.object({ membershipId: v.id('memberships'), companyId: v.id('company'), role }),
-		v.null()
-	),
+	returns: uiPreferencesView,
 	handler: async (ctx) => {
-		const { profile } = await readAccount(ctx);
-		if (!profile) return null;
-		const membership = await membershipForProfile(ctx, profile._id);
-		if (!membership || !(await ctx.db.get('company', membership.companyId))) return null;
-		return {
-			membershipId: membership._id,
-			companyId: membership.companyId,
-			role: membership.role
-		};
-	}
-});
-
-export const startup = query({
-	args: {},
-	returns: v.object({
-		viewer: viewerResult,
-		contracts: v.union(paginationResultValidator(contractCard), v.null())
-	}),
-	handler: async (ctx) => {
-		const viewer = await readViewer(ctx);
-		const company =
-			viewer?.membership && !viewer.needsInitialization && !viewer.company?.deletion
-				? viewer.company
-				: null;
-		return {
-			viewer,
-			contracts: company
-				? await readDirectory(ctx, company.id, '', { cursor: null, numItems: 24 })
-				: null
-		};
+		const { profile, membership } = await requireMembership(ctx);
+		const [helpPreferences, collapsed] = await Promise.all([
+			readHelpPreferences(ctx, profile),
+			supportWidgetCollapsed(ctx, membership)
+		]);
+		return { helpPreferences, supportWidgetCollapsed: collapsed };
 	}
 });
 
@@ -143,29 +109,12 @@ const scope = v.object({
 	membershipId: v.id('memberships'),
 	companyId: v.id('company')
 });
-export const startupHome = query({
-	args: {},
-	returns: v.object({
-		scope,
-		search: v.literal(''),
-		cursor: v.null(),
-		numItems: v.literal(24),
-		contracts: paginationResultValidator(contractCard)
-	}),
-	handler: async (ctx) => {
-		const access = await requireMembership(ctx);
-		return {
-			scope: {
-				profileId: access.profile._id,
-				membershipId: access.membershipId,
-				companyId: access.companyId
-			},
-			search: '' as const,
-			cursor: null,
-			numItems: 24 as const,
-			contracts: await readDirectory(ctx, access.companyId, '', { cursor: null, numItems: 24 })
-		};
-	}
+const homeView = v.object({
+	scope,
+	search: v.literal(''),
+	cursor: v.null(),
+	numItems: v.literal(24),
+	contracts: paginationResultValidator(contractCard)
 });
 const setupStep = v.union(
 	v.literal('template'),
@@ -183,18 +132,23 @@ const setupProgress = v.object({
 });
 
 /** One authoritative checklist for the workspace prompt and support experience. */
-async function readSetupProgress(ctx: QueryCtx, access: CompanyAccess) {
+async function readSetupProgress(
+	ctx: QueryCtx,
+	access: CompanyAccess,
+	setup?: Awaited<ReturnType<typeof readMembershipSetup>>
+) {
+	const { setupCompletedAt } = setup ?? (await readMembershipSetup(ctx, access.membership));
 	const result = (
 		nextStep: typeof setupStep.type,
 		contractId: import('./_generated/dataModel').Id<'savedContracts'> | null = null
 	) => ({
-		complete: access.membership.setupCompletedAt !== undefined,
+		complete: setupCompletedAt !== undefined,
 		nextStep,
 		contractId
 	});
-	if (access.membership.setupCompletedAt !== undefined) return result(null);
+	if (setupCompletedAt !== undefined) return result(null);
 	if (!access.company.templateSourceId) return result('template');
-	if (!(await hasRepInstructions(ctx, access.companyId))) return result('instructions');
+	if (!access.company.hasRepInstructions) return result('instructions');
 	const contract = await ctx.db
 		.query('contractDirectory')
 		.withIndex('by_companyId_and_creatorId_and_createdAt', (q) =>
@@ -204,8 +158,8 @@ async function readSetupProgress(ctx: QueryCtx, access: CompanyAccess) {
 		.first();
 	if (!contract) return result('contract');
 	if (
-		!(await hasActiveLinkForCreator(ctx, access.companyId, access.profile._id)) &&
-		!(await liveLinkFor(ctx, contract.contractId))
+		!contract.buyerLinkToken &&
+		!(await hasActiveLinkForCreator(ctx, access.companyId, access.profile._id))
 	)
 		return result('buyer-link', contract.contractId);
 	if (access.membership.role === 'rep') return result(null, contract.contractId);
@@ -221,21 +175,50 @@ async function readSetupProgress(ctx: QueryCtx, access: CompanyAccess) {
 }
 
 export const setupHints = query({
-	args: { membershipId: v.id('memberships') },
+	args: {},
 	returns: setupProgress,
-	handler: async (ctx, args) =>
-		readSetupProgress(ctx, await requireMembership(ctx, args.membershipId))
+	handler: async (ctx) => readSetupProgress(ctx, await requireMembership(ctx))
 });
 
-/** Independent full-refresh hint so the setup prompt can precede list results. */
-export const setupStartup = query({
+/** One auth pass; advisory workspace reads never become account admission inputs. */
+export const homeBootstrap = query({
 	args: {},
-	returns: v.object({ membershipId: v.id('memberships'), progress: setupProgress }),
+	returns: v.object({
+		viewer: viewerResult,
+		home: v.union(homeView, v.null()),
+		setup: v.union(
+			v.object({ membershipId: v.id('memberships'), progress: setupProgress }),
+			v.null()
+		)
+	}),
 	handler: async (ctx) => {
-		const access = await requireMembership(ctx);
+		const account = await viewerAccount(ctx);
+		const { profile, membership, company } = account;
+		if (!profile || !membership || !company || company.deletion)
+			return { viewer: await readViewer(ctx, account), home: null, setup: null };
+		const access: CompanyAccess = {
+			profile,
+			membership,
+			company,
+			companyId: company._id,
+			membershipId: membership._id,
+			isOwner: company.ownerProfileId === profile._id
+		};
+		const [viewer, contracts, progress] = await Promise.all([
+			readViewer(ctx, account),
+			readDirectory(ctx, company._id, '', { cursor: null, numItems: 24 }),
+			readSetupProgress(ctx, access)
+		]);
 		return {
-			membershipId: access.membershipId,
-			progress: await readSetupProgress(ctx, access)
+			viewer,
+			home: {
+				scope: { profileId: profile._id, membershipId: membership._id, companyId: company._id },
+				search: '' as const,
+				cursor: null,
+				numItems: 24 as const,
+				contracts
+			},
+			setup: { membershipId: membership._id, progress }
 		};
 	}
 });
@@ -246,9 +229,10 @@ export const completeSetup = mutation({
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		if (access.membership.setupCompletedAt !== undefined) return true;
-		if ((await readSetupProgress(ctx, access)).nextStep !== null) return false;
-		await ctx.db.patch('memberships', access.membershipId, { setupCompletedAt: Date.now() });
+		const setup = await readMembershipSetup(ctx, access.membership);
+		if (setup.setupCompletedAt !== undefined) return true;
+		if ((await readSetupProgress(ctx, access, setup)).nextStep !== null) return false;
+		await completeMembershipSetup(ctx, access.membership, setup);
 		return true;
 	}
 });

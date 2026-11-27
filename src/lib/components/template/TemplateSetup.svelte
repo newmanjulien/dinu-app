@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
-	import type { FunctionReturnType } from 'convex/server';
+	import {
+		createWorkspaceTemplateReads,
+		useWorkspaceTemplateReads
+	} from '$lib/auth/workspace-template-reads.svelte';
 	import { page } from '$app/state';
 	import { useConvexClient } from 'convex-svelte';
 	import { ConvexError } from 'convex/values';
@@ -52,9 +55,8 @@
 	let attempt: ReadAttempt | undefined;
 	const errors = $derived(issues.filter((i) => i.severity === 'error'));
 	const blocked = $derived(errors.length > 0);
-	type SetupStatus = FunctionReturnType<typeof api.templateSetup.status>;
-	let observed = $state.raw<{ identity: string; data?: SetupStatus; error?: string }>();
-	let statusRetry = $state(0);
+	const reads = useWorkspaceTemplateReads() ?? createWorkspaceTemplateReads();
+	reads.open();
 	const identity = $derived(
 		session.preparedSessionId && !session.blocked && !session.closing && !viewer().company.deletion
 			? JSON.stringify([
@@ -66,8 +68,8 @@
 				])
 			: undefined
 	);
-	const status = $derived(observed?.identity === identity ? observed?.data : undefined);
-	const statusError = $derived(observed?.identity === identity ? observed?.error : undefined);
+	const status = $derived(identity ? reads.status.data : undefined);
+	const statusError = $derived(identity ? reads.status.error?.message : undefined);
 	const setupCall = $derived(viewer().company.setupCall);
 	const setupBooked = $derived(setupCall?.state === 'scheduled');
 	const scheduledCallStart = $derived(setupCall?.state === 'scheduled' ? setupCall.start : null);
@@ -147,56 +149,6 @@
 				])
 			: undefined
 	);
-	$effect(() => {
-		const currentIdentity = identity,
-			currentMembership = membershipId;
-		void statusRetry;
-		if (!currentIdentity) return;
-		return untrack(() => {
-			let active = true,
-				release: (() => void) | undefined;
-			observed = { identity: currentIdentity };
-			const read = new ReadAttempt(15_000);
-			const current = () => active && identity === currentIdentity;
-			const stop = () => {
-				const dispose = release;
-				release = undefined;
-				dispose?.();
-			};
-			const fail = () => {
-				if (current())
-					observed = {
-						identity: currentIdentity,
-						error: 'Your setup status couldn’t load. Please try again.'
-					};
-				active = false;
-				read.complete();
-				stop();
-			};
-			read.signal.addEventListener('abort', fail, { once: true });
-			try {
-				release = client.onUpdate(
-					api.templateSetup.status,
-					{ membershipId: currentMembership },
-					(data) => {
-						if (current()) {
-							read.complete();
-							observed = { identity: currentIdentity, data };
-						}
-					},
-					fail
-				);
-				if (!active) stop();
-			} catch {
-				fail();
-			}
-			return () => {
-				active = false;
-				read.abort();
-				stop();
-			};
-		});
-	});
 	$effect(() => {
 		if (!canUpload)
 			untrack(() => {
@@ -393,7 +345,7 @@
 {#if statusError}
 	<TemplateSetupLayout title="Set up your template">
 		<p role="alert" class="text-[13px] leading-6 text-danger">{statusError}</p>
-		<Button variant="secondary" class="mt-3" onclick={() => statusRetry++}>Try again</Button>
+		<Button variant="secondary" class="mt-3" onclick={() => reads.status.retry()}>Try again</Button>
 	</TemplateSetupLayout>
 {:else if status?.kind === 'booking' || (!status && !setupBooked)}
 	<TemplateSetupBookingFrame

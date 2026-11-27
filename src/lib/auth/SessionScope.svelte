@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { page } from '$app/state';
+	import { registerStartupRouteReads } from './startup-route-reads';
 	import { useAccountContext } from './account-context.svelte';
 	import { browser } from '$app/environment';
 	import { env } from '$env/dynamic/public';
@@ -20,9 +22,20 @@
 		useStartupPreparation().take() ??
 			new ConvexClient(env.PUBLIC_CONVEX_URL!, {
 				disabled: !browser,
-				initialAuthTokenReuse: true
+				initialAuthTokenReuse: true,
+				expectAuth: true
 			})
 	);
+	$effect(() => {
+		const client = transport.current;
+		const path = page.url.pathname;
+		const bootstrap = page.data.routeBootstrap;
+		const versionId =
+			bootstrap?.kind === 'current' && bootstrap.sessionId === sessionId
+				? bootstrap.templateVersionId
+				: undefined;
+		return registerStartupRouteReads(client, path, versionId);
+	});
 	let authenticated = $state(false);
 	let loading = $state(true);
 	let configured = $state(false);
@@ -67,7 +80,8 @@
 					.replace(
 						new ConvexClient(env.PUBLIC_CONVEX_URL!, {
 							disabled: !browser,
-							initialAuthTokenReuse: true
+							initialAuthTokenReuse: true,
+							expectAuth: true
 						})
 					)
 					.catch((error) => console.error('Unable to close the previous Convex client.', error));

@@ -1,3 +1,4 @@
+import type { CredentialConnection } from './hubspotCredentials';
 import { v } from 'convex/values';
 import { internalAction } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
@@ -84,7 +85,7 @@ export const send = internalAction({
 			claim = crypto.randomUUID();
 		let event = await ctx.runMutation(internal.hubspotDelivery.claim, { id, claim, execution });
 		if (!event) return null;
-		let connection: Doc<'hubspotConnections'> | null = null;
+		let connection: CredentialConnection | null = null;
 		let freshDispatch: string | undefined;
 		let requests = 0,
 			bodyBytes = 0;

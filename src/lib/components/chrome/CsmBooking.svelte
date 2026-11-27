@@ -50,7 +50,7 @@
 	const id = $props.id();
 	const mode = untrack(() => initial.mode);
 	const replacement = untrack(() => initial.replacement);
-	type Shared = FunctionReturnType<typeof backend.csmBookings.setupStatus>;
+	type Shared = FunctionReturnType<typeof backend.csmBookings.setupOpening>['progress'];
 	let shared = $state<Shared>();
 	let sharedLoaded = $state(mode !== 'setup');
 	let sharedError = $state(false);
@@ -254,17 +254,26 @@
 	}
 	$effect(() => {
 		if (!mounted || mode !== 'setup') return;
+		const key = attemptId,
+			expectedGeneration = bindingGeneration;
 		void bootRetry;
-		return untrack(() =>
-			startInitialSubscription<Shared>(
+		return untrack(() => {
+			bootLoaded = false;
+			bootError = false;
+			return startInitialSubscription<FunctionReturnType<typeof backend.csmBookings.setupOpening>>(
 				(value, error) =>
 					client.onUpdate(
-						backend.csmBookings.setupStatus,
-						{ membershipId, ...(replacement ? { replacement } : {}) },
+						backend.csmBookings.setupOpening,
+						{
+							...(key ? { attemptId: key } : {}),
+							...(replacement ? { replacement } : {})
+						},
 						value,
 						error
 					),
-				(row) => {
+				({ progress, attempt }) => {
+					if (!current() || expectedGeneration !== bindingGeneration) return;
+					const row = progress;
 					if (shared && shared.state !== row.state) {
 						owner.availability.invalidate();
 						selectedSlot = undefined;
@@ -273,7 +282,9 @@
 					shared = row;
 					sharedLoaded = true;
 					sharedError = false;
-					if (!intent && !attemptId && row.attemptId) attemptId = row.attemptId;
+					bootError = false;
+					bootLoaded = true;
+					receive(attempt, expectedGeneration, key);
 					if (row.state === 'completed') {
 						owner.setUnresolved(false);
 						onBooked();
@@ -282,14 +293,16 @@
 				() => {
 					sharedError = true;
 					sharedLoaded = false;
+					bootError = true;
+					bootLoaded = false;
 					owner.availability.invalidate();
 				},
-				current
-			)
-		);
+				() => current() && expectedGeneration === bindingGeneration
+			);
+		});
 	});
 	$effect(() => {
-		if (!mounted) return;
+		if (!mounted || mode !== 'support') return;
 		const key = attemptId,
 			expectedGeneration = bindingGeneration;
 		void bootRetry;
@@ -301,7 +314,6 @@
 					client.onUpdate(
 						backend.csmBookings.attempt,
 						{
-							membershipId,
 							mode,
 							...(key ? { attemptId: key } : {}),
 							...(replacement ? { replacement } : {})
@@ -509,7 +521,7 @@
 			if (!key && intent) await sendIntent();
 			else if (mode === 'setup' && !key)
 				await waitForRead(
-					client.action(backend.csmBookings.checkSetup, {
+					client.mutation(backend.csmBookings.checkSetup, {
 						membershipId,
 						...(replacement ? { replacement } : {})
 					}),
@@ -517,7 +529,7 @@
 				);
 			else if (key) {
 				await waitForRead(
-					client.action(backend.csmBookings.checkStatus, { membershipId, attemptId: key }),
+					client.mutation(backend.csmBookings.checkStatus, { membershipId, attemptId: key }),
 					request.signal
 				);
 			}

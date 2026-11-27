@@ -75,7 +75,7 @@ it('reads returning accounts and provisions missing state once without restartin
 	expect(newMutation).toHaveBeenCalledExactlyOnceWith(api.profiles.initialize, {});
 });
 
-it('scopes independent Home assistance to the authenticated membership and excludes advisory hints from admission', async () => {
+it('scopes consolidated Home assistance to the authenticated membership and excludes advisory hints from admission', async () => {
 	const t = convexTest(schema, modules).withIdentity(identity);
 	await t.run(async (ctx) => {
 		await initializeViewer(ctx);
@@ -83,18 +83,21 @@ it('scopes independent Home assistance to the authenticated membership and exclu
 	const viewer = await t.query(api.accounts.viewer, {});
 	expect(viewer).not.toHaveProperty('hasCreatedContract');
 	expect(viewer).not.toHaveProperty('colleaguesInvited');
-	const home = await t.query(api.accounts.startupHome, {});
+	const bootstrap = await t.query(api.accounts.homeBootstrap, {});
+	expect(bootstrap.viewer).toEqual(viewer);
+	const home = bootstrap.home!;
 	expect(home.scope).toEqual({
 		profileId: viewer!.profile.id,
 		membershipId: viewer!.membership!.id,
 		companyId: viewer!.company!.id
 	});
 	expect(home).toMatchObject({ search: '', cursor: null, numItems: 24 });
-	const hints = await t.query(api.accounts.setupHints, { membershipId: viewer!.membership!.id });
+	const hints = await t.query(api.accounts.setupHints, {});
 	expect(hints).toEqual({ complete: false, nextStep: 'template', contractId: null });
+	expect(bootstrap.setup).toEqual({ membershipId: viewer!.membership!.id, progress: hints });
 	await expect(
 		t
 			.withIdentity({ ...identity, subject: 'other', tokenIdentifier: 'other' })
-			.query(api.accounts.setupHints, { membershipId: viewer!.membership!.id })
+			.query(api.accounts.setupHints, {})
 	).rejects.toThrow();
 });

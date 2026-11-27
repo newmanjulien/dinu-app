@@ -86,7 +86,7 @@ function fixture(count = 12, sourceReady = true) {
 	};
 }
 
-it('shares source reads across route/mounted leases and audiences until the final owner leaves', async () => {
+it('shares one-shot source reads across audiences and keeps structures until the workspace owner leaves', async () => {
 	const network = controlledClient();
 	const source = new TemplateSource(network.client, membershipId);
 	const sessions = (['rep', 'buyer'] as const).map(
@@ -106,73 +106,89 @@ it('shares source reads across route/mounted leases and audiences until the fina
 	});
 	const [rep, buyer] = sessions;
 	const releaseRoute = rep.retainReads();
-	await settle();
 	const releaseMounted = rep.retainReads();
 	const releaseBuyer = buyer.retainReads();
 	await settle();
-	const sourceRead = network.live('templateSources:authoringSource')[0];
 	const structures = network.live('playbookItems:currentStructure');
-	expect(sourceRead).toBeDefined();
 	expect(network.live('templateSources:authoringSource')).toHaveLength(1);
-	expect(structures.map((read) => read.args)).toEqual([
-		{ membershipId, audience: 'rep' },
-		{ membershipId, audience: 'buyer' }
-	]);
+	expect(structures.map((read) => read.args)).toEqual([{ audience: 'rep' }, { audience: 'buyer' }]);
 	expect(network.onUpdate).toHaveBeenCalledTimes(3);
-	const reads = network.onUpdate.mock.calls.length;
-	releaseRoute();
-	releaseRoute(); // Releasing an old route lease twice cannot consume the mounted lease.
-	await settle();
-	expect(network.live('templateSources:authoringSource')).toEqual([sourceRead]);
-	expect(network.live('playbookItems:currentStructure')).toEqual(structures);
-	releaseMounted();
-	await settle();
-	expect(network.live('templateSources:authoringSource')).toEqual([sourceRead]);
-	expect(network.live('playbookItems:currentStructure')).toEqual([structures[1]]);
-	releaseBuyer();
+	const data = documentFixture();
+	network.publish('templateSources:authoringSource', {
+		blocks: data.blocks,
+		templateSourceFingerprint: data.structure.templateSourceFingerprint
+	});
 	await settle();
 	expect(network.live('templateSources:authoringSource')).toHaveLength(0);
-	expect(network.live('playbookItems:currentStructure')).toHaveLength(0);
+	const reads = network.onUpdate.mock.calls.length;
+	releaseRoute();
+	releaseRoute();
+	releaseMounted();
+	releaseBuyer();
+	await settle();
+	expect(network.live('playbookItems:currentStructure')).toEqual(structures);
+	const releaseAgain = rep.retainReads();
 	expect(network.onUpdate).toHaveBeenCalledTimes(reads);
+	releaseAgain();
+	sessions.forEach((session) => session.destroy());
+	expect(network.live('playbookItems:currentStructure')).toHaveLength(0);
+	expect(network.live('templateSources:authoringSource')).toHaveLength(0);
 	expect(network.mutation).not.toHaveBeenCalled();
 });
 
-it('starts eight speculative reads before rendering and lets cold foreground demand bypass them', () => {
+it('waits for nearby demand before speculative reads and lets cold foreground demand bypass them', async () => {
 	const f = fixture(20, false);
-	expect(f.network.details().map((o) => o.args.id)).toEqual(
-		f.data.records.slice(0, 8).map((r) => r._id)
-	);
+	expect(f.network.details()).toHaveLength(0);
+	const nearby = f.data.records.slice(0, 8).map((r) => r._id);
+	f.session.itemPreload!(nearby);
+	await settle();
+	expect(f.network.details()).toHaveLength(1);
+	expect(f.network.details()[0].args.ids).toEqual(nearby);
 	expect(f.session.controller.entry).toBeNull();
 	expect(f.network.mutation).not.toHaveBeenCalled();
 	f.setSourceReady();
-	expect(f.network.details()).toHaveLength(8);
 	f.open(19);
-	expect(f.network.details()).toHaveLength(9);
+	await settle();
+	expect(f.network.details()).toHaveLength(2);
+	expect(f.network.details()[1].args.ids).toEqual([f.data.records[19]._id]);
 	expect(f.session.pendingPanel?.itemId).toBe(f.data.records[19]._id);
 	f.respond(19);
+	await settle();
 	expect(f.session.controller.draft?.persistedId).toBe(f.data.records[19]._id);
 	expect(f.session.selectionRequest?.status).toBe('opened');
-	// None of the original eight optional responses was delivered.
-	expect(f.network.details().filter((o) => o.args.id !== f.data.records[19]._id)).toHaveLength(8);
+	// The background batch remains unanswered and cannot delay the foreground result.
+	expect(f.network.details()).toHaveLength(1);
+	expect(f.network.details()[0].args.ids).toEqual(nearby);
 });
 
-it('cancellation and supersession never open a late cold response', () => {
+it('cancellation and supersession never open a late cold response', async () => {
 	const f = fixture(20);
 	f.open(18);
+	await settle();
+	const cancelled = f.network.details()[0];
 	expect(f.session.cancelSelection()).toBe(true);
-	f.respond(18);
+	cancelled.update([{ id: f.data.records[18]._id, content: f.data.detail(18) }]);
+	await settle();
 	expect(f.session.controller.entry).toBeNull();
 	f.open(17);
+	await settle();
+	const superseded = f.network.details()[0];
 	f.open(19);
-	f.respond(17);
+	await settle();
+	superseded.update([{ id: f.data.records[17]._id, content: f.data.detail(17) }]);
+	await settle();
 	expect(f.session.controller.entry).toBeNull();
 	f.respond(19);
+	await settle();
 	expect(f.session.controller.draft?.persistedId).toBe(f.data.records[19]._id);
 });
 
-it('a formerly warm instruction waits for its current revision rather than presenting stale content', () => {
+it('a formerly warm instruction waits for its current revision rather than presenting stale content', async () => {
 	const f = fixture();
+	f.session.itemPreload!([f.data.records[0]._id]);
+	await settle();
 	f.respond(0);
+	await settle();
 	const updated = {
 		...f.data.records[0],
 		contentRevision: 2,
@@ -184,11 +200,14 @@ it('a formerly warm instruction waits for its current revision rather than prese
 		items: f.data.structure.items.map((head, i) => (i ? head : { ...head, contentRevision: 2 }))
 	});
 	f.open(0);
+	await settle();
 	expect(f.session.pendingPanel).not.toBeNull();
 	expect(f.session.controller.entry).toBeNull();
 	f.respond(0);
+	await settle();
 	expect(f.session.controller.entry).toBeNull();
 	f.network.publishDetail(updated._id, f.data.detail(0, updated));
+	await settle();
 	expect(f.session.pendingPanel).toBeNull();
 	const draft = f.session.controller.draft;
 	expect(draft && isRepItem(draft) ? draft.instructions.summary : undefined).toBe(
@@ -196,22 +215,30 @@ it('a formerly warm instruction waits for its current revision rather than prese
 	);
 });
 
-it('keeps optional failures local, retries explicitly, and reuses warm instructions through A → B → A', () => {
-	const f = fixture(),
-		failed = f.network.details()[0];
+it('keeps optional failures local, retries explicitly, and reuses warm instructions through A → B → A', async () => {
+	const f = fixture();
+	f.session.itemPreload!(f.data.records.slice(0, 3).map((r) => r._id));
+	await settle();
+	const failed = f.network.details()[0];
 	failed.error(new Error('Speculative read failed'));
+	await settle();
 	expect(f.session.message).toBe('');
 	expect(failed.released).toBe(true);
 	f.open(0);
-	expect(f.network.details().some((o) => o.args.id === f.data.records[0]._id)).toBe(true);
+	await settle();
+	expect(f.network.details()[0].args.ids).toEqual([f.data.records[0]._id]);
 	f.respond(0);
+	await settle();
 	expect(f.session.controller.draft?.persistedId).toBe(f.data.records[0]._id);
 	f.close();
+	f.session.itemPreload!([f.data.records[1]._id]);
+	await settle();
 	f.respond(1);
+	await settle();
 	const reads = f.network.onUpdate.mock.calls.length;
 	for (const i of [0, 1, 0]) {
 		expect(f.open(i).status).toBe('accepted');
-		// No tick, timer, promise or additional response is allowed between click and these assertions.
+		// The warm click must open synchronously, with no tick or extra response.
 		expect(f.session.selectionRequest?.status).toBe('opened');
 		expect(f.session.controller.draft?.persistedId).toBe(f.data.records[i]._id);
 		expect(f.session.pendingPanel).toBeNull();
@@ -220,76 +247,78 @@ it('keeps optional failures local, retries explicitly, and reuses warm instructi
 	expect(f.network.onUpdate).toHaveBeenCalledTimes(reads);
 });
 
-it('prioritizes nearby demand, renews the reporter after same-templateSource refresh, and fences retired reports', () => {
+it('prioritizes nearby demand, renews the reporter after same-templateSource refresh, and fences retired reports', async () => {
 	const f = fixture(24),
 		nearby = [f.data.records[20]._id, f.data.records[19]._id];
 	const first = f.session.itemPreload!;
 	first(nearby);
-	expect(
-		f.network
-			.details()
-			.slice(-2)
-			.map((o) => o.args.id)
-	).toEqual(nearby);
+	await settle();
+	expect(f.network.details()[0].args.ids).toEqual(nearby);
 	f.session.retryReads();
 	expect(f.session.itemPreload).toBeUndefined();
 	f.network.publish('playbookItems:currentStructure', f.data.structure);
 	const renewed = f.session.itemPreload!;
 	expect(renewed).toBeTypeOf('function');
 	expect(renewed).not.toBe(first);
-	renewed(nearby); // A viewer must replay the current window to each new reporter; component coverage below.
+	renewed(nearby);
+	await settle();
 	const calls = f.network.onUpdate.mock.calls.length;
 	first([f.data.records[23]._id]);
+	await settle();
 	expect(f.network.onUpdate).toHaveBeenCalledTimes(calls);
-	expect(
-		f.network
-			.details()
-			.slice(-2)
-			.map((o) => o.args.id)
-	).toEqual(nearby);
+	expect(f.network.details()[0].args.ids).toEqual(nearby);
 });
 
-it('retains at most 64 optional records and eight awaiting reads, including warm editor demotion', () => {
-	const f = fixture(90),
-		answered = new Set<object>();
-	for (let step = 0; step < 100; step++) {
-		expect(f.network.details()).toHaveLength(Math.min(64, answered.size + 8));
-		expect(f.network.details().filter((o) => !answered.has(o)).length).toBeLessThanOrEqual(8);
-		const next = f.network.details().find((o) => !answered.has(o));
-		if (!next) break;
-		answered.add(next);
-		f.respond(Number(next.args.id!.split('-')[1]));
-	}
-	expect(f.network.details()).toHaveLength(64);
+it('retains at most 64 optional records in one bounded batch, including warm editor demotion', async () => {
+	const f = fixture(90);
+	expect(f.network.details()).toHaveLength(0);
+	f.session.itemPreload!(f.data.records.map((r) => r._id));
+	await settle();
+	expect(f.network.details()).toHaveLength(1);
+	expect(f.network.details()[0].args.ids).toEqual(f.data.records.slice(0, 64).map((r) => r._id));
+	for (let i = 0; i < 64; i++) f.respond(i);
+	await settle();
+	expect(f.network.details()).toHaveLength(0);
+	const retained = () => f.data.records.filter((r) => f.session.readDetail(r._id));
+	expect(retained()).toHaveLength(64);
 	f.open(0);
 	f.open(1);
-	const editor = f.data.records[1]._id;
-	expect(f.network.details().filter((o) => o.args.id !== editor).length).toBeLessThanOrEqual(64);
+	expect(f.session.controller.draft?.persistedId).toBe(f.data.records[1]._id);
 	f.close();
-	expect(f.network.details().length).toBeLessThanOrEqual(64);
+	expect(retained().length).toBeLessThanOrEqual(64);
+	expect(f.network.details()).toHaveLength(0);
 });
 
-it('enforces the encoded-body budget without repeatedly fetching the body that exceeded it', () => {
+it('enforces the encoded-body budget without repeatedly fetching the body that exceeded it', async () => {
 	const f = fixture(20),
 		large = 'x'.repeat(3 * 1024 * 1024);
-	const retained = new Map<string, number>();
-	for (const i of [0, 1]) {
-		const record = { ...f.data.records[i], instructions: { summary: large } };
-		retained.set(record._id, new TextEncoder().encode(JSON.stringify(record)).byteLength);
-		f.network.publishDetail(record._id, f.data.detail(i, record));
-	}
-	const bytes = () =>
-		f.network.details().reduce((sum, o) => sum + (retained.get(o.args.id!) ?? 0), 0);
-	expect(bytes()).toBeGreaterThan(3 * 1024 * 1024);
-	expect(bytes()).toBeLessThanOrEqual(4 * 1024 * 1024);
+	f.session.itemPreload!(f.data.records.map((r) => r._id));
+	await settle();
+	f.network.publishDetails(
+		f.data.records.map((record, i) =>
+			f.data.detail(i, i < 2 ? { ...record, instructions: { summary: large } } : record)
+		)
+	);
+	await settle();
+	const retained = f.data.records.map((r) => f.session.readDetail(r._id)).filter((r) => r !== null);
+	const bytes = retained.reduce(
+		(sum, r) => sum + new TextEncoder().encode(JSON.stringify(r)).byteLength,
+		0
+	);
+	expect(bytes).toBeGreaterThan(3 * 1024 * 1024);
+	expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+	expect(f.session.readDetail(f.data.records[1]._id)).toBeNull();
+	expect(f.session.readDetail(f.data.records[2]._id)).not.toBeNull();
 	const calls = f.network.onUpdate.mock.calls.length;
 	for (let i = 0; i < 10; i++) f.session.acceptSource();
+	await settle();
 	expect(f.network.onUpdate).toHaveBeenCalledTimes(calls);
 });
 
 it('optional arrivals do not notify the foreground projection or reaccept document content', async () => {
 	const f = fixture(),
 		accept = vi.fn();
+	f.session.itemPreload!(f.data.records.slice(0, 5).map((r) => r._id));
 	const release = observe(
 		() => f.session.hydratedDetails,
 		(details) => {
@@ -315,19 +344,27 @@ it('optional arrivals do not notify the foreground projection or reaccept docume
 	expect(f.source.domain.metrics.compiledDocumentBuilds).toBe(1);
 });
 
-it('releases speculative work on freeze and detach, and ignores callbacks from released reads', () => {
+it('releases speculative work on freeze and detach, and ignores callbacks from released reads', async () => {
 	const f = fixture(),
-		old = f.network.details()[0];
+		nearby = f.data.records.slice(0, 8).map((r) => r._id);
+	f.session.itemPreload!(nearby);
+	await settle();
+	const old = f.network.details()[0];
 	f.lifecycle.freeze(true);
 	expect(f.network.details()).toHaveLength(0);
 	expect(f.session.itemPreload).toBeUndefined();
-	old.update(f.data.detail(0));
+	old.update(nearby.map((id, i) => ({ id, content: f.data.detail(i) })));
+	await settle();
 	expect(f.session.detail(f.data.records[0]._id)).toBeNull();
 	f.lifecycle.freeze(false);
-	expect(f.network.details()).toHaveLength(8);
+	expect(f.network.details()).toHaveLength(0);
+	f.session.itemPreload!(nearby);
+	await settle();
+	expect(f.network.details()).toHaveLength(1);
 	f.detach();
 	expect(f.network.details()).toHaveLength(0);
 	expect(f.session.itemPreload).toBeUndefined();
+	expect(f.network.live('playbookItems:currentStructure')).toHaveLength(1);
 	f.session.destroy();
 	expect(f.network.live('playbookItems:currentStructure')).toHaveLength(0);
 	expect(f.network.details()).toHaveLength(0);

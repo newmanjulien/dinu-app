@@ -11,6 +11,7 @@
 	let {
 		kind,
 		audience = 'rep',
+		contractMode = 'negotiate',
 		helpVariant,
 		helpReady = false,
 		help,
@@ -27,6 +28,7 @@
 	}: {
 		kind: 'saved' | 'template';
 		audience?: TemplateAudience;
+		contractMode?: 'negotiate' | 'comments';
 		helpVariant?: TemplateHelpVariant;
 		helpReady?: boolean;
 		help?: HelpSession;
@@ -59,7 +61,7 @@
 {/if}
 <DocumentSection {active}>
 	{#snippet heading()}
-		<DocumentHeading {kind} {audience} />
+		<DocumentHeading {kind} {audience} {contractMode} />
 		{#if error}<div
 				role="alert"
 				class="mx-auto max-w-3xl px-6 py-3 text-center text-sm text-danger"

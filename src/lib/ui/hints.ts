@@ -6,9 +6,6 @@ export const hints = {
 	contractsIntro: {
 		text: 'Create and manage buyer contracts using your company’s template and instructions.'
 	},
-	firstBuyerLink: {
-		text: 'Send this link to the buyer, then open it yourself to exchange comments with them'
-	},
 	sellerCommentName: {
 		text: 'Add your name in Settings so buyers see it instead of your email.'
 	},

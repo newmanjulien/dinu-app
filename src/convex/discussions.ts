@@ -1,6 +1,4 @@
-import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
-import { ConvexError, v, type Infer } from 'convex/values';
-import type { Doc } from './_generated/dataModel';
+import { ConvexError, v } from 'convex/values';
 import {
 	internalMutation,
 	internalQuery,
@@ -11,137 +9,113 @@ import {
 import {
 	discussionAccess,
 	discussionCommand,
-	discussionMessage,
-	discussionThread,
+	discussionList,
 	markSeenResult,
 	publicAuthor,
 	seenMessages,
 	writeResult
 } from '../lib/discussions/validators';
-import { requireMembership } from './auth';
 import { markDiscussionSeen, writeDiscussion } from './discussionCommands';
-import { discussionContext, ownsDiscussion, type DiscussionContext } from './discussionContext';
-import { authorView, discussionActor, messageProjector } from './discussionService';
+import { DISCUSSION_THREAD_LIMIT, DISCUSSION_MESSAGE_LIMIT } from '../lib/discussions/limits';
+import {
+	buyerDiscussionContext,
+	ownsDiscussion,
+	sellerDiscussionContext
+} from './discussionContext';
+import {
+	authorView,
+	buyerDiscussionActor,
+	messageProjector,
+	sellerDiscussionActor
+} from './discussionService';
 
 export { discussionContext } from './discussionContext';
 
-const privateContextArgs = {
+const sellerContextArgs = {
 	membershipId: v.id('memberships'),
-	id: v.id('savedContracts'),
-	token: v.string()
+	id: v.id('savedContracts')
 };
 
-async function privateContext(
-	ctx: QueryCtx,
-	args: Infer<typeof discussionAccess> & {
-		membershipId: Doc<'memberships'>['_id'];
-		id: Doc<'savedContracts'>['_id'];
-	}
-) {
-	const access = await requireMembership(ctx, args.membershipId);
-	const context = await discussionContext(ctx, args);
-	if (context.root._id !== args.id || context.root.companyId !== access.companyId)
-		throw new ConvexError('This contract is unavailable.');
-	return { access, context };
-}
-
-function threadProjector(ctx: QueryCtx, context: DiscussionContext) {
-	const project = messageProjector(ctx, context.root);
-	return async (thread: Doc<'discussionThreads'>) => {
-		const root = await ctx.db
-			.query('discussionMessages')
-			.withIndex('by_threadId_and_reply', (q) => q.eq('threadId', thread._id).eq('reply', false))
-			.unique();
-		if (!ownsDiscussion(context, thread) || !root || !ownsDiscussion(context, root)) return null;
-		return {
-			id: thread._id,
-			contentRevision: thread.contentRevision,
-			anchor: thread.anchor,
-			root: await project(root)
-		};
-	};
-}
-
-/** Paginated reactive list of live comment threads for a buyer link. */
+/** One bounded live snapshot, including replies and the authenticated seller author. */
 export const list = query({
-	args: { access: discussionAccess, paginationOpts: paginationOptsValidator },
-	returns: paginationResultValidator(discussionThread),
-	handler: async (ctx, { access, paginationOpts }) => {
-		const context = await discussionContext(ctx, access);
-		const result = await ctx.db
-			.query('discussionThreads')
-			.withIndex('by_contractId', (q) => q.eq('contractId', context.root._id))
-			.order('asc')
-			.paginate(paginationOpts);
-		const project = threadProjector(ctx, context);
-		const projected = await Promise.all(result.page.map(project));
-		return {
-			...result,
-			page: projected.filter((item): item is NonNullable<typeof item> => item !== null)
-		};
-	}
-});
-
-/** Paginated reactive replies for one open comment thread. */
-export const replies = query({
-	args: {
-		access: discussionAccess,
-		threadId: v.id('discussionThreads'),
-		paginationOpts: paginationOptsValidator
-	},
-	returns: paginationResultValidator(discussionMessage),
-	handler: async (ctx, { access, threadId, paginationOpts }) => {
-		const context = await discussionContext(ctx, access);
-		const thread = await ctx.db.get('discussionThreads', threadId);
-		if (!thread || !ownsDiscussion(context, thread))
-			return { page: [], isDone: true, continueCursor: '' };
-		const result = await ctx.db
-			.query('discussionMessages')
-			.withIndex('by_threadId_and_reply', (q) => q.eq('threadId', threadId).eq('reply', true))
-			.order('asc')
-			.paginate(paginationOpts);
+	args: { access: discussionAccess },
+	returns: discussionList,
+	handler: async (ctx, { access }) => {
+		const resolved =
+			access.kind === 'seller'
+				? await sellerDiscussionContext(ctx, undefined, access.id)
+				: { context: await buyerDiscussionContext(ctx, access.token), access: null };
+		const { context } = resolved;
+		const [threads, messages] = await Promise.all([
+			ctx.db
+				.query('discussionThreads')
+				.withIndex('by_contractId', (q) => q.eq('contractId', context.root._id))
+				.order('desc')
+				.take(DISCUSSION_THREAD_LIMIT),
+			ctx.db
+				.query('discussionMessages')
+				.withIndex('by_contractId', (q) => q.eq('contractId', context.root._id))
+				.order('desc')
+				.take(DISCUSSION_MESSAGE_LIMIT)
+		]);
 		const project = messageProjector(ctx, context.root);
+		// Seed the shared author cache before projecting messages by that same seller.
+		const viewer = resolved.access
+			? await project.author(sellerDiscussionActor(context.root, resolved.access))
+			: null;
+		const grouped = new Map<
+			string,
+			{ root?: (typeof messages)[number]; replies: typeof messages }
+		>();
+		for (const message of messages.reverse()) {
+			if (!ownsDiscussion(context, message)) continue;
+			const group = grouped.get(message.threadId) ?? { replies: [] };
+			if (message.reply) group.replies.push(message);
+			else group.root = message;
+			grouped.set(message.threadId, group);
+		}
+		const projected = await Promise.all(
+			threads.reverse().map(async (thread) => {
+				const group = grouped.get(thread._id);
+				if (!ownsDiscussion(context, thread) || !group?.root) return null;
+				const [root, replies] = await Promise.all([
+					project.message(group.root),
+					Promise.all(group.replies.map(project.message))
+				]);
+				return {
+					id: thread._id,
+					contentRevision: thread.contentRevision,
+					anchor: thread.anchor,
+					root,
+					replies
+				};
+			})
+		);
 		return {
-			...result,
-			page: await Promise.all(result.page.map(project))
+			viewer,
+			threads: projected.filter((thread): thread is NonNullable<typeof thread> => thread !== null)
 		};
-	}
-});
-
-export const viewer = query({
-	args: privateContextArgs,
-	returns: publicAuthor,
-	handler: async (ctx, args) => {
-		const { access, context } = await privateContext(ctx, args);
-		return authorView(ctx, context.root, await discussionActor(ctx, context, undefined, access));
 	}
 });
 
 export const markSeen = mutation({
-	args: { ...privateContextArgs, operationId: v.string(), messages: seenMessages },
+	args: { ...sellerContextArgs, operationId: v.string(), messages: seenMessages },
 	returns: markSeenResult,
 	handler: async (ctx, args) => {
-		const { access, context } = await privateContext(ctx, args);
-		return markDiscussionSeen(
-			ctx,
-			context,
-			await discussionActor(ctx, context, undefined, access),
-			{
-				token: args.token,
-				operationId: args.operationId,
-				messages: args.messages
-			}
-		);
+		const { access, context } = await sellerDiscussionContext(ctx, args.membershipId, args.id);
+		return markDiscussionSeen(ctx, context, sellerDiscussionActor(context.root, access), {
+			operationId: args.operationId,
+			messages: args.messages
+		});
 	}
 });
 
 export const write = mutation({
-	args: { ...privateContextArgs, operationId: v.string(), command: discussionCommand },
+	args: { ...sellerContextArgs, operationId: v.string(), command: discussionCommand },
 	returns: writeResult,
 	handler: async (ctx, args) => {
-		const { access, context } = await privateContext(ctx, args);
-		return writeDiscussion(ctx, context, await discussionActor(ctx, context, undefined, access), {
-			token: args.token,
+		const { access, context } = await sellerDiscussionContext(ctx, args.membershipId, args.id);
+		return writeDiscussion(ctx, context, sellerDiscussionActor(context.root, access), {
 			operationId: args.operationId,
 			command: args.command
 		});
@@ -158,10 +132,10 @@ const buyerOperationArgs = {
 
 async function buyerOperation(
 	ctx: QueryCtx,
-	args: Infer<typeof discussionAccess> & { browserId: string; expectedAuthorKey: string }
+	args: { token: string; browserId: string; expectedAuthorKey: string }
 ) {
-	const context = await discussionContext(ctx, args);
-	const actor = await discussionActor(ctx, context, args.browserId);
+	const context = await buyerDiscussionContext(ctx, args.token);
+	const actor = await buyerDiscussionActor(ctx, context.root, args.browserId);
 	if (actor.key !== args.expectedAuthorKey)
 		throw new ConvexError({
 			code: 'DISCUSSION_IDENTITY_CHANGED',
@@ -177,7 +151,6 @@ export const buyerWrite = internalMutation({
 	handler: async (ctx, args) => {
 		const { context, actor } = await buyerOperation(ctx, args);
 		return writeDiscussion(ctx, context, actor, {
-			token: args.token,
 			operationId: args.operationId,
 			command: args.command
 		});
@@ -188,7 +161,11 @@ export const buyerViewer = internalQuery({
 	args: { token: v.string(), browserId: v.string() },
 	returns: publicAuthor,
 	handler: async (ctx, args) => {
-		const context = await discussionContext(ctx, args);
-		return authorView(ctx, context.root, await discussionActor(ctx, context, args.browserId));
+		const context = await buyerDiscussionContext(ctx, args.token);
+		return authorView(
+			ctx,
+			context.root,
+			await buyerDiscussionActor(ctx, context.root, args.browserId)
+		);
 	}
 });

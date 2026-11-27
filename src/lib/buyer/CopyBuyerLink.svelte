@@ -9,9 +9,15 @@
 	import { getBuyerLinkCopyFeedback } from './copy-feedback.svelte';
 	let {
 		id,
+		token,
 		disabled = false,
 		reason = null
-	}: { id: Id<'savedContracts'>; disabled?: boolean; reason?: string | null } = $props();
+	}: {
+		id: Id<'savedContracts'>;
+		token?: string | null;
+		disabled?: boolean;
+		reason?: string | null;
+	} = $props();
 	const viewer = useViewer();
 	const feedback = getBuyerLinkCopyFeedback();
 	const links = new BuyerLinkController(
@@ -19,7 +25,8 @@
 		getContractEditors(),
 		viewer().membership.id,
 		untrack(() => id),
-		feedback.show
+		feedback.show,
+		() => token
 	);
 	onDestroy(() => links.destroy());
 	let trigger = $state<HTMLButtonElement | null>();

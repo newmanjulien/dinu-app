@@ -1,6 +1,6 @@
 import { env } from '$env/dynamic/public';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
-import type { StartupData, StartupHome } from '$lib/auth/startup-data';
+import type { StartupData } from '$lib/auth/startup-data';
 import { ConvexHttpClient } from 'convex/browser';
 import { api } from '../../../convex/_generated/api';
 import type { PageServerLoad } from './$types';
@@ -17,7 +17,7 @@ export const load: PageServerLoad = ({ locals, isDataRequest }) => {
 		!('sessionId' in auth) ||
 		!auth.sessionId
 	)
-		return { startup: null, startupHome: null, startupSetup: null };
+		return { startup: null };
 	const { userId, sessionId } = auth;
 	const token = auth.getToken({ template: 'convex' });
 	function assist<T>(query: (client: ConvexHttpClient) => Promise<T>) {
@@ -39,12 +39,8 @@ export const load: PageServerLoad = ({ locals, isDataRequest }) => {
 			.catch(() => null)
 			.finally(() => read.complete());
 	}
-	const startup: Promise<StartupData | null> = assist(async (client) => ({
-		viewer: await client.query(api.accounts.viewer, {})
-	}));
-	const startupHome: Promise<StartupHome | null> = assist((client) =>
-		client.query(api.accounts.startupHome, {})
+	const startup: Promise<StartupData | null> = assist((client) =>
+		client.query(api.accounts.homeBootstrap, {})
 	);
-	const startupSetup = assist((client) => client.query(api.accounts.setupStartup, {}));
-	return { startup, startupHome, startupSetup };
+	return { startup };
 };

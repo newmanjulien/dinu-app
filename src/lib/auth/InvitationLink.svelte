@@ -67,7 +67,7 @@
 				return;
 			}
 			const read = new ReadAttempt(15_000);
-			void waitForRead(client.action(api.invitationLinks.resolve, { token }), read.signal)
+			void waitForRead(client.query(api.invitationLinks.resolve, { token }), read.signal)
 				.then((value) => {
 					if (
 						alive &&

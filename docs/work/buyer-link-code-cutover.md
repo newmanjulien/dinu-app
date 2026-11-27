@@ -1,5 +1,7 @@
 # Buyer link code cutover
 
+> Historical cutover record. Current release instructions are in [deployment](../deployment.md); the master plan retired the former preservation gates and requires a fresh database.
+
 Status: Phase 3 complete in the working tree. Phase 4 readiness inspected; traffic pause, database wipe, deployment, and verification remain pending.
 
 ## Code and URL contract

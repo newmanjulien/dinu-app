@@ -1,6 +1,7 @@
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BuyerContract } from '../../../src/lib/buyer/contract.svelte';
+import type { Id } from '../../../src/convex/_generated/dataModel';
 import { createDocumentWorkspace } from '../../../src/lib/document/runtime/workspace-factory';
 import { orderedTools, type ToolStates } from '../../../src/lib/components/document/document-tools';
 import { csmState } from '../../support/csm-state.svelte';
@@ -55,7 +56,7 @@ afterEach(async () => {
 });
 function fixture(variant: 'contract' | 'template' | 'buyer-template' | 'buyer' = 'contract') {
 	const state = csmState();
-	state.viewer.helpPreferences.contract = true;
+	state.preferences.helpPreferences.contract = true;
 	const network = controlledClient((read) => {
 		if (read.name === 'hubspotConnections:status') context.starts.push('policy');
 	});
@@ -63,7 +64,7 @@ function fixture(variant: 'contract' | 'template' | 'buyer-template' | 'buyer' =
 	workspace = createDocumentWorkspace({ kind: 'prose', blocks: { data: undefined } });
 	const download = vi.fn();
 	if (variant === 'buyer') {
-		buyer = new BuyerContract('Ab3Cd4Ef5Gh6I', network.client);
+		buyer = new BuyerContract('Ab3Cd4Ef5Gh6I', network.client, 'version' as Id<'templateVersions'>);
 		buyer.allowed = true;
 		buyer.target = document.createElement('div');
 	}
@@ -260,7 +261,7 @@ it.each(['preference', 'manual'] as const)(
 		const configurePreference = (hidden: boolean) =>
 			buyer!.help.configure({
 				kind: 'preference',
-				variant: 'buyer-link-seller',
+				variant: 'contract-comments',
 				identity: 'profile',
 				hidden,
 				save,

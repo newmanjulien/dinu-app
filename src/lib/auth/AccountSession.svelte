@@ -106,7 +106,6 @@
 		const active = clerk.session;
 		const user = userId;
 		const closing = session.closing;
-		const generation = session.transportGeneration;
 		const value = workspaceViewer;
 		const preserveInitialHints = initialHintsActive;
 		if (!browser) return;
@@ -132,8 +131,7 @@
 							}
 						: null
 				);
-			else
-				hints.prepare(user, active.id, generation, () => active.getToken({ template: 'convex' }));
+			else hints.activate(user, active.id);
 		});
 	});
 	onDestroy(() => {

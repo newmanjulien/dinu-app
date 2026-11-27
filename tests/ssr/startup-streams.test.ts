@@ -33,26 +33,35 @@ afterEach(() => {
 	requests.pending.clear();
 	vi.useRealTimers();
 });
-it('returns Contracts HTML data immediately and lets the account settle while cards never settle', async () => {
+it('returns Contracts HTML immediately with one bounded, scoped bootstrap stream', async () => {
 	vi.useFakeTimers();
-	const result = home({
+	const event = {
 		locals: { auth: () => ({ sessionId: 's', userId: 'u', getToken: async () => 't' }) },
 		isDataRequest: false
-	} as any) as any;
+	} as any;
+	const result = home(event) as any;
 	expect(result).not.toBeInstanceOf(Promise);
 	await Promise.resolve();
 	await Promise.resolve();
-	expect([...requests.pending.keys()]).toEqual([
-		'accounts:viewer',
-		'accounts:startupHome',
-		'accounts:setupStartup'
-	]);
-	requests.pending.get('accounts:viewer')!.resolve(null);
-	expect(await result.startup).toEqual({ viewer: null, userId: 'u', sessionId: 's' });
-	expect(requests.pending.get('accounts:startupHome')!.signal.aborted).toBe(false);
-	expect(requests.pending.get('accounts:setupStartup')!.signal.aborted).toBe(false);
+	expect([...requests.pending.keys()]).toEqual(['accounts:homeBootstrap']);
+	requests.pending
+		.get('accounts:homeBootstrap')!
+		.resolve({ viewer: null, home: null, setup: null });
+	expect(await result.startup).toEqual({
+		viewer: null,
+		home: null,
+		setup: null,
+		userId: 'u',
+		sessionId: 's'
+	});
+	requests.pending.clear();
+	const stalled = home(event) as any;
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(requests.pending.get('accounts:homeBootstrap')!.signal.aborted).toBe(false);
 	await vi.advanceTimersByTimeAsync(5_001);
-	expect(await result.startupHome).toBeNull();
+	expect(await stalled.startup).toBeNull();
+	expect(requests.pending.get('accounts:homeBootstrap')!.signal.aborted).toBe(true);
 });
 it('streams an anonymous invitation and bounds a service that ignores cancellation', async () => {
 	vi.useFakeTimers();

@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onDestroy, untrack } from 'svelte';
 	import InlineAction from '$lib/components/playbook/InlineAction.svelte';
 	import type { DiscussionThread, DiscussionSession } from './session.svelte';
 	import DiscussionMessage from './DiscussionMessage.svelte';
@@ -23,18 +22,12 @@
 		deletion: DeleteConfirmationState;
 	} = $props();
 	const composer = $derived(session.replyComposer(thread.id));
-	const replyLease = untrack(() => session.acquireReplies(thread.id));
-	const replies = replyLease.state;
-	onDestroy(replyLease.release);
-	$effect(() => {
-		const active = canRead && session.active && session.authorized;
-		untrack(() => replies.setActive(active));
-		return () => replies.setActive(false);
-	});
+	let shownReplies = $state(20);
+	const replies = $derived(thread.replies.slice(-shownReplies));
 
 	function selectThread() {
 		onActivate();
-		if (!session.readOnly && !session.viewer) void session.loadBuyerViewer();
+		if (!session.readOnly && !session.viewer) void session.loadViewer();
 		session.selected = thread.id;
 	}
 	function activate(trigger: HTMLButtonElement) {
@@ -52,33 +45,33 @@
 	}
 </script>
 
-{#each replies.rows as message (message.id)}
+{#if thread.replies.length > shownReplies}
+	<div class="px-3.5 pt-2 text-xs">
+		<InlineAction onclick={() => (shownReplies += 20)}>Show older replies</InlineAction>
+	</div>
+{/if}
+{#each replies as message (message.id)}
 	<DiscussionMessage
 		{message}
 		threadId={thread.id}
 		{session}
 		{deletion}
-		canRead={canRead && replies.authorized}
+		canRead={canRead && session.authorized}
 		reply
 		onActivate={activate}
 		onEdit={selectThread}
 	/>
 {/each}
-{#if replies.error}<div class="px-3.5 pb-3 text-xs">
-		<InlineAction onclick={() => replies.retry()}>Retry replies</InlineAction>
-	</div>{/if}
 {#if !session.readOnly && session.selected === thread.id && composer}<div class="px-3.5 pb-3.5">
 		<ReplyComposer
 			id={`reply-${thread.id}`}
 			text={composer.text}
 			pending={composer.busy}
 			textLocked={composer.awaitingConfirmation}
-			errorMessage={composer.error ?? replies.error ?? ''}
+			errorMessage={composer.error ?? ''}
 			onTextChange={(value) => session.updateComposerText(value)}
 			onClose={closeReply}
 			onSubmit={() => session.submitReply(thread.id)}
 		/>
 	</div>
-{:else if replies.error}<p role="alert" class="px-3.5 pb-3 text-xs text-danger">
-		{replies.error}
-	</p>{/if}
+{/if}

@@ -35,7 +35,7 @@ existing link for their latest contract, satisfies the buyer-link step regardles
 of where it was created or whether copying succeeded. Admins continue by installing
 an integration and inviting colleagues. `accounts.completeSetup` authenticates the
 membership and rechecks all facts before recording optional
-`memberships.setupCompletedAt`. Completion is
+`membershipSetupState.setupCompletedAt`. Completion is
 sticky per membership across visits and devices; later deletions/disconnections
 do not restart setup. Existing eligible memberships are detected on their next
 workspace visit. Unknown or failed reads never count as completed. After completion,

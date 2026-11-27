@@ -359,7 +359,6 @@ export async function reconcile(server, blocks, items) {
 		const harness = convexTest(schema, modules).withIdentity(identity);
 		const { companyId, membershipId } = await harness.run(async (ctx) => {
 			const profileId = await ctx.db.insert('profiles', {
-				helpPreferences: { contract: false, buyerLink: false },
 				identity: identity.tokenIdentifier,
 				issuer: identity.issuer,
 				clerkId: identity.subject,
@@ -368,13 +367,13 @@ export async function reconcile(server, blocks, items) {
 			});
 			const companyId = await ctx.db.insert('company', {
 				ownerProfileId: profileId,
-				name: 'Seed company'
+				name: 'Seed company',
+				hasRepInstructions: false
 			});
 			const membershipId = await ctx.db.insert('memberships', {
 				companyId,
 				profileId,
-				role: 'admin',
-				supportWidgetCollapsed: false
+				role: 'admin'
 			});
 			return { companyId, membershipId };
 		});
@@ -386,7 +385,9 @@ export async function reconcile(server, blocks, items) {
 		const saved = await harness.run(async (ctx) => {
 			const heads = await ctx.db
 				.query('playbookItems')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+				.withIndex('by_companyId_and_audience', (q) =>
+					q.eq('companyId', companyId).eq('audience', 'rep')
+				)
 				.collect();
 			const details = await Promise.all(heads.map((head) => hydrateHead(ctx, head)));
 			return present(details.find((detail) => detail.trigger.id === item.trigger.id));
@@ -462,7 +463,6 @@ export async function reconcile(server, blocks, items) {
 	const harness = convexTest(schema, modules).withIdentity(identity);
 	const { companyId } = await harness.run(async (ctx) => {
 		const profileId = await ctx.db.insert('profiles', {
-			helpPreferences: { contract: false, buyerLink: false },
 			identity: identity.tokenIdentifier,
 			issuer: identity.issuer,
 			clerkId: identity.subject,
@@ -471,13 +471,13 @@ export async function reconcile(server, blocks, items) {
 		});
 		const companyId = await ctx.db.insert('company', {
 			ownerProfileId: profileId,
-			name: 'Seed company'
+			name: 'Seed company',
+			hasRepInstructions: false
 		});
 		await ctx.db.insert('memberships', {
 			companyId,
 			profileId,
-			role: 'admin',
-			supportWidgetCollapsed: false
+			role: 'admin'
 		});
 		return { companyId };
 	});

@@ -1,3 +1,4 @@
+import { insertTestConnection } from './hubspot-credentials';
 import { fixtureOperationId } from './operation';
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
@@ -72,11 +73,11 @@ export async function fixture({
 		async ({ db }) =>
 			(await db
 				.query('playbookItems')
-				.withIndex('by_companyId', (q) => q.eq('companyId', owner.companyId))
+				.withIndex('by_companyId_and_audience', (q) => q.eq('companyId', owner.companyId))
 				.unique())!._id
 	);
 	const connectionId = await t.run(({ db }) =>
-		db.insert('hubspotConnections', {
+		insertTestConnection(db, {
 			companyId: owner.companyId,
 			accountId: '12345',
 			generation: 1,
@@ -107,7 +108,6 @@ export async function fixture({
 	};
 	const rep = await t.run(async ({ db }) => {
 		const profileId = await db.insert('profiles', {
-			helpPreferences: { contract: false, buyerLink: false },
 			identity: repIdentity.tokenIdentifier,
 			issuer: repIdentity.issuer,
 			clerkId: repIdentity.subject,
@@ -117,8 +117,7 @@ export async function fixture({
 		const membershipId = await db.insert('memberships', {
 			profileId,
 			companyId: owner.companyId,
-			role: 'rep',
-			supportWidgetCollapsed: false
+			role: 'rep'
 		});
 		return { profileId, membershipId };
 	});
@@ -265,7 +264,6 @@ export function relink(f: Fixture) {
 
 export async function playbookState(f: Fixture) {
 	const state = await f.t.query(api.contracts.state, {
-		membershipId: f.owner.membershipId,
 		id: f.id
 	});
 	if (!state) throw new Error('Fixture contract is missing');

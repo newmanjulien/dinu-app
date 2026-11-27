@@ -1,10 +1,10 @@
 import { ConvexError, v } from 'convex/values';
-import { internal } from './_generated/api';
-import type { Id } from './_generated/dataModel';
-import { internalMutation, internalQuery, type MutationCtx } from './_generated/server';
 import { approvedConcessionMap, contractReadiness } from '../lib/contract/changes';
 import { contractName } from '../lib/contract/filename';
 import { sourceBlock } from '../lib/document/source-validators';
+import { internal } from './_generated/api';
+import type { Id } from './_generated/dataModel';
+import { internalMutation, internalQuery, type MutationCtx } from './_generated/server';
 import { appliedOverlay } from './buyerValidators';
 import { cleanupBudget } from './cleanup';
 import { requireContractWork } from './contractPolicy';
@@ -17,7 +17,6 @@ import {
 } from './hubspotExportDeliveries';
 import { actionKey, actorOf, validateOperationId } from './operationReceipts';
 import { wordExportResult } from './savedContractValidators';
-import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { deleteUnownedFile } from './storageOwnership';
 import { readAppliedOverlays, snapshotReader } from './templates';
 
@@ -126,6 +125,7 @@ export const commit = internalMutation({
 				throw new ConvexError('This download attempt expired. Start a new download.');
 			const url = await ctx.storage.getUrl(prior.fileId);
 			if (!url) throw new ConvexError('This download attempt expired. Start a new download.');
+			await deleteUnownedFile(ctx, args.fileId);
 			return { url, filename: prior.filename };
 		}
 
@@ -163,11 +163,6 @@ export const commit = internalMutation({
 			sha256: args.sha256,
 			size: args.size
 		};
-		await assertStorageCapacity(ctx, {
-			documents: 4,
-			bytes: documentBytes({ ...value, _id: 'x'.repeat(32), _creationTime: 0 }) + 16_384,
-			queries: 10
-		});
 		const attemptId = await ctx.db.insert('wordExports', value);
 		const attempt = (await ctx.db.get('wordExports', attemptId))!;
 		const expiresAt = await recordExportDelivery(ctx, attempt, contract, now);

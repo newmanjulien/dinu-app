@@ -12,7 +12,7 @@
 	import SnappinessContext from './SnappinessContext.svelte';
 	import WorkspaceChrome from '../../../src/lib/components/workspace/WorkspaceChrome.svelte';
 	import { HelpSession } from '../../../src/lib/components/ui/modal/help-session.svelte';
-	import type { WorkspaceHelpVariant } from '../../../src/lib/components/ui/modal/help-content';
+	import type { TemplateHelpVariant } from '../../../src/lib/components/ui/modal/help-content';
 	let {
 		state,
 		workspace,
@@ -22,7 +22,7 @@
 	}: {
 		state: CsmState;
 		workspace: DocumentWorkspace;
-		variant?: WorkspaceHelpVariant;
+		variant?: 'contract' | TemplateHelpVariant;
 		buyer?: BuyerContract;
 		download: () => void;
 	} = $props();
@@ -34,7 +34,7 @@
 	$effect(() => {
 		if (buyer || variant !== 'contract') return;
 		const identity = state.viewer.profile.id;
-		const hidden = state.viewer.helpPreferences.contract;
+		const hidden = state.preferences.helpPreferences.contract;
 		untrack(() =>
 			contractHelp.configure({
 				kind: 'preference',
@@ -47,9 +47,7 @@
 			})
 		);
 	});
-	const connection = createReadQuery(client, api.hubspotConnections.status, {
-		membershipId: untrack(() => state.viewer.membership.id)
-	});
+	const connection = createReadQuery(client, api.hubspotConnections.status, {});
 	const deals = new HubSpotDeals({
 		client,
 		membershipId: untrack(() => state.viewer.membership.id),

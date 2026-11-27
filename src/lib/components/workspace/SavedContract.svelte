@@ -1,13 +1,9 @@
 <script lang="ts">
 	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
-	import type { Id } from '../../../convex/_generated/dataModel';
-	import type { BuyerLinkBarVisit } from '$lib/buyer/bar-visit.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { ReadAttempt } from '$lib/auth/attempt';
-	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import { useReadQuery } from '$lib/auth/read-query.svelte';
-	import { api } from '../../../convex/_generated/api';
+	import { useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import { getContractEditors } from '$lib/contract/editors.svelte';
 	import { creationPhase } from '$lib/contract/creation-perf';
@@ -18,14 +14,16 @@
 	import type { SavedRouteFrameState } from './saved-route-frame';
 	let {
 		id,
-		buyerLinkVisit,
+		mode = 'negotiate',
+		onModeChange,
 		interactionAdmitted = true,
 		onVisible,
 		onFailure,
 		onFrame
 	}: {
 		id: string;
-		buyerLinkVisit?: BuyerLinkBarVisit;
+		mode?: 'negotiate' | 'comments';
+		onModeChange?: (mode: 'negotiate' | 'comments') => void;
 		interactionAdmitted?: boolean;
 		onVisible?: () => void;
 		onFailure?: () => void;
@@ -37,17 +35,6 @@
 	const editor = acquired.editor;
 	const account = useViewerSession();
 	const runtime = getWorkspaceRuntime();
-	const membershipId = useViewer()().membership.id;
-	// Resolve link status alongside the contract opening, before the document frame mounts.
-	const latestBuyerLink = useReadQuery(api.buyerLinks.latest, () =>
-		sessions.accessAvailable &&
-		!runtime.paused &&
-		editor.metadata !== null &&
-		!editor.persistence?.deleted &&
-		!editor.persistence?.workBlock
-			? { membershipId, id: mountedId as Id<'savedContracts'> }
-			: 'skip'
-	);
 	const presentation = useWorkspacePresentation();
 	let opening = $state.raw<{
 		token: symbol;
@@ -147,8 +134,8 @@
 		<SavedDocumentFrame
 			openingRevision={opening?.token}
 			{editor}
-			{buyerLinkVisit}
-			{latestBuyerLink}
+			{mode}
+			{onModeChange}
 			{interactionAdmitted}
 			{onFrame}
 			onRetry={retry}

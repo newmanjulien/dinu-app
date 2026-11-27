@@ -20,16 +20,10 @@ export const hubspotKind = v.union(
 export const hubspotConnection = v.object({
 	companyId: v.id('company'),
 	accountId: v.string(),
-	generation: v.number(),
-	accessToken: v.string(),
-	refreshToken: v.string(),
-	expiresAt: v.number(),
 	scopes: v.array(v.string()),
 	installerId: v.id('profiles'),
 	installedAt: v.number(),
-	status: v.union(v.literal('connected'), v.literal('reconnect'), v.literal('retiring')),
-	refreshClaim: v.optional(v.string()),
-	refreshUntil: v.optional(v.number())
+	status: v.union(v.literal('connected'), v.literal('reconnect'), v.literal('retiring'))
 });
 export const hubspotOAuthState = v.object({
 	companyId: v.id('company'),

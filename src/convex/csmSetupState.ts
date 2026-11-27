@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from './_generated/server';
 import { liveProfile } from './auth';
 import { readHistoricalConfirmedBooking } from './csmHistory';
 import { confirmedSetupBooking, setupCallView } from './csmSetupValidators';
+import { readCompanySetup, setSetupAppointment } from './companySetupState';
 
 type Appointment = Doc<'csmSetupAppointments'>;
 export type ConfirmedSetupBooking = Infer<typeof confirmedSetupBooking>;
@@ -22,10 +23,12 @@ export type SetupBookingState =
 /** Qualification follows owned decisive facts, never presentation visibility or the clock. */
 export async function resolveSetupBooking(
 	ctx: QueryCtx,
-	company: Doc<'company'>
+	company: Doc<'company'>,
+	setup?: Awaited<ReturnType<typeof readCompanySetup>> | ReturnType<typeof readCompanySetup>
 ): Promise<SetupBookingState> {
-	if (!company.setupAppointmentId) return { kind: 'initial' };
-	const appointment = await ctx.db.get('csmSetupAppointments', company.setupAppointmentId);
+	const { setupAppointmentId } = await (setup ?? readCompanySetup(ctx, company));
+	if (!setupAppointmentId) return { kind: 'initial' };
+	const appointment = await ctx.db.get('csmSetupAppointments', setupAppointmentId);
 	if (
 		!appointment ||
 		appointment.companyId !== company._id ||
@@ -73,8 +76,10 @@ export async function pendingInitialSetup(
 /** Deletion clears only the current reference; historical rows cannot clear a newer booking. */
 export async function clearSetupAppointment(ctx: MutationCtx, appointment: Appointment) {
 	const company = await ctx.db.get('company', appointment.companyId);
-	if (company?.setupAppointmentId === appointment._id)
-		await ctx.db.patch('company', company._id, { setupAppointmentId: undefined });
+	if (!company) return;
+	const setup = await readCompanySetup(ctx, company);
+	if (setup.setupAppointmentId === appointment._id)
+		await setSetupAppointment(ctx, company, setup, undefined);
 }
 
 /** Compatible chain merges transfer the canonical reference before removing any loser. */
@@ -84,15 +89,16 @@ export async function transferSetupAppointment(
 	survivor: Appointment
 ) {
 	const company = await ctx.db.get('company', survivor.companyId);
-	const current = rows.find((row) => row._id === company?.setupAppointmentId);
-	if (!company || !current || current.companyId !== company._id || current._id === survivor._id)
-		return null;
+	if (!company) return null;
+	const setup = await readCompanySetup(ctx, company);
+	const current = rows.find((row) => row._id === setup.setupAppointmentId);
+	if (!current || current.companyId !== company._id || current._id === survivor._id) return null;
 	const confirmed = await readConfirmedSetupBooking(ctx, current);
 	if (confirmed)
 		await ctx.db.patch('csmSetupAppointments', survivor._id, {
 			confirmedBooking: confirmed,
 			bookingConfirmation: undefined
 		});
-	await ctx.db.patch('company', company._id, { setupAppointmentId: survivor._id });
+	await setSetupAppointment(ctx, company, setup, survivor._id);
 	return confirmed;
 }

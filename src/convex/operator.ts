@@ -234,11 +234,11 @@ export const bootstrap = internalMutation({
 				currentPointer(ctx, companyId),
 				ctx.db
 					.query('templateSources')
-					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.withIndex('by_companyId_and_state', (q) => q.eq('companyId', companyId))
 					.take(2),
 				ctx.db
 					.query('playbookItems')
-					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.withIndex('by_companyId_and_audience', (q) => q.eq('companyId', companyId))
 					.take(1),
 				ctx.db
 					.query('templateVersions')
@@ -256,7 +256,7 @@ export const bootstrap = internalMutation({
 					.take(1),
 				ctx.db
 					.query('playbookItemCreationReceipts')
-					.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+					.withIndex('by_companyId_and_renderKey', (q) => q.eq('companyId', companyId))
 					.take(1)
 			]);
 		if (

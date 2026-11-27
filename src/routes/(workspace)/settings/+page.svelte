@@ -41,15 +41,19 @@
 				file.size > 2 * 1024 * 1024
 			)
 				throw new Error('Choose an image of 2 MB or less (JPEG, PNG, WebP, GIF or AVIF).');
-			const response = await fetch(
-				'/api/avatar?company=' + company + '&membershipId=' + membershipId,
-				{
-					method: 'POST',
-					headers: { 'content-type': file.type },
-					body: file
-				}
-			);
-			if (!response.ok) throw new Error(await response.text());
+			const url = await client.mutation(api.avatars.generateUploadUrl, { company, membershipId });
+			const response = await fetch(url, {
+				method: 'POST',
+				headers: { 'content-type': file.type },
+				body: file
+			});
+			if (!response.ok) throw new Error('Unable to upload your avatar. Try again.');
+			const { storageId } = await response.json();
+			await client.mutation(api.avatars.commitAvatar, {
+				company,
+				membershipId,
+				avatarId: storageId
+			});
 		});
 	}
 </script>

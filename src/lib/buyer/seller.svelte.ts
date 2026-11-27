@@ -3,87 +3,76 @@ import { ConvexClient } from 'convex/browser';
 import type { FunctionReturnType } from 'convex/server';
 import { env } from '$env/dynamic/public';
 import { api } from '../../convex/_generated/api';
+import type { Id } from '../../convex/_generated/dataModel';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
-import type { SeenMessage } from '$lib/discussions/reads.svelte';
 
 type Clerk = NonNullable<Window['Clerk']>;
 type AccountSession = NonNullable<Clerk['session']>;
-type Seller = NonNullable<FunctionReturnType<typeof api.buyerLinks.sellerContext>>;
-type SellerAvatar = FunctionReturnType<typeof api.profiles.currentAvatar>;
 const key = Symbol('buyer-seller');
+export type BuyerPageContext = Extract<
+	FunctionReturnType<typeof api.buyerLinks.pageContext>,
+	{ kind: 'current' }
+>;
 
-/** Classifies the audience and owns the separate authenticated seller transport. */
+/** Classifies whether the viewer is a buyer or a signed-in company member previewing as buyer. */
 export class BuyerSeller {
-	viewer = $state.raw<Seller | null>(null);
-	private avatar = $state.raw<SellerAvatar>();
-	private avatarUnavailable = $state(false);
-	client = $state.raw<ConvexClient>();
-	private buyerPreview = $state(false);
-	private previewGeneration = $state(0);
-	get preview() {
-		return this.buyerPreview;
-	}
-	set preview(preview: boolean) {
-		if (this.buyerPreview === preview) return;
-		this.previewGeneration++;
-		this.buyerPreview = preview;
-	}
-	get discussionPolicy() {
-		return { readOnly: this.preview, generation: this.previewGeneration };
-	}
-	phase = $state<'checking' | 'buyer' | 'seller' | 'unavailable'>('checking');
+	phase = $state<'checking' | 'buyer' | 'preview' | 'unavailable'>('checking');
+	contractId = $state<Id<'savedContracts'> | null>(null);
+	phaseGeneration = $state(0);
 	private sessionId = $state<string>();
 	private clerk?: Clerk;
+	private client?: ConvexClient;
 	private root?: AbortController;
 	private loading = false;
 	private unsubscribe?: () => void;
 	private stopContext?: () => void;
-	private stopAvatar?: () => void;
 	private attempt?: ReadAttempt;
 	private generation = $state(0);
 	private contextGeneration = $state(0);
 	private prepared?: { token: string; expiresAt: number; sessionId: string; generation: number };
-	constructor(readonly token: string) {}
-	get userId() {
-		const session = this.clerk?.session;
-		return session && session.id === this.sessionId ? session.user.id : undefined;
+
+	private initialClassification = false;
+	constructor(
+		readonly token: string,
+		initial?: BuyerPageContext
+	) {
+		if (initial) {
+			this.initialClassification = true;
+			this.setPhase(
+				initial.audience === 'seller' ? 'preview' : 'buyer',
+				initial.audience === 'seller' ? initial.contractId : null
+			);
+		}
 	}
-	get identity() {
-		return this.viewer && this.sessionId
-			? JSON.stringify([this.sessionId, this.viewer.profile.id, this.viewer.membershipId])
-			: undefined;
+
+	get readOnly() {
+		return this.phase !== 'buyer';
 	}
-	get recoveryIdentity() {
-		return JSON.stringify([
-			this.sessionId ?? null,
-			this.viewer?.profile.id,
-			this.viewer?.membershipId
-		]);
-	}
-	get presentation() {
-		return this.phase === 'seller' && this.preview ? 'preview' : this.phase;
+	get discussionPolicy() {
+		return { readOnly: this.readOnly, generation: this.phaseGeneration };
 	}
 	get headerReadiness(): 'pending' | 'ready' | 'unavailable' {
 		if (this.phase === 'unavailable') return 'unavailable';
-		if (this.phase === 'checking' || (this.phase === 'seller' && !this.viewer)) return 'pending';
+		if (this.phase === 'checking' || (this.phase === 'preview' && !this.contractId))
+			return 'pending';
 		return 'ready';
-	}
-	get headerProfile() {
-		const profile = this.viewer?.profile;
-		return profile
-			? {
-					...profile,
-					avatarUrl: this.avatar?.id === profile.id ? this.avatar.avatarUrl : null
-				}
-			: undefined;
-	}
-	get headerAvatarReady() {
-		return (
-			this.viewer !== null && (this.avatarUnavailable || this.avatar?.id === this.viewer.profile.id)
-		);
 	}
 	get accountIdentity() {
 		return JSON.stringify([this.sessionId ?? null, this.generation, this.contextGeneration]);
+	}
+	get identity() {
+		return this.phase === 'preview' && this.sessionId && this.contractId
+			? JSON.stringify([this.sessionId, this.contractId])
+			: undefined;
+	}
+	private setPhase(
+		phase: 'checking' | 'buyer' | 'preview' | 'unavailable',
+		contractId: Id<'savedContracts'> | null = null
+	) {
+		const changed = this.phase !== phase || this.contractId !== contractId;
+		this.phase = phase;
+		this.contractId = contractId;
+		if (changed) this.phaseGeneration++;
 	}
 	async activityToken(signal: AbortSignal) {
 		if (!this.clerk?.session) {
@@ -127,16 +116,6 @@ export class BuyerSeller {
 		};
 		return token;
 	}
-	get visible() {
-		return Boolean(this.viewer && !this.preview);
-	}
-	async signOut() {
-		if (!this.clerk) throw new Error('Authentication is unavailable.');
-		await this.clerk.signOut(() => {});
-	}
-	viewAsBuyer() {
-		this.preview = true;
-	}
 	mount(hasAccountSession: boolean) {
 		const root = (this.root = new AbortController());
 		const detect = () => {
@@ -148,7 +127,7 @@ export class BuyerSeller {
 				/(?:^|;\s*)__(?:session|client_uat)(?:_[^=;]+)?=/u.test(document.cookie)
 			)
 				void this.loadAccount();
-			else this.phase = 'buyer';
+			else this.setPhase('buyer');
 		};
 		window.addEventListener('focus', detect);
 		document.addEventListener('visibilitychange', detect);
@@ -169,7 +148,7 @@ export class BuyerSeller {
 	private async loadAccount() {
 		if (this.loading || this.root?.signal.aborted) return;
 		this.loading = true;
-		this.phase = 'checking';
+		if (!this.initialClassification) this.setPhase('checking');
 		const attempt = new ReadAttempt(15_000, this.root?.signal);
 		try {
 			const { existingBuyerAccount } = await waitForRead(
@@ -181,7 +160,7 @@ export class BuyerSeller {
 			this.clerk = clerk;
 			this.unsubscribe = clerk.addListener(({ session }) => this.align(session ?? undefined));
 		} catch {
-			if (!this.root?.signal.aborted) this.phase = 'unavailable';
+			if (!this.root?.signal.aborted) this.setPhase('unavailable');
 		} finally {
 			attempt.complete();
 			this.loading = false;
@@ -193,39 +172,46 @@ export class BuyerSeller {
 		this.attempt?.abort();
 		this.stopContext?.();
 		this.stopContext = undefined;
-		this.stopAvatar?.();
-		this.stopAvatar = undefined;
-		this.avatar = undefined;
-		this.avatarUnavailable = false;
-		this.viewer = null;
-		this.preview = false;
+		this.contractId = null;
 		if (this.client) void this.client.close();
 		this.client = undefined;
 	}
 	private align(session: AccountSession | undefined, retry = false) {
 		if (this.root?.signal.aborted) return;
-		if (this.sessionId === session?.id && !retry && this.phase !== 'checking') return;
+		if (
+			this.sessionId === session?.id &&
+			!retry &&
+			this.phase !== 'checking' &&
+			!this.initialClassification
+		)
+			return;
 		if (this.sessionId === session?.id && this.client && !retry) return;
+		const initial = this.initialClassification
+			? { phase: this.phase, contractId: this.contractId }
+			: null;
+		this.initialClassification = false;
 		this.clear();
 		this.sessionId = session?.id;
 		if (!session) {
-			this.phase = 'buyer';
+			this.setPhase('buyer');
 			return;
 		}
-		this.phase = 'checking';
+		if (initial) this.setPhase(initial.phase, initial.contractId);
+		else this.setPhase('checking');
 		const generation = this.generation;
 		const current = () =>
 			!this.root?.signal.aborted &&
 			generation === this.generation &&
 			this.clerk?.session?.id === session.id;
 		const client = (this.client = new ConvexClient(env.PUBLIC_CONVEX_URL!, {
-			unsavedChangesWarning: false
+			unsavedChangesWarning: false,
+			expectAuth: true
 		}));
 		const attempt = (this.attempt = new ReadAttempt(15_000, this.root?.signal));
 		const fail = () => {
 			if (!current()) return;
 			this.clear();
-			this.phase = 'unavailable';
+			this.setPhase('unavailable');
 		};
 		attempt.signal.addEventListener('abort', fail, { once: true });
 		client.setAuth(
@@ -251,86 +237,28 @@ export class BuyerSeller {
 				}
 				if (this.stopContext) return;
 				this.stopContext = client.onUpdate(
-					api.buyerLinks.sellerContext,
+					api.buyerLinks.pageContext,
 					{ token: this.token },
-					(viewer) => {
+					(context) => {
 						if (!current()) return;
 						attempt.complete();
-						const changed =
-							this.viewer?.membershipId !== viewer?.membershipId ||
-							this.viewer?.profile.id !== viewer?.profile.id ||
-							this.viewer?.role !== viewer?.role;
-						if (changed) {
+						if (context.kind === 'account-error') {
+							fail();
+							return;
+						}
+						const nextContractId =
+							context.kind === 'current' && context.audience === 'seller'
+								? context.contractId
+								: null;
+						const nextPhase = nextContractId ? 'preview' : 'buyer';
+						if (this.phase !== nextPhase || this.contractId !== nextContractId)
 							this.contextGeneration++;
-							this.preview = false;
-						}
-						if (this.viewer?.profile.id !== viewer?.profile.id) {
-							this.stopAvatar?.();
-							this.stopAvatar = undefined;
-							this.avatar = undefined;
-							this.avatarUnavailable = false;
-						}
-						this.viewer = viewer;
-						this.phase = viewer ? 'seller' : 'buyer';
-						if (viewer && !this.stopAvatar) {
-							const profileId = viewer.profile.id;
-							this.stopAvatar = client.onUpdate(
-								api.profiles.currentAvatar,
-								{},
-								(avatar) => {
-									if (
-										current() &&
-										this.viewer?.profile.id === profileId &&
-										avatar.id === profileId
-									) {
-										this.avatar = avatar;
-										this.avatarUnavailable = false;
-									}
-								},
-								() => {
-									if (current() && this.viewer?.profile.id === profileId)
-										this.avatarUnavailable = true;
-								}
-							);
-						}
+						this.setPhase(nextPhase, nextContractId);
 					},
 					fail
 				);
 			}
 		);
-	}
-	async markMessagesSeen(identity: string, accountIdentity: string, messages: SeenMessage[]) {
-		const viewer = this.viewer,
-			client = this.client;
-		if (
-			!viewer ||
-			!client ||
-			identity !== this.identity ||
-			accountIdentity !== this.accountIdentity ||
-			!this.visible ||
-			!client.connectionState().isWebSocketConnected
-		)
-			return false;
-		const attempt = new ReadAttempt(15_000, this.root?.signal);
-		try {
-			await waitForRead(
-				client.mutation(api.discussions.markSeen, {
-					membershipId: viewer.membershipId,
-					id: viewer.contractId,
-					token: this.token,
-					operationId: crypto.randomUUID(),
-					messages: messages.map((message) => ({ ...message }))
-				}),
-				attempt.signal
-			);
-			return (
-				identity === this.identity &&
-				accountIdentity === this.accountIdentity &&
-				client === this.client
-			);
-		} finally {
-			attempt.complete();
-		}
 	}
 }
 export const setBuyerSeller = (seller: BuyerSeller) => setContext(key, seller);

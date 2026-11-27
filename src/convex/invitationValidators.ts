@@ -48,10 +48,7 @@ export const invitationPreviewData = v.union(
 	previewUnavailable
 );
 export type InvitationPreviewData = Infer<typeof invitationPreviewData>;
-export const invitationPreview = v.union(
-	previewDetails.extend({ expiresInMs: v.number() }),
-	previewUnavailable
-);
+export const invitationPreview = invitationPreviewData;
 export type InvitationPreview = Infer<typeof invitationPreview>;
 
 const resolutionAvailable = v.object({
@@ -74,15 +71,12 @@ const resolutionUnavailable = v.object({
 	),
 	companyName: v.union(v.string(), v.null())
 });
-export const invitationResolution = v.union(
-	resolutionAvailable,
-	resolutionMembership,
-	resolutionUnavailable
-);
-export type InvitationResolution = Infer<typeof invitationResolution>;
 export const invitationResolutionData = v.union(
 	resolutionAvailable.extend({ expiresAt: v.number() }),
 	resolutionMembership.extend({ expiresAt: v.optional(v.number()) }),
 	resolutionUnavailable
 );
 export type InvitationResolutionData = Infer<typeof invitationResolutionData>;
+
+export const invitationResolution = invitationResolutionData;
+export type InvitationResolution = Infer<typeof invitationResolution>;

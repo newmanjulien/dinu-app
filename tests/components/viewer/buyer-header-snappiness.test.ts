@@ -49,10 +49,17 @@ afterEach(async () => {
 async function admitLink() {
 	component = mount(Harness, { target: document.body });
 	await settle();
-	network.publish('buyerLinks:status', {
+	network.publish('buyerLinks:currentState', {
 		kind: 'current',
 		buyerName: 'Ocean Buyer',
-		companyName: 'Ocean Company'
+		companyName: 'Ocean Company',
+		buyerRefreshable: false,
+		templateVersionId: 'version',
+		title: 'Contract',
+		contentRevision: 1,
+		displayIdentity: 'published:1',
+		concessions: {},
+		appliedOverlays: []
 	});
 	await settle();
 	expect(document.querySelector('[data-document-body]')).not.toBeNull();
@@ -86,29 +93,24 @@ it('admits the buyer header before the heading and contract body on a cold load'
 	).toBeNull();
 });
 
-it('shows seller copy and a reserved avatar circle before the avatar read resolves', async () => {
+it('shows seller preview copy before revealing the preview body', async () => {
 	await admitLink();
-	seller.viewer = {
-		profile: { id: 'profile', name: 'Seller', email: 'seller@example.com' },
-		role: 'admin',
-		helpPreferences: { contract: true, buyerLink: true }
-	} as BuyerSeller['viewer'];
-	seller.phase = 'seller';
+	seller.contractId =
+		'contract-a' as import('../../../src/convex/_generated/dataModel').Id<'savedContracts'>;
+	seller.phase = 'preview';
 	await settle();
 	const header = document.querySelector('header')!;
-	expect(header.textContent).toContain('View as buyer');
-	expect(header.textContent).not.toContain('contract');
-	expect(header.querySelector('[aria-label="Your account"]')).not.toBeNull();
-	expect(header.querySelector('[aria-label="Your account"] .rounded-full')).not.toBeNull();
+	expect(header.textContent).toContain('You are in buyer view.');
+	expect(header.querySelector('[aria-label="Your account"]')).toBeNull();
+	expect(document.querySelector('h1')).toBeNull();
+	expect(
+		document.querySelector('[data-document-body]')?.closest('[aria-hidden="true"]')
+	).not.toBeNull();
 	await clock.frame();
 	await vi.advanceTimersByTimeAsync(0);
 	await settle();
+	expect(document.querySelector('h1')?.textContent).toContain('This is what Ocean Buyer sees');
 	expect(
 		document.querySelector('[data-document-body]')?.closest('[aria-hidden="true"]')
 	).toBeNull();
-	expect(seller.headerAvatarReady).toBe(false);
-	seller.preview = true;
-	await settle();
-	expect(header.textContent).toContain('You are in buyer view. Back to your view');
-	expect(header.textContent).not.toContain('contract');
 });

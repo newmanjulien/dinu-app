@@ -1,6 +1,7 @@
 import { v } from 'convex/values';
 import { mutation } from './_generated/server';
 import { requireMembership } from './auth';
+import { preferenceForMembership } from './membershipUiPreferences';
 import { role } from './permissions';
 
 export const setRole = mutation({
@@ -19,9 +20,19 @@ export const setSupportWidgetCollapsed = mutation({
 	args: { membershipId: v.id('memberships'), collapsed: v.boolean() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const { membership, membershipId } = await requireMembership(ctx, args.membershipId);
-		if (membership.supportWidgetCollapsed !== args.collapsed)
-			await ctx.db.patch('memberships', membershipId, { supportWidgetCollapsed: args.collapsed });
+		const { membershipId } = await requireMembership(ctx, args.membershipId);
+		const preference = await preferenceForMembership(ctx, membershipId);
+		if (preference) {
+			if (preference.supportWidgetCollapsed !== args.collapsed)
+				await ctx.db.patch('membershipUiPreferences', preference._id, {
+					supportWidgetCollapsed: args.collapsed
+				});
+		} else if (false !== args.collapsed) {
+			await ctx.db.insert('membershipUiPreferences', {
+				membershipId,
+				supportWidgetCollapsed: args.collapsed
+			});
+		}
 		return null;
 	}
 });

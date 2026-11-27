@@ -5,12 +5,12 @@
 	import BuyerDocumentFrame from './BuyerDocumentFrame.svelte';
 	import DocumentHeading from '$lib/components/document/DocumentHeading.svelte';
 	import DocumentSection from '$lib/components/document/DocumentSection.svelte';
-	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import RouteTitle from '$lib/auth/RouteTitle.svelte';
 	import { onMount, onDestroy, untrack, type Snippet } from 'svelte';
 
 	import { useConvexClient } from 'convex-svelte';
 	import { api } from '../../convex/_generated/api';
+	import type { Id } from '../../convex/_generated/dataModel';
 	import { BuyerContract, setBuyerContract } from './contract.svelte';
 	import { afterPaint } from '$lib/document/runtime/scheduler';
 	import {
@@ -19,7 +19,6 @@
 	} from '$lib/document/runtime/render-perf';
 
 	import Button from '$lib/ui/Button.svelte';
-	import SkeletonBlock from '$lib/ui/SkeletonBlock.svelte';
 	import WorkspaceStatus from '$lib/components/chrome/WorkspaceStatus.svelte';
 	import { setHeaderContent } from '$lib/components/chrome/header-content.svelte';
 	import Menu from '$lib/components/ui/Menu.svelte';
@@ -27,17 +26,20 @@
 	import SquareIconButton from '$lib/components/ui/SquareIconButton.svelte';
 	import DotsThreeVerticalIcon from 'phosphor-svelte/lib/DotsThreeVerticalIcon';
 	import ArrowSquareOutIcon from 'phosphor-svelte/lib/ArrowSquareOutIcon';
-	import AccountMenu from '$lib/components/chrome/AccountMenu.svelte';
-	import { BuyerSeller, setBuyerSeller } from './seller.svelte';
+	import { BuyerSeller, setBuyerSeller, type BuyerPageContext } from './seller.svelte';
 	import type { HelpPolicy } from '$lib/components/ui/modal/help-session.svelte';
 	import HelpModal from '$lib/components/ui/modal/HelpModal.svelte';
 	let {
 		token,
+		templateVersionId,
+		initialPageContext,
 		children,
 		browser = null,
 		hasAccountSession = false
 	}: {
 		token: string;
+		templateVersionId: Id<'templateVersions'>;
+		initialPageContext?: BuyerPageContext;
 		children: Snippet;
 		browser?: ActivityBrowser;
 		hasAccountSession?: boolean;
@@ -46,15 +48,22 @@
 	let menuButton = $state<HTMLButtonElement | null>(null);
 	const header = setHeaderContent();
 	const initialToken = untrack(() => token);
+	const initialTemplateVersionId = untrack(() => templateVersionId);
 	const activity = getBuyerActivity();
 	const client = useConvexClient();
-	const contract = setBuyerContract(new BuyerContract(initialToken, client));
+	const contract = setBuyerContract(
+		new BuyerContract(initialToken, client, initialTemplateVersionId)
+	);
 	recordDocumentLoadingMilestone('help-opening-start', {
 		opening: contract.help.loadingOpening
 	});
-	const seller = setBuyerSeller(new BuyerSeller(initialToken));
+	const seller = setBuyerSeller(
+		new BuyerSeller(
+			initialToken,
+			untrack(() => initialPageContext)
+		)
+	);
 	const headerReadiness = $derived(seller.headerReadiness);
-	const headerProfile = $derived(seller.headerProfile);
 	let firstPaintPassed = $state(false);
 	let headerPresented = $state(false);
 	const contractVisible = $derived(headerReadiness === 'ready' && headerPresented);
@@ -87,50 +96,23 @@
 			.catch(() => {});
 		return () => lifetime.abort();
 	});
-	// Help belongs to the shell, outside the document's keyed renderer lifetime.
+	// Buyer links always use manual buyer help (no automatic modal).
 	$effect(() => {
-		const presentation = seller.presentation;
-		const account = seller.accountIdentity;
-		const viewer = seller.viewer;
-		const sellerClient = seller.client;
-		const buyerIdentity = seller.recoveryIdentity;
+		const phase = seller.phase;
+		const identity = seller.accountIdentity;
 		let policy: HelpPolicy = { kind: 'pending' };
-		if (viewer && sellerClient && (presentation === 'seller' || presentation === 'preview')) {
-			const identity = viewer.profile.id;
-			policy =
-				presentation === 'preview'
-					? { kind: 'manual', variant: 'buyer-link-buyer', identity }
-					: {
-							kind: 'preference',
-							variant: 'buyer-link-seller',
-							identity,
-							hidden: viewer.helpPreferences.buyerLink,
-							save: (hidden) =>
-								sellerClient.mutation(api.profiles.setHelpHidden, {
-									variant: 'buyerLink',
-									hidden
-								}),
-							current: () =>
-								seller.viewer?.profile.id === identity &&
-								seller.client === sellerClient &&
-								seller.accountIdentity === account
-						};
-		} else if (presentation === 'buyer') {
+		if (phase === 'buyer' || phase === 'preview') {
 			policy = {
 				kind: 'manual',
 				variant: 'buyer-link-buyer',
-				identity: `buyer:${buyerIdentity}`
+				identity: `${phase}:${identity}`
 			};
 		}
 		untrack(() => contract.help.configure(policy));
 	});
 	$effect(() => {
-		if (seller.viewer) menuOpen = false;
+		if (seller.phase === 'preview') menuOpen = false;
 	});
-	function toggleBuyerPreview() {
-		if (seller.preview) seller.preview = false;
-		else seller.viewAsBuyer();
-	}
 	onMount(() => seller.mount(hasAccountSession));
 	onMount(() => activity?.setAccount(seller));
 	onMount(() => {
@@ -142,50 +124,65 @@
 		update();
 		return client.subscribeToConnectionState(update);
 	});
-	const status = useReadQuery(api.buyerLinks.status, { token: initialToken });
+	const linkView = $derived(contract.linkSettled ? contract.linkState : initialPageContext);
+	onMount(() => contract.mount());
 	const headingPresentation = $derived.by(() => {
-		if (headerReadiness !== 'ready' || status.rejected || status.data?.kind !== 'current')
+		if (headerReadiness !== 'ready' || contract.linkRejected || linkView?.kind !== 'current')
 			return undefined;
-		const current = status.data;
-		if (seller.presentation === 'seller') return { kind: 'seller' as const };
-		if (seller.presentation === 'preview')
+		const current = linkView;
+		if (seller.phase === 'preview')
 			return { kind: 'preview' as const, buyerName: current.buyerName };
-		if (seller.presentation === 'buyer')
+		if (seller.phase === 'buyer')
 			return { kind: 'buyer' as const, companyName: current.companyName };
 		return undefined;
 	});
 	$effect(() => {
-		contract.buyerName = status.data?.kind === 'current' ? status.data.buyerName : null;
+		contract.buyerName = linkView?.kind === 'current' ? linkView.buyerName : null;
 	});
+	let mounted = false;
+	let pendingRefresh: Promise<unknown> | undefined;
+	let lastAcceptedAt = 0;
+	function refreshBuyer() {
+		if (
+			!mounted ||
+			linkView?.kind !== 'current' ||
+			!linkView.buyerRefreshable ||
+			contract.linkRejected ||
+			document.visibilityState === 'hidden' ||
+			pendingRefresh ||
+			Date.now() - lastAcceptedAt < 45_000
+		)
+			return;
+		const request = (pendingRefresh = client.mutation(api.hubspotRecipients.requestBuyer, {
+			token: initialToken
+		}));
+		void request
+			.then(() => {
+				if (mounted) lastAcceptedAt = Date.now();
+			})
+			.catch(() => {})
+			.finally(() => {
+				if (pendingRefresh === request) pendingRefresh = undefined;
+			});
+	}
 	onMount(() => {
-		const lifetime = new AbortController();
-		let pending: Promise<Response> | undefined;
-		const refresh = () => {
-			if (document.visibilityState === 'hidden' || pending) return;
-			const request = (pending = fetch('/api/buyer/name', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ token: initialToken }),
-				signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(12_000)])
-			}));
-			void request
-				.catch(() => {})
-				.finally(() => {
-					if (pending === request) pending = undefined;
-				});
-		};
-		refresh();
-		window.addEventListener('focus', refresh);
-		document.addEventListener('visibilitychange', refresh);
+		mounted = true;
+		refreshBuyer();
+		window.addEventListener('focus', refreshBuyer);
+		document.addEventListener('visibilitychange', refreshBuyer);
 		return () => {
-			lifetime.abort();
-			window.removeEventListener('focus', refresh);
-			document.removeEventListener('visibilitychange', refresh);
+			mounted = false;
+			window.removeEventListener('focus', refreshBuyer);
+			document.removeEventListener('visibilitychange', refreshBuyer);
 		};
 	});
 	$effect(() => {
-		const kind = status.data?.kind;
-		const eligible = !status.rejected && kind === 'current';
+		if (linkView?.kind === 'current' && linkView.buyerRefreshable) untrack(refreshBuyer);
+	});
+
+	$effect(() => {
+		const kind = linkView?.kind;
+		const eligible = !contract.linkRejected && kind === 'current';
 		const account = JSON.stringify([seller.accountIdentity, seller.identity]);
 		untrack(() => {
 			activity?.observe(initialToken, eligible, browser, account);
@@ -194,14 +191,18 @@
 		});
 	});
 	$effect(() => {
-		if (!contract.allowed || !contract.help.resolved) return;
+		if (!contract.allowed || !contract.help.resolved || contract.help.admitted) return;
 		untrack(() => contract.help.considerAutomatic());
 	});
 
 	onDestroy(() => contract.destroy());
 </script>
 
-{#if seller.preview}<RouteTitle title="View contract as buyer" />{/if}
+{#if seller.phase === 'preview'}
+	<RouteTitle title="View contract as buyer" />
+{:else if seller.phase === 'buyer'}
+	<RouteTitle title="Review your contract" />
+{/if}
 
 <svelte:head>
 	<meta name="robots" content="noindex,nofollow" />
@@ -214,25 +215,9 @@
 	<div
 		class="flex h-[calc(var(--app-nav-height)-var(--surface-border-width))] items-center justify-between gap-3 px-2 sm:px-3 md:px-[18.5px]"
 	>
-		{#if (seller.presentation === 'seller' || seller.presentation === 'preview') && headerProfile}
-			<p class="min-w-0 text-[13.5px] text-ink-muted">
-				{#if seller.preview}You are in buyer view.{' '}
-				{/if}<button
-					type="button"
-					class="cursor-pointer whitespace-nowrap text-accent underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:text-ink-muted"
-					onclick={toggleBuyerPreview}
-				>
-					{seller.preview ? 'Back to your view' : 'View as buyer'}
-				</button>
-			</p>
-			{#if !seller.preview}
-				<AccountMenu
-					profile={headerProfile}
-					avatarPending={!seller.headerAvatarReady}
-					onSignOut={() => seller.signOut()}
-				/>
-			{/if}
-		{:else if seller.presentation === 'buyer'}
+		{#if seller.phase === 'preview'}
+			<p class="min-w-0 text-[13.5px] text-ink-muted">You are in buyer view.</p>
+		{:else if seller.phase === 'buyer'}
 			<p class="min-w-0 truncate text-[13.5px] text-ink-muted">
 				Review your contract and leave comments
 			</p>
@@ -268,10 +253,6 @@
 					</MenuItem>
 				{/snippet}
 			</Menu>
-		{:else if hasAccountSession && headerReadiness === 'pending'}
-			<div aria-hidden="true" class="ml-auto flex size-[25px] shrink-0 items-center">
-				<SkeletonBlock class="size-[25px] rounded-full" />
-			</div>
 		{/if}
 	</div>
 </header>
@@ -290,16 +271,17 @@
 		<p class="mt-3 text-sm text-ink-muted">Please try again to open this contract.</p>
 		<Button variant="secondary" class="mt-5" onclick={() => seller.retry()}>Try again</Button>
 	</main>
-{:else if !status.rejected && status.data?.kind === 'current'}
+{:else if !contract.linkRejected && linkView?.kind === 'current'}
 	<DocumentSection active={contractVisible}>
 		{#snippet heading()}
 			{#if contract.refreshError}<p role="alert" class="p-4 text-center text-sm">
 					{contract.refreshError}
 					<button class="underline" onclick={() => contract.retryDocument()}>Try again</button>
 				</p>{/if}
-			{#if status.error}<p role="alert" class="p-4 text-center text-sm">
-					We couldn’t refresh link access. <button class="underline" onclick={() => status.retry()}
-						>Try again</button
+			{#if contract.linkError}<p role="alert" class="p-4 text-center text-sm">
+					We couldn’t refresh link access. <button
+						class="underline"
+						onclick={() => contract.retryLink()}>Try again</button
 					>
 				</p>{/if}
 			{#if contractVisible}<DocumentHeading
@@ -311,13 +293,13 @@
 			{@render children()}
 		</div>
 	</DocumentSection>
-{:else if status.data?.kind === 'unavailable' || status.error}
+{:else if linkView?.kind === 'unavailable' || contract.linkError}
 	<main class="mx-auto max-w-md px-6 py-16 text-center">
 		<h1 class="text-lg font-medium">Link unavailable</h1>
 		<p class="mt-3 text-sm text-ink-muted">
 			We couldn’t open this contract. Check your connection or ask your rep for help.
 		</p>
-		<Button variant="secondary" class="mt-5" onclick={() => status.retry()}>Try again</Button>
+		<Button variant="secondary" class="mt-5" onclick={() => contract.retryLink()}>Try again</Button>
 	</main>
 {:else}
 	{#if contractVisible}

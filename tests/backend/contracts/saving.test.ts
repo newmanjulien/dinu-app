@@ -209,7 +209,7 @@ describe('saving work', () => {
 	it('acknowledges no-ops and replays without work, but rejects stale competing saves', async () => {
 		const { t, id, choices, membershipId } = await fixture(true);
 		const before = await persisted(t, id);
-		const beforeState = await t.query(api.contracts.state, { membershipId, id });
+		const beforeState = await t.query(api.contracts.state, { id });
 		if (!beforeState) throw new Error('Fixture state missing');
 		const args = {
 			membershipId,
@@ -228,6 +228,9 @@ describe('saving work', () => {
 			savedAt,
 			buyerName,
 			requestDelivery,
+			buyerLink,
+			hasUnreadComment,
+			latestQuote,
 			workBlock,
 			...state
 		} = beforeState;

@@ -1,3 +1,4 @@
+import { internal } from './_generated/api';
 import type { Infer } from 'convex/values';
 import type { Doc } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
@@ -17,11 +18,15 @@ export async function prepareActivity(
 	kind: Infer<typeof hubspotKind>,
 	detail = '',
 	occurredAt = Date.now(),
-	attemptId?: Doc<'wordExports'>['_id']
+	attemptId?: Doc<'wordExports'>['_id'],
+	options: { knownActive?: boolean } = {}
 ) {
 	if (
 		!contract.hubspot ||
-		!(await activeDestination(ctx, contract.root.companyId, contract.hubspot))
+		!(
+			options.knownActive ??
+			Boolean(await activeDestination(ctx, contract.root.companyId, contract.hubspot))
+		)
 	)
 		return { active: false, row: null };
 	if (
@@ -59,7 +64,14 @@ type ActivityArguments =
 	Parameters<typeof prepareActivity> extends [unknown, ...infer Rest] ? Rest : never;
 export async function activity(ctx: MutationCtx, ...args: ActivityArguments) {
 	const prepared = await prepareActivity(ctx, ...args);
-	if (prepared.row) await ctx.db.insert('hubspotEvents', prepared.row);
+	if (prepared.row) {
+		const id = await ctx.db.insert('hubspotEvents', prepared.row);
+		if (prepared.row.status === 'pending')
+			await ctx.scheduler.runAt(prepared.row.dueAt, internal.hubspotDelivery.wake, {
+				id,
+				at: prepared.row.dueAt
+			});
+	}
 	return prepared.active;
 }
 export function linkBlocked(

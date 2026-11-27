@@ -14,6 +14,7 @@ import { ContractEditors } from '../../../src/lib/contract/editors.svelte';
 import type { LiveContractState } from '../../../src/lib/contract/saved';
 import { WorkspaceFeedback } from '../../../src/lib/components/chrome/workspace-feedback.svelte';
 import type { ContractSaveRequest } from '../../../src/lib/contract/persistence.svelte';
+import { CONTRACT_CHOICE_SAVE_DELAY_MS } from '../../../src/lib/contract/persistence.svelte';
 import type { TemplateContent } from '../../../src/lib/template/model';
 import Harness from './RouteHarness.svelte';
 import { page, screen, setNavigate } from '../../support/navigation.svelte';
@@ -40,7 +41,6 @@ vi.mock('convex-svelte', () => ({
 vi.mock('$lib/components/workspace/SavedDocumentFrame.svelte', () => import('./Viewer.svelte'));
 vi.mock('$lib/components/ui/modal/CompanyNameDialog.svelte', () => import('./NameDialog.svelte'));
 vi.mock('$lib/contract/snapshot-cache', () => ({
-	getContractOpenings: () => ({ read: () => [] }),
 	getContractSnapshotCache: () => context.cache
 }));
 
@@ -162,6 +162,11 @@ async function settle() {
 	}
 }
 
+async function waitForChoiceSave() {
+	await new Promise((resolve) => setTimeout(resolve, CONTRACT_CHOICE_SAVE_DELAY_MS));
+	await settle();
+}
+
 function fixture({
 	approval = false,
 	read = true,
@@ -181,7 +186,15 @@ function fixture({
 	let removal = deferred<null>();
 	const liveState = (id: string) => {
 		const value = states.has(id) ? states.get(id) : contract(id);
-		return value ? { ...value, buyerName: null, requestDelivery: null } : null;
+		return value
+			? {
+					...value,
+					buyerName: null,
+					requestDelivery: null,
+					buyerLink: null,
+					hasUnreadComment: false
+				}
+			: null;
 	};
 	const network = controlledClient((observation) => {
 		queueMicrotask(() => {
@@ -223,7 +236,7 @@ function fixture({
 	const cache = {
 		peek: vi.fn(() => undefined),
 		restore: vi.fn(async () => undefined),
-		restoreMetadata: vi.fn(async () => undefined),
+		templateHint: vi.fn(() => undefined),
 		invalidate: vi.fn(),
 		loadFrozenVersion: vi.fn(async () => template(approval)),
 		seedConfirmed: vi.fn((data) => data),
@@ -233,16 +246,12 @@ function fixture({
 		isDeleted: () => false
 	};
 	const feedback: WorkspaceFeedback = new WorkspaceFeedback(() => owner.notices);
-	const onSaved = vi.fn();
 	const owner: ContractEditors = new ContractEditors({
 		userId: 'user',
 		membershipId: 'membership' as Id<'memberships'>,
 		companyId: 'company' as Id<'company'>,
 		client: client as unknown as Options['client'],
 		cache,
-		onSaved,
-		onDeleted: () => {},
-		onRenamed: () => {},
 		registerEditor: (editor) => {
 			aggregate = editor;
 			if (controller) return controller.registerEditor(editor);
@@ -256,7 +265,6 @@ function fixture({
 	return {
 		owner,
 		feedback,
-		onSaved,
 		cache,
 		client,
 		writes,
@@ -319,13 +327,14 @@ function buyerLinkFixture(owner: ContractEditors, current = () => contract()) {
 		created: true
 	};
 	const query = vi.fn<Client['query']>().mockImplementation(async (ref) => {
-		if (getFunctionName(ref) === 'buyerLinks:latest') return null;
 		expect(getFunctionName(ref)).toBe('contracts:state');
 		const state = current();
 		return {
 			...state,
 			buyerName: null,
-			requestDelivery: null
+			requestDelivery: null,
+			buyerLink: null,
+			hasUnreadComment: false
 		} as FunctionReturnType<typeof ref>;
 	});
 	const action = vi.fn<Client['action']>().mockResolvedValue(latest);
@@ -397,6 +406,7 @@ export {
 	draft,
 	controllers,
 	settle,
+	waitForChoiceSave,
 	fixture,
 	show,
 	buyerLinkFixture

@@ -26,24 +26,37 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		if (!env.PUBLIC_CONVEX_URL)
 			return new Response('Download unavailable.', { status: 503, headers: noStore });
 		const client = new ConvexHttpClient(env.PUBLIC_CONVEX_URL);
-		const state = await client.query(api.buyerLinks.currentState, { token: params.token });
-		if (state.displayIdentity !== displayIdentity)
-			return new Response(
-				'The displayed contract changed. Review the current contract and try again.',
-				{ status: 409, headers: noStore }
-			);
-		const template = await client.query(api.buyerLinks.templateContent, {
+		let snapshot = await client.query(api.buyerLinks.downloadSnapshot, {
 			token: params.token,
-			templateVersionId: state.templateVersionId
+			displayIdentity
 		});
-		const items = toAppliedOverlayItems(state.appliedOverlays);
+		if (snapshot.kind === 'too-large') {
+			const state = await client.query(api.buyerLinks.currentState, { token: params.token });
+			if (state.displayIdentity !== displayIdentity)
+				return new Response(
+					'The displayed contract changed. Review the current contract and try again.',
+					{ status: 409, headers: noStore }
+				);
+			const template = await client.query(api.buyerLinks.templateContent, {
+				token: params.token,
+				templateVersionId: state.templateVersionId
+			});
+			snapshot = {
+				kind: 'ready',
+				title: state.title,
+				blocks: template.blocks,
+				concessions: state.concessions,
+				appliedOverlays: state.appliedOverlays
+			};
+		}
+		const items = toAppliedOverlayItems(snapshot.appliedOverlays);
 		const blob = await generateWord(
 			composeExport({
-				blocks: template.blocks,
+				blocks: snapshot.blocks,
 				items,
-				concessions: state.concessions
+				concessions: snapshot.concessions
 			}),
-			contractName(state.title)
+			contractName(snapshot.title)
 		);
 		const bytes = await blob.arrayBuffer();
 		// A fresh client cannot reuse a timestamp pinned by an earlier content read.
@@ -54,7 +67,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		return new Response(bytes, {
 			headers: {
 				'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-				'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${contractName(state.title)}.docx`)}`,
+				'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${contractName(snapshot.title)}.docx`)}`,
 				'Cache-Control': 'private, no-store'
 			}
 		});

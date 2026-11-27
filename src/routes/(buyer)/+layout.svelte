@@ -25,6 +25,8 @@
 	<AnonymousProvider
 		>{#key page.params.token}<BuyerShell
 				token={page.params.token!}
+				templateVersionId={data.resolvedRouteTitle.templateVersionId}
+				initialPageContext={data.resolvedRouteTitle.context}
 				browser={data.activityBrowser}
 				hasAccountSession={data.hasAccountSession || data.resolvedRouteTitle.audience === 'seller'}
 				>{@render children()}</BuyerShell

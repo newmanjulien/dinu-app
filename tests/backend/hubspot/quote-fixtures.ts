@@ -1,3 +1,4 @@
+import { patchTestConnection } from '../../support/hubspot-credentials';
 import { fixtureOperationId } from '../../support/operation';
 import { vi } from 'vitest';
 import { api, internal, currentContract, NOW, type Fixture } from '../../support/linked-contract';
@@ -6,7 +7,7 @@ export async function installQuotes(f: Fixture) {
 	vi.stubEnv('HUBSPOT_QUOTES_ENABLED', 'true');
 	vi.stubEnv('HUBSPOT_QUOTES_PUSH_ENABLED', 'true');
 	await f.t.run(async ({ db }) => {
-		await db.patch('hubspotConnections', f.connectionId, {
+		await patchTestConnection(db, f.connectionId, {
 			scopes: ['oauth', 'crm.objects.quotes.read', 'crm.objects.quotes.write']
 		});
 		await db.insert('hubspotQuoteInstallations', {

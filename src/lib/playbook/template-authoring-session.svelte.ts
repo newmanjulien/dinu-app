@@ -1,6 +1,7 @@
 import { detailMatches } from '$lib/auth/workspace-read-storage';
 import type { TemplateAudience } from './model';
-import type { SnapshotClient } from '../query-once';
+import { queryOnce, type SnapshotClient } from '../query-once';
+import { ReadAttempt } from '$lib/auth/attempt';
 import { getContext, setContext } from 'svelte';
 import type { ConvexClient } from 'convex/browser';
 import { api } from '../../convex/_generated/api';
@@ -65,9 +66,8 @@ const sameSource = (a: AuthoringSourceIdentity, b: AuthoringSourceIdentity) =>
 	a.templateSourceFingerprint === b.templateSourceFingerprint;
 const PRELOAD_ITEMS = 64;
 const PRELOAD_BYTES = 4 * 1024 * 1024;
-const PRELOAD_CONCURRENCY = 8;
 const RECENT_ITEMS = 8;
-type DetailSubscription = {
+type DetailRead = {
 	release?: () => void;
 	snapshot?: TemplateContentSnapshot;
 	error?: string;
@@ -79,7 +79,9 @@ type DetailSubscription = {
 
 /** Membership lifetime. Read demand is independent of drafts and mounted authoring. */
 export class TemplateAuthoringSession {
-	private readers = 0;
+	private opened = false;
+	private detailQueue = new Map<string, object>();
+	private flushQueued = false;
 	private releaseSource?: () => void;
 	private readonly sourceRead: TemplateSource;
 	get templateSource() {
@@ -92,13 +94,9 @@ export class TemplateAuthoringSession {
 	private structureObserved = false;
 	private structureReady = $state(false);
 	private storageEpoch = 0;
-	private hydrated = false;
-	private scheduledView?: () => void;
 	private scheduledDetails = new Map<string, () => void>();
-	private writtenView?: StructureSnapshot;
 	private writtenDetails = new Map<string, TemplateContentSnapshot>();
-	private releaseEffects?: () => void;
-	private details = new Map<string, DetailSubscription>();
+	private details = new Map<string, DetailRead>();
 	private detailVersion = $state(0);
 	private projectedDetails: DeepReadonly<TemplateItemRecord[]> = [];
 	private preloadTemplateSource: string | null = null;
@@ -110,7 +108,6 @@ export class TemplateAuthoringSession {
 	private rankingDirty = true;
 	private failedPreloads = new Set<string>();
 	private rejectedDetails = new Set<string>();
-	private byteCutoff = Infinity;
 	private nearbyReporter = $state.raw<((ids: readonly string[]) => void) | undefined>();
 	private syncing = false;
 	private resync = false;
@@ -155,21 +152,6 @@ export class TemplateAuthoringSession {
 	) {
 		this.sourceRead = options.templateSource;
 		this.transport = convexSaveTransport(options.client, options.membershipId, options.audience);
-		// One accepted complete pair is the persistence unit, never a pending projection.
-		this.releaseEffects = $effect.root(() => {
-			$effect(() => {
-				const prose = this.templateSource.data,
-					structure = this.structure;
-				const current = this.current;
-				if (
-					current &&
-					prose &&
-					structure?.ready &&
-					prose.templateSourceFingerprint === structure.templateSourceFingerprint
-				)
-					this.scheduleView(prose, structure);
-			});
-		});
 	}
 	private get copy() {
 		return templateCopy(this.options.audience);
@@ -203,14 +185,10 @@ export class TemplateAuthoringSession {
 	configure(available: boolean, frozen: boolean, transportGeneration: number) {
 		if (!available && this.available) {
 			this.storageEpoch++;
-			this.scheduledView?.();
-			this.scheduledView = undefined;
 			for (const cancel of this.scheduledDetails.values()) cancel();
 			this.scheduledDetails.clear();
-			this.hydrated = false;
 			this.structure = null;
 			for (const id of this.details.keys()) this.releaseDetail(id, true);
-			this.writtenView = undefined;
 			this.writtenDetails.clear();
 			this.sourceRead.storage?.clearTemplates(this.options.audience);
 		}
@@ -224,16 +202,11 @@ export class TemplateAuthoringSession {
 	}
 	/** Compact opening reads cannot create, restore or discard a template draft. */
 	retainReads() {
-		this.readers++;
+		this.opened = true;
 		this.syncSubscriptions();
-		let released = false;
-		return () => {
-			if (released) return;
-			released = true;
-			this.readers--;
-			this.syncSubscriptions();
-		};
+		return () => {};
 	}
+
 	private Controller?: typeof AuthoringController;
 	installController(Controller: typeof AuthoringController) {
 		this.Controller = Controller;
@@ -273,6 +246,7 @@ export class TemplateAuthoringSession {
 	attach(source: () => AuthoringSource) {
 		if (this.source !== source) this.resetPreloading();
 		this.source = source;
+		this.opened = true;
 		this.attached = true;
 		this.syncSubscriptions();
 		return () => {
@@ -480,7 +454,7 @@ export class TemplateAuthoringSession {
 	private observedDetail(id: string) {
 		void this.detailVersion;
 		const entry = this.details.get(id);
-		return entry?.error || !entry?.observed || !entry.release ? undefined : entry.snapshot;
+		return entry?.error || !entry?.observed ? undefined : entry.snapshot;
 	}
 	private authoritativeDetail(id: string, value: TemplateContentSnapshot | undefined) {
 		const base = this.structure;
@@ -569,7 +543,6 @@ export class TemplateAuthoringSession {
 			0,
 			RECENT_ITEMS
 		);
-		this.rankingDirty = true;
 		for (const id of this.openedAt.keys())
 			if (!this.recentIds.includes(id)) this.openedAt.delete(id);
 	}
@@ -613,7 +586,6 @@ export class TemplateAuthoringSession {
 		};
 		this.openRequestedSelection();
 		this.syncSubscriptions();
-		this.hydrateDetail(itemId);
 		return { status: 'accepted', token };
 	}
 	cancelSelection() {
@@ -687,6 +659,7 @@ export class TemplateAuthoringSession {
 						confirmation: immutable(result),
 						message: ''
 					};
+					if (result.status === 'saved') this.acceptSavedDetail(result);
 					this.completion = { kind: result.status };
 					this.syncSubscriptions();
 					this.reconcile();
@@ -823,9 +796,9 @@ export class TemplateAuthoringSession {
 		const release = entry.release;
 		entry.release = undefined;
 		entry.token = undefined;
-		entry.observed = false;
 		entry.awaiting = false;
 		release?.();
+		this.detailQueue.delete(id);
 		if (discard || !entry.snapshot) this.details.delete(id);
 		if (this.pinnedIds().has(id)) this.detailVersion++;
 	}
@@ -841,9 +814,12 @@ export class TemplateAuthoringSession {
 		let count = 0,
 			bytes = 0;
 		for (const [id, entry] of optional) {
+			if (count >= PRELOAD_ITEMS || bytes + entry.bytes > PRELOAD_BYTES) {
+				this.releaseDetail(id, true);
+				continue;
+			}
 			count++;
 			bytes += entry.bytes;
-			if (count > PRELOAD_ITEMS || bytes > PRELOAD_BYTES) this.releaseDetail(id, true);
 		}
 	}
 
@@ -853,7 +829,6 @@ export class TemplateAuthoringSession {
 		this.ranking = [];
 		this.rankingDirty = true;
 		this.failedPreloads.clear();
-		this.byteCutoff = Infinity;
 		const pins = this.pinnedIds();
 		for (const id of this.details.keys()) if (!pins.has(id)) this.releaseDetail(id);
 	}
@@ -862,14 +837,13 @@ export class TemplateAuthoringSession {
 		this.rankingDirty = false;
 		const members = this.memberIds;
 		const current = new Set(members);
-		const next = [...new Set([...this.recentIds, ...this.nearbyIds, ...members])].filter((id) =>
-			current.has(id)
-		);
+		// Only the viewer's eager pages justify optional live bodies. A selected item
+		// and an in-flight save remain pinned independently of this admission list.
+		const next = [...new Set(this.nearbyIds)].filter((id) => current.has(id));
 		if (next.length === this.ranking.length && next.every((id, i) => id === this.ranking[i]))
 			return;
 		this.ranking = next;
 		this.failedPreloads.clear();
-		this.byteCutoff = Infinity;
 	}
 	private syncSubscriptions() {
 		if (this.disposed) return;
@@ -888,10 +862,7 @@ export class TemplateAuthoringSession {
 		}
 	}
 	private syncReads() {
-		const needed =
-			this.available &&
-			!this.suspended &&
-			(this.attached || Boolean(this.slot) || (!this.frozen && this.readers > 0));
+		const needed = this.available && !this.suspended && (this.opened || Boolean(this.slot));
 		if (!needed) {
 			this.releaseSubscriptions();
 			return;
@@ -899,81 +870,101 @@ export class TemplateAuthoringSession {
 		this.releaseSource ??= this.sourceRead.retain(false);
 		if (!this.structureRelease) {
 			this.structureLoading = true;
-			let subscription: () => void;
-			this.structureRelease = subscription = this.options.client.onUpdate(
-				api.playbookItems.currentStructure,
-				{ membershipId: this.options.membershipId, audience: this.options.audience },
-				(value) => {
-					if (this.disposed || this.structureRelease !== subscription) return;
-					// Source/readiness transitions revoke old admission even if a missing pointer
-					// reports generation zero. Pending operations retain their own recovery floor.
-					if (
-						this.structure?.ready &&
-						value.ready &&
-						sameSource(value, this.structure) &&
-						value.authoringGeneration < this.structure.authoringGeneration
-					)
-						return;
-					this.structureObserved = true;
-					this.structureReady = value.ready;
-					if (!value.ready) {
-						this.structureLoading = false;
-						this.structureError = '';
-						this.structureRejected = false;
-						this.syncSubscriptions();
-						this.settleLeave();
-						return;
-					}
-					const members = value.items.map((item) => item._id as string);
-					if (
-						members.length !== this.memberIds.length ||
-						members.some((id, i) => id !== this.memberIds[i])
-					) {
-						this.memberIds = members;
-						this.rankingDirty = true;
-					}
-					if (this.structure && !sameSource(this.structure, value)) {
-						this.storageEpoch++;
-						this.writtenView = undefined;
-						this.writtenDetails.clear();
-						this.recentIds = [];
-						this.openedAt.clear();
-						this.rejectedDetails.clear();
-						for (const id of this.details.keys()) this.releaseDetail(id, true);
-						this.requestedSelection = null;
-						if (!this.editor?.hasUnsavedWork) this.editor?.discard();
-						this.selectedId = this.editor?.draft?.persistedId ?? null;
-					}
-					this.structureObserved = true;
-					this.structure = immutable(value);
-					this.sourceRead.observeEnvelope(this.structure);
-					for (const [id, entry] of this.details)
-						if (entry.snapshot && !detailMatches(this.structure, entry.snapshot)) {
-							entry.snapshot = undefined;
-							entry.bytes = 0;
-						}
-					this.detailVersion++;
+			let subscription: ReturnType<SnapshotClient['onUpdate']>;
+			const accept = (value: StructureSnapshot) => {
+				if (this.disposed || this.structureRelease !== subscription) return;
+				// Source/readiness transitions revoke old admission even if a missing pointer
+				// reports generation zero. Pending operations retain their own recovery floor.
+				if (
+					this.structure?.ready &&
+					value.ready &&
+					sameSource(value, this.structure) &&
+					value.authoringGeneration < this.structure.authoringGeneration
+				)
+					return;
+				this.structureObserved = true;
+				this.structureReady = value.ready;
+				if (!value.ready) {
+					this.structureLoading = false;
 					this.structureError = '';
 					this.structureRejected = false;
-					this.structureLoading = false;
-					this.syncSubscriptions();
-					this.reconcile();
-				},
-				() => {
-					if (this.disposed || this.structureRelease !== subscription) return;
-					this.structureLoading = false;
-					this.storageEpoch++;
-					this.structure = null;
-					for (const id of this.details.keys()) this.releaseDetail(id, true);
-					this.sourceRead.storage?.clearTemplates(this.options.audience);
-					this.structureRejected = true;
-					this.structureError = this.copy.refreshFailed;
 					this.syncSubscriptions();
 					this.settleLeave();
+					return;
 				}
+				const members = value.items.map((item) => item._id as string);
+				if (
+					members.length !== this.memberIds.length ||
+					members.some((id, i) => id !== this.memberIds[i])
+				) {
+					this.memberIds = members;
+					this.rankingDirty = true;
+				}
+				if (this.structure && !sameSource(this.structure, value)) {
+					this.storageEpoch++;
+					this.writtenDetails.clear();
+					this.recentIds = [];
+					this.openedAt.clear();
+					this.rejectedDetails.clear();
+					for (const id of this.details.keys()) this.releaseDetail(id, true);
+					this.requestedSelection = null;
+					if (!this.editor?.hasUnsavedWork) this.editor?.discard();
+					this.selectedId = this.editor?.draft?.persistedId ?? null;
+				}
+				const previous = this.structure;
+				this.structureObserved = true;
+				this.structure = immutable(value);
+				this.sourceRead.observeEnvelope(this.structure);
+				for (const [id, entry] of this.details) {
+					const before = previous?.items.find((item) => item._id === id);
+					const head = value.items.find((item) => item._id === id);
+					const saved = this.slot?.confirmation;
+					const awaitingSaveHead =
+						saved?.status === 'saved' &&
+						saved.item._id === id &&
+						entry.snapshot?.status === 'present' &&
+						entry.snapshot.item.contentRevision === saved.item.contentRevision &&
+						head &&
+						head.contentRevision < saved.item.contentRevision;
+					if (
+						!awaitingSaveHead &&
+						((entry.snapshot && !detailMatches(this.structure, entry.snapshot)) ||
+							(entry.awaiting && before?.contentRevision !== head?.contentRevision))
+					)
+						this.releaseDetail(id, true);
+				}
+				this.detailVersion++;
+				this.structureError = '';
+				this.structureRejected = false;
+				this.structureLoading = false;
+				this.syncSubscriptions();
+				this.reconcile();
+			};
+			const fail = () => {
+				if (this.disposed || this.structureRelease !== subscription) return;
+				this.structureLoading = false;
+				this.storageEpoch++;
+				this.structure = null;
+				for (const id of this.details.keys()) this.releaseDetail(id, true);
+				this.sourceRead.storage?.clearTemplates(this.options.audience);
+				this.structureRejected = true;
+				this.structureError = this.copy.refreshFailed;
+				this.syncSubscriptions();
+				this.settleLeave();
+			};
+			this.structureRelease = subscription = this.options.client.onUpdate(
+				api.playbookItems.currentStructure,
+				{ audience: this.options.audience },
+				accept,
+				fail
 			);
+			try {
+				const cached = subscription.getCurrentValue?.();
+				if (cached !== undefined) accept(cached);
+			} catch {
+				fail();
+			}
 		}
-		this.hydrateView();
 		const pins = new Set(
 			[...this.pinnedIds()].filter(
 				(id) =>
@@ -1015,10 +1006,9 @@ export class TemplateAuthoringSession {
 			this.updateRanking();
 		}
 		const optional = new Set<string>();
-		let bytes = 0,
-			awaiting = 0;
+		let bytes = 0;
 		if (eligible) {
-			for (let i = 0; i < this.ranking.length && i < this.byteCutoff; i++) {
+			for (let i = 0; i < this.ranking.length; i++) {
 				const id = this.ranking[i];
 				if (pins.has(id) || this.failedPreloads.has(id)) continue;
 				const entry = this.details.get(id);
@@ -1027,14 +1017,11 @@ export class TemplateAuthoringSession {
 					continue;
 				}
 				if (bytes + (entry?.bytes ?? 0) > PRELOAD_BYTES) {
-					this.byteCutoff = i;
-					break;
+					this.failedPreloads.add(id);
+					continue;
 				}
-				const pending = !entry?.release || entry.awaiting;
-				if (pending && awaiting >= PRELOAD_CONCURRENCY) continue;
 				optional.add(id);
 				bytes += entry?.bytes ?? 0;
-				if (pending) awaiting++;
 				if (optional.size === PRELOAD_ITEMS) break;
 			}
 		}
@@ -1045,169 +1032,163 @@ export class TemplateAuthoringSession {
 		for (const id of optional) this.subscribeDetail(id);
 		this.trimRetained();
 	}
+	private acceptSavedDetail(result: Extract<Confirmation, { status: 'saved' }>) {
+		const id = result.item._id;
+		this.releaseDetail(id, true);
+		const snapshot = immutable({
+			ready: true as const,
+			status: 'present' as const,
+			templateSourceId: result.templateSourceId,
+			templateSourceFingerprint: result.templateSourceFingerprint,
+			item: result.item
+		});
+		this.details.set(id, {
+			awaiting: false,
+			observed: true,
+			snapshot,
+			bytes: new TextEncoder().encode(JSON.stringify(result.item)).byteLength
+		});
+		this.failedPreloads.delete(id);
+		this.rejectedDetails.delete(id);
+		this.detailVersion++;
+		this.scheduleDetail(id);
+	}
 	private subscribeDetail(id: string) {
 		let entry = this.details.get(id);
-		if (entry?.release) return;
+		if (entry?.release || entry?.error) return;
+		const saved = this.slot?.confirmation;
+		if (
+			saved?.status === 'saved' &&
+			saved.item._id === id &&
+			entry?.snapshot?.status === 'present' &&
+			entry.snapshot.item.contentRevision === saved.item.contentRevision
+		)
+			return;
+		if (
+			entry?.observed &&
+			entry.snapshot &&
+			this.structure &&
+			detailMatches(this.structure, entry.snapshot)
+		)
+			return;
 		entry ??= { awaiting: true, observed: false, bytes: 0 };
 		entry.awaiting = true;
 		entry.observed = false;
 		const token = (entry.token = {});
 		this.details.set(id, entry);
-		entry.release = this.options.client.onUpdate(
-			api.playbookItems.content,
-			{
-				membershipId: this.options.membershipId,
-				id: id as Id<'playbookItems'>,
-				audience: this.options.audience
-			},
-			(value) => {
-				if (this.disposed || this.details.get(id) !== entry || entry.token !== token) return;
-				const prior = entry.snapshot;
-				if (
-					prior?.status === 'present' &&
-					value.status === 'present' &&
-					sameSource(prior, value) &&
-					value.item.contentRevision < prior.item.contentRevision
-				)
-					return;
-				const sameBody =
-					prior?.status === 'present' &&
-					value.status === 'present' &&
-					sameSource(prior, value) &&
-					prior.ready === value.ready &&
-					prior.item.renderKey === value.item.renderKey &&
-					prior.item.currentRevisionId === value.item.currentRevisionId &&
-					prior.item._creationTime === value.item._creationTime &&
-					prior.item.contentRevision === value.item.contentRevision;
-				if (!sameBody)
-					entry.bytes =
-						value.status === 'present'
-							? new TextEncoder().encode(JSON.stringify(value.item)).byteLength
-							: 0;
-				entry.snapshot = sameBody ? prior : immutable(value);
-				this.failedPreloads.delete(id);
-				this.rejectedDetails.delete(id);
-				entry.awaiting = false;
-				entry.observed = true;
-				this.scheduleDetail(id);
-				entry.error = undefined;
-				if (this.pinnedIds().has(id)) {
-					this.detailVersion++;
-					this.reconcile();
-					this.openRequestedSelection();
-				}
-				this.syncSubscriptions();
-			},
-			() => {
-				if (this.disposed || this.details.get(id) !== entry || entry.token !== token) return;
-				entry.awaiting = false;
-				entry.observed = false;
-				this.rejectedDetails.add(id);
-				if (this.structure)
-					this.sourceRead.storage?.forgetTemplateDetail(this.options.audience, this.structure, id);
-				entry.snapshot = undefined;
-				entry.bytes = 0;
-				if (this.pinnedIds().has(id)) {
-					entry.error = this.copy.loadFailed;
-					this.detailVersion++;
-					this.settleLeave();
-				} else {
-					this.failedPreloads.add(id);
-					this.releaseDetail(id);
-				}
-				this.syncSubscriptions();
-			}
+		this.detailQueue.set(id, token);
+		entry.release = () => {};
+		if (this.flushQueued) return;
+		this.flushQueued = true;
+		queueMicrotask(() => {
+			this.flushQueued = false;
+			this.flushDetails();
+		});
+	}
+	private flushDetails() {
+		if (this.disposed || !this.available || !this.structure?.ready) return;
+		const pins = this.pinnedIds();
+		const queued = [...this.detailQueue].sort(
+			([a], [b]) => Number(pins.has(b)) - Number(pins.has(a))
 		);
+		this.detailQueue.clear();
+		for (let offset = 0; offset < queued.length; offset += PRELOAD_ITEMS)
+			void this.readDetails(queued.slice(offset, offset + PRELOAD_ITEMS), this.structure);
+	}
+	private async readDetails(selected: [string, object][], base: StructureSnapshot) {
+		const attempt = new ReadAttempt(15_000);
+		const active = (id: string, token: object) =>
+			!this.disposed && this.available && this.details.get(id)?.token === token;
+		for (const [id, token] of selected) {
+			const entry = this.details.get(id);
+			if (entry?.token !== token) continue;
+			entry.release = () => {
+				if (!selected.some(([other, key]) => active(other, key))) attempt.abort();
+			};
+		}
+		const accept = (id: string, token: object, value: TemplateContentSnapshot) => {
+			if (!active(id, token)) return;
+			const entry = this.details.get(id)!;
+			if (!this.structure || !detailMatches(this.structure, value)) {
+				this.releaseDetail(id, true);
+				return;
+			}
+			entry.snapshot = immutable(value);
+			entry.bytes =
+				value.status === 'present'
+					? new TextEncoder().encode(JSON.stringify(value.item)).byteLength
+					: 0;
+			entry.awaiting = false;
+			entry.observed = true;
+			entry.error = undefined;
+			entry.release = undefined;
+			entry.token = undefined;
+			this.failedPreloads.delete(id);
+			this.rejectedDetails.delete(id);
+			this.scheduleDetail(id);
+			if (this.pinnedIds().has(id)) this.detailVersion++;
+		};
+		try {
+			const storage = this.sourceRead.storage;
+			if (storage)
+				await Promise.all(
+					selected.map(async ([id, token]) => {
+						if (this.rejectedDetails.has(id) || !active(id, token)) return;
+						const value = await storage.readTemplateDetail(this.options.audience, base, id);
+						if (value && detailMatches(base, value)) accept(id, token, value);
+					})
+				);
+			const missing = selected.filter(([id, token]) => active(id, token));
+			if (missing.length) {
+				const result = await queryOnce(
+					this.options.client,
+					api.playbookItems.batchContent,
+					{
+						audience: this.options.audience,
+						ids: missing.map(([id]) => id as Id<'playbookItems'>)
+					},
+					attempt.signal
+				);
+				const values = new Map(result.map(({ id, content }) => [id as string, content]));
+				for (const [id, token] of missing) {
+					const value = values.get(id);
+					if (!value || !value.ready || value.status !== 'present') {
+						if (active(id, token)) this.failDetail(id);
+					} else accept(id, token, value);
+				}
+			}
+		} catch {
+			for (const [id, token] of selected) if (active(id, token)) this.failDetail(id);
+		} finally {
+			attempt.complete();
+			this.reconcile();
+			this.openRequestedSelection();
+			this.syncSubscriptions();
+		}
+	}
+	private failDetail(id: string) {
+		const entry = this.details.get(id);
+		if (!entry) return;
+		entry.awaiting = false;
+		entry.observed = false;
+		entry.release = undefined;
+		entry.token = undefined;
+		entry.snapshot = undefined;
+		entry.bytes = 0;
+		this.rejectedDetails.add(id);
+		if (this.structure)
+			this.sourceRead.storage?.forgetTemplateDetail(this.options.audience, this.structure, id);
+		if (this.pinnedIds().has(id)) {
+			entry.error = this.copy.loadFailed;
+			this.detailVersion++;
+			this.settleLeave();
+		} else {
+			this.failedPreloads.add(id);
+			this.details.delete(id);
+		}
 	}
 	presented() {
 		this.sourceRead.markPresented();
-	}
-	private hydrateView() {
-		const storage = this.sourceRead.storage;
-		if (!storage || this.hydrated || !this.available) return;
-		this.hydrated = true;
-		const epoch = this.storageEpoch;
-		void storage.readTemplateView(this.options.audience).then((pair) => {
-			if (
-				!pair ||
-				this.disposed ||
-				epoch !== this.storageEpoch ||
-				this.structureObserved ||
-				!this.available
-			)
-				return;
-			this.sourceRead.acceptStored(pair.source);
-			this.structure = pair.structure;
-			this.memberIds = pair.structure.items.map((item) => item._id);
-			this.rankingDirty = true;
-		});
-	}
-	private hydrateDetail(id: string) {
-		const storage = this.sourceRead.storage,
-			base = this.structure;
-		if (!storage || !base?.ready || this.rejectedDetails.has(id) || this.readDetail(id)) return;
-		const epoch = this.storageEpoch;
-		const requested = this.requestedSelection,
-			retained = this.details.get(id),
-			token = retained?.token;
-		void storage.readTemplateDetail(this.options.audience, base, id).then((snapshot) => {
-			if (
-				!snapshot ||
-				this.disposed ||
-				!this.available ||
-				epoch !== this.storageEpoch ||
-				this.selectedId !== id ||
-				!this.structure ||
-				!detailMatches(this.structure, snapshot)
-			)
-				return;
-			const entry = this.details.get(id);
-			if (
-				!entry ||
-				entry !== retained ||
-				entry.token !== token ||
-				this.requestedSelection !== requested ||
-				this.rejectedDetails.has(id) ||
-				entry.observed ||
-				entry.error
-			)
-				return;
-			entry.snapshot = snapshot;
-			entry.bytes = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
-			this.detailVersion++;
-			this.scheduleDetail(id);
-		});
-	}
-	private scheduleView(
-		prose: import('$lib/auth/workspace-read-storage').TemplateProse,
-		structure: StructureSnapshot
-	) {
-		if (!this.available || !this.sourceRead.storage || this.writtenView === structure) return;
-		this.scheduledView?.();
-		const epoch = this.storageEpoch;
-		this.scheduledView = this.sourceRead.scheduleStorage('view:' + this.options.audience, () => {
-			this.scheduledView = undefined;
-			if (
-				this.disposed ||
-				epoch !== this.storageEpoch ||
-				!this.current ||
-				this.structure !== structure ||
-				this.templateSource.data !== prose
-			)
-				return;
-			this.writtenView = structure;
-			this.sourceRead.storage!.writeTemplateView(
-				this.options.audience,
-				prose,
-				structure,
-				() =>
-					!this.disposed &&
-					this.available &&
-					epoch === this.storageEpoch &&
-					this.structure === structure
-			);
-			for (const id of this.recentIds) this.scheduleDetail(id);
-		});
 	}
 	private scheduleDetail(id: string) {
 		const storage = this.sourceRead.storage,
@@ -1396,8 +1377,6 @@ export class TemplateAuthoringSession {
 	destroy() {
 		this.disposed = true;
 		this.storageEpoch++;
-		this.releaseEffects?.();
-		this.scheduledView?.();
 		for (const cancel of this.scheduledDetails.values()) cancel();
 		this.scheduledDetails.clear();
 		this.discard();

@@ -9,6 +9,9 @@ import { cleanupCompanyExports } from './contractExports';
 import { cancelPreparationJobs } from './csmMeetingPreparation';
 import { cancelAppointmentJobs } from './csmSetupAppointments';
 import { clearSetupAppointment } from './csmSetupState';
+import { deleteCompanySetup } from './companySetupState';
+import { deleteMembershipSetup } from './membershipSetupState';
+import { deleteMembershipUiPreferences } from './membershipUiPreferences';
 import { DELETING_RECOVERY_DELAY, RECONCILIATION_PAGE_SIZE } from './deletionPolicy';
 import { companyCleanupPhases as phases, deletingCompanyRecord } from './deletionValidators';
 import { activeJob, cancelJob, RETIRED_DELIVERY_RECHECK, retireDelivery } from './emailDeliveries';
@@ -20,6 +23,47 @@ type Budget = ReturnType<typeof cleanupBudget>;
 type Phase = (typeof phases)[number];
 type PhaseResult = { drained: boolean; retryDelay?: number };
 
+const companyQueries = {
+	buyerActivityReceipts: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('buyerActivityReceipts').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	buyerActivityOpenings: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('buyerActivityOpenings').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	buyerActivityCounters: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('buyerActivityCounters').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	buyerLinks: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('buyerLinks').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	discussionMessages: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('discussionMessages').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	discussionThreads: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('discussionThreads').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	discussionCapacity: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('discussionCapacity').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	savedContracts: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('savedContracts').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	contractHubspotAssociations: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db
+			.query('contractHubspotAssociations')
+			.withIndex('by_companyId_and_connectionId_and_dealId', (q) => q.eq('companyId', id)),
+	contractBuyerRefreshes: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('contractBuyerRefreshes').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	playbookItems: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db
+			.query('playbookItems')
+			.withIndex('by_companyId_and_audience', (q) => q.eq('companyId', id)),
+	playbookItemCreationReceipts: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db
+			.query('playbookItemCreationReceipts')
+			.withIndex('by_companyId_and_renderKey', (q) => q.eq('companyId', id)),
+	templateVersions: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('templateVersions').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	currentTemplate: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('currentTemplate').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	playbookItemRevisions: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('playbookItemRevisions').withIndex('by_companyId', (q) => q.eq('companyId', id)),
+	memberships: (ctx: MutationCtx, id: Id<'company'>) =>
+		ctx.db.query('memberships').withIndex('by_companyId', (q) => q.eq('companyId', id))
+};
+
 async function drainByCompany(
 	ctx: MutationCtx,
 	companyId: Id<'company'>,
@@ -29,9 +73,9 @@ async function drainByCompany(
 		| 'buyerActivityOpenings'
 		| 'buyerActivityCounters'
 		| 'buyerLinks'
-		| 'buyerLinkBarShowings'
 		| 'discussionMessages'
 		| 'discussionThreads'
+		| 'discussionCapacity'
 		| 'savedContracts'
 		| 'contractHubspotAssociations'
 		| 'contractBuyerRefreshes'
@@ -44,22 +88,15 @@ async function drainByCompany(
 	)[]
 ) {
 	for (const table of tables) {
-		if (
-			!(await budget.drain(
-				table,
-				ctx.db.query(table).withIndex('by_companyId', (q) => q.eq('companyId', companyId))
-			))
-		)
-			return false;
+		if (!(await budget.drain(table, companyQueries[table](ctx, companyId)))) return false;
 	}
 	return true;
 }
 
 /**
  * Complete ordered company-erasure phases matching `deletionValidators.companyCleanupPhases`.
- * Covers all 44 company-scoped tables (9 HubSpot tables via `retireCompanyHubSpot` + 35 below);
- * only global/user-scoped tables (`profiles`, `deletedUsers`, `companyDeletions`, `fileSweeps`,
- * `hubspotJournal`, `hubspotPortalLifecycle`, `hubspotAccountRemovals`) are excluded.
+ * Tenant tables are drained here or by `retireCompanyHubSpot`; global and user-owned
+ * tables retain their independent cleanup protocols.
  */
 const phaseHandlers: Record<
 	Exclude<Phase, 'company'>,
@@ -126,15 +163,7 @@ const phaseHandlers: Record<
 			))
 	}),
 	buyerLinks: async (ctx, companyId, budget) => ({
-		drained:
-			(await drainByCompany(ctx, companyId, budget, ['buyerLinks', 'buyerLinkBarShowings'])) &&
-			(await budget.drain(
-				'buyerLinkShowingCleanups',
-				ctx.db
-					.query('buyerLinkShowingCleanups')
-					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
-				{ beforeDelete: (row) => cancelJob(ctx, row.jobId) }
-			))
+		drained: await drainByCompany(ctx, companyId, budget, ['buyerLinks'])
 	}),
 	discussions: async (ctx, companyId, budget) => ({
 		drained:
@@ -145,7 +174,11 @@ const phaseHandlers: Record<
 					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
 				{ beforeDelete: (owner) => resetQuota(ctx, owner) }
 			)) &&
-			(await drainByCompany(ctx, companyId, budget, ['discussionMessages', 'discussionThreads']))
+			(await drainByCompany(ctx, companyId, budget, [
+				'discussionMessages',
+				'discussionThreads',
+				'discussionCapacity'
+			]))
 	}),
 	contracts: async (ctx, companyId, budget) => ({
 		drained:
@@ -158,7 +191,9 @@ const phaseHandlers: Record<
 				'contractDirectory',
 				ctx.db
 					.query('contractDirectory')
-					.withIndex('by_companyId_and_savedAt_and_createdAt', (q) => q.eq('companyId', companyId))
+					.withIndex('by_companyId_and_hasUnreadComment_and_savedAt_and_createdAt', (q) =>
+						q.eq('companyId', companyId)
+					)
 			))
 	}),
 	templateData: async (ctx, companyId, budget) => ({
@@ -195,12 +230,9 @@ const phaseHandlers: Record<
 				'templateSources',
 				ctx.db
 					.query('templateSources')
-					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+					.withIndex('by_companyId_and_state', (q) => q.eq('companyId', companyId)),
 				{
 					afterDelete: async (row) => {
-						const company = await ctx.db.get('company', companyId);
-						if (company?.pendingTemplateSourceId === row._id)
-							await ctx.db.patch('company', companyId, { pendingTemplateSourceId: undefined });
 						if (row.source === 'docx') await deleteUnownedFile(ctx, row.originalFileId);
 					}
 				}
@@ -247,7 +279,7 @@ const phaseHandlers: Record<
 				'csmBookingAttempts',
 				ctx.db
 					.query('csmBookingAttempts')
-					.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+					.withIndex('by_companyId_and_mode_and_state', (q) => q.eq('companyId', companyId)),
 				{
 					beforeDelete: async (row) => {
 						await cancelJob(ctx, row.sendJobId);
@@ -258,7 +290,16 @@ const phaseHandlers: Record<
 			))
 	}),
 	memberships: async (ctx, companyId, budget) => ({
-		drained: await drainByCompany(ctx, companyId, budget, ['memberships'])
+		drained: await budget.drain(
+			'memberships',
+			ctx.db.query('memberships').withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+			{
+				beforeDelete: async (row) => {
+					await deleteMembershipSetup(ctx, row._id);
+					await deleteMembershipUiPreferences(ctx, row._id);
+				}
+			}
+		)
 	})
 };
 
@@ -296,6 +337,9 @@ export async function confirmAccountDeletion(ctx: MutationCtx, issuer: string, c
 	if (marker.status === 'deleting') {
 		const { _id, _creationTime, inFlight: _inFlight, ...base } = marker;
 		const next = { ...base, status: 'cleaning' as const };
+		await ctx.db.patch('company', marker.companyId, {
+			deletion: { status: 'cleaning', inFlight: false, issuer, clerkId }
+		});
 		await ctx.db.replace('companyDeletions', _id, next);
 		await ensureCleanup(ctx, { _id, _creationTime, ...next });
 		return;
@@ -390,6 +434,7 @@ export const releaseStaleDeleting = internalMutation({
 			marker.requestedAt + DELETING_RECOVERY_DELAY > Date.now()
 		)
 			return false;
+		await ctx.db.patch('company', marker.companyId, { deletion: undefined });
 		await ctx.db.delete('companyDeletions', marker._id);
 		return true;
 	}
@@ -410,6 +455,7 @@ export const clean = internalMutation({
 		while (!(await budget.exhausted())) {
 			if (phase === 'company') {
 				const company = await ctx.db.get('company', companyId);
+				await deleteCompanySetup(ctx, companyId);
 				if (company) await ctx.db.delete('company', companyId);
 				if (company?.avatarId) await deleteUnownedFile(ctx, company.avatarId);
 				// Membership validation rejects stale creation retries before receipt lookup.

@@ -2,6 +2,7 @@ import { activityBrowser } from '$lib/server/activity-browser';
 import { env } from '$env/dynamic/public';
 import { api } from '../../convex/_generated/api';
 import { readRouteData } from '$lib/server/route-title';
+import type { BuyerPageContext } from '$lib/buyer/seller.svelte';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ cookies, params, locals, request }) => {
@@ -9,7 +10,13 @@ export const load: LayoutServerLoad = async ({ cookies, params, locals, request 
 		cookies.delete('dinu_activity_choices_v1', { path: '/' });
 	const token = params.token;
 	let resolvedRouteTitle:
-		| { kind: 'current'; title: string; audience: 'buyer' | 'seller'; buyerName: string | null }
+		| {
+				kind: 'current';
+				title: string;
+				audience: 'buyer' | 'seller';
+				templateVersionId: BuyerPageContext['templateVersionId'];
+				context: BuyerPageContext;
+		  }
 		| { kind: 'unavailable' | 'error' | 'account-error'; title: string };
 	try {
 		if (!token || !env.PUBLIC_CONVEX_URL) throw new Error('Buyer link is unavailable.');
@@ -31,13 +38,9 @@ export const load: LayoutServerLoad = async ({ cookies, params, locals, request 
 				resolvedRouteTitle = {
 					kind: 'current',
 					audience: current.audience,
-					buyerName: current.buyerName,
-					title:
-						current.audience === 'buyer'
-							? 'Review your contract'
-							: current.buyerName
-								? `Leave comments for ${current.buyerName}`
-								: 'Leave comments'
+					context: current,
+					templateVersionId: current.templateVersionId,
+					title: current.audience === 'seller' ? 'View contract as buyer' : 'Review your contract'
 				};
 			}
 		}

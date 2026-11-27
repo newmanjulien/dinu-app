@@ -29,7 +29,7 @@ export const load: PageServerLoad = ({ url, locals, setHeaders }) => {
 					globalThis.fetch(input, { ...init, signal: read.signal, cache: 'no-store' })
 			});
 			const preview = await waitForRead(
-				client.action(api.invitationLinks.preview, { token }),
+				client.query(api.invitationLinks.preview, { token }),
 				read.signal
 			);
 			return { preview, error: '' };

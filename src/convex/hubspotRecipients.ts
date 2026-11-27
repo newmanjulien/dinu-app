@@ -1,23 +1,27 @@
+import { RateLimiter } from '@convex-dev/rate-limiter';
 import { v, type Infer } from 'convex/values';
-import { internal } from './_generated/api';
-import schema from './schema';
-import { contractBuyerRefresh } from './contractValidators';
+import { components, internal } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
 import {
+	env,
 	internalAction,
 	internalMutation,
 	mutation,
-	env,
 	type MutationCtx,
 	type QueryCtx
 } from './_generated/server';
-import { availableCompany, requireMembership, accessibleContract } from './auth';
-import { activeDestination } from './hubspotInstallation';
-import { connectionToken, HubSpotError, resolveRecipient } from './hubspotApi';
+import { accessibleContract, availableCompany, requireMembership } from './auth';
 import { resolveAccess, syncBuyerLinkMetadata } from './buyerLinks';
-import { documentBytes, assertStorageCapacity } from './storageCapacity';
+import { contractBuyerRefresh } from './contractValidators';
+import { connectionToken, HubSpotError, resolveRecipient } from './hubspotApi';
+import type { CredentialConnection } from './hubspotCredentials';
+import { attachCredentials, connectionWithCredentials } from './hubspotCredentials';
+import { activeDestination } from './hubspotInstallation';
 
 const LEASE_MS = 240_000;
+const buyerLimiter = new RateLimiter(components.rateLimiter, {
+	buyerRefresh: { kind: 'fixed window', rate: 1, period: 45_000 }
+});
 const target = contractBuyerRefresh.omit('leaseUntil', 'dueAt', 'suppressed');
 type Target = Infer<typeof target>;
 const company = v.union(v.object({ id: v.string(), name: v.string() }), v.null());
@@ -61,7 +65,11 @@ async function coordinator(ctx: QueryCtx, root: Doc<'savedContracts'>) {
 }
 
 /** Demand is coalesced without writing the stable association or content state. */
-export async function requestBuyerRefresh(ctx: MutationCtx, root: Doc<'savedContracts'>) {
+export async function requestBuyerRefresh(
+	ctx: MutationCtx,
+	root: Doc<'savedContracts'>,
+	leaseMs = LEASE_MS
+) {
 	const current = await eligible(ctx, root);
 	if (!current) return;
 	const { association, connection, capabilities } = current;
@@ -91,7 +99,7 @@ export async function requestBuyerRefresh(ctx: MutationCtx, root: Doc<'savedCont
 	const suppressed = !connection.scopes.includes('crm.objects.companies.read');
 	const value = {
 		...expected,
-		leaseUntil: suppressed ? 0 : now + LEASE_MS,
+		leaseUntil: suppressed ? 0 : now + leaseMs,
 		dueAt: now,
 		suppressed
 	};
@@ -111,13 +119,14 @@ export const request = mutation({
 	}
 });
 
-/** Trusted HTTP ingress supplies the buyer token, never a destination or credential. */
-export const buyerRequest = internalMutation({
+/** Public token demand is rate limited and coalesced; destinations stay server-owned. */
+export const requestBuyer = mutation({
 	args: { token: v.string() },
 	returns: v.null(),
 	handler: async (ctx, { token }) => {
 		const found = await resolveAccess(ctx, token);
-		if (found) await requestBuyerRefresh(ctx, found.contract);
+		if (found && (await buyerLimiter.limit(ctx, 'buyerRefresh', { key: token })).ok)
+			await requestBuyerRefresh(ctx, found.contract, 45_000);
 		return null;
 	}
 });
@@ -148,14 +157,14 @@ async function currentAttempt(ctx: QueryCtx, expected: Target) {
 
 export const start = internalMutation({
 	args: target.fields,
-	returns: v.union(schema.doc('hubspotConnections'), v.null()),
+	returns: v.union(connectionWithCredentials, v.null()),
 	handler: async (ctx, expected) => {
 		const current = await currentAttempt(ctx, expected);
 		if (!current || current.refresh.leaseUntil <= Date.now()) return null;
 		await ctx.db.patch('contractBuyerRefreshes', current.refresh._id, {
 			leaseUntil: Date.now() + LEASE_MS
 		});
-		return current.connection;
+		return attachCredentials(ctx, current.connection);
 	}
 });
 
@@ -194,13 +203,6 @@ export const commit = internalMutation({
 				Date.now() + (successful ? 45_000 : Math.min(300_000, Math.max(2000, args.retryAfter))),
 			suppressed: args.outcome === 'missing-capability'
 		};
-		await assertStorageCapacity(ctx, {
-			documents: 1 + (nextRoot ? 2 : 0),
-			bytes:
-				documentBytes({ ...current.refresh, ...refreshPatch }) +
-				(nextRoot ? documentBytes(nextRoot) + 4096 : 0),
-			queries: 1 + (nextRoot ? 2 : 0)
-		});
 		if (nextRoot) {
 			await ctx.db.patch('savedContracts', nextRoot._id, {
 				buyer: nextRoot.buyer,
@@ -217,7 +219,7 @@ export const refresh = internalAction({
 	args: target.fields,
 	returns: v.null(),
 	handler: async (ctx, expected) => {
-		const initial: Doc<'hubspotConnections'> | null = await ctx.runMutation(
+		const initial: CredentialConnection | null = await ctx.runMutation(
 			internal.hubspotRecipients.start,
 			expected
 		);

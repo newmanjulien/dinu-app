@@ -145,7 +145,8 @@ export async function readTemplateSource(
 	ctx: QueryCtx,
 	templateSourceId: Id<'templateSources'>,
 	companyId: Id<'company'>,
-	knownTemplateSource?: Doc<'templateSources'>
+	knownTemplateSource?: Doc<'templateSources'>,
+	options: { verifyFingerprint?: boolean } = {}
 ) {
 	const templateSource = await readTemplateSourceMetadata(
 		ctx,
@@ -172,19 +173,21 @@ export async function readTemplateSource(
 		)
 			throw new ConvexError('This template source is incomplete.');
 		blocks.push(...row.blocks);
-		chunkReadBytes += documentBytes(row);
+		if (options.verifyFingerprint) chunkReadBytes += documentBytes(row);
 	}
 	if (
 		rows.length !== templateSource.chunkCount ||
 		blocks.length !== templateSource.blockCount ||
-		chunkReadBytes !== templateSource.chunkReadBytes
+		(options.verifyFingerprint && chunkReadBytes !== templateSource.chunkReadBytes)
 	)
 		throw new ConvexError('This template source is incomplete.');
-	const integrity = templateSourceIntegrity(blocks);
-	if (integrity.blocksJsonBytes !== templateSource.blocksJsonBytes)
-		throw new ConvexError('This template source is incomplete.');
-	if (integrity.fingerprint !== templateSource.fingerprint)
-		throw new TemplateSourceFingerprintError();
+	if (options.verifyFingerprint) {
+		const integrity = templateSourceIntegrity(blocks);
+		if (integrity.blocksJsonBytes !== templateSource.blocksJsonBytes)
+			throw new ConvexError('This template source is incomplete.');
+		if (integrity.fingerprint !== templateSource.fingerprint)
+			throw new TemplateSourceFingerprintError();
+	}
 	return { templateSource, blocks, chunks: rows };
 }
 

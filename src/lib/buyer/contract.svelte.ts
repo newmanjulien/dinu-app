@@ -12,7 +12,8 @@ import { recordColdStart } from '$lib/document/runtime/render-perf';
 import { BuyerDownload } from './download.svelte';
 import type { DocumentToolControls } from '$lib/components/document/document-tools';
 
-export type BuyerDocumentState = FunctionReturnType<typeof api.buyerLinks.currentState>;
+export type BuyerLinkState = FunctionReturnType<typeof api.buyerLinks.currentState>;
+export type BuyerDocumentState = Extract<BuyerLinkState, { kind: 'current' }>;
 export type BuyerTemplateContent = FunctionReturnType<typeof api.buyerLinks.templateContent>;
 export type BuyerDocumentContent = BuyerDocumentState & {
 	blocks: BuyerTemplateContent['blocks'];
@@ -61,9 +62,21 @@ export class BuyerContract {
 	scheduler = $state.raw(this.createScheduler());
 	readonly priority: Priority = () => 'foreground';
 	readonly download: BuyerDownload;
+	linkState = $state.raw<BuyerLinkState>();
+	linkError = $state.raw<Error>();
+	linkRejected = $state(false);
+	linkSettled = $state(false);
+	private stopLink?: () => void;
+	private linkGeneration = 0;
+	private linkTimer?: ReturnType<typeof setTimeout>;
+	private stateListeners = new Set<{
+		accept: (state: BuyerDocumentState) => void;
+		fail: (error: Error) => void;
+	}>();
 	private stopDocument?: () => void;
 	private templates = new Map<Id<'templateVersions'>, BuyerTemplateContent>();
 	private templateReads = new Map<Id<'templateVersions'>, Promise<BuyerTemplateContent>>();
+	private initialTemplateAttempt?: ReadAttempt;
 	private latestStateSeq = 0;
 	tools = $state.raw<DocumentToolControls>();
 	private toolsOwner?: symbol;
@@ -78,9 +91,71 @@ export class BuyerContract {
 
 	constructor(
 		readonly token: string,
-		private client: SnapshotClient
+		private client: SnapshotClient,
+		private initialTemplateVersionId: Id<'templateVersions'>
 	) {
 		this.download = new BuyerDownload(token, this);
+	}
+	mount() {
+		this.observeLink();
+		if (this.allowed) this.prefetchInitialTemplate();
+	}
+	private observeLink() {
+		if (this.stopLink || this.destroyed) return;
+		const generation = ++this.linkGeneration;
+		const current = () => !this.destroyed && generation === this.linkGeneration;
+		const accept = (state: BuyerLinkState) => {
+			if (!current()) return;
+			clearTimeout(this.linkTimer);
+			this.linkState = state;
+			this.linkSettled = true;
+			this.linkError = undefined;
+			this.linkRejected = false;
+			this.setAccess(state.kind === 'current');
+			if (state.kind === 'current')
+				for (const listener of [...this.stateListeners]) listener.accept(state);
+		};
+		const fail = (error: Error) => {
+			if (!current()) return;
+			clearTimeout(this.linkTimer);
+			this.linkSettled = true;
+			this.linkState = undefined;
+			this.linkError = error;
+			this.linkRejected = true;
+			this.setAccess(false);
+		};
+		// Install the ownership sentinel before SDK callbacks can synchronously deliver data.
+		this.stopLink = () => {};
+		try {
+			const subscription = this.client.onUpdate(
+				api.buyerLinks.currentState,
+				{ token: this.token },
+				accept,
+				fail
+			);
+			if (!current()) {
+				subscription();
+				return;
+			}
+			this.stopLink = subscription;
+			const cached = subscription.getCurrentValue?.();
+			if (cached !== undefined) accept(cached);
+			if (!this.linkSettled)
+				this.linkTimer = setTimeout(() => {
+					if (!current()) return;
+					this.linkError = new Error('We couldn’t check link access. Please try again.');
+				}, 15_000);
+		} catch (cause) {
+			fail(cause instanceof Error ? cause : new Error('Link unavailable.'));
+		}
+	}
+	retryLink() {
+		this.linkGeneration++;
+		clearTimeout(this.linkTimer);
+		this.stopLink?.();
+		this.stopLink = undefined;
+		this.linkError = undefined;
+		this.observeLink();
 	}
 	bindTools(generation: number, tools: DocumentToolControls) {
 		if (generation !== this.generation || !this.allowed || !this.foreground || this.error)
@@ -127,6 +202,7 @@ export class BuyerContract {
 		if (cached) return Promise.resolve(cached);
 		const existing = this.templateReads.get(templateVersionId);
 		if (existing) return existing;
+		const generation = this.generation;
 		const read = queryOnce(
 			this.client,
 			api.buyerLinks.templateContent,
@@ -134,7 +210,8 @@ export class BuyerContract {
 			signal
 		)
 			.then((value) => {
-				this.templates.set(templateVersionId, value);
+				if (this.allowed && !this.destroyed && generation === this.generation)
+					this.templates.set(templateVersionId, value);
 				return value;
 			})
 			.finally(() => {
@@ -154,7 +231,22 @@ export class BuyerContract {
 			this.templateReads.clear();
 			this.Host = undefined;
 			this.error = null;
-		} else if (this.foreground) this.start();
+		} else {
+			this.observeLink();
+			this.prefetchInitialTemplate();
+			if (this.foreground) this.start();
+		}
+	}
+	private prefetchInitialTemplate() {
+		const templateVersionId = this.initialTemplateVersionId;
+		if (this.templates.has(templateVersionId) || this.templateReads.has(templateVersionId)) return;
+		const attempt = (this.initialTemplateAttempt = new ReadAttempt(15_000));
+		void this.loadTemplate(templateVersionId, attempt.signal)
+			.catch(() => {})
+			.finally(() => {
+				if (this.initialTemplateAttempt === attempt) this.initialTemplateAttempt = undefined;
+				attempt.complete();
+			});
 	}
 	attach(target: HTMLElement) {
 		if (this.target && this.target !== target) this.release();
@@ -250,15 +342,17 @@ export class BuyerContract {
 		if (this.stopDocument || !this.allowed || !this.foreground) return;
 		let active = true;
 		let settledInitial = !initial;
-		let unsubscribe: (() => void) | undefined;
+		let listener:
+			{ accept: (state: BuyerDocumentState) => void; fail: (error: Error) => void } | undefined;
 		const subscriptionAbort = new AbortController();
 		this.stopDocument = () => {
 			active = false;
 			subscriptionAbort.abort();
-			unsubscribe?.();
+			if (listener) this.stateListeners.delete(listener);
 		};
 		const applyState = (state: BuyerDocumentState) => {
 			if (!active || generation !== this.generation || !this.allowed || !this.foreground) return;
+			const seq = ++this.latestStateSeq;
 			this.refreshError = null;
 			if (this.content && state.displayIdentity === this.content.displayIdentity) return;
 			const cachedTemplate = this.templates.get(state.templateVersionId);
@@ -274,7 +368,6 @@ export class BuyerContract {
 				}
 				return;
 			}
-			const seq = ++this.latestStateSeq;
 			const readAttempt = new ReadAttempt(15_000, subscriptionAbort.signal);
 			void this.loadTemplate(state.templateVersionId, readAttempt.signal)
 				.then((template) => {
@@ -297,7 +390,13 @@ export class BuyerContract {
 					}
 				})
 				.catch((error) => {
-					if (!active || generation !== this.generation || !this.allowed || !this.foreground)
+					if (
+						!active ||
+						seq !== this.latestStateSeq ||
+						generation !== this.generation ||
+						!this.allowed ||
+						!this.foreground
+					)
 						return;
 					if (!settledInitial) {
 						settledInitial = true;
@@ -317,13 +416,11 @@ export class BuyerContract {
 				this.refreshError = 'We couldn’t refresh this contract. Try again.';
 			}
 		};
-		unsubscribe = this.client.onUpdate(
-			api.buyerLinks.currentState,
-			{ token: this.token },
-			applyState,
-			fail
-		);
-		if (!active) unsubscribe();
+		listener = { accept: applyState, fail };
+		this.stateListeners.add(listener);
+		this.observeLink();
+		if (this.linkState?.kind === 'current' && !this.linkRejected) applyState(this.linkState);
+		else if (this.linkError) fail(this.linkError);
 	}
 
 	retryDocument() {
@@ -332,6 +429,7 @@ export class BuyerContract {
 		this.templateReads.clear();
 		this.refreshError = null;
 		this.subscribeState(this.generation);
+		this.retryLink();
 	}
 	private isCurrent(generation: number, lifetime: AbortController) {
 		return (
@@ -412,6 +510,8 @@ export class BuyerContract {
 		const opening = this.opening;
 		this.opening = undefined;
 		opening?.abort();
+		this.initialTemplateAttempt?.abort();
+		this.initialTemplateAttempt = undefined;
 		this.templateReads.clear();
 		this.lifetime?.abort();
 		this.lifetime = undefined;
@@ -423,6 +523,11 @@ export class BuyerContract {
 	destroy() {
 		this.help.destroy();
 		this.destroyed = true;
+		this.linkGeneration++;
+		clearTimeout(this.linkTimer);
+		this.stopLink?.();
+		this.stopLink = undefined;
+		this.stateListeners.clear();
 		this.code = undefined;
 		this.allowed = false;
 		this.release();

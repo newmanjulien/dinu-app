@@ -71,7 +71,7 @@
 		anchor: DiscussionAnchor;
 	} | null>(null);
 	$effect(() => {
-		void session.transitionVersion;
+		void session.policyVersion;
 		toolbar = null;
 		dismissedSelection = undefined;
 		selectionPointer = null;
@@ -80,10 +80,10 @@
 	const visibleComposerCard = $derived(session.composer);
 	const previewEntry = $derived(
 		active &&
-		!obscured &&
-		session.authorized &&
-		session.policy().readOnly &&
-		session.perspective() === 'buyer'
+			!obscured &&
+			session.authorized &&
+			session.policy().readOnly &&
+			session.perspective() === 'buyer'
 	);
 	const showSellerNameHint = $derived(
 		!session.readOnly && !session.authRequired && session.missingSellerName()
@@ -422,12 +422,10 @@
 		const selected = session.selected;
 		const replyingTo = session.replyingTo;
 		if (!selected || !active || obscured) return;
-		const transitionVersion = untrack(() => session.transitionVersion);
-		const policyGeneration = untrack(() => session.policy().generation);
+		const policyGeneration = untrack(() => session.policyVersion);
 		void tick().then(() => {
 			if (
-				session.transitionVersion !== transitionVersion ||
-				session.policy().generation !== policyGeneration ||
+				session.policyVersion !== policyGeneration ||
 				session.selected !== selected ||
 				session.replyingTo !== replyingTo
 			)
@@ -460,7 +458,7 @@
 		onActivate?.();
 		session.selected = id;
 		if (id === 'composer') focusComposer();
-		if (!session.readOnly && !session.viewer) void session.loadBuyerViewer();
+		if (!session.readOnly && !session.viewer) void session.loadViewer();
 	}
 	onMount(() => {
 		let selectionFrame: number | undefined;
@@ -520,6 +518,7 @@
 		schedule();
 		return { destroy: () => observer.disconnect() };
 	}
+
 	onDestroy(() => {
 		alive = false;
 		selectionGeometryListeners.clear();
@@ -547,7 +546,7 @@
 		<p class="text-danger">Reconnect your account to continue discussions.</p>
 		<div class="flex flex-wrap gap-x-3 gap-y-2">
 			<InlineAction href={LOGIN_PATH} target="_blank">Log in in another tab</InlineAction>
-			<InlineAction onclick={() => session.loadBuyerViewer()}>Retry account</InlineAction>
+			<InlineAction onclick={() => session.loadViewer()}>Retry account</InlineAction>
 			<InlineAction disabled={!session.canContinueAsBuyer} onclick={() => session.continueAsBuyer()}
 				>Continue as Buyer</InlineAction
 			>
@@ -564,7 +563,6 @@
 		<SelectionToolbar
 			anchor={toolbar.reference}
 			label="Add comment"
-			description="Leave a comment on the highlighted text to start a discussion."
 			onSelect={begin}
 			onClose={dismissToolbar}
 		/>
@@ -667,10 +665,10 @@
 								perspective={session.perspective()}
 								title="Add comment"
 								placeholder="Write a comment…"
-									submitLabel={composer.awaitingConfirmation ? 'Retry' : 'Comment'}
+								submitLabel={composer.awaitingConfirmation ? 'Retry' : 'Comment'}
 								closeLabel="Cancel"
 								pending={composer.busy}
-									textLocked={composer.awaitingConfirmation}
+								textLocked={composer.awaitingConfirmation}
 								errorMessage={composer.error ?? session.error ?? ''}
 								onTextChange={(text) => session.updateComposerText(text)}
 								onClose={() => collapseComposer(true)}

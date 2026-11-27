@@ -32,7 +32,13 @@ export type DiscussionPoint = Infer<typeof discussionPoint>;
 export type DiscussionAnchor = Infer<typeof discussionAnchor>;
 export type DiscussionFootprint = Infer<typeof discussionFootprint>;
 
-export const discussionAccess = v.object({ token: v.string() });
+export const discussionAccess = v.union(
+	v.object({ kind: v.literal('buyer'), token: v.string() }),
+	v.object({
+		kind: v.literal('seller'),
+		id: v.id('savedContracts')
+	})
+);
 export type DiscussionAccess = Infer<typeof discussionAccess>;
 
 export const discussionCommand = v.union(
@@ -80,9 +86,16 @@ export const discussionThread = v.object({
 	id: v.id('discussionThreads'),
 	contentRevision: v.number(),
 	anchor: discussionAnchor,
-	root: discussionMessage
+	root: discussionMessage,
+	replies: v.array(discussionMessage)
 });
 export type DiscussionThread = Infer<typeof discussionThread>;
+
+export const discussionList = v.object({
+	viewer: v.union(publicAuthor, v.null()),
+	threads: v.array(discussionThread)
+});
+export type DiscussionList = Infer<typeof discussionList>;
 
 export const writeResult = v.object({
 	status: v.literal('complete'),

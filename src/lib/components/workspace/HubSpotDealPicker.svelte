@@ -31,7 +31,7 @@
 	} = $props();
 	const resource = useHubSpotDeals();
 	const connection = resource.connection;
-	let result = $state.raw<{ owner: string; page: DealPage }>();
+	let result = $state.raw<{ owner: string; term: string; page: DealPage }>();
 	let attempt = $state.raw<{
 		owner: string;
 		term: string;
@@ -43,7 +43,11 @@
 	const owner = $derived(active ? resource.identity : null);
 	const displayOwner = $derived(resource.displayIdentity);
 	const page = $derived(
-		result?.owner === displayOwner ? result.page : !term ? resource.initialPage : undefined
+		result?.owner === displayOwner && result.term === term
+			? result.page
+			: !term
+				? resource.initialPage
+				: undefined
 	);
 	const currentAttempt = $derived(
 		attempt?.owner === owner && attempt?.term === term ? attempt : undefined
@@ -91,7 +95,9 @@
 	);
 	const linkedIds = $derived(new Set(eligibilityReady ? eligibility!.data!.linkedDealIds : []));
 	const available = $derived(candidates.filter((deal) => !linkedIds.has(deal.id)));
-	const candidateKey = $derived(JSON.stringify([displayOwner, candidates.map((deal) => deal.id)]));
+	const candidateKey = $derived(
+		JSON.stringify([displayOwner, term, candidates.map((deal) => deal.id)])
+	);
 	let displayed = $state.raw<{ key: string; ids: string[] }>();
 	const deals = $derived(
 		displayed?.key === candidateKey
@@ -146,7 +152,7 @@
 		try {
 			const page = await resource.load(query, force, cursor);
 			if (!mounted || current !== generation || resource.identity !== identity || !page) return;
-			result = { owner: resource.displayIdentity!, page };
+			result = { owner: resource.displayIdentity!, term: query, page };
 		} catch (cause) {
 			if (mounted && current === generation && resource.identity === identity)
 				attempt = {

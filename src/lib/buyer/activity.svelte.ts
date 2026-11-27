@@ -1,5 +1,11 @@
 import { getContext, setContext } from 'svelte';
-import { ACTIVITY_RETENTION, type ActivityBrowser, type BuyerActivityRequest } from './tracking';
+import { MAX_CLAUSE_BATCH } from './activity-transport';
+import {
+	ACTIVITY_RETENTION,
+	type ActivityBrowser,
+	type BuyerActivityRequest,
+	type BuyerClauseBatchRequest
+} from './tracking';
 
 type Session = {
 	token: string;
@@ -13,6 +19,7 @@ type Session = {
 type Pending = { body: BuyerActivityRequest; at: number; generation: number };
 const key = Symbol('buyer-activity');
 const MAX_AGE = 120_000;
+const CLAUSE_BATCH_DELAY_MS = 150;
 type ActivityAccount = {
 	activityToken: (signal: AbortSignal) => Promise<string | null>;
 	preparedActivityToken: () => string | null;
@@ -31,6 +38,34 @@ function waitForRetry(delay: number, signal: AbortSignal) {
 	});
 }
 
+function batchRetry(value: unknown, count: number) {
+	if (!value || typeof value !== 'object' || !('results' in value) || !Array.isArray(value.results))
+		throw new Error('Invalid activity batch response.');
+	const results: unknown[] = value.results;
+	if (results.length !== count) throw new Error('Invalid activity batch response.');
+	let limitedAt = -1;
+	let retryAfter = 0;
+	for (const [index, outcome] of results.entries()) {
+		if (!outcome || typeof outcome !== 'object' || !('kind' in outcome))
+			throw new Error('Invalid activity batch outcome.');
+		if (limitedAt >= 0) {
+			if (outcome.kind !== 'deferred') throw new Error('Invalid activity batch outcome.');
+		} else if (outcome.kind === 'limited') {
+			if (
+				!('retryAfter' in outcome) ||
+				typeof outcome.retryAfter !== 'number' ||
+				!Number.isFinite(outcome.retryAfter)
+			)
+				throw new Error('Invalid activity batch outcome.');
+			limitedAt = index;
+			retryAfter = outcome.retryAfter;
+		} else if (outcome.kind !== 'recorded' && outcome.kind !== 'unavailable') {
+			throw new Error('Invalid activity batch outcome.');
+		}
+	}
+	return limitedAt < 0 ? null : { limitedAt, retryAfter };
+}
+
 /** Best-effort page activity. Event history is never persisted in browser storage. */
 export class BuyerActivity {
 	private account?: ActivityAccount;
@@ -42,8 +77,11 @@ export class BuyerActivity {
 	private generation = 0;
 	private delivering = false;
 	private queue: Pending[] = [];
+	private inFlight: Pending[] = [];
 	private request?: AbortController;
 	private expiry?: ReturnType<typeof setTimeout>;
+	private batchTimer?: ReturnType<typeof setTimeout>;
+	private batchWait?: () => void;
 	setAccount(account: ActivityAccount) {
 		this.account = account;
 		return () => {
@@ -101,6 +139,8 @@ export class BuyerActivity {
 	private cancel() {
 		this.generation++;
 		this.queue = [];
+		this.inFlight = [];
+		this.releaseBatchWait();
 		this.request?.abort();
 	}
 	private stop() {
@@ -184,9 +224,45 @@ export class BuyerActivity {
 			itemId
 		});
 	}
+	private headClauses() {
+		let count = 0;
+		while (
+			count < Math.min(this.queue.length, MAX_CLAUSE_BATCH) &&
+			this.queue[count].body.kind === 'clause'
+		)
+			count++;
+		return count;
+	}
+	private releaseBatchWait() {
+		clearTimeout(this.batchTimer);
+		this.batchTimer = undefined;
+		this.batchWait?.();
+		this.batchWait = undefined;
+	}
+	private waitForBatch() {
+		return new Promise<void>((resolve) => {
+			this.batchWait = resolve;
+			this.batchTimer = setTimeout(() => this.releaseBatchWait(), CLAUSE_BATCH_DELAY_MS);
+		});
+	}
+	private batchBody(entries: Pending[]): BuyerClauseBatchRequest {
+		const first = entries[0].body;
+		if (first.kind !== 'clause') throw new Error('Expected clause activity.');
+		return {
+			kind: 'clauses',
+			token: first.token,
+			browserId: first.browserId,
+			openingId: first.openingId,
+			events: entries.map(({ body }) => {
+				if (body.kind !== 'clause') throw new Error('Expected clause activity.');
+				return { eventId: body.eventId, sequence: body.sequence, itemId: body.itemId };
+			})
+		};
+	}
 	private enqueue(body: BuyerActivityRequest) {
 		if (this.queue.length >= 50) return;
 		this.queue.push({ body, at: Date.now(), generation: this.generation });
+		if (this.headClauses() === MAX_CLAUSE_BATCH) this.releaseBatchWait();
 		void this.drain();
 	}
 	private async drain() {
@@ -194,42 +270,74 @@ export class BuyerActivity {
 		this.delivering = true;
 		try {
 			while (this.alive && this.queue.length) {
-				const entry = this.queue.shift()!;
+				if (Date.now() - this.queue[0].at >= MAX_AGE) {
+					this.queue.shift();
+					continue;
+				}
+				if (this.queue[0].body.kind === 'clause' && this.headClauses() < MAX_CLAUSE_BATCH)
+					await this.waitForBatch();
+				if (!this.alive || !this.queue.length) break;
+				const entries = this.queue.splice(
+					0,
+					this.queue[0].body.kind === 'clause' ? this.headClauses() : 1
+				);
+				this.inFlight = entries;
+				const first = entries[0];
 				const session = this.session;
-				if (!session) continue;
+				if (!session) {
+					this.inFlight = [];
+					continue;
+				}
 				const current = () =>
-					this.alive && entry.generation === this.generation && this.session === session;
+					this.alive && first.generation === this.generation && this.session === session;
 				let handled = false;
+				let remaining = entries;
 				const controller = (this.request = new AbortController());
 				try {
 					for (
 						let attempt = 0;
-						attempt < 4 && current() && Date.now() - entry.at < MAX_AGE;
+						attempt < 4 && current() && Date.now() - remaining[0].at < MAX_AGE;
 						attempt++
 					) {
 						let delay = (attempt + 1) * 1000;
 						try {
+							const body = first.body.kind === 'clause' ? this.batchBody(remaining) : first.body;
 							const response = await this.send(
-								entry.body,
+								body,
 								AbortSignal.any([controller.signal, AbortSignal.timeout(8000)])
 							);
 							if (!current()) break;
 							if (response.ok) {
-								if (response.status !== 204) {
+								if (body.kind === 'clauses') {
+									if (response.status !== 200) throw new Error('Invalid activity response.');
+									const result: unknown = await response.json();
+									if (!current()) break;
+									const retry = batchRetry(result, remaining.length);
+									if (retry) {
+										remaining = remaining.slice(retry.limitedAt);
+										this.inFlight = remaining;
+										delay = Math.min(10_000, Math.max(delay, retry.retryAfter * 1000));
+									} else {
+										handled = true;
+										break;
+									}
+								} else if (response.status !== 204) {
 									const result: { expiresAt: number } = await response.json();
 									if (!current()) break;
-									if (entry.body.kind !== 'open') throw new Error('Invalid activity response.');
+									if (first.body.kind !== 'open') throw new Error('Invalid activity response.');
 									if (!Number.isFinite(result.expiresAt))
 										throw new Error('Invalid activity expiry.');
 									session.expiresAt = result.expiresAt;
 									session.opening = 'accepted';
 									this.scheduleExpiry();
 								}
-								handled = true;
-								break;
+								if (body.kind !== 'clauses') {
+									handled = true;
+									break;
+								}
 							}
 							if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-								if (entry.body.kind === 'open') this.stop();
+								if (first.body.kind === 'open') this.stop();
 								handled = true;
 								break;
 							}
@@ -246,10 +354,11 @@ export class BuyerActivity {
 					}
 				} finally {
 					if (this.request === controller) this.request = undefined;
+					this.inFlight = [];
 				}
 				if (current() && !handled) {
 					this.queue = [];
-					if (entry.body.kind === 'open') session.opening = 'idle';
+					if (first.body.kind === 'open') session.opening = 'idle';
 				}
 			}
 		} finally {
@@ -257,7 +366,7 @@ export class BuyerActivity {
 		}
 	}
 	private async send(
-		body: BuyerActivityRequest,
+		body: BuyerActivityRequest | BuyerClauseBatchRequest,
 		signal = AbortSignal.timeout(8000),
 		flush = false
 	) {
@@ -280,9 +389,31 @@ export class BuyerActivity {
 	}
 	private flush = () => {
 		if (!this.eligible || !this.session || this.session.expiresAt <= Date.now()) return;
-		for (const entry of this.queue.splice(0, 8))
-			if (entry.generation === this.generation && Date.now() - entry.at < MAX_AGE)
+		this.releaseBatchWait();
+		const pending = [...this.inFlight, ...this.queue.splice(0)].filter(
+			(entry) => entry.generation === this.generation && Date.now() - entry.at < MAX_AGE
+		);
+		for (let index = 0; index < pending.length;) {
+			const entry = pending[index];
+			if (entry.body.kind !== 'clause') {
 				void this.send(entry.body, AbortSignal.timeout(8000), true).catch(() => {});
+				index++;
+				continue;
+			}
+			let end = index + 1;
+			while (
+				end < pending.length &&
+				end - index < MAX_CLAUSE_BATCH &&
+				pending[end].body.kind === 'clause'
+			)
+				end++;
+			void this.send(
+				this.batchBody(pending.slice(index, end)),
+				AbortSignal.timeout(8000),
+				true
+			).catch(() => {});
+			index = end;
+		}
 	};
 }
 export function setBuyerActivity() {

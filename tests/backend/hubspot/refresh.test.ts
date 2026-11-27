@@ -1,3 +1,4 @@
+import { readTestConnection, patchTestConnection } from '../../support/hubspot-credentials';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
 import { api, fixture, integrationClock, json, NOW } from '../../support/linked-contract';
@@ -5,7 +6,7 @@ import { api, fixture, integrationClock, json, NOW } from '../../support/linked-
 integrationClock();
 async function expired() {
 	const f = await fixture();
-	await f.t.run(({ db }) => db.patch('hubspotConnections', f.connectionId, { expiresAt: NOW }));
+	await f.t.run(({ db }) => patchTestConnection(db, f.connectionId, { expiresAt: NOW }));
 	return f;
 }
 const replacement = {
@@ -35,7 +36,7 @@ describe('expired HubSpot credentials', () => {
 		expect(fetcher.mock.calls.filter(([input]) => input.endsWith('/oauth/v1/token'))).toHaveLength(
 			1
 		);
-		const row = await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId));
+		const row = await f.t.run(({ db }) => readTestConnection(db, f.connectionId));
 		expect(row).toMatchObject({
 			status: 'connected',
 			generation: 2,
@@ -88,7 +89,7 @@ describe('expired HubSpot credentials', () => {
 			)
 		);
 		await expect(list(f)).rejects.toThrow('503');
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
 			status: 'connected',
 			generation: 1
 		});
@@ -96,7 +97,7 @@ describe('expired HubSpot credentials', () => {
 		vi.setSystemTime(NOW + 60_001);
 		await list(f);
 		expect(refresh).toHaveBeenCalledTimes(2);
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
 			status: 'connected',
 			generation: 2
 		});
@@ -109,9 +110,10 @@ describe('expired HubSpot credentials', () => {
 			const fetcher = vi.fn(async () => json({}, status));
 			vi.stubGlobal('fetch', fetcher);
 			await expect(list(f)).rejects.toThrow(String(status));
-			expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject(
-				{ status: 'reconnect', generation: 2 }
-			);
+			expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
+				status: 'reconnect',
+				generation: 2
+			});
 			await expect(list(f)).rejects.toThrow('not connected');
 			expect(fetcher).toHaveBeenCalledTimes(1);
 		}

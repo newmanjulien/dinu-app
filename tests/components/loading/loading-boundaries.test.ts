@@ -67,7 +67,6 @@ vi.mock('convex/browser', () => ({
 }));
 let component: ReturnType<typeof mount> | undefined;
 const viewer = (): NonNullable<AccountViewer> => ({
-	helpPreferences: { contract: false, buyerLink: false },
 	profile: {
 		id: 'profile' as Id<'profiles'>,
 		email: 'private@example.com',
@@ -78,14 +77,14 @@ const viewer = (): NonNullable<AccountViewer> => ({
 		id: 'member' as Id<'memberships'>,
 		companyId: 'company' as Id<'company'>,
 		role: 'admin',
-		isOwner: true,
-		supportWidgetCollapsed: false
+		isOwner: true
 	},
 	company: {
 		id: 'company' as Id<'company'>,
 		name: 'Private company',
 		avatarUrl: null,
 		approvalEmail: null,
+		templateSource: null,
 		setupCall: null,
 		deletion: null
 	},
@@ -137,13 +136,24 @@ it('shows the Contracts frame before Clerk/auth/viewer settle without replacing 
 	expect(document.querySelector('[data-private-content]')).toBeNull();
 	await login();
 	expect(document.querySelector('[data-workspace-frame]')).toBe(frame);
-	expect(external.clients.flatMap((c) => c.reads)).toEqual([]);
+	const queuedClient = external.clients.at(-1)!;
+	expect(queuedClient.reads.filter((r: any) => r.active).map((r: any) => r.name)).toEqual([
+		'accounts:viewer',
+		'contracts:home'
+	]);
+	queuedClient.deliver('accounts:viewer', viewer());
+	await settle();
+	expect(document.querySelector('[data-private-content]')).toBeNull();
 	external.authenticate!(true);
 	await settle();
 	const client = external.clients.at(-1)!;
-	expect(client.reads.filter((r: any) => r.active).map((r: any) => r.name)).toEqual([
-		'accounts:viewer'
-	]);
+	await vi.waitFor(() =>
+		expect(client.reads.filter((r: any) => r.active).map((r: any) => r.name)).toEqual([
+			'accounts:viewer',
+			'contracts:home',
+			'accounts:setupHints'
+		])
+	);
 	client.deliver('accounts:viewer', viewer());
 	await settle();
 	await vi.waitFor(() => expect(document.querySelector('[data-private-content]')).not.toBeNull());

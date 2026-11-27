@@ -75,11 +75,11 @@ export async function replacementState(ctx: QueryCtx, source: Appointment) {
 				: ('unavailable' as const)
 	};
 }
-export async function sharedReplacement(
+export async function sharedReplacementWithAttempt(
 	ctx: QueryCtx,
 	owner: CompanyAccess,
 	target: Replacement
-): Promise<Infer<typeof replacementProgress>> {
+): Promise<{ progress: Infer<typeof replacementProgress>; attempt: Attempt | null }> {
 	// Rendering a frozen historical target is independent from new-creation eligibility.
 	const source = await ctx.db.get('csmSetupAppointments', target.appointmentId);
 	if (
@@ -88,21 +88,33 @@ export async function sharedReplacement(
 		source.companyId !== owner.companyId ||
 		!validBookingUid(target.currentUid)
 	)
-		return { state: 'unavailable' };
+		return { progress: { state: 'unavailable' }, attempt: null };
 	const progress = await replacementState(ctx, source);
-	return {
-		state:
-			source.currentUid !== target.currentUid &&
-			!('attempt' in progress && sameReplacement(progress.attempt?.replacement, target))
-				? 'unavailable'
-				: progress.state,
-		...('attempt' in progress &&
+	const ownedAttempt =
+		'attempt' in progress &&
 		progress.attempt?.membershipId === owner.membership._id &&
 		progress.attempt.profileId === owner.profile._id &&
 		sameReplacement(progress.attempt.replacement, target)
-			? { attemptId: progress.attempt._id }
-			: {})
+			? progress.attempt
+			: null;
+	return {
+		progress: {
+			state:
+				source.currentUid !== target.currentUid &&
+				!('attempt' in progress && sameReplacement(progress.attempt?.replacement, target))
+					? 'unavailable'
+					: progress.state,
+			...(ownedAttempt ? { attemptId: ownedAttempt._id } : {})
+		},
+		attempt: ownedAttempt
 	};
+}
+export async function sharedReplacement(
+	ctx: QueryCtx,
+	owner: CompanyAccess,
+	target: Replacement
+): Promise<Infer<typeof replacementProgress>> {
+	return (await sharedReplacementWithAttempt(ctx, owner, target)).progress;
 }
 /** Constant-work reconciliation before private receipt erasure, including a running sender. */
 export async function eraseReplacementAttempt(ctx: MutationCtx, attempt: Attempt) {

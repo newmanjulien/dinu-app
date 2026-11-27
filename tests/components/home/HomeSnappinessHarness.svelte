@@ -6,28 +6,29 @@
 	import type { CsmState } from '../../support/csm-state.svelte';
 	import type { StartupSetup } from '../../../src/lib/auth/startup-data';
 	import {
-		setWorkspaceReadSnapshots,
-		type WorkspaceReadSnapshots
-	} from '../../../src/lib/auth/workspace-read-snapshots.svelte';
+		setWorkspaceLists,
+		type WorkspaceLists
+	} from '../../../src/lib/auth/workspace-lists.svelte';
 	import {
 		ContractsSearchSession,
+		HOME_SEARCH_SETTLE_MS,
 		setContractsSearch
 	} from '../../../src/lib/components/workspace/contracts-search.svelte';
 	let {
 		state,
 		startup,
 		setup,
-		reads,
+		lists,
 		returning = false
 	}: {
 		state: CsmState;
 		startup: StartupHome | null;
 		setup: StartupSetup | null;
-		reads?: WorkspaceReadSnapshots;
+		lists?: WorkspaceLists;
 		returning?: boolean;
 	} = $props();
 	untrack(() => {
-		if (reads) setWorkspaceReadSnapshots(reads);
+		if (lists) setWorkspaceLists(lists);
 	});
 	const searchSession = new ContractsSearchSession();
 	const search = setContractsSearch(() => searchSession);
@@ -36,7 +37,11 @@
 	});
 	$effect(() => {
 		const value = searchSession.value.trim();
-		const timer = setTimeout(() => (searchSession.query = value), 200);
+		if (!value) {
+			searchSession.query = '';
+			return;
+		}
+		const timer = setTimeout(() => (searchSession.query = value), HOME_SEARCH_SETTLE_MS);
 		return () => clearTimeout(timer);
 	});
 </script>

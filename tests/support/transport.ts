@@ -19,7 +19,7 @@ export function deferred<T>() {
 
 type Observation = {
 	name: string;
-	args: { id?: string };
+	args: { id?: string; ids?: string[] };
 	update: (value: unknown) => void;
 	error: (error: Error) => void;
 	released: boolean;
@@ -50,12 +50,26 @@ export function controlledClient(onSubscribe?: (observation: Observation) => voi
 	};
 	const onUpdate = vi.fn(subscribe);
 	const live = (name: string) => observations.filter((o) => o.name === name && !o.released);
-	const details = () => live('playbookItems:content');
+	const details = () => live('playbookItems:batchContent');
 	const publish = (name: string, value: unknown) => live(name).forEach((o) => o.update(value));
-	const publishDetail = (id: string, value: TemplateContentSnapshot) =>
-		details()
-			.filter((o) => o.args.id === id)
-			.forEach((o) => o.update(value));
+	const answers = new Map<string, TemplateContentSnapshot>();
+	const publishDetail = (id: string, value: TemplateContentSnapshot) => {
+		if (!details().some((o) => o.args.ids?.includes(id))) return;
+		answers.set(id, value);
+		for (const observation of details()) {
+			const ids = observation.args.ids ?? [];
+			if (ids.every((key) => answers.has(key))) {
+				observation.update(ids.map((key) => ({ id: key, content: answers.get(key)! })));
+				for (const key of ids) answers.delete(key);
+			}
+		}
+	};
+	const publishDetails = (values: TemplateContentSnapshot[]) => {
+		for (const value of values) {
+			if (value.status !== 'present') throw new Error('Specify an item for a batch fixture.');
+			publishDetail(value.item._id, value);
+		}
+	};
 	return {
 		client: { onUpdate, mutation },
 		observations,
@@ -64,6 +78,7 @@ export function controlledClient(onSubscribe?: (observation: Observation) => voi
 		live,
 		details,
 		publish,
-		publishDetail
+		publishDetail,
+		publishDetails
 	};
 }

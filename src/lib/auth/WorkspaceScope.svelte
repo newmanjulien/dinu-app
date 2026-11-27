@@ -1,8 +1,11 @@
 <script lang="ts">
 	import {
-		WorkspaceReadSnapshots,
-		setWorkspaceReadSnapshots
-	} from './workspace-read-snapshots.svelte';
+		createWorkspaceTemplateReads,
+		setWorkspaceTemplateReads
+	} from './workspace-template-reads.svelte';
+	import { createUiPreferences, setUiPreferences } from './ui-preferences.svelte';
+	import { WorkspaceReadStorage } from './workspace-read-storage';
+	import { createWorkspaceLists, setWorkspaceLists } from './workspace-lists.svelte';
 	import { useReadQuery } from '$lib/auth/read-query.svelte';
 	import { setViewer, useViewerSession, type Viewer } from './viewer-session.svelte';
 	import { onMount, onDestroy, untrack, type Snippet } from 'svelte';
@@ -27,37 +30,29 @@
 	setViewer(() => viewer);
 	const account = useViewerSession();
 	const client = useConvexClient();
-	const reads = setWorkspaceReadSnapshots(
-		untrack(
-			() =>
-				new WorkspaceReadSnapshots(
-					{
-						profileId: viewer.profile.id,
-						membershipId: viewer.membership.id,
-						companyId: viewer.company.id
-					},
-					account.userId!
-				)
-		)
+	setUiPreferences(createUiPreferences());
+	const lists = setWorkspaceLists(createWorkspaceLists());
+	const templateReads = setWorkspaceTemplateReads(createWorkspaceTemplateReads());
+	const storage = untrack(
+		() =>
+			new WorkspaceReadStorage(
+				{
+					profileId: viewer.profile.id,
+					membershipId: viewer.membership.id,
+					companyId: viewer.company.id
+				},
+				account.userId!
+			)
 	);
-	untrack(() => reads.configure(viewer.permissions.manageMembers, !viewer.company.deletion));
-	// Start scoped disk reads as soon as the verified workspace exists. None gate rendering.
-	if (typeof indexedDB !== 'undefined') {
-		void reads.hydrate('contracts');
-		void reads.hydrate('buyerLinks');
-		void reads.hydrateDirectory('contracts');
-		void reads.hydrateDirectory('buyerLinks');
-	}
+	untrack(() => storage.configure(!viewer.company.deletion));
 	$effect(() => {
-		const manageMembers = viewer.permissions.manageMembers;
-		const deleting = Boolean(viewer.company.deletion);
-		untrack(() => reads.configure(manageMembers, !deleting));
+		storage.configure(!viewer.company.deletion);
 	});
 	const hubspotConnection = useReadQuery(
 		api.hubspotConnections.status,
 		() =>
 			account.workspaceAdmitted && !account.blocked && !account.closing && !viewer.company.deletion
-				? { membershipId: viewer.membership.id }
+				? {}
 				: 'skip',
 		() => account.transportGeneration
 	);
@@ -103,27 +98,22 @@
 					get cache() {
 						return getContractSnapshotCache(client);
 					},
-					registerEditor: account.registerEditor,
-					onSaved: (notice) => {
-						reads.contractChanged(notice.id, notice.name);
-						void reads.syncDirectory(client);
-					},
-					onDeleted: (id) => {
-						reads.contractChanged(id, undefined, true);
-						void reads.syncDirectory(client);
-					},
-					onRenamed: (id, name) => {
-						reads.contractChanged(id, name);
-						void reads.syncDirectory(client);
-					}
+					registerEditor: account.registerEditor
 				})
 		)
 	);
+	$effect(() => {
+		const cards = lists.home.data?.page ?? [];
+		untrack(() => {
+			const cache = getContractSnapshotCache(client);
+			for (const card of cards) cache.hint(card._id, card.templateVersionId, viewer.company.id);
+		});
+	});
 	const templateSource = setTemplateSource(
 		new TemplateSource(
 			client,
 			untrack(() => viewer.membership.id),
-			reads.storage
+			storage
 		)
 	);
 	const authoring = setTemplateAuthoringSession(
@@ -162,6 +152,8 @@
 				!account.closing &&
 				!viewer.company.deletion,
 			acquire: (path) => {
+				if (path === '/team') lists.openTeam();
+				if (path.startsWith('/template')) templateReads.open();
 				const saved = /^\/contracts\/([^/]+)(?:\/settings)?$/.exec(path);
 				if (saved && saved[1] !== 'new') {
 					if (path.endsWith('/settings')) return sessions.retainMetadata(saved[1]).release;
@@ -200,7 +192,7 @@
 	});
 	onDestroy(() => {
 		destinations.clear();
-		reads.destroy();
+		storage.close();
 		hubspot.destroy();
 		authoring.destroy();
 		buyerAuthoring.destroy();
@@ -213,8 +205,10 @@
 		const manageTemplate = viewer.permissions.manageTemplate;
 		const frozen = account.blocked;
 		const generation = account.transportGeneration;
+		const sourceIdentity = viewer.company.templateSource;
 		untrack(() => {
 			sessions.configure(available, frozen, generation);
+			templateSource.observeSource(sourceIdentity);
 			templateSource.configure(available && !frozen && !account.closing, generation);
 			authoring.configure(available && manageTemplate, frozen, generation);
 			buyerAuthoring.configure(available && manageTemplate, frozen, generation);

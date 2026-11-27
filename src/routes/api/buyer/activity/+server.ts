@@ -41,9 +41,16 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch }) => 
 			body: JSON.stringify(body)
 		});
 		if (response.ok && response.status !== 204) {
-			const result: { expiresAt: number } = await response.json();
-			if (body.kind !== 'open') return new Response(null, { status: 503, headers });
-			if (!Number.isFinite(result.expiresAt)) return new Response(null, { status: 503, headers });
+			const result: unknown = await response.json();
+			if (body.kind === 'clauses') {
+				if (!result || typeof result !== 'object' || !('results' in result))
+					return new Response(null, { status: 503, headers });
+				return Response.json(result, { headers });
+			}
+			if (body.kind !== 'open' || !result || typeof result !== 'object' || !('expiresAt' in result))
+				return new Response(null, { status: 503, headers });
+			if (typeof result.expiresAt !== 'number' || !Number.isFinite(result.expiresAt))
+				return new Response(null, { status: 503, headers });
 			saveActivityBrowser(
 				cookies,
 				body.token,

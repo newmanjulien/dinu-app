@@ -5,22 +5,21 @@ import { internalMutation, type MutationCtx } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
 import { activityQuotaKey, discussionQuotaKey, quotaName } from './buyerActivityValidators';
 import { cleanupBudget } from './cleanup';
-import { assertStorageCapacity } from './storageCapacity';
 
 const REFILL_MS = 60_000;
-const bucket = (capacity: number) => ({
+const bucket = (capacity: number, shards = 1) => ({
 	kind: 'token bucket' as const,
 	rate: capacity,
 	period: REFILL_MS,
 	capacity,
-	shards: 1
+	shards
 });
 const limiter = new RateLimiter(components.rateLimiter, {
 	activityBrowser: bucket(60),
-	activityLink: bucket(600),
-	activityCompany: bucket(3000),
+	activityLink: bucket(600, 4),
+	activityCompany: bucket(3000, 8),
 	discussionActor: bucket(60),
-	discussionCompany: bucket(3000)
+	discussionCompany: bucket(3000, 8)
 });
 type Link = Pick<Doc<'buyerLinks'>, 'companyId' | 'contractId'> & {
 	_id?: Doc<'buyerLinks'>['_id'];
@@ -34,7 +33,12 @@ function ownerFor(ctx: MutationCtx, name: Infer<typeof quotaName>, key: string) 
 }
 
 /** Browser, link and company budgets bound best-effort activity intake. */
-export async function consumeActivityQuota(ctx: MutationCtx, link: Link, browserId: string) {
+export async function consumeActivityQuota(
+	ctx: MutationCtx,
+	link: Link,
+	browserId: string,
+	count = 1
+) {
 	const common = { companyId: link.companyId, expiresAt: Date.now() + REFILL_MS };
 	const owners: Infer<typeof activityQuotaKey>[] = [
 		{
@@ -53,23 +57,21 @@ export async function consumeActivityQuota(ctx: MutationCtx, link: Link, browser
 		},
 		{ ...common, name: 'activityCompany', key: link.companyId }
 	];
-	for (const { name, key } of owners) {
-		const result = await limiter.check(ctx, name, { key });
-		if (!result.ok) return Math.max(1, Math.ceil(result.retryAfter / 1000));
-	}
-	await assertStorageCapacity(ctx, {
-		documents: owners.length * 2,
-		bytes: owners.length * 8000,
-		queries: owners.length * 8,
-		readDocuments: owners.length * 8
-	});
-	for (const owner of owners) {
-		if (!(await limiter.limit(ctx, owner.name, { key: owner.key })).ok)
-			throw new Error('Activity quota changed inside its transaction.');
-		const existing = await ownerFor(ctx, owner.name, owner.key);
-		if (existing) await ctx.db.replace('buyerActivityQuotaKeys', existing._id, owner);
-		else await ctx.db.insert('buyerActivityQuotaKeys', owner);
-	}
+	const checks = await Promise.all(
+		owners.map(({ name, key }) => limiter.check(ctx, name, { key, count }))
+	);
+	const denied = checks.find((result) => !result.ok);
+	if (denied && !denied.ok) return Math.max(1, Math.ceil(denied.retryAfter / 1000));
+	await Promise.all(
+		owners.map(async (owner) => {
+			if (!(await limiter.limit(ctx, owner.name, { key: owner.key, count })).ok)
+				throw new Error('Activity quota changed inside its transaction.');
+			const existing = await ownerFor(ctx, owner.name, owner.key);
+			if (!existing) await ctx.db.insert('buyerActivityQuotaKeys', owner);
+			else if (existing.expiresAt - Date.now() < REFILL_MS / 2)
+				await ctx.db.replace('buyerActivityQuotaKeys', existing._id, owner);
+		})
+	);
 	return null;
 }
 
@@ -85,22 +87,27 @@ export async function prepareDiscussionQuota(ctx: MutationCtx, link: Link, actor
 		},
 		{ ...common, name: 'discussionCompany', key: link.companyId }
 	];
-	for (const { name, key } of owners)
-		if (!(await limiter.check(ctx, name, { key })).ok)
-			throw new ConvexError('Too many messages. Try again shortly.');
+	const checks = await Promise.all(
+		owners.map(({ name, key }) => limiter.check(ctx, name, { key }))
+	);
+	if (checks.some((result) => !result.ok))
+		throw new ConvexError('Too many messages. Try again shortly.');
 	return {
 		work: { documents: 4, bytes: 16_000, queries: 16, readDocuments: 16, readBytes: 32_000 },
 		commit: async () => {
-			for (const owner of owners) {
-				if (!(await limiter.limit(ctx, owner.name, { key: owner.key })).ok)
-					throw new Error('Discussion quota changed inside its transaction.');
-				const existing = await ctx.db
-					.query('discussionQuotaKeys')
-					.withIndex('by_name_and_key', (q) => q.eq('name', owner.name).eq('key', owner.key))
-					.unique();
-				if (existing) await ctx.db.replace('discussionQuotaKeys', existing._id, owner);
-				else await ctx.db.insert('discussionQuotaKeys', owner);
-			}
+			await Promise.all(
+				owners.map(async (owner) => {
+					if (!(await limiter.limit(ctx, owner.name, { key: owner.key })).ok)
+						throw new Error('Discussion quota changed inside its transaction.');
+					const existing = await ctx.db
+						.query('discussionQuotaKeys')
+						.withIndex('by_name_and_key', (q) => q.eq('name', owner.name).eq('key', owner.key))
+						.unique();
+					if (!existing) await ctx.db.insert('discussionQuotaKeys', owner);
+					else if (existing.expiresAt - Date.now() < REFILL_MS / 2)
+						await ctx.db.replace('discussionQuotaKeys', existing._id, owner);
+				})
+			);
 		}
 	};
 }
@@ -112,7 +119,7 @@ export async function resetQuota(
 	await limiter.reset(ctx, owner.name, { key: owner.key });
 }
 
-/** Fully idle buckets are full again, so removing them cannot grant additional tokens. */
+/** Throttled owner writes lag last use by up to half a refill. Preserve that grace before resetting. */
 export const expire = internalMutation({
 	args: {},
 	returns: v.null(),
@@ -123,7 +130,9 @@ export const expire = internalMutation({
 			if (
 				!(await budget.drain(
 					table,
-					ctx.db.query(table).withIndex('by_expiresAt', (q) => q.lte('expiresAt', Date.now())),
+					ctx.db
+						.query(table)
+						.withIndex('by_expiresAt', (q) => q.lte('expiresAt', Date.now() - REFILL_MS / 2)),
 					{
 						beforeDelete: (owner) => resetQuota(ctx, owner)
 					}

@@ -12,6 +12,7 @@ import schema from './schema';
 import { availableCompany, companyDeletion, liveProfile } from './auth';
 import { canonicalState, confirmedEvidence, safeFailedEvidence } from './csmAttemptState';
 import { patchAttempt } from './csmBookings';
+import { readCompanySetup, setSetupAppointment } from './companySetupState';
 import { recoveryEnrollment, enrollAttemptRecovery } from './csmRecoveryPolicy';
 import { pendingSuccessors } from './csmSetupChain';
 import {
@@ -211,8 +212,9 @@ async function companies(ctx: MutationCtx, cursor: string | null, apply: boolean
 	}[] = [];
 	for (const company of page.page) {
 		if (company.templateSourceId || (await companyDeletion(ctx, company._id))) continue;
-		if (company.setupAppointmentId) {
-			if ((await resolveSetupBooking(ctx, company)).kind === 'unavailable')
+		const setup = await readCompanySetup(ctx, company);
+		if (setup.setupAppointmentId) {
+			if ((await resolveSetupBooking(ctx, company, setup)).kind === 'unavailable')
 				unresolved.push({ companyId: company._id, reason: 'invalid-current' });
 			continue;
 		}
@@ -252,7 +254,7 @@ async function companies(ctx: MutationCtx, cursor: string | null, apply: boolean
 		recoverable++;
 		if (apply) {
 			await ctx.db.patch('csmSetupAppointments', a._id, { confirmedBooking: confirmed });
-			await ctx.db.patch('company', company._id, { setupAppointmentId: a._id });
+			await setSetupAppointment(ctx, company, setup, a._id);
 			updated++;
 		}
 	}

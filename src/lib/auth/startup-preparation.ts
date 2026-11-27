@@ -17,7 +17,10 @@ class StartupPreparation {
 		this.pending = import('convex/browser')
 			.then(({ ConvexClient }) => {
 				if (generation === this.generation)
-					this.client = new ConvexClient(env.PUBLIC_CONVEX_URL!, { initialAuthTokenReuse: true });
+					this.client = new ConvexClient(env.PUBLIC_CONVEX_URL!, {
+						initialAuthTokenReuse: true,
+						expectAuth: true
+					});
 			})
 			.catch(() => {})
 			.finally(() => {

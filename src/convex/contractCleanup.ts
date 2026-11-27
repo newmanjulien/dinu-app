@@ -14,6 +14,37 @@ import { exportDelivery } from './hubspotExportDeliveries';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
 import { deleteUnownedFile } from './storageOwnership';
 
+const contractQueries = {
+	buyerActivityReceipts: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db
+			.query('buyerActivityReceipts')
+			.withIndex('by_contractId_and_eventId', (q) => q.eq('contractId', id)),
+	buyerActivityOpenings: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db
+			.query('buyerActivityOpenings')
+			.withIndex('by_contractId_and_openingId', (q) => q.eq('contractId', id)),
+	buyerActivityCounters: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db.query('buyerActivityCounters').withIndex('by_contractId', (q) => q.eq('contractId', id)),
+	discussionMessages: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db.query('discussionMessages').withIndex('by_contractId', (q) => q.eq('contractId', id)),
+	discussionThreads: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db.query('discussionThreads').withIndex('by_contractId', (q) => q.eq('contractId', id)),
+	discussionCapacity: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db.query('discussionCapacity').withIndex('by_contractId', (q) => q.eq('contractId', id)),
+	contractHubspotAssociations: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db
+			.query('contractHubspotAssociations')
+			.withIndex('by_contractId', (q) => q.eq('contractId', id)),
+	contractBuyerRefreshes: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db
+			.query('contractBuyerRefreshes')
+			.withIndex('by_contractId', (q) => q.eq('contractId', id)),
+	hubspotLinkBlocks: (ctx: MutationCtx, id: Id<'savedContracts'>) =>
+		ctx.db
+			.query('hubspotLinkBlocks')
+			.withIndex('by_contractId_and_generation', (q) => q.eq('contractId', id))
+};
+
 async function schedule(
 	ctx: MutationCtx,
 	marker: Doc<'contractCleanups'>,
@@ -111,18 +142,6 @@ export const clean = internalMutation({
 					ctx.db.query('buyerLinks').withIndex('by_contractId', (q) => q.eq('contractId', id))
 				);
 				if (!drained) break;
-				phase = 'buyerLinkShowings';
-				continue;
-			}
-
-			if (phase === 'buyerLinkShowings') {
-				const drained = await budget.drain(
-					'buyerLinkBarShowings',
-					ctx.db
-						.query('buyerLinkBarShowings')
-						.withIndex('by_contractId', (q) => q.eq('contractId', id))
-				);
-				if (!drained) break;
 				phase = 'buyerActivity';
 				continue;
 			}
@@ -134,12 +153,7 @@ export const clean = internalMutation({
 					'buyerActivityOpenings',
 					'buyerActivityCounters'
 				] as const) {
-					if (
-						!(await budget.drain(
-							table,
-							ctx.db.query(table).withIndex('by_contractId', (q) => q.eq('contractId', id))
-						))
-					) {
+					if (!(await budget.drain(table, contractQueries[table](ctx, id)))) {
 						drained = false;
 						break;
 					}
@@ -172,13 +186,12 @@ export const clean = internalMutation({
 				);
 				if (!quotas) break;
 				let drained = true;
-				for (const table of ['discussionMessages', 'discussionThreads'] as const) {
-					if (
-						!(await budget.drain(
-							table,
-							ctx.db.query(table).withIndex('by_contractId', (q) => q.eq('contractId', id))
-						))
-					) {
+				for (const table of [
+					'discussionMessages',
+					'discussionThreads',
+					'discussionCapacity'
+				] as const) {
+					if (!(await budget.drain(table, contractQueries[table](ctx, id)))) {
 						drained = false;
 						break;
 					}
@@ -233,12 +246,7 @@ export const clean = internalMutation({
 					'contractBuyerRefreshes',
 					'hubspotLinkBlocks'
 				] as const) {
-					if (
-						!(await budget.drain(
-							table,
-							ctx.db.query(table).withIndex('by_contractId', (q) => q.eq('contractId', id))
-						))
-					) {
+					if (!(await budget.drain(table, contractQueries[table](ctx, id)))) {
 						drained = false;
 						break;
 					}

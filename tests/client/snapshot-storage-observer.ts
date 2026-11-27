@@ -7,9 +7,21 @@ export function observeSnapshotStorage() {
 	let immutableWrites = 0;
 	const transactions = new Set<Promise<void>>();
 	const connections = new Set<IDBDatabase>();
-	let onMetadataWrite:
-		((value: { contract: { stateRevision: number } }, tx: IDBTransaction) => void) | undefined;
+	let onImmutableWrite: ((value: { id: string }, tx: IDBTransaction) => void) | undefined;
 	vi.stubGlobal('indexedDB', new IDBFactory());
+	// Native Node 24 Web Locks coordinate disk access; no live cross-test channel is needed.
+	vi.stubGlobal('BroadcastChannel', undefined);
+	const registry = new Map<string, string>();
+	vi.stubGlobal('localStorage', {
+		get length() {
+			return registry.size;
+		},
+		key: (index: number) => [...registry.keys()][index] ?? null,
+		getItem: (key: string) => registry.get(key) ?? null,
+		setItem: (key: string, value: string) => registry.set(key, value),
+		removeItem: (key: string) => registry.delete(key),
+		clear: () => registry.clear()
+	});
 
 	const transaction = IDBDatabase.prototype.transaction;
 	vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (
@@ -33,8 +45,10 @@ export function observeSnapshotStorage() {
 		...args
 	) {
 		const request = put.apply(this, args);
-		if (this.name === 'snapshots') immutableWrites++;
-		if (this.name === 'metadata') onMetadataWrite?.(args[0], this.transaction);
+		if (this.name === 'snapshots') {
+			immutableWrites++;
+			onImmutableWrite?.(args[0], this.transaction);
+		}
 		return request;
 	});
 
@@ -43,11 +57,11 @@ export function observeSnapshotStorage() {
 			return immutableWrites;
 		},
 		// Register before triggering a write; resolve when its real transaction commits.
-		committedRevision(stateRevision: number) {
+		committedVersion(versionId: string) {
 			return new Promise<void>((resolve, reject) => {
-				onMetadataWrite = (value, tx) => {
-					if (value.contract.stateRevision !== stateRevision) return;
-					onMetadataWrite = undefined;
+				onImmutableWrite = (value, tx) => {
+					if (value.id !== versionId) return;
+					onImmutableWrite = undefined;
 					tx.addEventListener('complete', () => resolve(), { once: true });
 					tx.addEventListener('abort', () => reject(tx.error), { once: true });
 				};
@@ -62,7 +76,7 @@ export function observeSnapshotStorage() {
 				} while (transactions.size);
 			} finally {
 				for (const connection of connections) connection.close();
-				onMetadataWrite = undefined;
+				onImmutableWrite = undefined;
 			}
 		}
 	};

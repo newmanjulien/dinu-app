@@ -10,23 +10,25 @@ export async function verifiedIdentity(ctx: Pick<QueryCtx, 'auth'>) {
 	return { ...identity, email: identity.email };
 }
 /** Viewer/initialization may observe a missing profile; all paths reject deleted accounts. */
-export async function readAccount(ctx: QueryCtx) {
-	const identity = await verifiedIdentity(ctx);
-	const deleted = await ctx.db
-		.query('deletedUsers')
-		.withIndex('by_issuer_and_clerkId', (q) =>
-			q.eq('issuer', identity.issuer).eq('clerkId', identity.subject)
-		)
-		.unique();
-	if (deleted)
-		throw new ConvexError({
-			code: 'account-deleted',
-			message: 'This account has been deleted.'
-		});
+export async function readAccount(
+	ctx: QueryCtx,
+	knownIdentity?: Awaited<ReturnType<typeof verifiedIdentity>>
+) {
+	const identity = knownIdentity ?? (await verifiedIdentity(ctx));
 	const profile = await ctx.db
 		.query('profiles')
 		.withIndex('by_identity', (q) => q.eq('identity', identity.tokenIdentifier))
 		.unique();
+	const deleted =
+		!profile &&
+		(await ctx.db
+			.query('deletedUsers')
+			.withIndex('by_issuer_and_clerkId', (q) =>
+				q.eq('issuer', identity.issuer).eq('clerkId', identity.subject)
+			)
+			.unique());
+	if (deleted || profile?.deletedAt !== undefined)
+		throw new ConvexError({ code: 'account-deleted', message: 'This account has been deleted.' });
 	return { identity, profile };
 }
 export async function requireAccount(ctx: QueryCtx) {
@@ -46,16 +48,21 @@ export function membershipForProfile(ctx: QueryCtx, profileId: Id<'profiles'>) {
 }
 /** Optional recognition on public links never initializes an account or a workspace. */
 export async function memberForCompany(ctx: QueryCtx, companyId: Id<'company'>) {
-	if (!(await ctx.auth.getUserIdentity())) return null;
-	const { profile } = await readAccount(ctx);
+	const identity = await ctx.auth.getUserIdentity();
+	if (!identity) return null;
+	if (!identity.email || identity.emailVerified !== true) return null;
+	const { profile } = await readAccount(ctx, { ...identity, email: identity.email });
 	if (!profile) return null;
 	const membership = await membershipForProfile(ctx, profile._id);
 	return membership?.companyId === companyId ? { profile, membership } : null;
 }
 export async function requireMembership(ctx: QueryCtx, expectedMembershipId?: Id<'memberships'>) {
-	const profile = await requireProfile(ctx);
-	const membership = await membershipForProfile(ctx, profile._id);
-	if (!membership || (expectedMembershipId && membership._id !== expectedMembershipId))
+	const [profile, supplied] = await Promise.all([
+		requireProfile(ctx),
+		expectedMembershipId ? ctx.db.get('memberships', expectedMembershipId) : null
+	]);
+	const membership = expectedMembershipId ? supplied : await membershipForProfile(ctx, profile._id);
+	if (!membership || membership.profileId !== profile._id)
 		throw new ConvexError('Your company access has changed. Reload to continue.');
 	const company = await requireCompany(ctx, membership.companyId);
 	return {
@@ -73,21 +80,14 @@ export function companyDeletion(ctx: QueryCtx, companyId: Id<'company'>) {
 		.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
 		.unique();
 }
-async function readCompany(ctx: QueryCtx, companyId: Id<'company'>) {
-	const [company, deletion] = await Promise.all([
-		ctx.db.get('company', companyId),
-		companyDeletion(ctx, companyId)
-	]);
-	return { company, deletion };
-}
 export async function availableCompany(ctx: QueryCtx, companyId: Id<'company'>) {
-	const { company, deletion } = await readCompany(ctx, companyId);
-	return deletion ? null : company;
+	const company = await ctx.db.get('company', companyId);
+	return company?.deletion ? null : company;
 }
 export async function requireCompany(ctx: QueryCtx, companyId: Id<'company'>) {
-	const { company, deletion } = await readCompany(ctx, companyId);
+	const company = await ctx.db.get('company', companyId);
 	if (!company) throw new ConvexError('This company is unavailable.');
-	if (deletion)
+	if (company.deletion)
 		throw new ConvexError('Company activity is paused while account deletion finishes.');
 	return company;
 }
@@ -103,14 +103,8 @@ export async function requirePermission(
 }
 export async function liveProfile(ctx: QueryCtx, profileId?: Id<'profiles'>) {
 	if (!profileId) return null;
-	const [profile, deleted] = await Promise.all([
-		ctx.db.get('profiles', profileId),
-		ctx.db
-			.query('deletedUsers')
-			.withIndex('by_profileId', (q) => q.eq('profileId', profileId))
-			.unique()
-	]);
-	return deleted ? null : profile;
+	const profile = await ctx.db.get('profiles', profileId);
+	return profile?.deletedAt !== undefined ? null : profile;
 }
 /** Callers deduplicate profile IDs within their transaction; never cache across requests. */
 export async function liveCompanyMember(

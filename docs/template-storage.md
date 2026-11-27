@@ -105,7 +105,7 @@ live references and historical cell edits are unsupported. Target shape/populati
 
 ## Retired conversion tools
 
-Retired contract conversion/recovery runners and their dated runbooks describe superseded models. The strict application has no permanent retained-contract translator. The separately preserved one-off [current-schema preservation kit](backend-preservation-cutover.md) retains original history; older/unknown targets stop for their actual-schema plan. Local implementation performs no conversion/reset/deployment.
+Retired contract conversion/recovery runners and their dated runbooks describe superseded models. The strict application has no permanent retained-contract translator. The current incompatible model requires a fresh database and matching frontend; see [deployment](deployment.md). Local implementation performs no conversion/reset/deployment.
 Seed transport and the independent historical reconciliation oracle remain available; their own release procedures still apply.
 
 Buyer current views compose directly from the contract's frozen `templateVersions` snapshot and `buyerLinks.currentView.concessions`. Public rendering receives frozen template blocks, applied Playbook overlays, and non-overlapped buyer explanations — never private Playbook guidance or pending review state.

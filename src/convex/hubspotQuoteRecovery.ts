@@ -1,12 +1,13 @@
 import { ConvexError, v } from 'convex/values';
-import { internalAction, internalMutation, internalQuery } from './_generated/server';
 import { internal } from './_generated/api';
+import { internalAction, internalMutation, internalQuery } from './_generated/server';
 import { availableCompany } from './auth';
-import { installation } from './hubspotInstallation';
 import { connectionToken, hubspot } from './hubspotApi';
-import schema from './schema';
+import { attachCredentials, connectionWithCredentials } from './hubspotCredentials';
+import { installation } from './hubspotInstallation';
 import { activeQuote, numericQuoteId, quotePath, quoteUrl } from './hubspotQuoteProvider';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
+import schema from './schema';
 
 const evidence = (value: string) => {
 	if (value.trim().length < 10 || value.length > 1000)
@@ -19,7 +20,7 @@ export const data = internalQuery({
 	args: { id: v.id('hubspotQuotePushes') },
 	returns: v.object({
 		push: schema.doc('hubspotQuotePushes'),
-		connection: schema.doc('hubspotConnections')
+		connection: connectionWithCredentials
 	}),
 	handler: async (ctx, { id }) => {
 		const push = await ctx.db.get('hubspotQuotePushes', id);
@@ -29,7 +30,7 @@ export const data = internalQuery({
 			!['unknown', 'attention', 'verified'].includes(push.state)
 		)
 			throw new ConvexError('This push is not available for operator recovery.');
-		const connection = await installation(ctx, push.companyId);
+		const connection = await attachCredentials(ctx, await installation(ctx, push.companyId));
 		if (!connection || connection.accountId !== push.destination.accountId)
 			throw new ConvexError('Connect the original HubSpot account before reconciliation.');
 		return { push, connection };

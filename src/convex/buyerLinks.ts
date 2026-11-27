@@ -1,6 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { paginationOptsValidator, paginationResultValidator } from 'convex/server';
 import { ConvexError, getConvexSize, v, type Infer } from 'convex/values';
 import { internal } from './_generated/api';
 import type { Doc, Id } from './_generated/dataModel';
@@ -8,6 +7,7 @@ import {
 	action,
 	internalMutation,
 	query,
+	env,
 	type MutationCtx,
 	type QueryCtx
 } from './_generated/server';
@@ -18,16 +18,12 @@ import {
 	isBuyerCode
 } from '../lib/buyer/token';
 import { approvedConcessionMap, contractReadiness } from '../lib/contract/changes';
-import { canonicalJson } from '../lib/document/canonical-json';
-import { textPrefix } from '../lib/text';
-import { helpPreferences, profileView } from './accountViews';
-import { accessibleContract, availableCompany, memberForCompany, requireMembership } from './auth';
+import { availableCompany, memberForCompany } from './auth';
 import {
 	buyerDocumentState,
+	buyerDownloadSnapshot,
 	buyerTemplateContent,
-	linkCapture,
-	linkSummary,
-	publicStatus
+	linkCapture
 } from './buyerValidators';
 import { buyerName } from './contractBuyer';
 import { markDirectoryBuyerLinkPublished } from './contractDirectory';
@@ -35,8 +31,6 @@ import { requireContractWork } from './contractPolicy';
 import { seller } from './contractState';
 import { deleteAffectedComments, type PreloadedInvalidation } from './discussionInvalidation';
 import { actionKey, receipt, remember, validateOperationId } from './operationReceipts';
-import { role } from './permissions';
-import { assertStorageCapacity } from './storageCapacity';
 import { readAppliedOverlays, versionReader } from './templates';
 
 export { seller } from './contractState';
@@ -46,17 +40,6 @@ const tokenArgs = { token: v.string() };
 
 function summary(link: Doc<'buyerLinks'>) {
 	return { id: link._id, token: link.token, createdAt: link.createdAt };
-}
-
-function browseRow(link: Doc<'buyerLinks'>, row: Doc<'contractDirectory'>) {
-	return {
-		id: link._id,
-		contractId: row.contractId,
-		token: link.token,
-		title: row.title,
-		createdAt: link.createdAt,
-		hasUnreadComment: row.hasUnreadComment
-	};
 }
 
 type LiveBuyerLink = Doc<'buyerLinks'> & {
@@ -83,14 +66,13 @@ export async function hasActiveLinkForCreator(
 	companyId: Id<'company'>,
 	creatorId: Id<'profiles'>
 ) {
-	for await (const link of ctx.db
-		.query('buyerLinks')
-		.withIndex('by_companyId_and_creatorId', (q) =>
-			q.eq('companyId', companyId).eq('creatorId', creatorId)
-		)) {
-		if (link.currentView !== null) return true;
-	}
-	return false;
+	const row = await ctx.db
+		.query('contractDirectory')
+		.withIndex('by_companyId_and_buyerLinkCreatorId', (q) =>
+			q.eq('companyId', companyId).eq('buyerLinkCreatorId', creatorId)
+		)
+		.first();
+	return row !== null;
 }
 
 export function displayIdentityFor(
@@ -111,12 +93,18 @@ async function patchBuyerLinkMetadata(
 ) {
 	const nextTitle = root.title;
 	const nextBuyerName = buyerName(root);
-	if (link.currentView.title === nextTitle && link.currentView.buyerName === nextBuyerName) return;
+	if (
+		link.currentView.title === nextTitle &&
+		link.currentView.buyerName === nextBuyerName &&
+		link.currentView.buyerRefreshable === (root.buyer.kind === 'hubspot')
+	)
+		return;
 	await ctx.db.patch('buyerLinks', link._id, {
 		currentView: {
 			...link.currentView,
 			title: nextTitle,
 			buyerName: nextBuyerName,
+			buyerRefreshable: root.buyer.kind === 'hubspot',
 			...(link.currentView.title !== nextTitle
 				? {
 						displayIdentity: displayIdentityFor(
@@ -142,7 +130,11 @@ export async function syncBuyerLink(
 	const nextTitle = root.title;
 	const nextBuyerName = buyerName(root);
 	const prevView = link.currentView;
-	const concessionsChanged = canonicalJson(prevView.concessions) !== canonicalJson(nextConcessions);
+	const concessionsChanged =
+		Object.keys(prevView.concessions).length !== Object.keys(nextConcessions).length ||
+		Object.entries(prevView.concessions).some(
+			([id, value]) => nextConcessions[id as Id<'playbookItems'>] !== value
+		);
 	if (!concessionsChanged) {
 		await patchBuyerLinkMetadata(ctx, link, root);
 		return;
@@ -152,6 +144,7 @@ export async function syncBuyerLink(
 			templateVersionId: root.templateVersionId,
 			title: nextTitle,
 			buyerName: nextBuyerName,
+			buyerRefreshable: root.buyer.kind === 'hubspot',
 			concessions: nextConcessions,
 			contentRevision: prevView.contentRevision + 1,
 			displayIdentity: displayIdentityFor(root.templateVersionId, nextConcessions, nextTitle)
@@ -186,6 +179,7 @@ export async function retractBuyerLinkConcession(
 			templateVersionId: prevView.templateVersionId,
 			title: nextTitle,
 			buyerName: nextBuyerName,
+			buyerRefreshable: root.buyer.kind === 'hubspot',
 			concessions: nextConcessions,
 			contentRevision: prevView.contentRevision + 1,
 			displayIdentity: displayIdentityFor(prevView.templateVersionId, nextConcessions, nextTitle)
@@ -208,15 +202,6 @@ export async function syncBuyerLinkMetadata(ctx: MutationCtx, root: Doc<'savedCo
 	await patchBuyerLinkMetadata(ctx, link, root);
 }
 
-async function linkedDirectoryRow(
-	ctx: QueryCtx,
-	row: Doc<'contractDirectory'>,
-	companyId: Id<'company'>
-) {
-	const link = await liveLinkFor(ctx, row.contractId);
-	return link && link.companyId === companyId ? browseRow(link, row) : null;
-}
-
 /** Public acquisition depends only on the pointer, immutable template and live gates. */
 async function resolveView(ctx: QueryCtx, token: string) {
 	if (!isBuyerCode(token)) return null;
@@ -225,14 +210,8 @@ async function resolveView(ctx: QueryCtx, token: string) {
 		.withIndex('by_token', (q) => q.eq('token', token))
 		.unique();
 	if (!link?.currentView) return null;
-	const [company, deletion] = await Promise.all([
-		availableCompany(ctx, link.companyId),
-		ctx.db
-			.query('contractCleanups')
-			.withIndex('by_contractId', (q) => q.eq('contractId', link.contractId))
-			.unique()
-	]);
-	return company && !deletion ? { link, view: link.currentView, company } : null;
+	const company = await availableCompany(ctx, link.companyId);
+	return company ? { link, view: link.currentView, company } : null;
 }
 
 /** Discussion/activity paths additionally require the actual current contract. */
@@ -243,138 +222,6 @@ export async function resolveAccess(ctx: QueryCtx, token: string) {
 	return contract?.companyId === found.link.companyId ? { ...found, contract } : null;
 }
 export const resolve = resolveAccess;
-
-export const sellerContext = query({
-	args: tokenArgs,
-	returns: v.union(
-		v.null(),
-		v.object({
-			profile: profileView.omit('avatarUrl'),
-			helpPreferences,
-			membershipId: v.id('memberships'),
-			role,
-			contractId: v.id('savedContracts'),
-			title: v.string(),
-			buyerName: v.union(v.string(), v.null())
-		})
-	),
-	handler: async (ctx, { token }) => {
-		const found = await resolveAccess(ctx, token);
-		if (!found) return null;
-		const member = await memberForCompany(ctx, found.link.companyId);
-		if (!member) return null;
-		return {
-			profile: {
-				id: member.profile._id,
-				name: member.profile.name,
-				email: member.profile.email
-			},
-			helpPreferences: member.profile.helpPreferences,
-			membershipId: member.membership._id,
-			role: member.membership.role,
-			contractId: found.contract._id,
-			title: found.view.title,
-			buyerName: found.view.buyerName
-		};
-	}
-});
-
-export const latest = query({
-	args: sellerArgs,
-	returns: v.union(linkSummary, v.null()),
-	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
-		const root = accessibleContract(await ctx.db.get('savedContracts', args.id), access);
-		if (!root) throw new ConvexError('This contract is unavailable.');
-		const link = await liveLinkFor(ctx, root._id);
-		return link ? summary(link) : null;
-	}
-});
-
-export async function hasSingleActiveOwnLink(
-	ctx: QueryCtx,
-	companyId: Id<'company'>,
-	creatorId: Id<'profiles'>
-) {
-	let activeCount = 0;
-	for await (const link of ctx.db
-		.query('buyerLinks')
-		.withIndex('by_companyId_and_creatorId', (q) =>
-			q.eq('companyId', companyId).eq('creatorId', creatorId)
-		)) {
-		if (link.currentView === null) continue;
-		activeCount++;
-		if (activeCount > 1) return false;
-	}
-	return activeCount === 1;
-}
-
-export const dashboardPresence = query({
-	args: { membershipId: v.id('memberships') },
-	returns: v.object({
-		hasActive: v.boolean(),
-		hasCreatedOneLink: v.boolean()
-	}),
-	handler: async (ctx, { membershipId }) => {
-		const access = await requireMembership(ctx, membershipId);
-		const [row, hasCreatedOneLink] = await Promise.all([
-			ctx.db
-				.query('contractDirectory')
-				.withIndex('by_companyId_hasBuyerLink_hasUnreadComment_buyerLinkCreatedAt', (q) =>
-					q.eq('companyId', access.companyId).eq('hasBuyerLink', true)
-				)
-				.first(),
-			hasSingleActiveOwnLink(ctx, access.companyId, access.profile._id)
-		]);
-		return { hasActive: Boolean(row), hasCreatedOneLink };
-	}
-});
-
-export const browse = query({
-	args: {
-		membershipId: v.id('memberships'),
-		search: v.optional(v.string()),
-		paginationOpts: paginationOptsValidator
-	},
-	returns: paginationResultValidator(
-		v.object({
-			id: v.id('buyerLinks'),
-			contractId: v.id('savedContracts'),
-			token: v.string(),
-			title: v.string(),
-			createdAt: v.number(),
-			hasUnreadComment: v.boolean()
-		})
-	),
-	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
-		const term = textPrefix((args.search ?? '').trim(), 200);
-		if (term) {
-			const result = await ctx.db
-				.query('contractDirectory')
-				.withSearchIndex('search_title', (q) =>
-					q.search('title', term).eq('companyId', access.companyId).eq('hasBuyerLink', true)
-				)
-				.paginate(args.paginationOpts);
-			const rows = await Promise.all(
-				result.page.map((row) => linkedDirectoryRow(ctx, row, access.companyId))
-			);
-			return { ...result, page: rows.filter((row) => row !== null) };
-		}
-		// Unread links stay ahead of read links across page boundaries.
-		const result = await ctx.db
-			.query('contractDirectory')
-			.withIndex('by_companyId_hasBuyerLink_hasUnreadComment_buyerLinkCreatedAt', (q) =>
-				q.eq('companyId', access.companyId).eq('hasBuyerLink', true)
-			)
-			.order('desc')
-			.paginate(args.paginationOpts);
-		const rows = await Promise.all(
-			result.page.map((row) => linkedDirectoryRow(ctx, row, access.companyId))
-		);
-		return { ...result, page: rows.filter((row) => row !== null) };
-	}
-});
 
 /** Create the permanent buyer link once the contract has 0 pending & 0 rejected concessions. */
 export const capture = internalMutation({
@@ -430,6 +277,7 @@ export const capture = internalMutation({
 				templateVersionId: contract.root.templateVersionId,
 				title: contract.root.title,
 				buyerName: buyerName(contract.root),
+				buyerRefreshable: contract.root.buyer.kind === 'hubspot',
 				concessions,
 				contentRevision: 1,
 				displayIdentity: displayIdentityFor(
@@ -439,32 +287,15 @@ export const capture = internalMutation({
 				)
 			}
 		};
-		await assertStorageCapacity(ctx, { documents: 2, bytes: getConvexSize(value) + 2048 });
 		const id = await ctx.db.insert('buyerLinks', value);
-		await markDirectoryBuyerLinkPublished(ctx, args.id, createdAt);
+		await markDirectoryBuyerLinkPublished(ctx, args.id, value.token, access.profile._id);
 		const result = { id, token: value.token, createdAt, created: true };
 		await remember(ctx, access.companyId, key, inputs, JSON.stringify(result), args.id);
 		return result;
 	}
 });
 
-export const status = query({
-	args: tokenArgs,
-	returns: publicStatus,
-	handler: async (ctx, { token }) => {
-		const found = await resolveView(ctx, token);
-		return found
-			? {
-					kind: 'current' as const,
-					title: found.view.title,
-					companyName: found.company.name,
-					buyerName: found.view.buyerName
-				}
-			: { kind: 'unavailable' as const };
-	}
-});
-
-/** One current link snapshot and verified audience for the first page title. */
+/** One current link snapshot and verified audience for buyer links and seller buyer-preview. */
 export const pageContext = query({
 	args: tokenArgs,
 	returns: v.union(
@@ -472,8 +303,22 @@ export const pageContext = query({
 		v.object({ kind: v.literal('account-error') }),
 		v.object({
 			kind: v.literal('current'),
-			audience: v.union(v.literal('buyer'), v.literal('seller')),
-			buyerName: v.union(v.string(), v.null())
+			audience: v.literal('buyer'),
+			buyerName: v.union(v.string(), v.null()),
+			companyName: v.string(),
+			title: v.string(),
+			buyerRefreshable: v.boolean(),
+			templateVersionId: v.id('templateVersions')
+		}),
+		v.object({
+			kind: v.literal('current'),
+			audience: v.literal('seller'),
+			contractId: v.id('savedContracts'),
+			buyerName: v.union(v.string(), v.null()),
+			companyName: v.string(),
+			title: v.string(),
+			buyerRefreshable: v.boolean(),
+			templateVersionId: v.id('templateVersions')
 		})
 	),
 	handler: async (ctx, { token }) => {
@@ -487,13 +332,26 @@ export const pageContext = query({
 			throw error;
 		}
 		const contract = member ? await ctx.db.get('savedContracts', found.link.contractId) : null;
+		if (member && contract?.companyId === found.link.companyId) {
+			return {
+				kind: 'current' as const,
+				audience: 'seller' as const,
+				contractId: contract._id,
+				buyerName: found.view.buyerName,
+				companyName: found.company.name,
+				title: found.view.title,
+				buyerRefreshable: found.view.buyerRefreshable && env.HUBSPOT_ENABLED === 'true',
+				templateVersionId: found.view.templateVersionId
+			};
+		}
 		return {
 			kind: 'current' as const,
-			audience:
-				member && contract?.companyId === found.link.companyId
-					? ('seller' as const)
-					: ('buyer' as const),
-			buyerName: found.view.buyerName
+			audience: 'buyer' as const,
+			buyerName: found.view.buyerName,
+			companyName: found.company.name,
+			title: found.view.title,
+			buyerRefreshable: found.view.buyerRefreshable && env.HUBSPOT_ENABLED === 'true',
+			templateVersionId: found.view.templateVersionId
 		};
 	}
 });
@@ -539,7 +397,7 @@ export const currentState = query({
 	returns: buyerDocumentState,
 	handler: async (ctx, { token }) => {
 		const found = await resolveView(ctx, token);
-		if (!found) throw new ConvexError('This link is unavailable.');
+		if (!found) return { kind: 'unavailable' as const };
 		const { link, view } = found;
 		const appliedOverlays =
 			Object.keys(view.concessions).length > 0
@@ -549,6 +407,10 @@ export const currentState = query({
 					)
 				: [];
 		return {
+			kind: 'current' as const,
+			companyName: found.company.name,
+			buyerName: view.buyerName,
+			buyerRefreshable: view.buyerRefreshable && env.HUBSPOT_ENABLED === 'true',
 			templateVersionId: view.templateVersionId,
 			title: view.title,
 			contentRevision: view.contentRevision,
@@ -584,6 +446,37 @@ export const templateContent = query({
 		if (getConvexSize(result) > 15_000_000)
 			throw new ConvexError('This contract exceeds supported response capacity.');
 		return result;
+	}
+});
+
+/** One consistent link/template snapshot for Word generation. */
+export const downloadSnapshot = query({
+	args: { token: v.string(), displayIdentity: v.string() },
+	returns: buyerDownloadSnapshot,
+	handler: async (ctx, { token, displayIdentity }) => {
+		const found = await resolveView(ctx, token);
+		if (!found || found.view.displayIdentity !== displayIdentity)
+			throw new ConvexError(
+				'The displayed contract changed. Review the current contract and try again.'
+			);
+		const { link, view } = found;
+		const reader = await versionReader(ctx, view.templateVersionId, link.companyId, true);
+		// Reserve native read headroom for the link, company, and template wrappers.
+		if (reader.readBytes > 12_000_000) return { kind: 'too-large' as const };
+		const [blocks, appliedOverlays] = await Promise.all([
+			reader.blocks(),
+			Object.keys(view.concessions).length > 0
+				? readAppliedOverlays(reader, view.concessions)
+				: Promise.resolve([])
+		]);
+		const result = {
+			kind: 'ready' as const,
+			title: view.title,
+			blocks,
+			concessions: view.concessions,
+			appliedOverlays
+		};
+		return getConvexSize(result) > 15_000_000 ? { kind: 'too-large' as const } : result;
 	}
 });
 

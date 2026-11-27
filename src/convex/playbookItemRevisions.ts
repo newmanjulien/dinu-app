@@ -2,11 +2,10 @@ import { ConvexError, type Infer } from 'convex/values';
 import type { TemplateItem } from '../lib/playbook/model';
 import type { TemplateDetailRecord } from '../lib/playbook/structure';
 import { playbookStructure } from '../lib/playbook/structure';
-import { encodeStructure, decodeStructure } from '../lib/playbook/structure-codec';
+import { decodeStructure, encodeStructure } from '../lib/playbook/structure-codec';
 import type { Doc, Id } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import type { historicalItem } from './playbookValidators';
-import { assertStorageCapacity, documentBytes } from './storageCapacity';
 
 export type HistoricalItem = Infer<typeof historicalItem>;
 export type UnrevisedDetailRecord = HistoricalItem &
@@ -82,11 +81,12 @@ export function historicalRevision(saved: Doc<'playbookItemRevisions'>): Histori
 export async function storeItemRevision(
 	ctx: MutationCtx,
 	saved: UnrevisedDetailRecord,
-	mutableVersionId?: Id<'templateVersions'>
+	mutableVersionId?: Id<'templateVersions'>,
+	knownVersion?: Doc<'templateVersions'>
 ) {
-	if (mutableVersionId) await currentMutableVersion(ctx, saved.companyId, mutableVersionId);
+	if (mutableVersionId && !knownVersion)
+		await currentMutableVersion(ctx, saved.companyId, mutableVersionId);
 	const contentRevision = { ...itemRevision(saved), mutableVersionId };
-	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(contentRevision) });
 	return ctx.db.insert('playbookItemRevisions', contentRevision);
 }
 
@@ -95,11 +95,13 @@ export async function replaceDraftItemRevision(
 	ctx: MutationCtx,
 	revisionId: Id<'playbookItemRevisions'>,
 	saved: UnrevisedDetailRecord,
-	mutableVersionId: Id<'templateVersions'>
+	mutableVersionId: Id<'templateVersions'>,
+	knownVersion?: Doc<'templateVersions'>,
+	knownPrevious?: Doc<'playbookItemRevisions'>
 ) {
 	const [version, previous] = await Promise.all([
-		currentMutableVersion(ctx, saved.companyId, mutableVersionId),
-		ctx.db.get('playbookItemRevisions', revisionId)
+		knownVersion ?? currentMutableVersion(ctx, saved.companyId, mutableVersionId),
+		knownPrevious ?? ctx.db.get('playbookItemRevisions', revisionId)
 	]);
 	if (
 		!previous ||
@@ -112,36 +114,8 @@ export async function replaceDraftItemRevision(
 	)
 		throw new ConvexError('This template revision cannot be replaced.');
 	const contentRevision = { ...itemRevision(saved), mutableVersionId };
-	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(contentRevision) });
 	await ctx.db.replace('playbookItemRevisions', revisionId, contentRevision);
 	return revisionId;
-}
-
-/** A newly allocated revision becomes mutable after its owning version is known. */
-export async function markDraftItemRevision(
-	ctx: MutationCtx,
-	revisionId: Id<'playbookItemRevisions'>,
-	mutableVersionId: Id<'templateVersions'>
-) {
-	const contentRevision = await ctx.db.get('playbookItemRevisions', revisionId);
-	if (!contentRevision) throw new ConvexError('This template revision is unavailable.');
-	const version = await currentMutableVersion(ctx, contentRevision.companyId, mutableVersionId);
-	if (
-		(contentRevision.mutableVersionId && contentRevision.mutableVersionId !== mutableVersionId) ||
-		!version.items.some(
-			(item) => item.itemId === contentRevision.itemId && item.revisionId === revisionId
-		)
-	)
-		throw new ConvexError('This template revision does not belong to its mutable owner.');
-	if (contentRevision.mutableVersionId) return 0;
-	const beforeBytes = documentBytes(contentRevision);
-	const afterBytes = documentBytes({ ...contentRevision, mutableVersionId });
-	await assertStorageCapacity(ctx, {
-		documents: 1,
-		bytes: afterBytes
-	});
-	await ctx.db.patch('playbookItemRevisions', revisionId, { mutableVersionId });
-	return afterBytes - beforeBytes;
 }
 
 /** Compact heads are the only live storage format written by canonical writers. */
@@ -205,6 +179,7 @@ export async function createAuthoringItem(
 		lastOperation?: TemplateDetailRecord['lastOperation'];
 		renderKey?: string;
 		mutableVersionId?: Id<'templateVersions'>;
+		knownVersion?: Doc<'templateVersions'>;
 	}
 ): Promise<TemplateDetailRecord> {
 	const initial = {
@@ -216,12 +191,6 @@ export async function createAuthoringItem(
 		renderKey: content.renderKey ?? content.lastOperation?.id ?? '',
 		structure: new ArrayBuffer(0)
 	};
-	await assertStorageCapacity(ctx, {
-		documents: 1,
-		bytes: documentBytes(initial),
-		queries: 1,
-		readDocuments: 1
-	});
 	const id = await ctx.db.insert('playbookItems', initial);
 	const head = (await ctx.db.get('playbookItems', id))!;
 	const saved: UnrevisedDetailRecord = {
@@ -233,10 +202,14 @@ export async function createAuthoringItem(
 		...(content.lastOperation ? { lastOperation: content.lastOperation } : {}),
 		renderKey: initial.renderKey || id
 	};
-	const currentRevisionId = await storeItemRevision(ctx, saved, content.mutableVersionId);
+	const currentRevisionId = await storeItemRevision(
+		ctx,
+		saved,
+		content.mutableVersionId,
+		content.knownVersion
+	);
 	const next: TemplateDetailRecord = { ...saved, currentRevisionId };
 	const packedHead = compactHead(next);
-	await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(packedHead) });
 	await ctx.db.replace('playbookItems', id, packedHead);
 	return next;
 }

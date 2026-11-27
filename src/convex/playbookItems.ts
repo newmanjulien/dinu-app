@@ -1,5 +1,4 @@
-import { templateAudience, templateItem } from '../lib/playbook/validators';
-import { v } from 'convex/values';
+import { ConvexError, v } from 'convex/values';
 import { sourceTarget } from '../lib/document/source-validators';
 import { PlaybookGeometryIndex } from '../lib/playbook/geometry-index';
 import { MAX_PLAYBOOK_ITEMS } from '../lib/playbook/limits';
@@ -12,13 +11,14 @@ import {
 	validateTemplateItemContent
 } from '../lib/playbook/validation';
 import { PlaybookValidationError } from '../lib/playbook/validation-error';
+import { templateAudience, templateItem } from '../lib/playbook/validators';
 import type { Doc } from './_generated/dataModel';
 import { mutation, query, type QueryCtx } from './_generated/server';
 import { requireMembership, requirePermission, scopedOperation } from './auth';
 import {
+	readValidationCertificate,
 	readValidationFacts,
-	validationCertified,
-	readValidationCertificate
+	validationCertified
 } from './authoringValidation';
 import {
 	compactHead,
@@ -26,22 +26,21 @@ import {
 	headStructure,
 	hydrateHead,
 	itemRevision,
-	markDraftItemRevision,
 	replaceDraftItemRevision,
 	storeItemRevision,
 	type UnrevisedDetailRecord
 } from './playbookItemRevisions';
 import { hydratedTemplateItem, trigger } from './playbookValidators';
-import { assertStorageCapacity, documentBytes } from './storageCapacity';
+import { documentBytes } from './storageCapacity';
 import { templateRejected } from './templateCapacity';
 import {
-	addTemplateReadBytes,
-	orderedAudienceHeads,
 	currentPointer,
 	isMutableTemplateVersion,
+	nextTemplateGenerations,
+	orderedAudienceHeads,
 	readAuthoringVersion,
-	templateGenerations,
-	saveChangedVersion
+	saveChangedVersion,
+	templateGenerations
 } from './templates';
 
 const sourceIdentity = {
@@ -247,7 +246,7 @@ export const saveTemplateItem = mutation({
 		} catch (error) {
 			return rejection(error);
 		}
-		const captured = await readAuthoringVersion(ctx, access.company, current ?? undefined);
+		let captured = await readAuthoringVersion(ctx, access.company, current ?? undefined);
 		if (!current && captured.version.itemCount >= MAX_PLAYBOOK_ITEMS)
 			throw templateRejected('Playbook exceeds supported size.');
 		const structuralChanged =
@@ -259,9 +258,21 @@ export const saveTemplateItem = mutation({
 				return rejection(error);
 			}
 		}
-		const mutableVersionId = isMutableTemplateVersion(captured.version)
-			? captured.version._id
-			: undefined;
+		if (!isMutableTemplateVersion(captured.version)) {
+			const { _id, _creationTime, ...version } = captured.version;
+			const versionId = await ctx.db.insert('templateVersions', {
+				...version,
+				mutability: 'mutable'
+			});
+			const pointer = { ...captured.pointer, versionId };
+			await ctx.db.patch('currentTemplate', pointer._id, { versionId });
+			captured = {
+				...captured,
+				pointer,
+				version: { ...captured.version, _id: versionId, mutability: 'mutable' }
+			};
+		}
+		const mutableVersionId = captured.version._id;
 		let next: TemplateDetailRecord;
 		let previousRevision: Doc<'playbookItemRevisions'> | null = null;
 		let nextRevisionBytes: number;
@@ -271,7 +282,8 @@ export const saveTemplateItem = mutation({
 				companyId: access.companyId,
 				renderKey: operationId,
 				lastOperation: { id: operationId, callerId: access.profile._id },
-				mutableVersionId
+				mutableVersionId,
+				knownVersion: captured.version
 			});
 			const receipt = {
 				companyId: access.companyId,
@@ -279,11 +291,13 @@ export const saveTemplateItem = mutation({
 				operationId: scopedOperation(access, operationId),
 				itemId: next._id
 			};
-			await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(receipt) });
 			await ctx.db.insert('playbookItemCreationReceipts', receipt);
-			nextRevisionBytes = documentBytes(
-				(await ctx.db.get('playbookItemRevisions', next.currentRevisionId))!
-			);
+			nextRevisionBytes = documentBytes({
+				...itemRevision(next),
+				mutableVersionId,
+				_id: next.currentRevisionId,
+				_creationTime: 0
+			});
 		} else {
 			previousRevision = currentRevision;
 			if (!previousRevision) throw templateRejected('The saved rule revision is missing.');
@@ -298,8 +312,15 @@ export const saveTemplateItem = mutation({
 			};
 			const currentRevisionId =
 				mutableVersionId && previousRevision.mutableVersionId === mutableVersionId
-					? await replaceDraftItemRevision(ctx, previousRevision._id, proposed, mutableVersionId)
-					: await storeItemRevision(ctx, proposed, mutableVersionId);
+					? await replaceDraftItemRevision(
+							ctx,
+							previousRevision._id,
+							proposed,
+							mutableVersionId,
+							captured.version,
+							previousRevision
+						)
+					: await storeItemRevision(ctx, proposed, mutableVersionId, captured.version);
 			next = { ...proposed, currentRevisionId };
 			nextRevisionBytes = documentBytes({
 				...itemRevision(proposed),
@@ -310,10 +331,9 @@ export const saveTemplateItem = mutation({
 		}
 		const packedHead = compactHead(next);
 		if (current) {
-			await assertStorageCapacity(ctx, { documents: 1, bytes: documentBytes(packedHead) });
 			await ctx.db.replace('playbookItems', current._id, packedHead);
 		}
-		const versionId = await saveChangedVersion(
+		await saveChangedVersion(
 			ctx,
 			captured,
 			current,
@@ -329,11 +349,18 @@ export const saveTemplateItem = mutation({
 				})
 			}
 		);
-		if (!mutableVersionId) {
-			const delta = await markDraftItemRevision(ctx, next.currentRevisionId, versionId);
-			await addTemplateReadBytes(ctx, versionId, captured.templateSource, delta);
-		}
-		return { status: 'saved' as const, item: next, ...(await committed(ctx, access.company)) };
+		const hasRepInstructions =
+			captured.version.items.some((reference) => reference.audience === 'rep') ||
+			next.audience === 'rep';
+		if (hasRepInstructions !== access.company.hasRepInstructions)
+			await ctx.db.patch('company', access.companyId, { hasRepInstructions });
+		return {
+			status: 'saved' as const,
+			item: next,
+			templateSourceId: captured.templateSource._id,
+			templateSourceFingerprint: captured.templateSource.fingerprint,
+			...nextTemplateGenerations(captured.version, structuralChanged)
+		};
 	}
 });
 export const deleteTemplateItem = mutation({
@@ -363,7 +390,6 @@ export const deleteTemplateItem = mutation({
 		const captured = await readAuthoringVersion(ctx, access.company, current);
 		if (!revision) throw templateRejected('The saved rule revision is missing.');
 		// Removing a trigger can only relax ownership: unowned changes are valid by design.
-		await assertStorageCapacity(ctx, { documents: 1 });
 		await ctx.db.delete('playbookItems', id);
 		await saveChangedVersion(
 			ctx,
@@ -379,17 +405,27 @@ export const deleteTemplateItem = mutation({
 			revision.mutableVersionId === captured.version._id
 		)
 			await ctx.db.delete('playbookItemRevisions', revision._id);
-		return { status: 'deleted' as const, ...(await committed(ctx, access.company)) };
+		const hasRepInstructions = captured.version.items.some(
+			(reference) => reference.itemId !== id && reference.audience === 'rep'
+		);
+		if (hasRepInstructions !== access.company.hasRepInstructions)
+			await ctx.db.patch('company', access.companyId, { hasRepInstructions });
+		return {
+			status: 'deleted' as const,
+			templateSourceId: captured.templateSource._id,
+			templateSourceFingerprint: captured.templateSource.fingerprint,
+			...nextTemplateGenerations(captured.version, true)
+		};
 	}
 });
 export const currentStructure = query({
-	args: { membershipId: v.id('memberships'), audience: templateAudience },
+	args: { audience: templateAudience },
 	returns: v.object({ ...watermark, ready: v.boolean(), items: v.array(structureItem) }),
-	handler: async (ctx, { membershipId, audience }) => {
+	handler: async (ctx, { audience }) => {
 		const access =
 				audience === 'buyer'
-					? await requirePermission(ctx, 'manageTemplate', membershipId)
-					: await requireMembership(ctx, membershipId),
+					? await requirePermission(ctx, 'manageTemplate')
+					: await requireMembership(ctx),
 			state = await observation(ctx, access.company);
 		if (!state.ready) return { ...state.watermark, ready: false, items: [] };
 		const heads = await ctx.db
@@ -413,35 +449,34 @@ export const currentStructure = query({
 		};
 	}
 });
-/** Item bodies do not depend on the global pointer, manifest or authoring generation. */
-export const content = query({
-	args: {
-		membershipId: v.id('memberships'),
-		id: v.id('playbookItems'),
-		audience: templateAudience
-	},
-	returns: v.union(
-		v.object({
-			...sourceIdentity,
-			ready: v.boolean(),
-			status: v.literal('present'),
-			item: hydratedTemplateItem
-		}),
-		v.object({ ...sourceIdentity, ready: v.boolean(), status: v.literal('missing') })
-	),
-	handler: async (ctx, { membershipId, id, audience }) => {
+const itemContent = v.union(
+	v.object({
+		...sourceIdentity,
+		ready: v.boolean(),
+		status: v.literal('present'),
+		item: hydratedTemplateItem
+	}),
+	v.object({ ...sourceIdentity, ready: v.boolean(), status: v.literal('missing') })
+);
+/** One authorization and source certification for a bounded batch of immutable revisions. */
+export const batchContent = query({
+	args: { ids: v.array(v.id('playbookItems')), audience: templateAudience },
+	returns: v.array(v.object({ id: v.id('playbookItems'), content: itemContent })),
+	handler: async (ctx, { ids, audience }) => {
+		if (ids.length > 64) throw new ConvexError('Request at most 64 template items.');
 		const access =
 			audience === 'buyer'
-				? await requirePermission(ctx, 'manageTemplate', membershipId)
-				: await requireMembership(ctx, membershipId);
-		const [source, certificate, head] = await Promise.all([
+				? await requirePermission(ctx, 'manageTemplate')
+				: await requireMembership(ctx);
+		const unique = [...new Set(ids)];
+		const [source, certificate, heads] = await Promise.all([
 			access.company.templateSourceId
 				? ctx.db.get('templateSources', access.company.templateSourceId)
 				: null,
 			access.company.templateSourceId
 				? readValidationCertificate(ctx, access.companyId, access.company.templateSourceId)
 				: null,
-			ctx.db.get('playbookItems', id)
+			Promise.all(unique.map((id) => ctx.db.get('playbookItems', id)))
 		]);
 		const scope = {
 			templateSourceId: source?._id ?? null,
@@ -452,8 +487,21 @@ export const content = query({
 				validationCertified(source, certificate)
 			)
 		};
-		if (!scope.ready || !head || head.companyId !== access.companyId || head.audience !== audience)
-			return { ...scope, status: 'missing' as const };
-		return { ...scope, status: 'present' as const, item: await hydrateHead(ctx, head) };
+		return Promise.all(
+			unique.map(async (id, index) => {
+				const head = heads[index];
+				if (
+					!scope.ready ||
+					!head ||
+					head.companyId !== access.companyId ||
+					head.audience !== audience
+				)
+					return { id, content: { ...scope, status: 'missing' as const } };
+				return {
+					id,
+					content: { ...scope, status: 'present' as const, item: await hydrateHead(ctx, head) }
+				};
+			})
+		);
 	}
 });

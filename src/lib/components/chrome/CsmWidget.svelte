@@ -39,11 +39,12 @@
 		section: SupportSection | undefined;
 		setupComplete: boolean;
 		collapsed: boolean;
-		onCollapsedChange: (collapsed: boolean) => Promise<unknown>;
+		onCollapsedChange: (membershipId: Id<'memberships'>, collapsed: boolean) => Promise<unknown>;
 		canStart: () => boolean;
 	} = $props();
 
 	let alive = true;
+	const savedMembershipId = untrack(() => membershipId);
 	const current = () => alive;
 	const owner = createCsmOwner({
 		client,
@@ -66,18 +67,13 @@
 	});
 	const visible = $derived(Boolean(content && (shown || canStart())));
 
-	// The member's saved choice, overridden locally until their latest change is saved.
-	let override = $state<boolean>();
-	let saving = $state(0);
-	let latest = 0;
-	const expanded = $derived(!(override ?? collapsed));
+	let saveFailed = $state(false);
+	let failedPreference = $state<boolean>();
+	let preferenceGeneration = 0;
+	const expanded = $derived(!collapsed);
 	let trigger = $state<HTMLButtonElement>();
 	let action = $state<HTMLButtonElement>();
 	const desktop = new MediaQuery('(min-width: 1000px)', false);
-
-	$effect(() => {
-		if (!saving && override === collapsed) override = undefined;
-	});
 
 	let activeDialog = $state.raw<SupportDialog>();
 	let admitted = $state.raw<SupportDialog>();
@@ -108,15 +104,16 @@
 	const BookingBody = $derived(body.component);
 
 	async function persist(next: boolean) {
-		override = next;
-		const write = ++latest;
-		saving++;
+		const generation = ++preferenceGeneration;
+		saveFailed = false;
+		failedPreference = undefined;
 		try {
-			await onCollapsedChange(next);
+			await onCollapsedChange(savedMembershipId, next);
 		} catch {
-			if (write === latest) override = undefined;
-		} finally {
-			saving--;
+			if (alive && generation === preferenceGeneration) {
+				failedPreference = next;
+				saveFailed = true;
+			}
 		}
 	}
 
@@ -134,7 +131,7 @@
 
 	function prepare() {
 		if (!canStart() || activeDialog || !content) return;
-		if (!warm()) return;
+		void loadCsmModal().catch(() => {});
 		if (content.video) {
 			warmVideoPoster(content.video.poster, 'high');
 			videoPreconnect?.prepare();
@@ -190,6 +187,22 @@
 	<div
 		class={`fixed right-3.5 bottom-[calc(20px+var(--buyer-link-bar-height,0px))] z-1 border-edge bg-surface text-ink shadow-floating transition-[background-color,border-color] duration-200 ease-out motion-reduce:transition-none ${expanded && desktop.current ? 'w-[156px] rounded-[9px] border has-[.widget-action:hover]:border-control-border' : 'w-10 rounded-lg border-hairline has-[.widget-action:hover]:bg-surface-hover'}`}
 	>
+		{#if saveFailed}
+			<p
+				role="alert"
+				class="absolute right-0 bottom-full mb-2 w-52 rounded-lg border border-edge bg-surface p-2 text-xs text-danger shadow-card"
+			>
+				Couldn’t save your preference.
+				<button
+					type="button"
+					class="underline"
+					onclick={() => {
+						saveFailed = false;
+						if (failedPreference !== undefined) void persist(failedPreference);
+					}}>Try again</button
+				>
+			</p>
+		{/if}
 		{#if expanded && desktop.current}
 			<button
 				bind:this={action}

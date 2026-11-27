@@ -7,6 +7,7 @@ export const buyerCurrentView = v.object({
 	templateVersionId: v.id('templateVersions'),
 	title: v.string(),
 	buyerName: v.union(v.string(), v.null()),
+	buyerRefreshable: v.boolean(),
 	concessions: v.record(v.id('playbookItems'), v.string()),
 	contentRevision: v.number(),
 	displayIdentity: v.string()
@@ -47,29 +48,37 @@ export const buyerTemplateContent = v.object({
 });
 
 /** Small reactive state pushed to a buyer link when title or approved concessions change. */
-export const buyerDocumentState = v.object({
-	templateVersionId: v.id('templateVersions'),
-	title: v.string(),
-	contentRevision: v.number(),
-	displayIdentity: v.string(),
-	concessions: v.record(v.id('playbookItems'), v.string()),
-	appliedOverlays: v.array(appliedOverlay)
-});
-
-export const linkSummary = v.object({
-	id: v.id('buyerLinks'),
-	token: v.string(),
-	createdAt: v.number()
-});
-
-export const linkCapture = linkSummary.extend({ created: v.boolean() });
-
-export const publicStatus = v.union(
+export const buyerDocumentState = v.union(
 	v.object({ kind: v.literal('unavailable') }),
 	v.object({
 		kind: v.literal('current'),
-		title: v.string(),
 		companyName: v.string(),
-		buyerName: v.union(v.string(), v.null())
+		buyerName: v.union(v.string(), v.null()),
+		buyerRefreshable: v.boolean(),
+		templateVersionId: v.id('templateVersions'),
+		title: v.string(),
+		contentRevision: v.number(),
+		displayIdentity: v.string(),
+		concessions: v.record(v.id('playbookItems'), v.string()),
+		appliedOverlays: v.array(appliedOverlay)
 	})
 );
+
+/** One authorized acquisition for a buyer Word download. */
+export const buyerDownloadSnapshot = v.union(
+	v.object({
+		kind: v.literal('ready'),
+		title: v.string(),
+		blocks: v.array(sourceBlock),
+		concessions: v.record(v.id('playbookItems'), v.string()),
+		appliedOverlays: v.array(appliedOverlay)
+	}),
+	v.object({ kind: v.literal('too-large') })
+);
+
+export const linkCapture = v.object({
+	id: v.id('buyerLinks'),
+	token: v.string(),
+	createdAt: v.number(),
+	created: v.boolean()
+});

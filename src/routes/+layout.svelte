@@ -36,7 +36,8 @@
 				page.data.resolvedRouteTitle?.kind === 'current'
 				? currentOverride
 				: (page.data.resolvedRouteTitle?.title ?? '');
-		if (route.document === 'saved') return page.data.resolvedRouteTitle?.title ?? '';
+		if (route.document === 'saved')
+			return currentOverride ?? page.data.resolvedRouteTitle?.title ?? route.title;
 		if (currentOverride) return currentOverride;
 		return route.title;
 	});

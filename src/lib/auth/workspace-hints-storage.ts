@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { env } from '$env/dynamic/public';
 import { afterStartupPaint } from './startup-perf';
+import type { MembershipRetirement } from './viewer-session.svelte';
 import {
 	WORKSPACE_HINT_COOKIE,
 	WORKSPACE_HINT_MAX_AGE,
@@ -23,13 +24,18 @@ export type WorkspacePresentation = {
 export type WorkspaceHintState = WorkspaceLayoutHints & WorkspacePresentation;
 
 type StoredPresentation = WorkspaceScope & Omit<WorkspacePresentation, 'instructionsReady'>;
+export type WorkspaceHintIdentity = { userId: string; sessionId: string };
+type RememberedHints = WorkspaceHintIdentity & { membershipId: string; comparison: string };
 const MAX_BYTES = 16 * 1024;
-let pending:
-	{ userId: string; sessionId: string; comparison: string; cancel: () => void } | undefined;
-let remembered: string | undefined;
+let pending: (RememberedHints & { cancel: () => void }) | undefined;
+let remembered: RememberedHints | undefined;
+
+function presentationPrefix() {
+	return `dinu:v3:${env.PUBLIC_CONVEX_URL ?? ''}:workspace-presentation:`;
+}
 
 function key(userId: string) {
-	return `dinu:v3:${env.PUBLIC_CONVEX_URL ?? ''}:workspace-presentation:${userId}`;
+	return `${presentationPrefix()}${userId}`;
 }
 
 const avatar = (value: unknown) => (value === null ? null : hintText(value, 4096));
@@ -90,6 +96,114 @@ export function cancelWorkspaceHintWrites(userId: string, sessionId: string) {
 	pending = undefined;
 }
 
+function storedRecord(raw: string | null | undefined): Record<string, unknown> | undefined {
+	if (!raw || raw.length > MAX_BYTES || new TextEncoder().encode(raw).byteLength > MAX_BYTES)
+		return;
+	try {
+		const record: unknown = JSON.parse(raw);
+		return record && typeof record === 'object' ? (record as Record<string, unknown>) : undefined;
+	} catch {
+		/* Unusable display records still have a deployment/user-scoped key. */
+	}
+}
+
+/** Ownership, not freshness or presentation validity, determines physical removal. */
+function removeWorkspaceHints(
+	matches: (userId: string, sessionId: string | undefined, membershipId?: string) => boolean,
+	removeLegacy = false
+) {
+	if (!browser) return;
+	if (pending && matches(pending.userId, pending.sessionId, pending.membershipId)) {
+		pending.cancel();
+		pending = undefined;
+	}
+	if (remembered && matches(remembered.userId, remembered.sessionId, remembered.membershipId))
+		remembered = undefined;
+	try {
+		const raw = browserCookie();
+		const record = storedRecord(raw);
+		const userId = hintText(record?.userId, 256);
+		if (
+			(raw && !record && removeLegacy) ||
+			(record?.deployment === env.PUBLIC_CONVEX_URL &&
+				userId &&
+				matches(
+					userId,
+					hintText(record.sessionId, 256),
+					hintText((record.hints as Record<string, unknown> | undefined)?.membershipId, 256)
+				))
+		)
+			document.cookie = `${WORKSPACE_HINT_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
+	} catch {
+		/* Cookie failure must not prevent localStorage cleanup. */
+	}
+	try {
+		const prefix = presentationPrefix();
+		const legacyPrefix = `dinu:v9:${env.PUBLIC_CONVEX_URL ?? ''}:`;
+		const obsoleteKey = (storageKey: string) =>
+			removeLegacy &&
+			storageKey.startsWith(legacyPrefix) &&
+			(storageKey.endsWith(':cards') || storageKey.endsWith(':openings'));
+		const keys: string[] = [];
+		for (let index = 0; index < localStorage.length; index++) {
+			const storageKey = localStorage.key(index);
+			if (storageKey && (storageKey.startsWith(prefix) || obsoleteKey(storageKey)))
+				keys.push(storageKey);
+		}
+		for (const storageKey of keys) {
+			try {
+				if (obsoleteKey(storageKey)) {
+					// Inspect names only; no historical card/opening payload reader.
+					localStorage.removeItem(storageKey);
+					continue;
+				}
+				const record = storedRecord(localStorage.getItem(storageKey));
+				if (
+					matches(
+						storageKey.slice(prefix.length),
+						hintText(record?.sessionId, 256),
+						hintText(
+							(record?.presentation as Record<string, unknown> | undefined)?.membershipId,
+							256
+						)
+					)
+				)
+					localStorage.removeItem(storageKey);
+			} catch {
+				/* Continue removing other records when one operation fails. */
+			}
+		}
+	} catch {
+		/* Optional display storage. */
+	}
+}
+
+export function clearWorkspaceHints(userId: string, sessionId?: string) {
+	removeWorkspaceHints(
+		(storedUserId, storedSessionId) =>
+			storedUserId === userId &&
+			(sessionId === undefined || storedSessionId === undefined || storedSessionId === sessionId)
+	);
+}
+
+/** A departure cannot remove another membership's pending or persisted presentation. */
+export function clearWorkspaceMembershipHints(owner: MembershipRetirement) {
+	removeWorkspaceHints(
+		(userId, sessionId, membershipId) =>
+			userId === owner.userId &&
+			membershipId === owner.membershipId &&
+			(owner.sessionId === undefined || sessionId === owner.sessionId)
+	);
+}
+
+/** Keep only the identified session, independently of mounted presentation owners. */
+export function retireWorkspaceHints(current?: WorkspaceHintIdentity) {
+	removeWorkspaceHints(
+		(userId, sessionId) => userId !== current?.userId || sessionId !== current?.sessionId,
+		true
+	);
+}
+
 /** Nonessential persistence follows useful rendering; absence cancels queued writes. */
 export function rememberWorkspaceHints(
 	userId: string,
@@ -99,19 +213,7 @@ export function rememberWorkspaceHints(
 	if (!browser) return;
 	const storageKey = key(userId);
 	if (!membership) {
-		cancelWorkspaceHintWrites(userId, sessionId);
-		remembered = undefined;
-		try {
-			if (readWorkspaceHintCookie(browserCookie(), userId, sessionId))
-				document.cookie = `${WORKSPACE_HINT_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
-		} catch {
-			/* Optional storage. */
-		}
-		try {
-			localStorage.removeItem(storageKey);
-		} catch {
-			/* Optional storage. */
-		}
+		clearWorkspaceHints(userId, sessionId);
 		return;
 	}
 	const hints = workspaceLayoutHints(membership);
@@ -121,15 +223,24 @@ export function rememberWorkspaceHints(
 	if (pending?.comparison === comparison) return;
 	pending?.cancel();
 	pending = undefined;
-	if (remembered === comparison) return;
-	const cancel = afterStartupPaint(() => {
+	if (remembered?.comparison === comparison) return;
+	const write = {
+		userId,
+		sessionId,
+		membershipId: hints.membershipId,
+		comparison,
+		cancel: () => {}
+	};
+	pending = write;
+	write.cancel = afterStartupPaint(() => {
+		if (pending !== write) return;
 		pending = undefined;
 		const raw = encodeWorkspaceHintCookie({ userId, sessionId, hints });
 		if (!raw) return;
 		try {
 			const secure = location.protocol === 'https:' ? '; Secure' : '';
 			document.cookie = `${WORKSPACE_HINT_COOKIE}=${encodeURIComponent(raw)}; Path=/; Max-Age=${WORKSPACE_HINT_MAX_AGE}; SameSite=Lax${secure}`;
-			remembered = comparison;
+			remembered = { userId, sessionId, membershipId: hints.membershipId, comparison };
 		} catch {
 			/* Keep in-memory layout hints. */
 		}
@@ -148,5 +259,4 @@ export function rememberWorkspaceHints(
 			/* Keep in-memory display fields. */
 		}
 	});
-	pending = { userId, sessionId, comparison, cancel };
 }

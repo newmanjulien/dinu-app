@@ -5,9 +5,7 @@
 	import { api } from '../../../src/convex/_generated/api';
 	const account = useAccount();
 	const auth = useAccountContext()!;
-	const region = useReadQuery(api.accounts.setupHints, () =>
-		auth.authenticated ? { membershipId: account()!.membership!.id } : 'skip'
-	);
+	const region = useReadQuery(api.accounts.setupHints, () => (auth.authenticated ? {} : 'skip'));
 </script>
 
 <main data-private-content>

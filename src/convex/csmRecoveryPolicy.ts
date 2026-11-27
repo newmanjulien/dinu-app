@@ -54,8 +54,8 @@ export async function enrollAttemptRecovery(ctx: MutationCtx, a: Doc<'csmBooking
 		return enrollment;
 	}
 	if (a.recoveryDue !== undefined) return enrollment;
-	const recoveryJobId = await ctx.scheduler.runAfter(
-		Math.max(0, enrollment.dueAt - Date.now()),
+	const recoveryJobId = await ctx.scheduler.runAt(
+		enrollment.dueAt,
 		internal.csmBookings.recoverAttempt,
 		{ attemptId: a._id }
 	);

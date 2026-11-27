@@ -7,17 +7,14 @@
 		setStartupData,
 		setStartupHome,
 		setStartupSetup,
-		type StartupData,
-		type StartupHome,
-		type StartupSetup
+		type StartupData
 	} from './startup-data';
 	let { children }: { children: Snippet } = $props();
 	const clerk = useClerkContext();
 	const session = useViewerSession();
 	let data = $state.raw<StartupData | null>(null);
 	let generation = $state<number>();
-	let home = $state.raw<StartupHome | null>(null);
-	let setup = $state.raw<StartupSetup | null>(null);
+
 	$effect(() => {
 		if (session.preparedSessionId && generation === undefined)
 			generation = session.transportGeneration;
@@ -36,62 +33,26 @@
 			active = false;
 		};
 	});
-	$effect(() => {
-		const request = page.data.startupHome;
-		let active = true;
-		untrack(() => (home = null));
-		if (request)
-			void Promise.resolve(request)
-				.then((result) => {
-					if (active) home = result;
-				})
-				.catch(() => {});
-		return () => {
-			active = false;
-		};
-	});
-	$effect(() => {
-		const request = page.data.startupSetup;
-		let active = true;
-		untrack(() => (setup = null));
-		if (request)
-			void Promise.resolve(request)
-				.then((result) => {
-					if (active) setup = result;
-				})
-				.catch(() => {});
-		return () => {
-			active = false;
-		};
-	});
-	setStartupSetup(() =>
-		setup &&
-		generation === session.transportGeneration &&
-		!session.closing &&
-		setup.sessionId === clerk.session?.id &&
-		setup.userId === clerk.user?.id
-			? setup
-			: null
-	);
-	setStartupHome(() =>
-		home &&
-		generation === session.transportGeneration &&
-		!session.closing &&
-		home.sessionId === clerk.session?.id &&
-		home.userId === clerk.user?.id
-			? home
-			: null
-	);
 	// A server snapshot can assist the first admission only, never a recovered transport.
-	setStartupData(() =>
+	const current = () =>
 		data &&
 		generation === session.transportGeneration &&
 		!session.closing &&
 		data.sessionId === clerk.session?.id &&
 		data.userId === clerk.user?.id
 			? data
-			: null
-	);
+			: null;
+	setStartupData(current);
+	setStartupHome(() => {
+		const value = current();
+		return value?.home ? { ...value.home, sessionId: value.sessionId, userId: value.userId } : null;
+	});
+	setStartupSetup(() => {
+		const value = current();
+		return value?.setup
+			? { ...value.setup, sessionId: value.sessionId, userId: value.userId }
+			: null;
+	});
 </script>
 
 {@render children()}

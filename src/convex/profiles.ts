@@ -5,6 +5,7 @@ import { mutation, query } from './_generated/server';
 import { memberView } from './accountViews';
 import { liveProfile, readAccount, requireMembership, requireProfile } from './auth';
 import { normalizedName } from './names';
+import { defaultHelpPreferences, preferenceForProfile } from './profileUiPreferences';
 
 export const initialize = mutation({
 	args: {},
@@ -20,33 +21,17 @@ export const initialize = mutation({
 				issuer: identity.issuer,
 				clerkId: identity.subject,
 				email,
-				name: textPrefix((identity.name ?? '').trim(), 32),
-				helpPreferences: { contract: false, buyerLink: false }
+				name: textPrefix((identity.name ?? '').trim(), 32)
 			});
 		return null;
 	}
 });
 
-/** Avatar imagery is optional chrome and does not gate seller-link classification. */
-export const currentAvatar = query({
-	args: {},
-	returns: v.object({
-		id: v.id('profiles'),
-		avatarUrl: v.union(v.string(), v.null())
-	}),
-	handler: async (ctx) => {
-		const profile = await requireProfile(ctx);
-		return {
-			id: profile._id,
-			avatarUrl: profile.avatarId ? await ctx.storage.getUrl(profile.avatarId) : null
-		};
-	}
-});
 export const colleagues = query({
-	args: { membershipId: v.id('memberships'), paginationOpts: paginationOptsValidator },
+	args: { paginationOpts: paginationOptsValidator },
 	returns: paginationResultValidator(memberView),
 	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
+		const access = await requireMembership(ctx);
 		const result = await ctx.db
 			.query('memberships')
 			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
@@ -89,9 +74,12 @@ export const setHelpHidden = mutation({
 	returns: v.null(),
 	handler: async (ctx, { variant, hidden }) => {
 		const profile = await requireProfile(ctx);
-		await ctx.db.patch('profiles', profile._id, {
-			helpPreferences: { ...profile.helpPreferences, [variant]: hidden }
-		});
+		const preference = await preferenceForProfile(ctx, profile._id);
+		const current = preference?.helpPreferences ?? defaultHelpPreferences;
+		if (current[variant] === hidden) return null;
+		const helpPreferences = { ...current, [variant]: hidden };
+		if (preference) await ctx.db.patch('profileUiPreferences', preference._id, { helpPreferences });
+		else await ctx.db.insert('profileUiPreferences', { profileId: profile._id, helpPreferences });
 		return null;
 	}
 });

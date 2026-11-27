@@ -4,17 +4,17 @@
 	import { templateCopy } from '$lib/playbook/template-copy';
 	import type { TemplateAudience } from '$lib/playbook/model';
 	type BuyerPresentation =
-		| { kind: 'seller' }
-		| { kind: 'preview'; buyerName: string | null }
-		| { kind: 'buyer'; companyName: string };
+		{ kind: 'preview'; buyerName: string | null } | { kind: 'buyer'; companyName: string };
 
 	let {
 		kind,
 		audience = 'rep',
+		contractMode = 'negotiate',
 		buyerPresentation
 	}: {
 		kind: 'saved' | 'template' | 'buyer';
 		audience?: TemplateAudience;
+		contractMode?: 'negotiate' | 'comments';
 		buyerPresentation?: BuyerPresentation;
 	} = $props();
 	const copy = $derived.by(() => {
@@ -24,18 +24,19 @@
 				hintLabel: templateCopy(audience).editingHelpLabel,
 				hint: templateCopy(audience).editingHelp
 			};
-		if (kind === 'saved')
+		if (kind === 'saved') {
+			if (contractMode === 'comments')
+				return {
+					title: 'Add, see and answer comments',
+					hintLabel: 'About comments',
+					hint: 'Leave comments on the contract and reply to buyer comments here.'
+				};
 			return {
 				title: 'Negotiate this contract',
 				hintLabel: 'About contract negotiation',
 				hint: 'Review the instructions and use approved concessions to negotiate this contract.'
 			};
-		if (buyerPresentation?.kind === 'seller')
-			return {
-				title: 'Add, see and answer comments',
-				hintLabel: 'About seller comments',
-				hint: 'Leave comments on the contract and reply to buyer comments here.'
-			};
+		}
 		if (buyerPresentation?.kind === 'preview') {
 			const buyer = buyerPresentation.buyerName?.trim();
 			return {

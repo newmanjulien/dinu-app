@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { setUiPreferences } from '../../../src/lib/auth/ui-preferences.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { useConvexClient } from 'convex-svelte';
 	import WorkspaceShell from '../../../src/lib/auth/WorkspaceShell.svelte';
@@ -13,6 +14,11 @@
 	import type { CsmState } from '../../support/csm-state.svelte';
 	let { state }: { state: CsmState } = $props();
 	setViewer(() => state.viewer);
+	setUiPreferences({
+		get data() {
+			return state.preferences;
+		}
+	} as Parameters<typeof setUiPreferences>[0]);
 	untrack(() => setViewerSession(state.session));
 	const client = useConvexClient();
 	const ids = untrack(() => ({

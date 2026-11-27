@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { optimisticCollapsed } from './ui-preferences.svelte';
+	import { useUiPreferences } from '$lib/auth/ui-preferences.svelte';
+	const uiPreferences = useUiPreferences();
 	import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
 	import { navigating, page } from '$app/state';
 	import { useConvexClient } from 'convex-svelte';
@@ -203,12 +206,16 @@
 			membershipId={viewer().membership.id}
 			{section}
 			setupComplete={setup.complete}
-			collapsed={viewer().membership.supportWidgetCollapsed}
-			onCollapsedChange={(collapsed) =>
-				client.mutation(api.memberships.setSupportWidgetCollapsed, {
-					membershipId: viewer().membership.id,
-					collapsed
-				})}
+			collapsed={uiPreferences.data?.supportWidgetCollapsed ?? false}
+			onCollapsedChange={(membershipId, collapsed) =>
+				client.mutation(
+					api.memberships.setSupportWidgetCollapsed,
+					{
+						membershipId,
+						collapsed
+					},
+					{ optimisticUpdate: (store) => optimisticCollapsed(store, collapsed) }
+				)}
 			canStart={() => Boolean(supportIdentity && section) && presentation.canStart()}
 		/>
 	{/key}

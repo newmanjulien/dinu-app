@@ -10,7 +10,9 @@ import {
 	requirePermission
 } from './auth';
 import { revokeInvitation } from './companyInvitations';
-import { cleanupMembershipShowings } from './buyerLinkShowingCleanup';
+import { deleteMembershipUiPreferences } from './membershipUiPreferences';
+import { deleteMembershipSetup } from './membershipSetupState';
+import { deleteProfileUiPreferences } from './profileUiPreferences';
 import { emailAddress } from './emailValidators';
 import { normalizedName } from './names';
 import { deleteUnownedFile } from './storageOwnership';
@@ -26,14 +28,14 @@ export const create = mutation({
 			throw new ConvexError('Enter a company name of 120 characters or fewer.');
 		const companyId = await ctx.db.insert('company', {
 			name,
+			hasRepInstructions: false,
 			ownerProfileId: profile._id,
 			approvalEmail: identity.email.trim().toLowerCase()
 		});
 		await ctx.db.insert('memberships', {
 			companyId,
 			profileId: profile._id,
-			role: 'admin',
-			supportWidgetCollapsed: false
+			role: 'admin'
 		});
 		return companyId;
 	}
@@ -70,7 +72,8 @@ export const removeMember = mutation({
 				.unique();
 			if (invitation) await revokeInvitation(ctx, invitation);
 		}
-		await cleanupMembershipShowings(ctx, target._id, target.companyId);
+		await deleteMembershipUiPreferences(ctx, target._id);
+		await deleteMembershipSetup(ctx, target._id);
 		await ctx.db.delete('memberships', target._id);
 		return null;
 	}
@@ -94,7 +97,8 @@ export const leave = mutation({
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		if (access.isOwner) throw new ConvexError('Transfer ownership to a colleague before leaving.');
-		await cleanupMembershipShowings(ctx, access.membershipId, access.companyId);
+		await deleteMembershipUiPreferences(ctx, access.membershipId);
+		await deleteMembershipSetup(ctx, access.membershipId);
 		await ctx.db.delete('memberships', access.membershipId);
 		return null;
 	}
@@ -119,8 +123,7 @@ export const recoverOwner = internalMutation({
 			await ctx.db.insert('memberships', {
 				companyId: company._id,
 				profileId: replacement._id,
-				role: 'admin',
-				supportWidgetCollapsed: false
+				role: 'admin'
 			});
 		}
 		await ctx.db.patch('company', company._id, { ownerProfileId: replacement._id });
@@ -132,11 +135,15 @@ export const recoverOwner = internalMutation({
 		if (!marker || marker.complete || marker.recoveryCompanyId !== company._id) return null;
 		const membership = await membershipForProfile(ctx, priorOwnerId);
 		if (membership?.companyId === company._id) {
-			await cleanupMembershipShowings(ctx, membership._id, membership.companyId);
+			await deleteMembershipUiPreferences(ctx, membership._id);
+			await deleteMembershipSetup(ctx, membership._id);
 			await ctx.db.delete('memberships', membership._id);
 		}
 		const profile = await ctx.db.get('profiles', priorOwnerId);
-		if (profile) await ctx.db.delete('profiles', profile._id);
+		if (profile) {
+			await deleteProfileUiPreferences(ctx, profile._id);
+			await ctx.db.delete('profiles', profile._id);
+		}
 		if (profile?.avatarId) await deleteUnownedFile(ctx, profile.avatarId);
 		await ctx.db.patch('deletedUsers', marker._id, {
 			complete: true,

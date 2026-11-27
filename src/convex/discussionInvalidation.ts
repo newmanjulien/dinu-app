@@ -14,6 +14,7 @@ import { cleanupBudget } from './cleanup';
 import { writeDirectoryUnread } from './contractDirectory';
 import type { HistoricalItem } from './playbookItemRevisions';
 import { snapshotReader } from './templates';
+import { accountMessage, accountThread } from './discussionCapacity';
 
 const THREAD_PAGE_SIZE = 16;
 const THREAD_PAGE_MAX_BYTES = 2 * 1024 * 1024;
@@ -78,13 +79,17 @@ export async function deleteThreadAndMessages(
 	ctx: MutationCtx,
 	threadId: Id<'discussionThreads'>
 ): Promise<void> {
+	const thread = await ctx.db.get('discussionThreads', threadId);
+	if (!thread) return;
+	await accountThread(ctx, thread, -1);
 	await ctx.db.delete('discussionThreads', threadId);
 	const { drain } = cleanupBudget(ctx);
 	const done = await drain(
 		'discussionMessages',
 		ctx.db
 			.query('discussionMessages')
-			.withIndex('by_threadId_and_reply', (q) => q.eq('threadId', threadId))
+			.withIndex('by_threadId_and_reply', (q) => q.eq('threadId', threadId)),
+		{ beforeDelete: (message) => accountMessage(ctx, message, -1) }
 	);
 	if (!done) {
 		await ctx.scheduler.runAfter(0, internal.discussionInvalidation.drainThreadMessages, {
@@ -107,7 +112,8 @@ export const drainThreadMessages = internalMutation({
 				'discussionMessages',
 				ctx.db
 					.query('discussionMessages')
-					.withIndex('by_threadId_and_reply', (q) => q.eq('threadId', threadId))
+					.withIndex('by_threadId_and_reply', (q) => q.eq('threadId', threadId)),
+				{ beforeDelete: (message) => accountMessage(ctx, message, -1) }
 			);
 			if (!done) {
 				await ctx.scheduler.runAfter(0, internal.discussionInvalidation.drainThreadMessages, {
@@ -160,6 +166,7 @@ async function deleteAffectedPage(
 	for (const thread of page.page) {
 		if (thread.contentRevision > maxContentRevision) continue;
 		if (!footprintAffectedByChanges(thread.footprint, changeSet)) continue;
+		await accountThread(ctx, thread, -1);
 		await ctx.db.delete('discussionThreads', thread._id);
 		deletedThreadIds.push(thread._id);
 	}

@@ -48,7 +48,7 @@
 	$effect(() => {
 		expired = false;
 		if (signedIn || preview?.status !== 'available') return;
-		const timer = setTimeout(() => (expired = true), preview.expiresInMs);
+		const timer = setTimeout(() => (expired = true), Math.max(0, preview.expiresAt - Date.now()));
 		return () => clearTimeout(timer);
 	});
 	$effect(() => {

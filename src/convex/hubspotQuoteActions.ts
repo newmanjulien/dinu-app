@@ -63,9 +63,10 @@ export const push = action({
 			});
 			if (result.kind !== 'reused') throw new Error('Payload reservation was not completed');
 			return result.summary;
-		} finally {
-			// Also covers duplicate/reused handoffs and an ambiguous mutation response.
+		} catch (error) {
+			// Unowned bytes are discarded if generation or commit fails.
 			await ctx.runMutation(internal.storageOwnership.discardFile, { fileId });
+			throw error;
 		}
 	}
 });

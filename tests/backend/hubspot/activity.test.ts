@@ -38,7 +38,6 @@ describe('HubSpot activity from contract operations', () => {
 		await f.t.mutation(api.contracts.save, args);
 		expect((await events(f)).map((e) => e.kind)).toEqual(['created', 'applied']);
 		const state = await f.t.query(api.contracts.state, {
-			membershipId: f.owner.membershipId,
 			id: f.id
 		});
 		expect(state?.concessions).toMatchObject([

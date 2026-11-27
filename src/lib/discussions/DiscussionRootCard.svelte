@@ -28,13 +28,13 @@
 	const composer = $derived(session.replyComposer(thread.id));
 	let replyTrigger = $state<HTMLButtonElement>();
 	$effect(() => {
-		void session.transitionVersion;
+		void session.policyVersion;
 		return () => deletion.clear();
 	});
 
 	function selectThread() {
 		onActivate();
-		if (!session.readOnly && !session.viewer) void session.loadBuyerViewer();
+		if (!session.readOnly && !session.viewer) void session.loadViewer();
 		session.selected = thread.id;
 	}
 	function rememberReplyTrigger(trigger: HTMLButtonElement) {

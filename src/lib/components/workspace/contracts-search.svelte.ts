@@ -1,22 +1,14 @@
 import { getContext, setContext } from 'svelte';
-import type { Id } from '../../../convex/_generated/dataModel';
-import { FirstLinkHintVisit } from '$lib/buyer/first-link-hint-visit.svelte';
+
+export const HOME_SEARCH_SETTLE_MS = 500;
 
 export class ContractsSearchSession {
 	value = $state('');
 	query = $state('');
 	viewQuery = '';
 	contractRows = 4;
-	buyerLinks = 10;
 	private restore = false;
 	private selection: [number, number] | undefined;
-	private hintVisit: FirstLinkHintVisit | undefined;
-
-	firstLinkHintVisit(membershipId: Id<'memberships'>) {
-		if (this.hintVisit?.membershipId !== membershipId)
-			this.hintVisit = new FirstLinkHintVisit(membershipId);
-		return this.hintVisit;
-	}
 
 	rememberFocus(input: HTMLInputElement) {
 		if (typeof document === 'undefined' || document.activeElement !== input) return;

@@ -1,6 +1,6 @@
 export type TemplateHelpVariant = 'template' | 'buyer-template';
-export type WorkspaceHelpVariant = 'contract' | TemplateHelpVariant;
-export type BuyerLinkHelpVariant = 'buyer-link-seller' | 'buyer-link-buyer';
+export type WorkspaceHelpVariant = 'contract' | 'contract-comments' | TemplateHelpVariant;
+export type BuyerLinkHelpVariant = 'buyer-link-buyer';
 export type HelpVariant = WorkspaceHelpVariant | BuyerLinkHelpVariant;
 
 export type HelpContent = {
@@ -35,9 +35,9 @@ export const helpContent = {
 			}
 		]
 	},
-	'buyer-link-seller': {
-		title: 'How buyer links work',
-		intro: 'Buyer links let you exchange comments with your buyer.',
+	'contract-comments': {
+		title: 'How comments work',
+		intro: 'Exchange comments with your buyer directly on this contract.',
 		steps: [
 			{
 				title: 'Leave a comment',

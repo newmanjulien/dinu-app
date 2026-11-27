@@ -6,7 +6,7 @@ export interface SnapshotClient {
 		args: FunctionArgs<Query>,
 		onUpdate: (value: FunctionReturnType<Query>) => void,
 		onError?: (error: Error) => unknown
-	): () => void;
+	): (() => void) & { getCurrentValue?: () => FunctionReturnType<Query> | undefined };
 }
 
 /** Own the subscription until the first result, error, or cancellation. */
@@ -17,7 +17,7 @@ export function queryOnce<Query extends FunctionReference<'query'>>(
 	signal: AbortSignal
 ): Promise<FunctionReturnType<Query>> {
 	return new Promise((resolve, reject) => {
-		let unsubscribe: (() => void) | undefined;
+		let unsubscribe: ReturnType<SnapshotClient['onUpdate']> | undefined;
 		let settled = false;
 		const finish = (complete: () => void) => {
 			if (settled) return;
@@ -36,6 +36,8 @@ export function queryOnce<Query extends FunctionReference<'query'>>(
 				(value) => finish(() => resolve(value)),
 				(error) => finish(() => reject(error))
 			);
+			const cached = unsubscribe.getCurrentValue?.();
+			if (cached !== undefined) finish(() => resolve(cached));
 			// Also handle clients that deliver a cached result synchronously.
 			if (settled) unsubscribe();
 		} catch (error) {

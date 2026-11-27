@@ -26,6 +26,7 @@ import { assertStorageCapacity, documentBytes } from './storageCapacity';
 import { deleteUnownedFile } from './storageOwnership';
 import { currentPointer } from './templates';
 import { pendingInitialSetup, resolveSetupBooking } from './csmSetupState';
+import { readCompanySetup, setSetupIntake, patchCompanySetup } from './companySetupState';
 import { blockingInitialGuard } from './csmErasureGuards';
 import { replacementState } from './csmReplacements';
 
@@ -41,8 +42,9 @@ import {
 const UPLOAD_TTL = 90 * 24 * 60 * 60_000;
 /** The company owns this source even when its uploader has left. Never scan upload history. */
 export async function currentPendingTemplate(ctx: QueryCtx, company: Doc<'company'>) {
-	if (!company.pendingTemplateSourceId) return null;
-	const source = await ctx.db.get('templateSources', company.pendingTemplateSourceId);
+	const { row } = await readCompanySetup(ctx, company);
+	if (!row?.pendingTemplateSourceId) return null;
+	const source = await ctx.db.get('templateSources', row.pendingTemplateSourceId);
 	if (
 		!source ||
 		source.companyId !== company._id ||
@@ -53,22 +55,24 @@ export async function currentPendingTemplate(ctx: QueryCtx, company: Doc<'compan
 	return source;
 }
 export const status = query({
-	args: { membershipId: v.id('memberships') },
+	args: {},
 	returns: templateSetupStatus,
-	handler: async (ctx, { membershipId }): Promise<Infer<typeof templateSetupStatus>> => {
-		const { company } = await requirePermission(ctx, 'manageTemplate', membershipId);
+	handler: async (ctx): Promise<Infer<typeof templateSetupStatus>> => {
+		const { company } = await requirePermission(ctx, 'manageTemplate');
 		if (company.templateSourceId) return { kind: 'released' };
-		const [booking, source] = await Promise.all([
-			resolveSetupBooking(ctx, company),
-			currentPendingTemplate(ctx, company)
+		const setup = readCompanySetup(ctx, company);
+		const [booking, source, state] = await Promise.all([
+			resolveSetupBooking(ctx, company, setup),
+			currentPendingTemplate(ctx, company),
+			setup
 		]);
 		const pending = source ? { filename: source.filename } : null;
 		if (booking.kind === 'confirmed') {
 			if (pending) return { kind: 'waiting', pending };
-			if (company.setupIntake?.step !== 'complete')
+			if (state.setupIntake?.step !== 'complete')
 				return {
 					kind: 'intake',
-					step: company.setupIntake?.step === 'negotiation' ? 'negotiation' : 'team'
+					step: state.setupIntake?.step === 'negotiation' ? 'negotiation' : 'team'
 				};
 			return { kind: 'upload' };
 		}
@@ -131,24 +135,17 @@ export const saveIntake = mutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const { company, companyId, profile } = await requirePermission(
-			ctx,
-			'manageTemplate',
-			args.membershipId
-		);
-		if (
-			company.templateSourceId ||
-			company.pendingTemplateSourceId ||
-			company.setupIntake?.step === 'complete'
-		)
-			return null;
-		const booking = await resolveSetupBooking(ctx, company);
+		const { company, profile } = await requirePermission(ctx, 'manageTemplate', args.membershipId);
+		const setup = await readCompanySetup(ctx, company);
+		if (company.templateSourceId || setup.row?.pendingTemplateSourceId) return null;
+		if (setup.setupIntake?.step === 'complete') return null;
+		const booking = await resolveSetupBooking(ctx, company, setup);
 		if (booking.kind !== 'confirmed')
 			throw new ConvexError('Confirm your setup call before continuing.');
 
 		const now = Date.now();
-		const existing = company.setupIntake;
-		let setupIntake: NonNullable<Doc<'company'>['setupIntake']>;
+		const existing = setup.setupIntake;
+		let setupIntake: NonNullable<Doc<'companySetupState'>['setupIntake']>;
 
 		if (args.step === 'team') {
 			if (existing?.step === 'negotiation') return null;
@@ -180,9 +177,13 @@ export const saveIntake = mutation({
 
 		await assertStorageCapacity(ctx, {
 			documents: 1,
-			bytes: documentBytes({ ...company, setupIntake })
+			bytes: documentBytes({
+				companyId: company._id,
+				...(setup.setupAppointmentId ? { setupAppointmentId: setup.setupAppointmentId } : {}),
+				setupIntake
+			})
 		});
-		await ctx.db.patch('company', companyId, { setupIntake });
+		await setSetupIntake(ctx, company, setup, setupIntake);
 		return null;
 	}
 });
@@ -199,7 +200,7 @@ async function uploadCompany(ctx: QueryCtx, membershipId: Id<'memberships'>) {
 			.take(1),
 		ctx.db
 			.query('playbookItems')
-			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.withIndex('by_companyId_and_audience', (q) => q.eq('companyId', companyId))
 			.take(1),
 		ctx.db
 			.query('templateSources')
@@ -213,7 +214,7 @@ async function uploadCompany(ctx: QueryCtx, membershipId: Id<'memberships'>) {
 			.take(1),
 		ctx.db
 			.query('playbookItemCreationReceipts')
-			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.withIndex('by_companyId_and_renderKey', (q) => q.eq('companyId', companyId))
 			.take(1)
 	]);
 	if (
@@ -356,11 +357,7 @@ export const prepare = internalMutation({
 			bytes: documentBytes({ ...pendingTemplateSource, ...counters })
 		});
 		await ctx.db.patch('templateSources', pendingTemplateSourceId, counters);
-		await assertStorageCapacity(ctx, {
-			documents: 1,
-			bytes: documentBytes({ ...access.company, pendingTemplateSourceId })
-		});
-		await ctx.db.patch('company', access.companyId, { pendingTemplateSourceId });
+		await patchCompanySetup(ctx, access.companyId, { pendingTemplateSourceId });
 		if (pending) {
 			await ctx.db.patch('templateSources', pending._id, {
 				state: 'deleting',
@@ -462,8 +459,11 @@ export const expire = internalMutation({
 			return null;
 		const company = await ctx.db.get('company', templateSource.companyId);
 		if (company?.templateSourceId === templateSourceId) return null;
-		if (company?.pendingTemplateSourceId === templateSourceId)
-			await ctx.db.patch('company', company._id, { pendingTemplateSourceId: undefined });
+		if (
+			company &&
+			(await readCompanySetup(ctx, company)).row?.pendingTemplateSourceId === templateSourceId
+		)
+			await patchCompanySetup(ctx, company._id, { pendingTemplateSourceId: undefined });
 		await ctx.db.patch('templateSources', templateSourceId, { state: 'deleting' });
 		const { drain } = cleanupBudget(ctx);
 		let drained = await drain(

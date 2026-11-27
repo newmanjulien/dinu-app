@@ -72,10 +72,29 @@ export const configure = internalAction({
 	}
 });
 
+/** No action or external request on idle installations. */
+export const probe = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		if (
+			env.HUBSPOT_JOURNAL_ENABLED === 'true' &&
+			(await ctx.db.query('hubspotConnections').first())
+		)
+			await ctx.scheduler.runAfter(0, internal.hubspotJournal.poll, {});
+		return null;
+	}
+});
+
 export const claim = internalMutation({
 	args: { claim: v.string() },
 	returns: v.union(schema.doc('hubspotJournal'), v.null()),
 	handler: async (ctx, args) => {
+		if (
+			env.HUBSPOT_JOURNAL_ENABLED !== 'true' ||
+			!(await ctx.db.query('hubspotConnections').first())
+		)
+			return null;
 		let state = await ctx.db
 			.query('hubspotJournal')
 			.withIndex('by_name', (q) => q.eq('name', 'lifecycle'))
@@ -168,7 +187,7 @@ export const retirePortal = internalMutation({
 		if (!portal || portal.uninstalledAt !== args.occurredAt) return null;
 		const page = await ctx.db
 			.query('hubspotConnections')
-			.withIndex('by_accountId', (q) => q.eq('accountId', args.accountId))
+			.withIndex('by_accountId_and_status', (q) => q.eq('accountId', args.accountId))
 			.paginate({ cursor: args.cursor, numItems: 25 });
 		for (const connection of page.page) {
 			if (connection.status === 'retiring') continue;
@@ -182,8 +201,7 @@ export const retirePortal = internalMutation({
 			)) {
 				// No provider incarnation ID: don't remove a possibly newer local installation.
 				await ctx.db.patch('hubspotConnections', connection._id, {
-					status: 'reconnect',
-					generation: connection.generation + 1
+					status: 'reconnect'
 				});
 				await ctx.db.patch('hubspotPortalLifecycle', portal._id, {
 					diagnostic: 'Uninstall/install chronology is ambiguous; verify the current installation'

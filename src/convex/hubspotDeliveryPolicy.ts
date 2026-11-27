@@ -1,3 +1,4 @@
+import { credentialConnection } from './hubspotCredentials';
 import type { Doc } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
 import { readContract, type ContractHubspotLink } from './contractState';
@@ -34,7 +35,7 @@ export async function deliveryFacts(ctx: QueryCtx, event: Doc<'hubspotEvents'>) 
 	const current =
 		directory ??
 		(contract ? { companyId: contract.root.companyId, hubspot: contract.hubspot } : null);
-	const connection = await ctx.db.get('hubspotConnections', event.destination.connectionId);
+	const connection = await credentialConnection(ctx, event.destination.connectionId);
 	const accountValid = Boolean(
 		connection &&
 		connection.companyId === event.companyId &&

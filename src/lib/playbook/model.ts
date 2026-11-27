@@ -21,6 +21,9 @@ export type TemplateItem = Infer<typeof validators.templateItem>;
 export const isRepItem = <T extends { audience: TemplateAudience }>(
 	item: T
 ): item is Extract<T, { audience: 'rep' }> => item.audience === 'rep';
+export const isBuyerItem = <T extends { audience: TemplateAudience }>(
+	item: T
+): item is Extract<T, { audience: 'buyer' }> => item.audience === 'buyer';
 export type TemplateItemId = Id<'playbookItems'>;
 /** Identity shared by mutable heads and immutable snapshot entries. */
 export type RepInstructionRecord<ItemId extends string = Id<'playbookItems'>> = Pick<

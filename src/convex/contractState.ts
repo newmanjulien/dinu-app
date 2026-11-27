@@ -51,7 +51,7 @@ export async function accessibleContractState(
 /** Generic seller authorization belongs to the contract domain, independent of buyer links. */
 export async function seller(
 	ctx: QueryCtx,
-	args: { membershipId: Id<'memberships'>; id: Id<'savedContracts'> }
+	args: { membershipId?: Id<'memberships'>; id: Id<'savedContracts'> }
 ) {
 	const access = await requireMembership(ctx, args.membershipId);
 	const contract = await accessibleContractState(ctx, args.id, access);

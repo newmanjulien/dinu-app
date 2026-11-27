@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { setUiPreferences } from '../../../src/lib/auth/ui-preferences.svelte';
 	import { setBuyerLinkCopyFeedback } from '../../../src/lib/buyer/copy-feedback.svelte';
 	import { setAccountContext } from '../../../src/lib/auth/account-context.svelte';
 	import { setCompanySetup } from '../../../src/lib/features/company-setup/company-setup.svelte';
@@ -70,6 +71,11 @@
 	accountContext.authenticated = true;
 	accountContext.loading = false;
 	setViewer(() => state.viewer);
+	setUiPreferences({
+		get data() {
+			return state.preferences;
+		}
+	} as Parameters<typeof setUiPreferences>[0]);
 	const hubspot = setHubSpotDeals(
 		untrack(() => deals) ??
 			new HubSpotDeals({

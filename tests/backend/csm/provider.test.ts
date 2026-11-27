@@ -251,6 +251,14 @@ it('missing local credentials and deleted companies perform no provider work', a
 	expect((await t.action(api.csmBookings.availability, args)).status).toBe('unavailable');
 	vi.stubEnv('CAL_WEBHOOK_SECRET', 'synthetic');
 	await t.run(async (ctx) => {
+		await ctx.db.patch('company', owner.companyId, {
+			deletion: {
+				status: 'deleting',
+				inFlight: false,
+				issuer: identity.issuer,
+				clerkId: identity.subject
+			}
+		});
 		await ctx.db.insert('companyDeletions', {
 			companyId: owner.companyId,
 			issuer: identity.issuer,

@@ -38,6 +38,10 @@ const contractId = 'contract' as Id<'savedContracts'>;
 const buyerCode = 'Ab3Cd4Ef5Gh6I';
 const buyerState: FunctionReturnType<typeof api.buyerLinks.currentState> = {
 	templateVersionId: 'version' as Id<'templateVersions'>,
+	kind: 'current',
+	companyName: 'Ocean Company',
+	buyerName: 'Ocean Buyer',
+	buyerRefreshable: false,
 	displayIdentity: 'approved:0',
 	title: 'Contract',
 	contentRevision: 0,
@@ -136,13 +140,14 @@ it('clears discussions on delivered access rejection and recovers on retry', asy
 	const { client, reads } = snapshots(api.discussions.list);
 	const session = new DiscussionSession(
 		client as unknown as ConstructorParameters<typeof DiscussionSession>[0],
-		{ token: buyerCode },
+		{ kind: 'buyer', token: buyerCode },
 		() => 1,
-		() => ({ readOnly: true, generation: 0 })
+		{ policy: () => ({ readOnly: true, generation: 0 }) }
 	);
 	session.setActive(true);
-	const thread: FunctionReturnType<typeof api.discussions.list>['page'][number] = {
+	const thread: FunctionReturnType<typeof api.discussions.list>['threads'][number] = {
 		id: 'thread' as Id<'discussionThreads'>,
+		replies: [],
 		contentRevision: 1,
 		anchor: {
 			start: { kind: 'source', point: { sourceKey: 'p', offset: 0 } },
@@ -158,7 +163,7 @@ it('clears discussions on delivered access rejection and recovers on retry', asy
 			author: { key: 'buyer', name: 'Buyer', avatarUrl: null, buyer: true }
 		}
 	};
-	reads[0].receive({ page: [thread], isDone: true, continueCursor: '' });
+	reads[0].receive({ viewer: null, threads: [thread] });
 	expect(session.authorized).toBe(true);
 	expect(session.threads).toEqual([thread]);
 	reads[0].fail(new Error('Access revoked'));
@@ -166,14 +171,14 @@ it('clears discussions on delivered access rejection and recovers on retry', asy
 	expect(session.threads).toEqual([]);
 	expect(session.error).toContain('Comments are unavailable');
 	session.retry();
-	reads.at(-1)!.receive({ page: [thread], isDone: true, continueCursor: '' });
+	reads.at(-1)!.receive({ viewer: null, threads: [thread] });
 	expect(session.authorized).toBe(true);
 	expect(session.threads).toEqual([thread]);
 	session.destroy();
 });
 
 it('retains the accepted buyer resource through an opening retry and tears it down on access withdrawal', () => {
-	const owner = new BuyerContract(buyerCode, { onUpdate: unused });
+	const owner = new BuyerContract(buyerCode, { onUpdate: unused }, buyerContent.templateVersionId);
 	owner.allowed = true;
 	owner.content = buyerContent;
 	owner.Host = unused;
@@ -201,10 +206,12 @@ it('reports successful clipboard writes to one feedback owner and extends dismis
 	const feedback = new BuyerLinkCopyFeedback();
 	const writeText = vi.fn().mockResolvedValue(undefined);
 	Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-	const latest: NonNullable<FunctionReturnType<typeof api.buyerLinks.latest>> = {
+	const buyerLink = {
 		id: 'link' as Id<'buyerLinks'>,
 		token: buyerCode,
-		createdAt: 0
+		createdAt: 0,
+		contentRevision: 0,
+		concessions: {}
 	};
 	const links = new BuyerLinkController(
 		{
@@ -219,17 +226,23 @@ it('reports successful clipboard writes to one feedback owner and extends dismis
 				inflightActions: 0
 			}),
 			query: async (query) => {
-				expect(getFunctionName(query)).toBe(getFunctionName(api.buyerLinks.latest));
-				return latest as FunctionReturnType<typeof query>;
+				expect(getFunctionName(query)).toBe(getFunctionName(api.contracts.state));
+				return { buyerLink } as unknown as FunctionReturnType<typeof query>;
 			},
 			action: async (action) => {
 				expect(getFunctionName(action)).toBe(getFunctionName(api.buyerLinks.ensureLatest));
-				return { ...latest, created: false } as FunctionReturnType<typeof action>;
+				return {
+					id: buyerLink.id,
+					token: buyerLink.token,
+					createdAt: buyerLink.createdAt,
+					created: false
+				} as FunctionReturnType<typeof action>;
 			}
 		},
 		{
 			reserveForLink: () => ({
 				needsSave: false,
+				currentState: undefined,
 				get editor() {
 					return unused();
 				},

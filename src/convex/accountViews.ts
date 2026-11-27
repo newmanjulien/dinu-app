@@ -19,7 +19,6 @@ export const companyDeletionView = v.union(
 );
 export const accountView = v.object({
 	profile: profileView,
-	helpPreferences,
 	permissions,
 	membership: v.union(
 		v.null(),
@@ -27,8 +26,7 @@ export const accountView = v.object({
 			id: v.id('memberships'),
 			role,
 			companyId: v.id('company'),
-			isOwner: v.boolean(),
-			supportWidgetCollapsed: v.boolean()
+			isOwner: v.boolean()
 		})
 	),
 	company: v.union(
@@ -39,6 +37,10 @@ export const accountView = v.object({
 			avatarUrl: v.union(v.string(), v.null()),
 			approvalEmail: v.union(v.string(), v.null()),
 			setupCall: setupCallView,
+			templateSource: v.union(
+				v.object({ id: v.id('templateSources'), fingerprint: v.string() }),
+				v.null()
+			),
 			deletion: companyDeletionView
 		})
 	),
@@ -46,6 +48,7 @@ export const accountView = v.object({
 	templateReady: v.boolean(),
 	instructionsReady: v.boolean()
 });
+export const uiPreferencesView = v.object({ helpPreferences, supportWidgetCollapsed: v.boolean() });
 export const viewerResult = v.union(v.null(), accountView);
 
 /** A colleague combines person details with this company's membership role. */

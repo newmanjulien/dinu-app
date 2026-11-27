@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { setUiPreferences } from '../../../src/lib/auth/ui-preferences.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import {
 		TemplateSource,
@@ -10,10 +11,12 @@
 	import Layout from '../../../src/routes/(workspace)/contracts/(document)/+layout.svelte';
 	import { ContractEditors, setContractEditors } from '../../../src/lib/contract/editors.svelte';
 	import { setWorkspaceRuntime } from '../../../src/lib/auth/workspace-context.svelte';
+	import { setPageMetadata } from '../../../src/lib/auth/page-metadata.svelte';
 	import { setViewerSession, setViewer } from '../../../src/lib/auth/viewer-session.svelte';
 	import type { Viewer } from '../../../src/lib/auth/viewer-session.svelte';
 	import { screen, goto } from '../../support/navigation.svelte';
 	let { sessions }: { sessions: ContractEditors } = $props();
+	setPageMetadata();
 	untrack(() => setContractEditors(sessions));
 	setWorkspaceRuntime({
 		hostReady: true,
@@ -25,28 +28,28 @@
 	setViewerSession({
 		userId: 'user',
 		phase: 'ready',
+		workspaceAdmitted: true,
 		blocked: false,
 		closing: false,
 		transportGeneration: 0
 	} as ReturnType<typeof import('../../../src/lib/auth/viewer-session.svelte').useViewerSession>);
+	setUiPreferences({
+		data: { helpPreferences: { contract: true, buyerLink: true }, supportWidgetCollapsed: false }
+	} as Parameters<typeof setUiPreferences>[0]);
 	setViewer(
 		() =>
 			({
 				profile: { id: 'profile' },
-				helpPreferences: { contract: true, buyerLink: true },
 				company: { id: 'company' },
 				membership: { id: 'membership' }
-			}) as Viewer
+			}) as unknown as Viewer
 	);
 	const hubspot = setHubSpotDeals(
 		new HubSpotDeals({
 			client: useConvexClient(),
 			membershipId:
 				'membership' as import('../../../src/convex/_generated/dataModel').Id<'memberships'>,
-			connection: useQuery(api.hubspotConnections.status, {
-				membershipId:
-					'membership' as import('../../../src/convex/_generated/dataModel').Id<'memberships'>
-			}),
+			connection: useQuery(api.hubspotConnections.status, {}),
 			identity: () => 'session:company:membership'
 		})
 	);

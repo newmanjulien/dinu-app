@@ -135,8 +135,7 @@ export async function readValidationFacts(
 		)
 		.take(certificate.chunkCount + 1);
 	const bytes = new Uint8Array(certificate.dataBytes);
-	let cursor = 0,
-		readBytes = 0;
+	let cursor = 0;
 	for (const [order, row] of rows.entries()) {
 		if (
 			row.order !== order ||
@@ -148,13 +147,8 @@ export async function readValidationFacts(
 			throw templateRejected('Source validation storage is incomplete.');
 		bytes.set(new Uint8Array(row.data), cursor);
 		cursor += row.data.byteLength;
-		readBytes += documentBytes(row);
 	}
-	if (
-		rows.length !== certificate.chunkCount ||
-		cursor !== bytes.length ||
-		readBytes !== certificate.readBytes
-	)
+	if (rows.length !== certificate.chunkCount || cursor !== bytes.length)
 		throw templateRejected('Source validation storage is incomplete.');
 	const decoded = decodeValidationFacts(bytes.buffer);
 	if (decoded.index.orderedBlocks.length !== templateSource.blockCount)
@@ -194,7 +188,9 @@ export const certify = internalMutation({
 		)
 			return null;
 		if (!validationCertified(templateSource, certificate)) {
-			const source = await readTemplateSource(ctx, templateSource._id, companyId, templateSource);
+			const source = await readTemplateSource(ctx, templateSource._id, companyId, templateSource, {
+				verifyFingerprint: true
+			});
 			certificate = await writeValidationFacts(ctx, {
 				companyId,
 				templateSourceId: templateSource._id,

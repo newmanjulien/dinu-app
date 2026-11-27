@@ -96,7 +96,7 @@ function fixture({ shared = true, frozen = true } = {}) {
 	const state = csmState(),
 		controls = creationState(),
 		layout = layoutFixture();
-	state.viewer.helpPreferences.contract = true;
+	state.preferences.helpPreferences.contract = true;
 	const data = documentFixture(40),
 		saved = readyContract(data);
 	let liveTemplate = documentFixture(2).blocks;
@@ -105,7 +105,13 @@ function fixture({ shared = true, frozen = true } = {}) {
 			if (observation.released) return;
 			switch (observation.name) {
 				case 'contracts:state':
-					observation.update({ ...saved.contract, buyerName: null, requestDelivery: null });
+					observation.update({
+						...saved.contract,
+						buyerName: null,
+						requestDelivery: null,
+						buyerLink: null,
+						hasUnreadComment: false
+					});
 					break;
 				case 'templateSources:authoringSource':
 					observation.update({ blocks: liveTemplate, templateSourceFingerprint: 'live' });
@@ -139,6 +145,7 @@ function fixture({ shared = true, frozen = true } = {}) {
 	context.client = client;
 	replaceContractCacheScope(
 		createCacheScope({
+			userId: state.session.userId!,
 			profileId: state.viewer.profile.id,
 			membershipId: state.viewer.membership.id
 		})
@@ -161,9 +168,6 @@ function fixture({ shared = true, frozen = true } = {}) {
 		membershipId: state.viewer.membership.id,
 		client: client as unknown as ConstructorParameters<typeof ContractEditors>[0]['client'],
 		cache,
-		onSaved() {},
-		onDeleted() {},
-		onRenamed() {},
 		registerEditor: (editor) => {
 			editor.resume();
 			return () => {};
@@ -757,7 +761,7 @@ it('owns first functioning help above saved module/host/frozen snapshot, and pre
 	const search =
 		deferred<typeof import('../../../src/lib/components/document/DocumentSearchTools.svelte')>();
 	context.search = search.promise;
-	f.state.viewer.helpPreferences.contract = false;
+	f.state.preferences.helpPreferences.contract = false;
 	screen.destination = { kind: 'saved', id: f.saved.id };
 	const savedModule =
 		deferred<typeof import('../../../src/lib/components/workspace/SavedContract.svelte')>();
@@ -813,7 +817,7 @@ it('owns first functioning help above saved module/host/frozen snapshot, and pre
 
 it('waits for resolved preference before saved admission and makes A→B→A separate openings with fenced old writes', async () => {
 	const f = fixture();
-	f.state.viewer.helpPreferences.contract = undefined as unknown as boolean;
+	f.state.preferences.helpPreferences.contract = undefined as unknown as boolean;
 	screen.destination = { kind: 'saved', id: f.saved.id };
 	const module =
 		deferred<typeof import('../../../src/lib/components/workspace/SavedContract.svelte')>();
@@ -824,7 +828,7 @@ it('waits for resolved preference before saved admission and makes A→B→A sep
 	module.resolve(await import('../../../src/lib/components/workspace/SavedContract.svelte'));
 	await settle();
 	expect(f.editors.entries[0].attachments).toBe(1);
-	f.state.viewer.helpPreferences.contract = false;
+	f.state.preferences.helpPreferences.contract = false;
 	await settle();
 	const first = document.querySelector('dialog')!;
 	expect(first).not.toBeNull();
@@ -857,7 +861,7 @@ it('waits for resolved preference before saved admission and makes A→B→A sep
 
 it('closes naming before automatic help and never reopens it on same-opening saved-module failure/retry', async () => {
 	const f = fixture();
-	f.state.viewer.helpPreferences.contract = false;
+	f.state.preferences.helpPreferences.contract = false;
 	const module =
 		deferred<typeof import('../../../src/lib/components/workspace/SavedContract.svelte')>();
 	context.saved = module.promise;
@@ -894,7 +898,7 @@ it('handles hidden preference once, fences transport-old writes, and confirms ch
 	f.mount();
 	await settle();
 	expect(document.querySelector('dialog')).toBeNull();
-	f.state.viewer.helpPreferences.contract = false;
+	f.state.preferences.helpPreferences.contract = false;
 	await settle();
 	expect(document.querySelector('dialog')).toBeNull();
 	// A true replacement opening gets a fresh automatic decision.
@@ -916,7 +920,7 @@ it('handles hidden preference once, fences transport-old writes, and confirms ch
 	checkbox.click();
 	await settle();
 	expect(checkbox.checked).toBe(false);
-	f.state.viewer.helpPreferences.contract = true;
+	f.state.preferences.helpPreferences.contract = true;
 	await settle();
 	expect(checkbox.checked).toBe(true);
 	expect(document.querySelector('dialog')).toBe(modal);
@@ -927,7 +931,7 @@ it.each(['automatic', 'manual'] as const)(
 	async (opening) => {
 		const configured = vi.spyOn(HelpSession.prototype, 'configure');
 		const f = fixture();
-		f.state.viewer.helpPreferences.contract = opening === 'manual';
+		f.state.preferences.helpPreferences.contract = opening === 'manual';
 		f.controls.runtime.hostReady = true;
 		f.controls.factory.ready = true;
 		screen.destination = { kind: 'saved', id: f.saved.id };
@@ -1006,7 +1010,7 @@ it.each([
 	'defers initially paused $preference preference (hidden=$hidden) until the first active decision before saved admission',
 	async ({ preference, hidden }) => {
 		const f = fixture({ frozen: false });
-		f.state.viewer.helpPreferences.contract =
+		f.state.preferences.helpPreferences.contract =
 			preference === 'known' ? hidden : (undefined as unknown as boolean);
 		f.controls.runtime.paused = true;
 		f.controls.runtime.hostReady = true;
@@ -1034,7 +1038,7 @@ it.each([
 		expect(editor.attachments).toBe(1);
 		expect(document.querySelector('dialog')).toBeNull();
 		expect(document.querySelector('nav[aria-label="Document tools"]')).toBeNull();
-		f.state.viewer.helpPreferences.contract = hidden;
+		f.state.preferences.helpPreferences.contract = hidden;
 		await settle();
 		expect(help.resolved).toBe(true);
 		expect(help.admitted).toBe(false);
@@ -1060,7 +1064,7 @@ it.each([
 			await settle();
 		}
 		// A hidden decision is consumed too: a later subscription cannot interrupt the viewer.
-		f.state.viewer.helpPreferences.contract = !hidden;
+		f.state.preferences.helpPreferences.contract = !hidden;
 		f.state.session.transportGeneration++;
 		f.controls.runtime.paused = true;
 		await settle();
@@ -1080,7 +1084,7 @@ it.each(['resolve', 'reject'] as const)(
 	async (completion) => {
 		const configured = vi.spyOn(HelpSession.prototype, 'configure');
 		const f = fixture();
-		f.state.viewer.helpPreferences.contract = false;
+		f.state.preferences.helpPreferences.contract = false;
 		f.controls.runtime.hostReady = true;
 		f.controls.factory.ready = true;
 		screen.destination = { kind: 'saved', id: f.saved.id };
@@ -1129,7 +1133,7 @@ it.each(['resolve', 'reject'] as const)(
 		expect(checkbox.disabled).toBe(false);
 		expect(help.hidden).toBe(false);
 		expect(checkbox.checked).toBe(false);
-		f.state.viewer.helpPreferences.contract = true;
+		f.state.preferences.helpPreferences.contract = true;
 		await settle();
 		expect(help.hidden).toBe(true);
 		expect(checkbox.checked).toBe(true);

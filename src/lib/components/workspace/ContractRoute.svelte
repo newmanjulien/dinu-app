@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { useUiPreferences, optimisticHelp } from '$lib/auth/ui-preferences.svelte';
+	const uiPreferences = useUiPreferences();
 	import { useWorkspacePresentation } from '$lib/auth/workspace-presentation.svelte';
 	import { getWorkspaceRuntime } from '$lib/auth/workspace-context.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
@@ -8,8 +10,8 @@
 	import { getDocumentNavigation } from '$lib/document/runtime/navigation.svelte';
 	import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 	import { page } from '$app/state';
+	import { getPageMetadata } from '$lib/auth/page-metadata.svelte';
 	import type { Id } from '../../../convex/_generated/dataModel';
-	import { BuyerLinkBarVisit } from '$lib/buyer/bar-visit.svelte';
 	import type { ContractDestination } from '$lib/contract/saved';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
 	import { useConvexClient } from 'convex-svelte';
@@ -33,6 +35,7 @@
 	const runtime = getWorkspaceRuntime();
 	const session = useViewerSession();
 	const editors = getContractEditors();
+	const pageMetadata = getPageMetadata();
 	const accountViewer = useViewer();
 	const client = useConvexClient();
 	const creationHelp = new HelpSession();
@@ -59,17 +62,14 @@
 	let previewAttempt = $state(0);
 	let frame = $state.raw<SavedRouteFrameState>();
 	const activeFrame = $derived(data.kind === 'saved' && frame?.id === data.id ? frame : undefined);
+	let contractMode = $state<'negotiate' | 'comments'>('negotiate');
 	let helpOpening = $state.raw<{
 		token: symbol;
 		destination: string;
 		identity: string;
 		help: HelpSession;
 	}>();
-	let buyerLinkVisit = $state.raw<{
-		destination: string;
-		identity: string;
-		visit: BuyerLinkBarVisit;
-	}>();
+	let commentsHelp = $state.raw<HelpSession>();
 	const helpIdentity = $derived.by(() => {
 		const account = accountViewer();
 		return JSON.stringify([
@@ -85,21 +85,18 @@
 		const destination = data.kind === 'saved' ? data.id : undefined;
 		const identity = helpIdentity;
 		untrack(() => {
-			if (buyerLinkVisit?.destination !== destination || buyerLinkVisit?.identity !== identity)
-				buyerLinkVisit = destination
-					? {
-							destination,
-							identity,
-							visit: new BuyerLinkBarVisit(
-								destination as Id<'savedContracts'>,
-								accountViewer().membership.id
-							)
-						}
-					: undefined;
 			if (helpOpening?.destination === destination && helpOpening?.identity === identity) return;
+			contractMode = 'negotiate';
 			helpOpening?.help.destroy();
+			commentsHelp?.destroy();
+			commentsHelp = undefined;
 			helpOpening = destination
-				? { token: Symbol('saved-presentation'), destination, identity, help: new HelpSession() }
+				? {
+						token: Symbol('saved-presentation'),
+						destination,
+						identity,
+						help: new HelpSession()
+					}
 				: undefined;
 			if (helpOpening)
 				recordDocumentLoadingMilestone('help-opening-start', {
@@ -107,45 +104,76 @@
 				});
 		});
 	});
-	const currentBuyerLinkVisit = $derived(
-		data.kind === 'saved' &&
-			buyerLinkVisit?.destination === data.id &&
-			buyerLinkVisit.identity === helpIdentity
-			? buyerLinkVisit.visit
-			: undefined
-	);
+	$effect(() => {
+		if (data.kind !== 'saved' || owner?.editor.buyerLink === null) contractMode = 'negotiate';
+	});
 	$effect(() => {
 		const opening = helpOpening;
 		const account = accountViewer();
 		const generation = session.transportGeneration;
-		const hidden = account.helpPreferences?.contract;
+		const contractHidden = uiPreferences.data?.helpPreferences.contract;
+		const commentsHidden = uiPreferences.data?.helpPreferences.buyerLink;
+		const mode = contractMode;
 		const active = !runtime.paused;
 		if (!opening) return;
 		untrack(() => {
-			opening.help.setActive(active);
+			const isCurrent = () =>
+				helpOpening === opening &&
+				data.kind === 'saved' &&
+				data.id === opening.destination &&
+				!runtime.paused &&
+				helpIdentity === opening.identity &&
+				session.transportGeneration === generation &&
+				!session.closing;
+			opening.help.setActive(active && mode === 'negotiate');
 			opening.help.configure(
-				hidden === undefined
+				contractHidden === undefined
 					? { kind: 'pending' }
 					: {
 							kind: 'preference',
 							variant: 'contract',
 							identity: opening.identity,
-							hidden,
+							hidden: contractHidden,
 							save: (hidden) =>
-								client.mutation(api.profiles.setHelpHidden, { variant: 'contract', hidden }),
-							current: () =>
-								helpOpening === opening &&
-								data.kind === 'saved' &&
-								data.id === opening.destination &&
-								!runtime.paused &&
-								helpIdentity === opening.identity &&
-								session.transportGeneration === generation &&
-								!session.closing
+								client.mutation(
+									api.profiles.setHelpHidden,
+									{ variant: 'contract', hidden },
+									{ optimisticUpdate: (store) => optimisticHelp(store, 'contract', hidden) }
+								),
+							current: isCurrent
 						}
 			);
-			opening.help.considerAutomatic();
+			if (mode === 'negotiate') opening.help.considerAutomatic();
+
+			if (mode === 'comments') {
+				const current = (commentsHelp ??= new HelpSession());
+				current.setActive(active);
+				current.configure(
+					commentsHidden === undefined
+						? { kind: 'pending' }
+						: {
+								kind: 'preference',
+								variant: 'contract-comments',
+								identity: opening.identity,
+								hidden: commentsHidden,
+								save: (hidden) =>
+									client.mutation(
+										api.profiles.setHelpHidden,
+										{ variant: 'buyerLink', hidden },
+										{ optimisticUpdate: (store) => optimisticHelp(store, 'buyerLink', hidden) }
+									),
+								current: isCurrent
+							}
+				);
+				current.considerAutomatic();
+			} else {
+				commentsHelp?.setActive(false);
+			}
 		});
 	});
+	const activeHelp = $derived(
+		contractMode === 'comments' ? (commentsHelp ?? helpOpening?.help) : helpOpening?.help
+	);
 	let helpPresentedToken = $state<symbol>();
 	const helpPresented = $derived(Boolean(helpOpening && helpPresentedToken === helpOpening.token));
 	$effect(() => {
@@ -187,10 +215,24 @@
 		release: () => void;
 		protect: () => void;
 	}>();
+	const bootstrapGeneration = untrack(() => session.transportGeneration);
+	let bootstrapConsumed = false;
 	// The route owns both leases, independently of lazy modules, rendering and retries.
 	function ownSaved(id: string) {
 		if (owner?.id === id) return owner;
 		let releaseResource = resources?.beginOpen(id);
+		if (!bootstrapConsumed) {
+			bootstrapConsumed = true;
+			const bootstrap = page.data.routeBootstrap;
+			if (
+				bootstrap?.kind === 'current' &&
+				bootstrap.state?._id === id &&
+				session.transportGeneration === bootstrapGeneration &&
+				bootstrap.sessionId === session.preparedSessionId &&
+				bootstrap.userId === session.userId
+			)
+				editors.seedAuthoritative(bootstrap.state);
+		}
 		const opening = editors.acquire(id);
 		const previous = owner;
 		owner = {
@@ -203,6 +245,7 @@
 				}
 			},
 			release: () => {
+				if (opening.editor.pending) void opening.editor.savePending();
 				opening.release();
 				releaseResource?.();
 			}
@@ -238,6 +281,34 @@
 				previewRenderFailed = false;
 			}
 		});
+	});
+	// The editor and tab title share the same authorized contracts.state read.
+	let titleRead = $state.raw<{
+		id: string;
+		read: ReturnType<typeof editors.retainMetadata>['read'];
+	}>();
+	$effect(() => {
+		const id =
+			data.kind === 'saved' && !runtime.paused && editors.accessAvailable ? data.id : undefined;
+		if (!id) return;
+		const lease = editors.retainMetadata(id);
+		titleRead = { id, read: lease.read };
+		return () => {
+			titleRead = undefined;
+			lease.release();
+		};
+	});
+	$effect(() => {
+		if (data.kind !== 'saved' || titleRead?.id !== data.id || !titleRead.read.current) return;
+		const title =
+			titleRead.read.data === null
+				? 'Contract not found'
+				: titleRead.read.data
+					? titleRead.read.buyerName
+						? `Negotiate with ${titleRead.read.buyerName}`
+						: 'Negotiate a contract'
+					: undefined;
+		if (title) return pageMetadata.register(title, page.route.id, page.url.pathname);
 	});
 	$effect(() => {
 		const current = owner;
@@ -290,6 +361,7 @@
 		settleOpening(false);
 		owner?.release();
 		helpOpening?.help.destroy();
+		commentsHelp?.destroy();
 		creationHelp.destroy();
 	});
 	async function openSaved(id: Id<'savedContracts'>) {
@@ -317,17 +389,18 @@
 	}
 </script>
 
-{#if data.kind === 'saved' && !creating && !runtime.paused && helpOpening?.help.open}
+{#if data.kind === 'saved' && !creating && !runtime.paused && activeHelp?.open}
 	<HelpModal
-		help={helpOpening.help}
+		help={activeHelp}
 		isAdmin={accountViewer().membership.role === 'admin'}
-		onClose={() => helpOpening?.help.close()}
+		onClose={() => activeHelp.close()}
 	/>
 {/if}
 <div inert={creating} aria-hidden={creating}>
 	<WorkspaceRouteFrame
 		kind="saved"
-		help={helpOpening?.help ?? creationHelp}
+		{contractMode}
+		help={activeHelp ?? creationHelp}
 		helpHosted
 		active={!runtime.paused && (creating || Boolean(helpOpening?.help.admitted))}
 		workspace={activeFrame?.workspace}
@@ -350,7 +423,8 @@
 					{:else if SavedContract}{#key data.id}
 							<SavedContract
 								id={data.id}
-								buyerLinkVisit={currentBuyerLinkVisit}
+								mode={contractMode}
+								onModeChange={(next) => (contractMode = next)}
 								interactionAdmitted={!creating}
 								onVisible={() => creationPhase('displayed')}
 								onFailure={() => {

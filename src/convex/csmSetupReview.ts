@@ -145,7 +145,7 @@ export const scan = internalMutation({
 			return null;
 		const page = await ctx.db
 			.query('csmWebhookEvidence')
-			.withIndex('by_appointmentId_and_state', (q) =>
+			.withIndex('by_appointmentId_and_state_and_evidenceGeneration', (q) =>
 				q.eq('appointmentId', a._id).eq('state', 'retained')
 			)
 			.paginate({ cursor: args.cursor, numItems: 25 });

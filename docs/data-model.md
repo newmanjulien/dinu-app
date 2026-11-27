@@ -1,19 +1,19 @@
 # Current data model
 
-Reusable company setup is a **template**; a buyer-specific instance is a **contract**. Shared text/rendering machinery is a **document**. The authoritative table map (51 tables) is [schema.ts](../src/convex/schema.ts).
+Reusable company setup is a **template**; a buyer-specific instance is a **contract**. Shared text/rendering machinery is a **document**. The authoritative table map is [schema.ts](../src/convex/schema.ts).
 
-| Owner                 | Authority                                                                                  | Lifetime                                   |
-| --------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------ |
-| Accounts              | Profiles, memberships and company ownership                                                | Person or company                          |
-| Template authoring    | Compact heads, immutable revision bodies, current manifest and certified source            | Company                                    |
-| Frozen templates      | Permanently frozen template manifests and referenced Playbook/source content               | Company, including after contract deletion |
-| Contracts             | `savedContracts` root with flat `concessions[]`, `review` state, and `quoteRequests`       | Contract                                   |
-| Browse and buyer view | Derived `contractDirectory` and auto-synced `buyerLinks.currentView`                       | Contract                                   |
-| Discussions           | Shared contract `discussionThreads` and `discussionMessages` with anchor footprints        | Contract                                   |
-| Operations            | Flat `operationReceipts` for idempotent retry                                              | 24-hour TTL (daily cron); preserved across single-contract delete |
-| Exports and quotes    | `wordExports` (short-lived DOCX bytes) and `hubspotQuotePushes` (30-day HTML + facts)      | Byte TTL / company lifetime                |
-| Integrations          | Captured destinations, leases, dispatch and reconciliation                                 | Each protocol's retention                  |
-| Maintenance           | Bounded deletion, preparation and cleanup progress                                         | Until owned work completes                 |
+| Owner                 | Authority                                                                             | Lifetime                                                          |
+| --------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Accounts              | Profiles, memberships and company ownership                                           | Person or company                                                 |
+| Template authoring    | Compact heads, immutable revision bodies, current manifest and certified source       | Company                                                           |
+| Frozen templates      | Permanently frozen template manifests and referenced Playbook/source content          | Company, including after contract deletion                        |
+| Contracts             | `savedContracts` root with flat `concessions[]`, `review` state, and `quoteRequests`  | Contract                                                          |
+| Browse and buyer view | Derived `contractDirectory` and auto-synced `buyerLinks.currentView`                  | Contract                                                          |
+| Discussions           | Shared contract `discussionThreads` and `discussionMessages` with anchor footprints   | Contract                                                          |
+| Operations            | Flat `operationReceipts` for idempotent retry                                         | 24-hour TTL (daily cron); preserved across single-contract delete |
+| Exports and quotes    | `wordExports` (short-lived DOCX bytes) and `hubspotQuotePushes` (30-day HTML + facts) | Byte TTL / company lifetime                                       |
+| Integrations          | Captured destinations, leases, dispatch and reconciliation                            | Each protocol's retention                                         |
+| Maintenance           | Bounded deletion, preparation and cleanup progress                                    | Until owned work completes                                        |
 
 The seller dashboard and buyer-link views both compose the contract directly from its frozen `templateVersions` snapshot and applied Playbook concessions (`savedContracts.concessions` on the dashboard, `buyerLinks.currentView.concessions` on the buyer link). There is no materialized contract document store or buyer change-proposal system.
 
@@ -21,23 +21,19 @@ The seller dashboard and buyer-link views both compose the contract directly fro
 
 `profiles` describe people and their authentication identity. `memberships` connect people to a company and own their Rep/Admin role. The indexed transactional join enforces at most one membership per profile. Ownership is independent: `company.ownerProfileId` identifies the owner, who may choose the Rep role. Missing ownership supports operator recovery; a missing template source means setup is incomplete.
 
-`buyerLinkBarShowings` remembers one presentation per membership and unlinked contract; `memberships.firstBuyerLinkHintShowing` remembers the dashboard's first-link hint. Contract deletion drains showing records through its bounded cleanup, and account/member removal queues a durable bounded drain before deleting the membership. Company deletion drains both showing records and pending membership drains before removing the company.
+`profiles.deletedAt` and `company.deletion` fence normal authenticated reads directly. Auth derives the profile and its unique membership once; normal reads do not query separate deletion markers. Workspace read arguments omit membership IDs. Mutations keep expected membership IDs and reject a replaced workspace.
 
-`accounts.viewer` returns a profile, optional membership, optional company, and derived permissions. `requireMembership` returns an explicit access object with an actual profile and membership. The server derives identity, checks expected membership IDs, and rejects unavailable or deleting companies. Role is never an account-profile property in the canonical API.
+`accounts.viewer` projects identity, role, company, permissions, and setup/source identity. `accounts.homeBootstrap` combines this projection with Home cards and setup progress for one SSR request. `contracts.routeBootstrap` returns authorized saved-document metadata and its frozen version identity for hard loads.
 
-`profiles.helpPreferences` contains required `contract` and `buyerLink` booleans, where
-`true` suppresses automatic Help. Both default to `false`. Only the authenticated
-profile owner can change either flag through `profiles.setHelpHidden`; the mutation
-preserves the other flag. The private account and seller-context queries return the
-preferences at the top level; shared profile/colleague views do not expose them.
-Seller buyer preview has no checkbox and cannot initiate preference writes.
-Anonymous buyers keep per-link browser preferences. This required shape has no runtime fallback. A target missing it needs a bounded preservation/disposition plan before the matching frontend/backend release; an old reset record proves no current population facts.
+`membershipSetupState.setupCompletedAt` records the member's checklist completion separately from access-bearing membership fields. The strict schema has no buyer-link bar showing table or first-link showing marker.
+
+`profileUiPreferences.helpPreferences` owns the contract/buyer-link Help booleans; `membershipUiPreferences.supportWidgetCollapsed` owns the support choice. `accounts.uiPreferences` reads them independently of the viewer query. Missing records use defaults; writes upsert only the side record, preserve unrelated choices, and skip equal values. There are no profile/membership fallback fields. Owner removal and company deletion drain preference/setup records. Shared profiles and colleagues do not expose private choices. Seller buyer preview cannot write preferences; anonymous buyers keep per-link browser choices.
 
 `profiles`, `memberships`, and `companies` own their respective update APIs. `avatars` owns avatar authorization/storage operations. Invitations capture their own lifecycle; their delivery summary is a list projection of an authoritative email delivery.
 
-Home’s setup prompts guide both reps and admins to create a contract and then create a buyer link for their latest own contract. The “Create link” button uses the shared `BuyerLinkController` to create and copy the link directly from Home. `accounts.setupHints` checks the member’s latest own contract and reads `buyerLinks` through its company/creator index. Any link created by the member in the current company, or an existing link for their latest contract, satisfies this step. Link creation through any entry point advances setup even if copying fails; previewing alone does not. Clipboard successes and failures use the shared workspace feedback. Setup no longer needs a client copy-progress marker or acknowledgment mutation; `memberships.buyerLinkCopiedAt` is absent from the strict schema; its target field removal requires G07 clearance. Admins continue to integrations and inviting colleagues; integration read errors do not advance to invitations.
+Home’s setup prompts guide both reps and admins to create a contract and then create a buyer link for their latest own contract. The “Create link” button uses the shared `BuyerLinkController` to create and copy the link directly from Home. `accounts.setupHints` checks the member’s latest own contract and reads `buyerLinks` through its company/creator index. Any link created by the member in the current company, or an existing link for their latest contract, satisfies this step. Link creation through any entry point advances setup even if copying fails; previewing alone does not. Clipboard successes and failures use the shared workspace feedback. Setup no longer needs a client copy-progress marker or acknowledgment mutation; `memberships.buyerLinkCopiedAt` is absent from the strict schema; no compatibility field or showing acknowledgement remains. Admins continue to integrations and inviting colleagues; integration read errors do not advance to invitations.
 
-`company.pendingTemplateSourceId` identifies at most one company-owned pending
+`companySetupState.pendingTemplateSourceId` identifies at most one company-owned pending
 DOCX. Successful valid import adopts it atomically with `uploadedAt` and a 90-day
 `expiresAt`; replacing it retires the previous pending source through bounded
 cleanup. Uploader attribution does not make it personal data owned by that member.
@@ -49,7 +45,11 @@ The admin-only `templateSetup.status` returns booking/intake/upload/waiting/rele
 and bounded pending metadata; reps receive no pending metadata. See the
 [operator runbook](assisted-template-setup.md).
 
-`company.setupAppointmentId` identifies the company's current native setup call.
+`companySetupState.setupAppointmentId` identifies the company's current native setup call;
+`companySetupState.setupIntake` stores the assisted setup answers. Both are separate from
+the company record used for access checks, together with the pending source pointer.
+Reads and writes use the side record directly without legacy company-field fallback. Company deletion removes the setup
+record after appointment cleanup.
 Its owned appointment's last decisive `bookingConfirmation` (`accepted` or
 `cancelled`) controls pre-release upload and operator-release qualification. An
 accepted creation qualifies while provider refresh is checking and after the call
@@ -136,14 +136,14 @@ meaningful after deletion. `templateSourceCertificates` and `templateSourceValid
 private certified coordinate/numbering facts without source prose. See
 [template authoring storage](template-authoring-storage.md) for read contracts and conversion.
 
-`templateVersions` contain the template source and ordered item/revision references. `currentTemplate` is one pointer per company. A version is `mutable` while no contract has captured it. Contract creation atomically changes it to `frozen`; later authoring creates another version. Deleting the capturing contract never makes a version mutable again. Mutable-only revisions can be replaced or removed; frozen revisions retain their captured content.
+`templateVersions` contain the template source and ordered item/revision references. `currentTemplate` is one pointer per company. A version is `mutable` while no contract has captured it. Contract creation atomically changes it to `frozen`; later authoring creates another version. Deleting the capturing contract never makes a version mutable again. Mutable revision slots are preallocated and updated in place until frozen; frozen revisions retain their captured content. Authoring save watermarks remain in memory rather than browser storage.
 
 Template saving commits exact JSON/native counters and company-monotonic authoring
 and structural generations with head/revision/receipt/manifest/pointer changes. Ordinary
 saves serialize only the changed historical body. Structural changes validate affected
 relations against certified compact facts and heads; prose edits need only metadata and
 the changed body. Initial/bulk acceptance and conversion perform complete audits.
-`currentStructure` serves annotations; `content` hydrates selected item content. Native admission
+`currentStructure` serves live annotations; bounded `batchContent` hydrates exact selected item revisions in one authenticated read. Source prose is keyed by fingerprint, and browser detail payloads by item/revision/audience. Native admission
 and rollback checks remain independent of business JSON limits.
 
 ## Contracts, concessions, and review
@@ -163,7 +163,7 @@ flowchart LR
 
 `approvals.request`, `approvals.decide`, and `approvals.complete` own Playbook approval workflows directly on `savedContracts.concessions` and `savedContracts.review`. Admins approve or decline pending concessions from the left margin (`ReviewTags`). When a decision revokes a previously approved concession (`approved → rejected`), `retractBuyerLinkConcession` immediately pulls that concession back from any live `buyerLinks.currentView` (invalidating overlapping comments) while holding pending edits; when a decision leaves zero pending and zero rejected concessions, `syncBuyerLink` automatically updates `buyerLinks.currentView` and removes overlapped comments. Confirming review completion (`approvals.complete` guarded by `expectedDecidedAt`, returning `{ status: 'skipped' }` if stale) queues the Loops decision notification with the triggering reviewer in CC.
 
-`contractDirectory` is a maintained derived listing/search/provider projection with title, creator, saved/created ordering, association summary, and `hasUnreadComment`. `buyerLinks.currentView` stores `{ templateVersionId, title, buyerName, concessions, contentRevision, displayIdentity }` (where `displayIdentity` hashes `[templateVersionId, title, sortedConcessions]`) and updates automatically on contract save, approval decision, rename, or HubSpot buyer-name refresh; logical contract deletion sets `currentView: null` synchronously.
+`contractDirectory` is a maintained derived listing/search/provider projection with title, frozen `templateVersionId`, contract author, active buyer-link publisher/token, saved/created ordering, association summary, and `hasUnreadComment`. Cards can start immutable loading alongside metadata. `contracts.home` is a plain live workspace query; `contracts.batchState` bounds warming reads. The company/publisher index bounds active-link presence and first-link checks to one or two directory rows. The buyer pointer materializes refresh eligibility so public manual-contract reads need no association lookup. `buyerLinks.currentView` stores `{ templateVersionId, title, buyerName, concessions, contentRevision, displayIdentity }` (where `displayIdentity` hashes `[templateVersionId, title, sortedConcessions]`) and updates automatically on contract save, approval decision, rename, or HubSpot buyer-name refresh; logical contract deletion sets `currentView: null` synchronously.
 
 Optional `contractHubspotAssociations` owns the CRM destination; `contractBuyerRefreshes` separately owns destination-bound buyer-name freshness. Buyer names stay outside saved intent and confirmed caches.
 
@@ -193,6 +193,8 @@ setup completion. See [CSM calls](delegation.md).
 
 ## Email, caches, and maintenance
 
+`hubspotConnections` owns the stable company/portal association and integration settings. `hubspotCredentials`, uniquely indexed by connection, owns token generation, access/refresh tokens, expiry, and refresh claims. Internal provider reads attach credentials explicitly; ordinary connection projections do not subscribe to token rotation or expose secrets. Connection removal and company cleanup delete the credential side record.
+
 `operationReceipts` is a single flat table (`{ companyId, contractId?, key, inputs, result, expiresAt }`) keyed by authenticated company/actor/action/operationId. Receipts expire 24 hours after creation via the daily `operationReceipts.pruneExpired` cron (`by_expiresAt`), are preserved across individual contract deletion because `contracts.create`, `hubspotDeals`, and `hubspotQuotes` read receipts before contract-existence checks (whereas `contracts.save`, `approvals.*`, `buyerLinks.capture`, and `discussions.*` check existence first), and are wiped on `companyDeletion`.
 
 `contractExports` (`wordExports` table) owns 2-step seller Word download: `prepare` validates access/readiness and returns template blocks + applied overlays (or an existing committed valid download URL), the Node `wordExport.generate` action renders `.docx` bytes and stores them in Convex `_storage`, and `commit` rechecks `templateVersionId`, `stateRevision`, and `title`, records the `wordExports` row, HubSpot download activity + 30-day `hubspotExportDeliveries` attachment hold (when linked), and returns `{ url, filename }`. Unlinked downloads expire after 1 hour plus a 15-minute physical read grace; linked downloads release their hold once HubSpot confirms the private File upload.
@@ -201,17 +203,37 @@ setup completion. See [CSM calls](delegation.md).
 
 `emailDeliveries` owns dispatch, provider outcome, retry, cancellation, and disposal for invitation, approval-request, and completed-review decision emails. Named event validators carry inline summary counts directly on the delivery event. An uncertain outcome never proves non-delivery or authorizes automatic replay.
 
-Browser confirmed caches receive an immutable scope containing deployment/profile/membership identity. Cache replacement disposes old work, closes its recent-opening store, clears disposable data, and publishes the new resource. Disposable confirmed data uses namespace `dinu:v9` and IndexedDB format **17**; workspace/template read storage uses `dinu:workspace-read:v2` (IndexedDB schema **3**); tab-scoped draft recovery uses `dinu:drafts:v7` envelope version **1** (`{ version: 1, baseStateRevision, selections, request, conflict }`).
+## Browser data ownership
 
-`contractCleanups` drains deleted contract rows in bounded phases (`deliveries`, `buyerLinks`, `buyerLinkShowings`, `buyerActivity`, `buyerQuotas`, `discussions`, `exports`, `hubspotQuotes`), preserving `operationReceipts` and in-flight HubSpot upload rows. Company deletion removes all tenant tables, receipts, and stored files across bounded shared-budget phases.
+Convex owns current identity/access, mutable workspace state, search, and write acceptance. Live workspace queries and a four-entry visited-contract subscription LRU retain current state across navigation. SDK `getCurrentValue()` hydration makes warm reads synchronous. SSR seeds remain user/session/transport fenced. Local persistence serves immutable content, provisional presentation, and unsaved intent; it grants no authority. See [architecture](local-first-architecture.md) for ownership and [checks](performance-checks.md) for automated guarantees and manual limits.
+
+| Browser data                                                                  | Scope and bound                                                      | Current use                                                                                                          |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `dinu:v9` / IndexedDB schema 18                                               | Deployment/profile/membership with owning user; 24 versions / 32 MiB | Frozen templates keyed by version only; no mutable metadata or save writes; no content TTL                           |
+| `dinu:workspace-read:v2` / IndexedDB schema 8                                 | Deployment/profile/membership/company with owning user               | Source prose by fingerprint: 16 MiB; exact item/revision/audience details: eight entries / 4 MiB; seven-day read age |
+| Workspace cookie version 1                                                    | Deployment/user/session; 3,000 encoded characters / 24 hours         | Placeholder layout facts                                                                                             |
+| `dinu:v3:<deployment>:workspace-presentation:<user>` / localStorage version 3 | Matching session/membership/company; 16 KiB / 24 hours               | Placeholder names/avatar URLs                                                                                        |
+| `dinu:drafts:v7` / sessionStorage envelope 1                                  | Deployment/user/membership/contract in the current tab               | Unsaved selections, immutable pending request, and conflict recovery                                                 |
+
+Home and Team use workspace-owned live queries; neither persists directory pages. Authoring structure/setup stay live after first use, while source and detail reads are cancellable, coalesced, and immutable. Disk upgrades remove obsolete mutable stores. Optional IndexedDB/Web Lock failures have bounded recovery and leave memory/live reads usable.
+
+Scoped registry retirement removes disposable databases on confirmed ownership departure. Draft journals are separate: cache eviction and ordinary navigation retain them; accepted saves, explicit discard, and confirmed logout/departure/deletion retire the relevant owner. Deferred callbacks are fenced against replacement owners. Failed/cancelled exit and transient same-session interruption preserve intent. Physical native multi-tab cleanup and storage-failure erasure remain manual acceptance checks.
+
+## Backend maintenance
+
+`contractCleanups` drains deleted contract rows in bounded phases (`deliveries`, `buyerLinks`, `buyerActivity`, `buyerQuotas`, `discussions`, `exports`, `hubspotQuotes`), preserving `operationReceipts` and in-flight HubSpot upload rows. Company deletion removes all tenant tables, receipts, and stored files across bounded shared-budget phases.
+
+Due writes schedule retries and lease watchdogs at stored timestamps, fenced by current due state, ownership, generation, or lease. A ten-minute indexed `recovery.sweep` checks the eight CSM/HubSpot worker families and schedules only nonempty families. Delivery and quote pumps share a 20-row cap across active statuses; quote payload/diagnostic expiry shares 25 rows. Native pagination lives in separate internal page queries so each execution paginates only once. Continuations require remaining work or a future active lease.
+
+Quota-owner expiry runs daily, with a half-refill grace preserving token budgets under throttled owner writes. The five-minute Journal probe skips disabled or connection-free polling. Deletion, receipts, activity, uploads, and byte retention retain their own bounded maintenance schedules. The strict schema requires a fresh database before release; implementation performs no reset or deployment.
 
 The canonical seed has 112 blocks, three static tables, 55 items, 21 concessions and 29 changes.
 
 ## Buyer links and shared discussions
 
-Each contract retains at most one permanent 13-character, case-sensitive ASCII base62 buyer code (~77.4 bits of entropy) at `/<code>`. First link creation requires zero pending and zero rejected concessions. Once created, `buyerLinks.currentView` auto-syncs whenever approved concessions, title, or buyer name change (leaving 0 pending & 0 rejected). Public queries split immutable template reads (`buyerLinks.templateContent`: frozen blocks and raw buyer explanations, filtered client-side against active concessions) from small reactive state (`buyerLinks.status`, `buyerLinks.currentState`: approved applied overlays and `currentView` metadata) — never private Playbook guidance or pending review state. Buyer Word downloads re-verify `displayIdentity` before and after generation.
+Each contract retains at most one permanent 13-character, case-sensitive ASCII base62 buyer code (~77.4 bits of entropy) at `/<code>`. First link creation requires zero pending and zero rejected concessions. Once created, `buyerLinks.currentView` auto-syncs whenever approved concessions, title, or buyer name change (leaving 0 pending & 0 rejected). Public queries split immutable template reads (`buyerLinks.templateContent`: frozen blocks and raw buyer explanations, filtered client-side against active concessions) from small reactive state (`buyerLinks.currentState`: approved applied overlays, availability/header/refresh eligibility, and `currentView` metadata) — never private Playbook guidance or pending review state. Buyer Word downloads re-verify `displayIdentity` before and after generation.
 
-Shared discussions (`discussionThreads`, `discussionMessages`) live on the buyer link and support comments anchored to either base template text (`kind: 'source'`) or applied Playbook replacement text (`kind: 'concession'`), storing a compact anchor + `footprint` (`{ templateStart?, templateEnd?, blockSpan?: { start, end }, blockKeys, concessions: { itemId, concessionId }[] }`, where `blockSpan` records 3-slot block ordinals — `3*k` source, `3*k + 1` split, `3*k + 2` boundary — so boundary insertions, paragraph splits, and removed blocks inside multi-paragraph selections are detected alongside source text ranges and concession dependencies). Server ingress derives anonymous authorship from an HttpOnly browser cookie; authenticated teammates post via `api.discussions.write`. When an approved concession change in `syncBuyerLink` or `retractBuyerLinkConcession` overlaps a thread's footprint, `deleteAffectedComments` silently hard-deletes the affected threads (scheduling batched cursorless message drains when needed) and recomputes `contractDirectory.hasUnreadComment`; unaffected comments survive cross-reference and clause-number renumbering. Messages track `unreadByTeam` and clear on authenticated teammate view (500 ms focused unobscured visibility).
+One `discussions.list` subscription returns the newest 200 threads and 2,000 messages with a deduplicated author projection; create/reply admission enforces the same ceilings. A contract-scoped `discussionCapacity` row tracks stored rows and bytes, enforcing a 4 MiB discussion document budget on creation and edits. Messages awaiting asynchronous thread cleanup retain capacity until deletion; contract/company erasure removes the counter. Older replies reveal locally, and acknowledgement reads/patches are batched. Shared discussions (`discussionThreads`, `discussionMessages`) live on the buyer link and support comments anchored to either base template text (`kind: 'source'`) or applied Playbook replacement text (`kind: 'concession'`), storing a compact anchor + `footprint` (`{ templateStart?, templateEnd?, blockSpan?: { start, end }, blockKeys, concessions: { itemId, concessionId }[] }`, where `blockSpan` records 3-slot block ordinals — `3*k` source, `3*k + 1` split, `3*k + 2` boundary — so boundary insertions, paragraph splits, and removed blocks inside multi-paragraph selections are detected alongside source text ranges and concession dependencies). Server ingress derives anonymous authorship from an HttpOnly browser cookie; authenticated teammates post via `api.discussions.write`. When an approved concession change in `syncBuyerLink` or `retractBuyerLinkConcession` overlaps a thread's footprint, `deleteAffectedComments` silently hard-deletes the affected threads (scheduling batched cursorless message drains when needed) and recomputes `contractDirectory.hasUnreadComment`; unaffected comments survive cross-reference and clause-number renumbering. Messages track `unreadByTeam` and clear on authenticated teammate view (500 ms focused unobscured visibility).
 
 ## Buyer-link activity
 
@@ -225,15 +247,11 @@ server recording times and a fixed 30-day expiry. `buyerActivityReceipts` reject
 changed payloads under reused event IDs and witnesses distinct clause membership
 through its opening/item index. New events on an already witnessed clause retain
 their own replay receipts without increasing the distinct count. All updates commit
-atomically. The strict model has no historical `buyerActivityClauses` or optional receipt `acceptedAt`; G05/G06 require genuine witness deadlines and verified absence before deployment. Required opening `acceptedAt` remains. `buyerActivityCounters` supplies
+atomically. The strict model has no historical `buyerActivityClauses` or optional receipt `acceptedAt`. Required opening `acceptedAt` remains. `buyerActivityCounters` supplies
 contract-local visitor numbers without reusing numbers after history expires.
 Activity groups openings into visits using the same contract/browser or verified same-company profile, with a 30-minute inactivity boundary. Idle time and clause actions cannot manufacture a return. Openings preserve required server `acceptedAt`, optional verified profile and normalized first-opening city; public bodies cannot supply either identity or city. Public intake retains secret/origin/body validation
 and browser/link/company limits; discussions have separate actor/company budgets.
 
-Seller `recent` is an authorized trusted-clock mutation returning the newest ten
-unexpired visits expanded into opening/clause rows. Clients refresh while open
-and prune expired rows. Indexed bounded daily cleanup physically expires activity;
-contract/company deletion removes summaries, children, counters and limiter owners.
-Account deletion selectively drains current profile-linked openings and receipt children. Current quotas remain `activityBrowser`, `activityLink`, `activityCompany`, `discussionActor` and `discussionCompany`; anonymous discussion cookie adoption remains independent.
+Seller `recent` is an authorized live query returning summaries for the latest ten visits, with fixed `expiresAt` values. Clients filter expiry with their display clock; the query never reads wall-clock time. Indexed bounded daily cleanup physically expires activity. Contract/company deletion removes summaries, children, counters, and limiter owners; account deletion selectively drains profile-linked openings and receipt children. Current quotas remain `activityBrowser`, `activityLink`, `activityCompany`, `discussionActor`, and `discussionCompany`. Anonymous discussion cookie adoption remains independent.
 
-The four raw activity tables, historical clause membership, old quota names, old raw cleanup fields/phases and `buyerVisits.project` are absent locally. Their factual G01–G13 clearance and advanced-marker current-activity catch-up occur under the preserved old bundle before strict release. See [legacy retirement](link-activity-removal.md) before release operations.
+The former raw activity tables, historical clause membership, old quota names, raw cleanup phases, and projection callback are absent. This model has no preservation converter or backwards-compatible release path; see [deployment](deployment.md) for the fresh-database prerequisite.

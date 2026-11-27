@@ -30,11 +30,17 @@ export type SessionEditor = {
 	discard: () => void;
 	restartTransport: () => void;
 };
+export type MembershipRetirement = Readonly<{
+	userId: string;
+	membershipId: string;
+	sessionId?: string;
+}>;
 export type SessionResources = {
 	cancelReads: () => void;
 	clear: () => void;
 	endSession?: () => void;
-	forgetMembership?: (userId: string) => void;
+	captureMembershipRetirement?: (owner: MembershipRetirement) => () => void;
+	forgetAccount?: (userId: string) => void;
 };
 type Session = {
 	readonly closing: boolean;
@@ -58,7 +64,12 @@ type Session = {
 	returnToLogin: () => void;
 	completeAccountDeletion: (context: { sessionId: string; userId: string }) => Promise<void>;
 	signOut: () => Promise<void>;
-	exitCompany: (action: () => Promise<unknown>, discard?: boolean) => Promise<void>;
+	captureMembershipRetirement: (owner: MembershipRetirement) => () => void;
+	exitCompany: (
+		membershipId: string,
+		action: () => Promise<unknown>,
+		discard?: boolean
+	) => Promise<void>;
 };
 export const setViewerSession = (session: Session) => setContext(sessionKey, session);
 export const useViewerSession = () => getContext<Session>(sessionKey);

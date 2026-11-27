@@ -1,14 +1,14 @@
 import { ConvexError, v } from 'convex/values';
-import { action, internalMutation, env } from './_generated/server';
 import { internal } from './_generated/api';
+import { action, env, internalMutation } from './_generated/server';
 import { requireMembership, requirePermission } from './auth';
-import { permissionsForRole } from './permissions';
-import { sha256 } from './operationReceipts';
 import { tokenExchange } from './hubspotApi';
-import { hubspotConnection } from './hubspotValidators';
+import { credentialFields, credentialsFor } from './hubspotCredentials';
 import { portalLifecycle, requireInstallAllowed } from './hubspotInstallation';
 import { quoteInstallationFor } from './hubspotQuotesInstallation';
-import { oauthPurpose, quoteScopes, hasQuoteScopes } from './hubspotQuoteValidators';
+import { hasQuoteScopes, oauthPurpose, quoteScopes } from './hubspotQuoteValidators';
+import { sha256 } from './operationReceipts';
+import { permissionsForRole } from './permissions';
 
 export const reserve = internalMutation({
 	args: { hash: v.string(), purpose: v.optional(oauthPurpose) },
@@ -41,7 +41,7 @@ export const reserve = internalMutation({
 			companyId: access.companyId,
 			membershipId: access.membershipId,
 			profileId: access.profile._id,
-			generation: connection?.generation ?? 0,
+			generation: connection ? ((await credentialsFor(ctx, connection._id))?.generation ?? 0) : 0,
 			lifecycleVersion: state?.version ?? 0,
 			expiresAt: Date.now() + 10 * 60_000,
 			claimed: false
@@ -105,7 +105,7 @@ export const commit = internalMutation({
 		stateId: v.id('hubspotOAuthStates'),
 		accountId: v.string(),
 		scopes: v.array(v.string()),
-		tokens: hubspotConnection.pick('accessToken', 'refreshToken', 'expiresAt')
+		tokens: credentialFields.pick('accessToken', 'refreshToken', 'expiresAt')
 	},
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
@@ -129,7 +129,10 @@ export const commit = internalMutation({
 			.query('hubspotConnections')
 			.withIndex('by_companyId', (q) => q.eq('companyId', access.companyId))
 			.unique();
-		if ((existing?.generation ?? 0) !== state.generation)
+		if (
+			(existing ? ((await credentialsFor(ctx, existing._id))?.generation ?? 0) : 0) !==
+			state.generation
+		)
 			throw new ConvexError('Another installation finished first. Reload to see its status.');
 		if ((state.lifecycleVersion ?? 0) !== (current?.version ?? 0))
 			throw new ConvexError('Installation expired. Start again.');
@@ -150,8 +153,6 @@ export const commit = internalMutation({
 			companyId: access.companyId,
 			accountId: args.accountId,
 			scopes: args.scopes,
-			...args.tokens,
-			generation: state.generation + 1,
 			installerId: access.profile._id,
 			// Credential/cache freshness; immutable installation identity begins at _creationTime.
 			installedAt: Date.now(),
@@ -160,6 +161,20 @@ export const commit = internalMutation({
 		if (existing?.status === 'retiring') throw new ConvexError('HubSpot is being uninstalled.');
 		const connectionId = existing?._id ?? (await ctx.db.insert('hubspotConnections', value));
 		if (existing) await ctx.db.replace('hubspotConnections', existing._id, value);
+		const credentials = existing ? await credentialsFor(ctx, existing._id) : null;
+		const tokens = {
+			...args.tokens,
+			generation: state.generation + 1,
+			refreshClaim: undefined,
+			refreshUntil: undefined
+		};
+		if (credentials) await ctx.db.patch('hubspotCredentials', credentials._id, tokens);
+		else
+			await ctx.db.insert('hubspotCredentials', {
+				companyId: access.companyId,
+				connectionId,
+				...tokens
+			});
 		const quoteGranted = hasQuoteScopes(args.scopes);
 		if (state.purpose === 'quotes' && quoteGranted) {
 			const quoteValue = {

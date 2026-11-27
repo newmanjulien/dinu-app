@@ -15,6 +15,8 @@ import { workBlockFromError, workBlockMessage, type ContractWorkBlock } from './
 
 export type { ContractSaveRequest } from './draft-values';
 
+export const CONTRACT_CHOICE_SAVE_DELAY_MS = 300;
+
 type Resolution =
 	| { kind: 'current' }
 	| { kind: 'conflict'; message?: string }
@@ -48,6 +50,7 @@ export class ContractPersistence {
 	private transportGeneration = 0;
 	private transport = new AbortController();
 	private recovery = $state.raw<ContractDraft | null>(null);
+	private choiceSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	get workBlock() {
 		return this.policy;
@@ -120,6 +123,7 @@ export class ContractPersistence {
 		this.policyRefused = false;
 	}
 	private record() {
+		if (this.draftSelections === null) this.cancelChoiceSave();
 		if (this.recoveryPending) return;
 		this.checkpoint(
 			this.deleted || !this.pending || !this.draftSelections
@@ -144,6 +148,7 @@ export class ContractPersistence {
 			return;
 		}
 		this.selectionLimitError = null;
+		if (sameSelection(next, this.choices) && !this.error) return;
 		const confirmedMap = concessionSelectionMap(this.confirmed.concessions);
 		if (sameSelection(next, confirmedMap) && !this.request) {
 			this.draftSelections = null;
@@ -156,7 +161,21 @@ export class ContractPersistence {
 		this.draftSelections = next;
 		this.clearError();
 		this.record();
-		this.start();
+		this.scheduleChoiceSave();
+	}
+
+	private cancelChoiceSave() {
+		if (this.choiceSaveTimer === null) return;
+		clearTimeout(this.choiceSaveTimer);
+		this.choiceSaveTimer = null;
+	}
+
+	private scheduleChoiceSave() {
+		this.cancelChoiceSave();
+		this.choiceSaveTimer = setTimeout(() => {
+			this.choiceSaveTimer = null;
+			this.start();
+		}, CONTRACT_CHOICE_SAVE_DELAY_MS);
 	}
 
 	acceptLive(next: LiveContractState | null) {
@@ -253,7 +272,7 @@ export class ContractPersistence {
 		this.baseStateRevision = this.confirmed.stateRevision;
 		this.resolution = { kind: 'current' };
 		this.record();
-		this.start();
+		this.start(true);
 	}
 
 	private acknowledgeRequest(committed: ContractState) {
@@ -282,7 +301,9 @@ export class ContractPersistence {
 		return false;
 	}
 
-	private start() {
+	private start(force = false) {
+		if (force) this.cancelChoiceSave();
+		else if (this.choiceSaveTimer !== null) return;
 		if (
 			!this.canSave ||
 			this.running ||
@@ -374,7 +395,7 @@ export class ContractPersistence {
 		if (!this.canSave || this.running) return;
 		this.policyRefused = false;
 		this.clearError();
-		this.start();
+		this.start(true);
 	}
 
 	async useConfirmedState() {
@@ -415,6 +436,7 @@ export class ContractPersistence {
 		this.frozen = frozen;
 	}
 	private replaceTransport() {
+		this.cancelChoiceSave();
 		this.transportGeneration++;
 		this.transport.abort();
 		this.transport = new AbortController();
@@ -458,7 +480,7 @@ export class ContractPersistence {
 			!this.error &&
 			(this.pending || this.running)
 		) {
-			this.start();
+			this.start(true);
 			if (!this.running) return false;
 			await this.running;
 			if (generation !== this.transportGeneration) return false;

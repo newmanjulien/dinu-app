@@ -2,11 +2,12 @@ import { paginationOptsValidator, paginationResultValidator } from 'convex/serve
 import { ConvexError, v, type Infer } from 'convex/values';
 import type { Doc } from './_generated/dataModel';
 import { mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
-import { accessibleContract, requireMembership, type CompanyAccess } from './auth';
+import { requireMembership, type CompanyAccess } from './auth';
+import { liveLinkFor } from './buyerLinks';
 import { buyerName } from './contractBuyer';
 import { ensureContractCleanup } from './contractCleanup';
 import { readDirectory, writeDirectory } from './contractDirectory';
-import { contractWorkBlock, installation, requireContractWork } from './contractPolicy';
+import { blockForConnection, installation, requireContractWork } from './contractPolicy';
 import { saveSelections } from './contractSaving';
 import {
 	accessibleContractState,
@@ -26,7 +27,6 @@ import {
 	liveContractMetadata,
 	saveResult
 } from './savedContractValidators';
-import { assertStorageCapacity } from './storageCapacity';
 import { currentPointer } from './templates';
 
 function contractTitle(value: string) {
@@ -114,57 +114,120 @@ async function requestDeliveryOf(ctx: QueryCtx, root: Doc<'savedContracts'>) {
 
 export const browse = query({
 	args: {
-		membershipId: v.id('memberships'),
 		search: v.string(),
 		paginationOpts: paginationOptsValidator
 	},
 	returns: paginationResultValidator(contractCard),
 	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
+		const access = await requireMembership(ctx);
 		return readDirectory(ctx, access.companyId, args.search, args.paginationOpts);
 	}
 });
 
-/** Small authorized read for the browser title before a contract page is rendered. */
-export const routeTitle = query({
+/** Fresh metadata and immutable version identity from the same authorized SSR read. */
+export const routeBootstrap = query({
 	args: { id: v.string() },
 	returns: v.union(
-		v.object({ kind: v.literal('current'), buyerName: v.union(v.string(), v.null()) }),
+		v.object({
+			kind: v.literal('current'),
+			buyerName: v.union(v.string(), v.null()),
+			templateVersionId: v.id('templateVersions'),
+			state: liveContractMetadata
+		}),
 		v.object({ kind: v.literal('unavailable') })
 	),
 	handler: async (ctx, { id }) => {
 		const access = await requireMembership(ctx);
-		const contractId = ctx.db.normalizeId('savedContracts', id);
-		const contract = contractId
-			? accessibleContract(await ctx.db.get('savedContracts', contractId), access)
-			: null;
-		return contract
-			? { kind: 'current' as const, buyerName: buyerName(contract) }
+		const state = await readLiveContract(
+			ctx,
+			access,
+			id,
+			await installation(ctx, access.companyId)
+		);
+		return state
+			? {
+					kind: 'current' as const,
+					buyerName: state.buyerName,
+					templateVersionId: state.templateVersionId,
+					state
+				}
 			: { kind: 'unavailable' as const };
 	}
 });
 
+/** Shared live read lets batch and SSR callers reuse authorization and installation. */
+export async function readLiveContract(
+	ctx: QueryCtx,
+	access: CompanyAccess,
+	id: string,
+	connection: Doc<'hubspotConnections'> | null
+) {
+	const contractId = ctx.db.normalizeId('savedContracts', id);
+	const contract = contractId ? await accessibleContractState(ctx, contractId, access) : null;
+	if (!contract) return null;
+	const pushId = contract.root.quoteRequests?.latest?.pushId;
+	const [requestDelivery, link, directory, quote] = await Promise.all([
+		requestDeliveryOf(ctx, contract.root),
+		liveLinkFor(ctx, contract.root._id),
+		ctx.db
+			.query('contractDirectory')
+			.withIndex('by_contractId', (q) => q.eq('contractId', contract.root._id))
+			.unique(),
+		pushId ? ctx.db.get('hubspotQuotePushes', pushId) : null
+	]);
+	return {
+		...metadataOf(contract),
+		buyerName: buyerName(contract.root),
+		workBlock: blockForConnection(connection, contract.hubspot),
+		requestDelivery,
+		buyerLink: link
+			? {
+					id: link._id,
+					token: link.token,
+					createdAt: link.createdAt,
+					contentRevision: link.currentView.contentRevision,
+					concessions: link.currentView.concessions
+				}
+			: null,
+		hasUnreadComment: Boolean(link && directory?.hasUnreadComment),
+		latestQuote:
+			quote?.companyId === access.companyId && quote.contractId === contract.root._id
+				? {
+						id: quote._id,
+						state: quote.state,
+						canonicalKey: quote.canonicalKey,
+						url: quote.url ?? null,
+						message: quote.message ?? null
+					}
+				: null
+	};
+}
 export const state = query({
-	args: {
-		membershipId: v.id('memberships'),
-		id: v.string()
-	},
+	args: { id: v.string() },
 	returns: v.union(liveContractMetadata, v.null()),
-	handler: async (ctx, { id, membershipId }) => {
-		const access = await requireMembership(ctx, membershipId);
-		const contractId = ctx.db.normalizeId('savedContracts', id);
-		const contract = contractId ? await accessibleContractState(ctx, contractId, access) : null;
-		if (!contract) return null;
-		const [workBlock, requestDelivery] = await Promise.all([
-			contractWorkBlock(ctx, contract),
-			requestDeliveryOf(ctx, contract.root)
-		]);
-		return {
-			...metadataOf(contract),
-			buyerName: buyerName(contract.root),
-			workBlock,
-			requestDelivery
-		};
+	handler: async (ctx, { id }) => {
+		const access = await requireMembership(ctx);
+		return readLiveContract(ctx, access, id, await installation(ctx, access.companyId));
+	}
+});
+export const batchState = query({
+	args: { ids: v.array(v.string()) },
+	returns: v.array(v.union(liveContractMetadata, v.null())),
+	handler: async (ctx, { ids }) => {
+		if (ids.length > 8) throw new ConvexError('Request at most 8 contracts.');
+		const access = await requireMembership(ctx);
+		const connection = await installation(ctx, access.companyId);
+		return Promise.all(
+			[...new Set(ids)].map((id) => readLiveContract(ctx, access, id, connection))
+		);
+	}
+});
+export const home = query({
+	args: {},
+	returns: paginationResultValidator(contractCard),
+	handler: async (ctx) => {
+		const access = await requireMembership(ctx);
+		return readDirectory(ctx, access.companyId, '', { numItems: 24, cursor: null });
 	}
 });
 
@@ -291,7 +354,6 @@ export async function createContract(
 		: null;
 	if (!version || version.companyId !== access.companyId)
 		throw new ConvexError('The contract template is not available.');
-	await assertStorageCapacity(ctx, { documents: 4, bytes: 16_000 });
 	const id = await ctx.db.insert('savedContracts', {
 		companyId: access.companyId,
 		title: name,

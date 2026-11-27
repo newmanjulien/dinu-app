@@ -1,3 +1,4 @@
+import { insertTestConnection, readTestConnection } from '../../support/hubspot-credentials';
 import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
@@ -26,7 +27,6 @@ async function outsider(f: Awaited<ReturnType<typeof fixture>>) {
 	};
 	const membershipId = await f.t.run(async ({ db }) => {
 		const profileId = await db.insert('profiles', {
-			helpPreferences: { contract: false, buyerLink: false },
 			identity: auth.tokenIdentifier,
 			issuer: auth.issuer,
 			clerkId: auth.subject,
@@ -34,14 +34,14 @@ async function outsider(f: Awaited<ReturnType<typeof fixture>>) {
 			name: 'Outside'
 		});
 		const companyId = await db.insert('company', {
+			hasRepInstructions: false,
 			name: 'Other company',
 			ownerProfileId: profileId
 		});
 		return db.insert('memberships', {
 			companyId,
 			profileId,
-			role: 'admin',
-			supportWidgetCollapsed: false
+			role: 'admin'
 		});
 	});
 	return { client: f.root.withIdentity(auth), membershipId };
@@ -90,7 +90,7 @@ describe('integration authorization', () => {
 		// Even valid credentials for the caller's own company cannot authorize a foreign contract.
 		const otherConnection = await other.client.run(async ({ db }) => {
 			const membership = (await db.get('memberships', other.membershipId))!;
-			return db.insert('hubspotConnections', {
+			return insertTestConnection(db, {
 				companyId: membership.companyId,
 				accountId: '999',
 				generation: 1,
@@ -149,9 +149,7 @@ describe('integration authorization', () => {
 	});
 	it('returns installation status without exposing credentials', async () => {
 		const f = await fixture();
-		expect(
-			await f.t.query(api.hubspotConnections.status, { membershipId: f.owner.membershipId })
-		).toEqual({
+		expect(await f.t.query(api.hubspotConnections.status, {})).toEqual({
 			quotes: {
 				installationId: null,
 				epoch: 0,
@@ -234,7 +232,7 @@ describe('OAuth installation authority', () => {
 				tokens
 			})
 		).rejects.toThrow('finished first');
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
 			accountId: '12345',
 			generation: 2,
 			accessToken: tokens.accessToken
@@ -258,9 +256,7 @@ describe('OAuth installation authority', () => {
 			f.t.action(api.hubspotOAuth.finish, { state, code: 'synthetic-code' })
 		).rejects.toThrow('expired');
 		expect(fetcher).toHaveBeenCalledTimes(2);
-		expect(
-			(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId)))?.generation
-		).toBe(1);
+		expect((await f.t.run(({ db }) => readTestConnection(db, f.connectionId)))?.generation).toBe(1);
 	});
 });
 

@@ -1,8 +1,8 @@
 # Production releases
 
-**Strict local backend/client model prepared; NOT DEPLOYABLE TO AN UNVERIFIED POPULATED TARGET.** No target inventory, conversion, reset or deployment was performed by this implementation. All G01–G25 remain UNVERIFIED. Follow the [preservation cutover and concrete release kit](backend-preservation-cutover.md) before publishing this incompatible release.
+The current backend/client model requires a fresh database and matching frontend. No inventory, reset, re-seed, or deployment was performed during the master-plan implementation. The former preservation cutover and compatibility gates are retired; there is no runtime migration or old-client compatibility path.
 
-The [2026-11-06 reset record](production-data-reconciliation.md) describes an earlier point in time, not current target emptiness or authorization for another reset. Configured development is `disciplined-squid-496` and production is `befitting-lyrebird-846` in `dinu-app`; verify actual targets and all obligations afresh before an authorized release. [Current architecture](data-model.md) describes the strict model.
+The [2026-11-06 reset record](production-data-reconciliation.md) is historical evidence, not proof of current target state. [Current architecture](data-model.md) describes the strict schema. Provision/reset and seed the intended target as part of a separately authorized release, reconcile any external provider work, then publish matching backend/frontend and reload clients.
 
 After the release gates are cleared, push to `main` to release Dinu. Vercel builds the website and deploys Convex from
 the same checkout. Automatic deployments from other branches are disabled by
@@ -111,7 +111,7 @@ production deployments or deploying Convex separately.
 ## Failures and recovery
 
 The deployments are not atomic. Convex can update before Vercel publishes, and
-open browser tabs can still use older frontend code. Release matching supported clients and fence old served/open/offline protocols before removing their backend surfaces. The [preservation cutover](#backend-ownership-conversion) releases the verified converted schema/data/client set together; routine build checks do not enforce its population or job gates.
+open browser tabs can still use older frontend code. This incompatible release needs a fresh target and matching clients. Confirm the target and provider/scheduler state before publishing; routine build checks do not establish database readiness.
 
 If preflight fails, fix the named production setting or retry after a transient
 service failure, then redeploy the same commit. Do not bypass the checker.
@@ -120,7 +120,7 @@ Vercel publication is blocked. The previous website is still serving against the
 updated backend. Repair the endpoint or configuration and rerun the complete
 release. The same recovery applies if Vercel fails to publish after smoke succeeds.
 
-A source revert can roll back code only when the stored representation and supported clients still match it. After preservation conversion, source-only or Vercel-only rollback is insufficient. Follow the release kit: restore matching code/client, database, files and components with scheduler and external-outcome reconciliation, or complete forward under the original fences. Reverting source never reverses a provider effect.
+A rollback requires matching code, clients, database, files, and components. Reconcile scheduled work and external provider outcomes before restoring or complete the release forward. Reverting source does not reverse a provider effect.
 
 Local `npm run dev` and `npm run build` are unchanged. Local development continues
 to use its existing configuration rather than the production release checker.
@@ -131,7 +131,7 @@ Integration content ships with the website from `src/lib/integrations.ts`; no ca
 
 ## Clean Playbook-only schema and client cutover
 
-The local model stores flat Playbook `concessions[]` and single `review` state directly on `savedContracts`, auto-syncs `buyerLinks.currentView`, stores anchored buyer-link comments in `discussionThreads`/`discussionMessages`, and uses 2-step `prepare`/`commit` for `wordExports` and `hubspotQuotePushes` with flat 24-hour `operationReceipts`. Materialized contract documents, native change chains, buyer change proposals, `approvalRequests`, `contractOutputs`, and download-acknowledgement journals are removed with no backwards compatibility; deploying to an existing environment requires a clean database reset/re-seed and client reload. Browser storage uses disposable cache `dinu:v9` (IndexedDB 17) and tab-scoped draft journal `dinu:drafts:v7` (envelope version 1).
+The local model stores flat Playbook `concessions[]` and single `review` state directly on `savedContracts`, auto-syncs `buyerLinks.currentView`, stores anchored buyer-link comments in `discussionThreads`/`discussionMessages`, and uses 2-step `prepare`/`commit` for `wordExports` and `hubspotQuotePushes` with flat 24-hour `operationReceipts`. Materialized contract documents, native change chains, buyer change proposals, `approvalRequests`, `contractOutputs`, and download-acknowledgement journals are removed with no backwards compatibility; deploying to an existing environment requires a clean database reset/re-seed and client reload. Browser storage uses immutable-only disposable cache `dinu:v9` (IndexedDB 18), authoring cache `dinu:workspace-read:v2` (IndexedDB 8) and tab-scoped draft journal `dinu:drafts:v7` (envelope version 1).
 
 Manual acceptance after database reset and re-seed includes: creating a contract, applying/removing Playbook concessions via `Apply option` / `Remove option`, requesting approval as a rep, approving/declining from left-margin `ReviewTags` as an admin, verifying buyer link auto-sync on zero pending/rejected concessions and contract rename, posting/replying/deleting comments on base text and applied concession text, confirming overlapping concessions silently remove affected comments while unrelated comments survive renumbering, Word download (seller + buyer), and HubSpot Quotes push. Local type/build/tests cannot certify visual/native provider behavior or browser rendering.
 

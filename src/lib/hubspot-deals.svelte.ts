@@ -13,10 +13,12 @@ type Eligibility = ReturnType<typeof createReadQuery<typeof api.hubspotDeals.eli
 export type DealEligibilityLease = { readonly read: Eligibility; release: () => void };
 const key = Symbol('hubspot-deals');
 const freshness = 45_000;
+const maxSearchPages = 8;
 
 /** One browse page per installation. Retained names never confer current eligibility. */
 export class HubSpotDeals {
 	private cache = $state.raw<{ owner: string; page: DealPage; at: number }>();
+	private searchPages = new Map<string, { page: DealPage; at: number }>();
 	private acceptedConnection = $state.raw<{ owner: string; value: Connection }>();
 	private owner: string | null = null;
 	private requests = new Map<string, Promise<DealPage | undefined>>();
@@ -85,6 +87,8 @@ export class HubSpotDeals {
 		else if (!this.connection.isLoading && !this.connection.error && this.connection.data)
 			this.acceptedConnection = { owner: scope, value: this.connection.data };
 		if (this.cache?.owner !== this.displayIdentity) this.cache = undefined;
+		for (const key of this.searchPages.keys())
+			if (JSON.parse(key)[0] !== this.displayIdentity) this.searchPages.delete(key);
 		if (owner === this.owner) return;
 		this.owner = owner;
 		this.requests.clear();
@@ -189,8 +193,14 @@ export class HubSpotDeals {
 		const term = search.trim().slice(0, 200);
 		const initial = !term && cursor === undefined;
 		const requestKey = JSON.stringify([term, cursor ?? null]);
+		const searchKey = JSON.stringify([display, term]);
 		if (!force && initial && this.cache && Date.now() - this.cache.at < freshness)
 			return Promise.resolve(this.cache.page);
+		if (!force && term && cursor === undefined) {
+			const cached = this.searchPages.get(searchKey);
+			if (cached && Date.now() - cached.at < freshness) return Promise.resolve(cached.page);
+			if (cached) this.searchPages.delete(searchKey);
+		}
 		const existing = this.requests.get(requestKey);
 		if (existing) return existing;
 		const attempt = new ReadAttempt(15_000);
@@ -207,6 +217,12 @@ export class HubSpotDeals {
 				(page) => {
 					if (this.identity !== owner || this.requests.get(requestKey) !== request) return;
 					if (initial) this.cache = { owner: display, page, at: Date.now() };
+					else if (term && cursor === undefined) {
+						this.searchPages.delete(searchKey);
+						this.searchPages.set(searchKey, { page, at: Date.now() });
+						if (this.searchPages.size > maxSearchPages)
+							this.searchPages.delete(this.searchPages.keys().next().value!);
+					}
 					return page;
 				},
 				(error: unknown) => {

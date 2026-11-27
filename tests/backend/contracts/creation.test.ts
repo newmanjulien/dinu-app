@@ -14,7 +14,12 @@ import { create } from '../../../src/convex/contracts';
 import { contractNotification } from '../../../src/convex/emailNotifications';
 import { hydrateHead } from '../../../src/convex/playbookItemRevisions';
 import schema from '../../../src/convex/schema';
-import { saveTemplateVersion, readLiveSnapshot } from '../../../src/convex/templates';
+import {
+	currentPointer,
+	readLiveSnapshot,
+	readVersion,
+	saveTemplateVersion
+} from '../../../src/convex/templates';
 import { item as baseItem, block, identity, initializeViewer } from '../../support/contract-data';
 const item: typeof baseItem = {
 	...baseItem,
@@ -52,7 +57,7 @@ async function fixture() {
 		async ({ db }) =>
 			(await db
 				.query('playbookItems')
-				.withIndex('by_companyId', (q) => q.eq('companyId', state.companyId))
+				.withIndex('by_companyId_and_audience', (q) => q.eq('companyId', state.companyId))
 				.unique())!._id
 	);
 	return { ...state, itemId };
@@ -73,7 +78,7 @@ async function prepareApproval(
 		expectedStateRevision: 0,
 		operationId: fixtureOperationId('save')
 	});
-	const state = await t.query(api.contracts.state, { membershipId, id });
+	const state = await t.query(api.contracts.state, { id });
 	if (!state) throw new Error('Contract missing');
 	await t.mutation(api.approvals.request, {
 		membershipId,
@@ -81,7 +86,7 @@ async function prepareApproval(
 		expectedGeneration: state.review.generation,
 		operationId: fixtureOperationId('request-approval')
 	});
-	const updated = await t.query(api.contracts.state, { membershipId, id });
+	const updated = await t.query(api.contracts.state, { id });
 	const deliveryId = updated?.review.request?.deliveryId;
 	if (!deliveryId) throw new Error('approval delivery missing');
 	const delivery = await t.mutation(internal.emailDeliveries.prepare, {
@@ -134,11 +139,10 @@ describe('immutable template creation', () => {
 			operationId: templateOperationId
 		});
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(2);
-		const state = await t.query(api.contracts.state, { membershipId, id: created.id });
+		const state = await t.query(api.contracts.state, { id: created.id });
 		const loaded = state && {
 			contract: state,
 			snapshot: await t.query(api.templates.frozenContent, {
-				membershipId,
 				versionId: state.templateVersionId
 			})
 		};
@@ -169,9 +173,7 @@ describe('immutable template creation', () => {
 				operationId
 			})
 		).toEqual({ status: 'deleted' });
-		expect(await t.query(api.templates.content, { membershipId, versionId: first })).toEqual(
-			loaded?.snapshot
-		);
+		expect(await t.run((ctx) => readVersion(ctx, first, companyId))).toEqual(loaded?.snapshot);
 		await t.mutation(api.playbookItems.deleteTemplateItem, {
 			membershipId,
 			id: itemId,
@@ -285,7 +287,7 @@ describe('immutable template creation', () => {
 				token: 'Ab3Cd4Ef5Gh6I'
 			})
 		).rejects.toThrow('The saved contract changed.');
-		expect(await t.query(api.buyerLinks.latest, { membershipId, id: created.id })).toBeNull();
+		expect((await t.query(api.contracts.state, { id: created.id }))?.buyerLink).toBeNull();
 	});
 	it('captures approval statuses against shared versions; blocks company holds', async () => {
 		const { t, itemId, companyId, membershipId } = await fixture();
@@ -311,8 +313,16 @@ describe('immutable template creation', () => {
 			}
 		});
 		await t.run(({ db }) => db.patch('memberships', membershipId, { role: 'admin' }));
-		const holdId = await t.run(({ db }) =>
-			db.insert('companyDeletions', {
+		const holdId = await t.run(async ({ db }) => {
+			await db.patch('company', companyId, {
+				deletion: {
+					status: 'deleting',
+					inFlight: false,
+					issuer: identity.issuer,
+					clerkId: identity.subject
+				}
+			});
+			return db.insert('companyDeletions', {
 				companyId,
 				issuer: identity.issuer,
 				clerkId: identity.subject,
@@ -322,8 +332,8 @@ describe('immutable template creation', () => {
 				inFlight: false,
 				phase: 'invitations',
 				cleanupGeneration: 0
-			})
-		);
+			});
+		});
 		await expect(
 			t.mutation(api.contracts.create, {
 				membershipId,
@@ -341,9 +351,10 @@ describe('immutable template creation', () => {
 		).rejects.toThrow('paused');
 		await t.run(async (ctx) => {
 			await ctx.db.delete('companyDeletions', holdId);
+			await ctx.db.patch('company', companyId, { deletion: undefined });
 			await saveTemplateVersion(ctx, companyId, await readLiveSnapshot(ctx, companyId));
 		});
-		expect((await t.query(api.templates.current, { membershipId }))?.versionId).not.toBe(
+		expect((await t.run((ctx) => currentPointer(ctx, companyId)))?.versionId).not.toBe(
 			created.contract.templateVersionId
 		);
 	});
@@ -365,9 +376,8 @@ describe('immutable template creation', () => {
 		});
 		expect(
 			(
-				await t.query(api.templates.content, {
-					membershipId,
-					versionId: (await t.query(api.contracts.state, { membershipId, id }))!.templateVersionId
+				await t.query(api.templates.frozenContent, {
+					versionId: (await t.query(api.contracts.state, { id }))!.templateVersionId
 				})
 			).items[0]._id
 		).toBe(itemId);
@@ -410,7 +420,7 @@ describe('immutable template creation', () => {
 				operationId: templateOperationId
 			})
 		).resolves.toMatchObject({ status: 'rejected' });
-		expect((await t.query(api.templates.current, { membershipId }))?.versionId).toBe(first);
+		expect((await t.run((ctx) => currentPointer(ctx, companyId)))?.versionId).toBe(first);
 		expect(
 			repItem(
 				await t.run(async (ctx) => hydrateHead(ctx, (await ctx.db.get('playbookItems', itemId))!))
@@ -437,18 +447,16 @@ describe('immutable template creation', () => {
 			expect(String(bootstrap.reason)).toContain(
 				'This company already has template data or another import. Refusing to overwrite it.'
 			);
-		const current = await t.query(api.templates.current, { membershipId });
+		const current = await t.run((ctx) => currentPointer(ctx, companyId));
 		expect(
-			repItem(
-				(await t.query(api.templates.content, { membershipId, versionId: current!.versionId }))
-					.items[0]
-			).approvalPolicy
+			repItem((await t.run((ctx) => readVersion(ctx, current!.versionId, companyId))).items[0])
+				.approvalPolicy
 		).toEqual({ kind: 'required', instructions: 'Newest' });
 		const versions = await t.run(({ db }) => db.query('templateVersions').collect());
 		await expect(finishTemplate(t, companyId)).rejects.toThrow(
 			'This company already has template data or another import. Refusing to overwrite it.'
 		);
-		expect((await t.query(api.templates.current, { membershipId }))?.versionId).toBe(
+		expect((await t.run((ctx) => currentPointer(ctx, companyId)))?.versionId).toBe(
 			current?.versionId
 		);
 		expect(await t.run(({ db }) => db.query('templateVersions').collect())).toHaveLength(

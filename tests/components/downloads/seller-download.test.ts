@@ -29,7 +29,6 @@ vi.mock('$lib/auth/workspace-context.svelte', () => ({
 vi.mock('$lib/hubspot-deals.svelte', () => ({
 	useHubSpotDeals: () => ({ connection: { data: { status: 'uninstalled' } } })
 }));
-vi.mock('$lib/contract/snapshot-cache', () => ({ getContractOpenings: () => ({ record() {} }) }));
 vi.mock('$lib/document/runtime/resources.svelte', () => ({
 	getDocumentResources: () => undefined
 }));
@@ -92,14 +91,6 @@ async function fixture() {
 		target: document.body,
 		props: {
 			editor: f.editor as unknown as ContractEditor,
-			latestBuyerLink: {
-				data: null,
-				error: undefined,
-				rejected: false,
-				isLoading: false,
-				isStale: false,
-				retry: vi.fn()
-			},
 			onRetry() {}
 		}
 	});

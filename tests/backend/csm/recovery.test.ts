@@ -1,3 +1,4 @@
+import { patchCompanySetup } from '../../../src/convex/companySetupState';
 // @vitest-environment edge-runtime
 /// <reference types="vite/client" />
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -188,14 +189,12 @@ it('blocks retry for unsafe historical failures and preserves their guards throu
 			issuer: identity.issuer,
 			clerkId: 'departing-user',
 			email: 'departing@example.com',
-			name: 'Departing admin',
-			helpPreferences: { contract: false, buyerLink: false }
+			name: 'Departing admin'
 		});
 		const membershipId = await ctx.db.insert('memberships', {
 			companyId: owner.companyId,
 			profileId,
-			role: 'admin',
-			supportWidgetCollapsed: false
+			role: 'admin'
 		});
 		const appointmentId = await ctx.db.insert('csmSetupAppointments', {
 			companyId: owner.companyId,
@@ -252,7 +251,7 @@ it('blocks retry for unsafe historical failures and preserves their guards throu
 		await ctx.db.patch('csmSetupAppointments', appointmentId, {
 			replacementAttemptId: replacementId
 		});
-		await ctx.db.patch('company', owner.companyId, { setupAppointmentId: appointmentId });
+		await patchCompanySetup(ctx, owner.companyId, { setupAppointmentId: appointmentId });
 		const markerId = await ctx.db.insert('deletedUsers', {
 			issuer: identity.issuer,
 			clerkId: 'departing-user',
@@ -264,8 +263,12 @@ it('blocks retry for unsafe historical failures and preserves their guards throu
 		});
 		return { initialId, replacementId, replacement, markerId };
 	});
-	const progress = () =>
-		t.query(api.csmBookings.setupStatus, { membershipId: owner.membershipId, replacement });
+	const progress = async () =>
+		(
+			await t.query(api.csmBookings.setupOpening, {
+				replacement
+			})
+		).progress;
 	expect(await progress()).toEqual({ state: 'uncertain' });
 	await expect(t.mutation(api.csmBookings.book, { ...args, replacement })).rejects.toThrow(
 		'being updated'
@@ -290,8 +293,8 @@ it('blocks retry for unsafe historical failures and preserves their guards throu
 	expect(guards.page[0]).toMatchObject({ disposition: 'unresolved', phase: 'legacyUncertain' });
 	expect(guards.page[0].terminal).toBeUndefined();
 	// With no current appointment, the surviving initial guard still blocks a new creation.
-	await t.run((ctx) => ctx.db.patch('company', owner.companyId, { setupAppointmentId: undefined }));
-	expect(await t.query(api.csmBookings.setupStatus, { membershipId: owner.membershipId })).toEqual({
+	await t.run((ctx) => patchCompanySetup(ctx, owner.companyId, { setupAppointmentId: undefined }));
+	expect((await t.query(api.csmBookings.setupOpening, {})).progress).toEqual({
 		state: 'uncertain'
 	});
 	await expect(t.mutation(api.csmBookings.book, args)).rejects.toThrow('still being confirmed');

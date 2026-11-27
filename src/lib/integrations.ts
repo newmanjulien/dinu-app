@@ -154,6 +154,20 @@ export const integrations: readonly IntegrationEntry[] = [
 		logoPath: '/integrations/hubspot.jpg',
 		summary: 'Sign contracts with Hubspot Contracts.',
 		content: { kind: 'comingSoon' }
+	},
+	{
+		slug: 'docusign',
+		name: 'DocuSign',
+		logoPath: '/integrations/docusign.png',
+		summary: 'Send contracts for signature with DocuSign.',
+		content: { kind: 'comingSoon' }
+	},
+	{
+		slug: 'ironclad',
+		name: 'Ironclad',
+		logoPath: '/integrations/ironclad.png',
+		summary: 'Manage contract workflows with Ironclad.',
+		content: { kind: 'comingSoon' }
 	}
 ];
 

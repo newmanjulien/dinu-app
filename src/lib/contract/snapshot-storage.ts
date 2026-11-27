@@ -1,135 +1,143 @@
 import type { TemplateContent } from '../template/model';
 import { ReadAttempt, waitForRead } from '$lib/auth/attempt';
 import type { CacheScope } from './browser-storage';
-import { validContractMetadata, validTemplate } from './persisted-values';
-import { olderContractState, type ReadyContract } from './saved';
+import { validTemplate } from './persisted-values';
+import {
+	acquirePersistentCache,
+	type PersistentCacheLease
+} from '$lib/auth/persistent-cache-registry';
 export { validSnapshot, validTemplate } from './persisted-values';
 
 export const SNAPSHOT_ENTRIES = 24;
 export const SNAPSHOT_BYTES = 32 * 1024 * 1024;
 export type SnapshotSize = { bytes: number; immutableBytes: number };
-export type SnapshotEntry = SnapshotSize & { data: ReadyContract };
-export type SnapshotMetadata = SnapshotSize & { contract: ReadyContract['contract'] };
-type RepairTarget =
-	{ store: 'metadata'; id: string } | { store: 'snapshots'; id: string; companyId: string };
-type LruEntry = { id: string; versionId: string; bytes: number; immutableBytes: number };
-type Write = (
-	| { kind: 'put'; entry: SnapshotEntry }
-	| { kind: 'update'; contract: ReadyContract['contract']; bytes: number }
-	| { kind: 'delete' }
-	| { kind: 'repair'; target: RepairTarget }
-) & { valid: () => boolean };
-const writeContract = (write: Write) =>
-	write.kind === 'put'
-		? write.entry.data.contract
-		: write.kind === 'update'
-			? write.contract
-			: undefined;
-const writeBytes = (write: Write) =>
-	write.kind === 'put' ? write.entry.bytes : write.kind === 'update' ? write.bytes : 0;
-
-/** Disk payload must pass validation before entering shared memory. */
-type StoredSnapshot = { id: string; snapshot: TemplateContent };
-type StoredMetadata = {
-	id: string;
-	contract: ReadyContract['contract'];
-	bytes: number;
-	immutableBytes: number;
-	usedAt: number;
-};
-function readMetadata(value: unknown, id: string): StoredMetadata | undefined {
-	const metadata = value as StoredMetadata | undefined;
-	if (
-		!metadata ||
-		metadata.id !== id ||
-		!Number.isFinite(metadata.bytes) ||
-		metadata.bytes < 0 ||
-		metadata.bytes > SNAPSHOT_BYTES ||
-		!Number.isFinite(metadata.immutableBytes) ||
-		metadata.immutableBytes < 0 ||
-		metadata.immutableBytes > metadata.bytes ||
-		!Number.isFinite(metadata.usedAt)
-	)
-		return;
-	return validContractMetadata(metadata.contract, id) ? metadata : undefined;
-}
-
+export type SnapshotEntry = SnapshotSize & { data: import('./saved').ReadyContract };
+type StoredVersion = { id: string; snapshot: TemplateContent; bytes: number; usedAt: number };
 function result<T>(request: IDBRequest<T>): Promise<T> {
 	return new Promise((resolve, reject) => {
 		request.onsuccess = () => resolve(request.result);
 		request.onerror = () => reject(request.error);
 	});
 }
-function completed(transaction: IDBTransaction) {
+function completed(tx: IDBTransaction) {
 	return new Promise<void>((resolve, reject) => {
-		transaction.oncomplete = () => resolve();
-		transaction.onabort = transaction.onerror = () => reject(transaction.error);
+		tx.oncomplete = () => resolve();
+		tx.onabort = tx.onerror = () => reject(tx.error);
 	});
 }
 
-/** Independent disk LRU. Immutable template versions and mutable metadata have separate stores. */
+/** Optional disk cache contains only immutable versions, shared by all contracts using them. */
 export class SnapshotStorage {
-	constructor(private readonly scope: CacheScope) {}
 	private closed = false;
-	private database: Promise<IDBDatabase | undefined> | undefined;
+	private connection?: IDBDatabase;
+	private opening?: Promise<IDBDatabase | undefined>;
+	private openingRequest?: IDBOpenDBRequest;
+	private lease?: PersistentCacheLease;
+	private retryAt = 0;
+	private failures = 0;
 	private lifetime = new AbortController();
-	private pending = new Map<string, Write>();
-	private active = new Map<string, Write>();
-	private writing = false;
-	private open() {
-		if (this.closed) return Promise.resolve(undefined);
-		return (this.database ??= new Promise((resolve) => {
-			const opening = new ReadAttempt(250);
-			let settled = false;
-			const finish = (db?: IDBDatabase) => {
-				if (settled) {
-					db?.close();
+	private queue = Promise.resolve();
+	constructor(private readonly scope: CacheScope) {}
+	private failed() {
+		this.retryAt = Date.now() + Math.min(5000, 250 * 2 ** Math.min(this.failures++, 5));
+	}
+	private open(): Promise<IDBDatabase | undefined> {
+		if (
+			this.closed ||
+			typeof indexedDB === 'undefined' ||
+			!this.scope.userId ||
+			!this.scope.membershipId
+		)
+			return Promise.resolve(undefined);
+		this.lease?.touch();
+		if (this.connection) return Promise.resolve(this.connection);
+		if (this.opening) return this.opening;
+		if (Date.now() < this.retryAt) return Promise.resolve(undefined);
+		let resolve!: (db?: IDBDatabase) => void;
+		const pending = new Promise<IDBDatabase | undefined>((done) => {
+			resolve = done;
+		});
+		this.opening = pending;
+		let settled = false;
+		const finish = (db?: IDBDatabase) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(db);
+		};
+		const timer = setTimeout(() => finish(), 250);
+		void (async () => {
+			const lease =
+				this.lease ??
+				(await acquirePersistentCache(
+					{
+						kind: 'contracts',
+						databaseName: `${this.scope.namespace}:snapshots`,
+						userId: this.scope.userId!,
+						membershipId: this.scope.membershipId!
+					},
+					() => this.close(),
+					this.lifetime.signal
+				));
+			if (!lease || this.closed || !lease.valid()) {
+				lease?.release();
+				this.opening = undefined;
+				this.failed();
+				finish();
+				return;
+			}
+			this.lease = lease;
+			const request = indexedDB.open(`${this.scope.namespace}:snapshots`, 18);
+			this.openingRequest = request;
+			request.onupgradeneeded = () => {
+				if (this.closed || !lease.valid()) {
+					request.transaction?.abort();
 					return;
 				}
-				settled = true;
-				opening.complete();
-				opening.signal.removeEventListener('abort', failed);
-				this.lifetime.signal.removeEventListener('abort', failed);
-				resolve(db);
+				const db = request.result;
+				for (const name of [...db.objectStoreNames]) db.deleteObjectStore(name);
+				db.createObjectStore('snapshots', { keyPath: 'id' }).createIndex('lru', 'usedAt');
 			};
-			const failed = () => finish();
-			opening.signal.addEventListener('abort', failed, { once: true });
-			this.lifetime.signal.addEventListener('abort', failed, { once: true });
-			try {
-				const request = indexedDB.open(`${this.scope.namespace}:snapshots`, 17);
-				request.onupgradeneeded = () => {
-					for (const name of ['snapshots', 'metadata', 'approved'])
-						if (request.result.objectStoreNames.contains(name))
-							request.result.deleteObjectStore(name);
-					request.result.createObjectStore('snapshots', { keyPath: 'id' });
-					request.result
-						.createObjectStore('metadata', { keyPath: 'id' })
-						.createIndex('lru', [
-							'usedAt',
-							'id',
-							'contract.templateVersionId',
-							'bytes',
-							'immutableBytes'
-						]);
-				};
-				request.onblocked = request.onerror = failed;
-				request.onsuccess = () => {
-					request.result.onversionchange = () => this.close();
-					finish(request.result);
-				};
-			} catch {
-				failed();
-			}
-		}));
+			// A blocked native request stays alive; callers can use the network immediately.
+			request.onblocked = () => finish();
+			request.onerror = () => {
+				this.openingRequest = undefined;
+				this.opening = undefined;
+				this.releaseDisk();
+				this.failed();
+				finish();
+			};
+			request.onsuccess = () => {
+				this.openingRequest = undefined;
+				this.opening = undefined;
+				const db = request.result;
+				if (this.closed || !lease.valid()) {
+					db.close();
+					this.releaseDisk();
+					finish();
+					return;
+				}
+				this.connection = db;
+				this.failures = 0;
+				this.retryAt = 0;
+				db.onversionchange = () => this.close();
+				// Adopt late success even after the optional caller's deadline.
+				finish(db);
+			};
+		})().catch(() => {
+			this.opening = undefined;
+			this.releaseDisk();
+			this.failed();
+			finish();
+		});
+		return pending;
 	}
 	private async transaction<T>(
 		db: IDBDatabase,
-		mode: IDBTransactionMode,
 		work: (tx: IDBTransaction) => Promise<T>,
 		cancel?: AbortSignal
 	): Promise<T> {
 		const attempt = new ReadAttempt(1000, this.lifetime.signal, cancel);
-		const signal = attempt.signal;
 		let tx: IDBTransaction | undefined;
 		const abort = () => {
 			try {
@@ -139,69 +147,20 @@ export class SnapshotStorage {
 			}
 		};
 		try {
-			signal.throwIfAborted();
-			tx = db.transaction(['snapshots', 'metadata'], mode);
-			signal.addEventListener('abort', abort, { once: true });
+			attempt.signal.throwIfAborted();
+			tx = db.transaction('snapshots', 'readwrite');
+			attempt.signal.addEventListener('abort', abort, { once: true });
 			const done = completed(tx);
 			done.catch(() => {});
-			const value = await waitForRead(work(tx), signal);
-			await waitForRead(done, signal);
+			const value = await waitForRead(work(tx), attempt.signal);
+			await waitForRead(done, attempt.signal);
 			return value;
 		} catch (error) {
 			abort();
 			throw error;
 		} finally {
 			attempt.complete();
-			signal.removeEventListener('abort', abort);
-		}
-	}
-	/** Restore the target's coherent saved snapshot in one optional transaction. */
-	async getOpening(id: string, signal?: AbortSignal) {
-		try {
-			const db = await this.open();
-			if (!db || signal?.aborted) return;
-			return await this.transaction(
-				db,
-				'readonly',
-				async (tx) => {
-					const metadata = readMetadata(await result(tx.objectStore('metadata').get(id)), id);
-					if (!metadata || signal?.aborted) return;
-					const contract = metadata.contract;
-					const version = await result<StoredSnapshot | undefined>(
-						tx.objectStore('snapshots').get(contract.templateVersionId)
-					);
-					return {
-						metadata,
-						snapshot:
-							version?.id === contract.templateVersionId &&
-							validTemplate(version.snapshot, contract.companyId)
-								? version.snapshot
-								: undefined
-					};
-				},
-				signal
-			);
-		} catch {
-			/* Optional disk restoration cannot delay current access. */
-		}
-	}
-	/** Read only mutable metadata; immutable content goes through the shared version loader. */
-	async getMetadata(id: string, signal?: AbortSignal): Promise<SnapshotMetadata | undefined> {
-		try {
-			const db = await this.open();
-			if (!db || signal?.aborted) return;
-			const metadata = await this.transaction(
-				db,
-				'readonly',
-				(tx) => result<StoredMetadata | undefined>(tx.objectStore('metadata').get(id)),
-				signal
-			);
-			if (signal?.aborted) return;
-			const normalized = readMetadata(metadata, id);
-			if (normalized) return normalized;
-			if (metadata) this.repair({ store: 'metadata', id });
-		} catch {
-			// Optional storage never prevents an authenticated network read.
+			attempt.signal.removeEventListener('abort', abort);
 		}
 	}
 	async getVersion(
@@ -212,237 +171,78 @@ export class SnapshotStorage {
 		try {
 			const db = await this.open();
 			if (!db || signal?.aborted) return;
-			const entry = await this.transaction(
+			return await this.transaction(
 				db,
-				'readonly',
-				(tx) => result<StoredSnapshot | undefined>(tx.objectStore('snapshots').get(id)),
+				async (tx) => {
+					const store = tx.objectStore('snapshots');
+					const cursor = await result(store.openCursor(id));
+					if (!cursor) return;
+					const entry = cursor.value as StoredVersion;
+					if (
+						entry.id !== id ||
+						!validTemplate(entry.snapshot, companyId) ||
+						!Number.isFinite(entry.bytes) ||
+						entry.bytes < 0 ||
+						entry.bytes > SNAPSHOT_BYTES
+					) {
+						cursor.delete();
+						return;
+					}
+					cursor.update({ ...entry, usedAt: Date.now() });
+					return entry.snapshot;
+				},
 				signal
 			);
-			if (signal?.aborted) return;
-			if (entry?.id === id && validTemplate(entry.snapshot, companyId)) return entry.snapshot;
-			if (entry) this.repair({ store: 'snapshots', id, companyId });
 		} catch {
-			// Optional storage never prevents an authenticated network read.
+			/* Optional storage never prevents an authenticated network read. */
 		}
 	}
-	private repair(target: RepairTarget) {
-		this.enqueue(`repair:${target.store}:${target.id}`, {
-			kind: 'repair',
-			target,
-			valid: () => true
-		});
+	put(id: string, snapshot: TemplateContent, bytes: number, valid: () => boolean) {
+		if (this.closed || !valid() || bytes > SNAPSHOT_BYTES) return;
+		this.queue = this.queue
+			.then(async () => {
+				if (this.closed || !valid()) return;
+				const db = await this.open();
+				if (!db || !valid()) return;
+				await this.transaction(db, async (tx) => {
+					const store = tx.objectStore('snapshots');
+					const existing = await result(store.get(id));
+					if (!valid()) {
+						tx.abort();
+						return;
+					}
+					if (existing) return;
+					store.put({ id, snapshot, bytes, usedAt: Date.now() } satisfies StoredVersion);
+					const entries = (await result(store.getAll())) as StoredVersion[];
+					entries.sort((a, b) => a.usedAt - b.usedAt);
+					let total = entries.reduce((sum, entry) => sum + entry.bytes, 0);
+					let count = entries.length;
+					for (const entry of entries) {
+						if (count <= SNAPSHOT_ENTRIES && total <= SNAPSHOT_BYTES) break;
+						store.delete(entry.id);
+						total -= entry.bytes;
+						count--;
+					}
+				});
+			})
+			.catch(() => {});
 	}
 	close() {
+		if (this.closed) return;
 		this.closed = true;
-		this.pending.clear();
 		this.lifetime.abort();
-		void this.database?.then((db) => db?.close());
-	}
-	private enqueue(id: string, write: Write) {
-		if (this.closed || !write.valid()) return;
-		const queued = this.pending.get(id);
-		const active = this.active.get(id);
-		const previous = queued?.valid() ? queued : active?.valid() ? active : undefined;
-		if (write.kind === 'update' && previous?.kind === 'delete') return;
-		const incoming = writeContract(write);
-		const current = previous && writeContract(previous);
-		if (incoming && current && olderContractState(incoming, current)) {
-			if (
-				write.kind !== 'put' ||
-				previous?.kind !== 'update' ||
-				incoming.templateVersionId !== current.templateVersionId
-			)
-				return;
-			write = {
-				...write,
-				entry: {
-					...write.entry,
-					data: { ...write.entry.data, contract: current },
-					bytes: write.entry.immutableBytes + previous.bytes
-				}
-			};
-		}
-		if (write.kind === 'update' && previous === queued && queued?.kind === 'put') {
-			if (write.contract.templateVersionId !== queued.entry.data.contract.templateVersionId) return;
-			write = {
-				kind: 'put',
-				valid: write.valid,
-				entry: {
-					data: { ...queued.entry.data, contract: write.contract },
-					immutableBytes: queued.entry.immutableBytes,
-					bytes: queued.entry.immutableBytes + write.bytes
-				}
-			};
-		}
-		this.pending.delete(id);
-		this.pending.set(id, write);
-		while (
-			this.pending.size &&
-			(this.pending.size + this.active.size > SNAPSHOT_ENTRIES ||
-				this.queuedBytes() > SNAPSHOT_BYTES)
-		) {
-			const oldest = this.pending.keys().next().value!;
-			this.pending.delete(oldest);
-		}
-		if (!this.writing) void this.drain();
-	}
-	private async drain() {
-		this.writing = true;
+		this.connection?.close();
+		this.connection = undefined;
 		try {
-			const db = await this.open();
-			if (!db) {
-				this.pending.clear();
-				return;
-			}
-			while (!this.closed && this.pending.size) {
-				const batch = [...this.pending];
-				this.pending.clear();
-				this.active = new Map(batch);
-				try {
-					await this.transaction(db, 'readwrite', async (tx) => {
-						for (const [id, write] of batch) if (write.valid()) await this.write(tx, id, write);
-						await this.enforceLimits(tx);
-					});
-				} catch {
-					/* Optional cache; failed writes do not affect confirmed server state. */
-				} finally {
-					this.active.clear();
-				}
-			}
-		} finally {
-			this.writing = false;
+			this.openingRequest?.transaction?.abort();
+		} catch {
+			/* Already settled. */
 		}
+		// Keep the deletion lock until an uncancelable native open reaches a terminal event.
+		if (!this.openingRequest) this.releaseDisk();
 	}
-	private queuedBytes() {
-		const versions = new Map<string, number>();
-		let bytes = 0;
-		for (const write of [...this.pending.values(), ...this.active.values()]) {
-			bytes += writeBytes(write);
-			if (write.kind === 'put') {
-				bytes -= write.entry.immutableBytes;
-				versions.set(write.entry.data.contract.templateVersionId, write.entry.immutableBytes);
-			}
-		}
-		return bytes + [...versions.values()].reduce((sum, size) => sum + size, 0);
-	}
-	private async write(tx: IDBTransaction, id: string, write: Write) {
-		const store = tx.objectStore('metadata');
-		const snapshots = tx.objectStore('snapshots');
-		if (write.kind === 'repair') {
-			const repair = write.target;
-			const target = tx.objectStore(repair.store);
-			const current = await result(target.get(repair.id));
-			if (
-				current &&
-				!(repair.store === 'metadata'
-					? readMetadata(current, repair.id)
-					: current.id === repair.id && validTemplate(current.snapshot, repair.companyId))
-			)
-				target.delete(repair.id);
-		} else if (write.kind === 'delete') store.delete(id);
-		else if (write.kind === 'put') {
-			const { data, bytes, immutableBytes } = write.entry;
-			const versionId = data.contract.templateVersionId;
-			const current = readMetadata(await result(store.get(id)), id);
-			const missing = (await result(snapshots.getKey(versionId))) === undefined;
-			if (!write.valid()) return;
-			if (missing) snapshots.put({ id: versionId, snapshot: data.snapshot });
-			if (current && olderContractState(data.contract, current.contract)) return;
-			store.put({ id, contract: data.contract, bytes, immutableBytes, usedAt: Date.now() });
-		} else {
-			const metadata = readMetadata(await result(store.get(id)), id);
-			if (!metadata || !write.valid()) return;
-			if (
-				write.contract.templateVersionId !== metadata.contract.templateVersionId ||
-				olderContractState(write.contract, metadata.contract)
-			)
-				return;
-			store.put({
-				...metadata,
-				contract: write.contract,
-				bytes: metadata.immutableBytes + write.bytes,
-				usedAt: Date.now()
-			});
-		}
-	}
-	private async enforceLimits(tx: IDBTransaction) {
-		const store = tx.objectStore('metadata');
-		const entries = await new Promise<LruEntry[]>((resolve, reject) => {
-			const entries: LruEntry[] = [];
-			const request = store.index('lru').openKeyCursor();
-			request.onerror = () => reject(request.error);
-			request.onsuccess = () => {
-				const cursor = request.result;
-				if (!cursor) return resolve(entries);
-				const [usedAt, id, versionId, bytes, immutableBytes] = cursor.key as [
-					number,
-					string,
-					string,
-					number,
-					number
-				];
-				if (
-					Number.isFinite(usedAt) &&
-					typeof id === 'string' &&
-					id === cursor.primaryKey &&
-					typeof versionId === 'string' &&
-					Number.isFinite(bytes) &&
-					bytes >= 0 &&
-					bytes <= SNAPSHOT_BYTES &&
-					Number.isFinite(immutableBytes) &&
-					immutableBytes >= 0 &&
-					immutableBytes <= bytes
-				)
-					entries.push({ id, versionId, bytes, immutableBytes });
-				else store.delete(cursor.primaryKey);
-				cursor.continue();
-			};
-		});
-		const indexed = new Set(entries.map((entry) => entry.id));
-		for (const id of await result(store.getAllKeys()))
-			if (typeof id !== 'string' || !indexed.has(id)) store.delete(id);
-		const versions = new Map<string, { bytes: number; references: number }>();
-		let total = 0;
-		for (const entry of entries) {
-			total += entry.bytes - entry.immutableBytes;
-			const id = entry.versionId;
-			const version = versions.get(id);
-			if (version) version.references++;
-			else {
-				versions.set(id, { bytes: entry.immutableBytes, references: 1 });
-				total += entry.immutableBytes;
-			}
-		}
-		let count = entries.length;
-		for (const entry of entries) {
-			if (count <= SNAPSHOT_ENTRIES && total <= SNAPSHOT_BYTES) break;
-			store.delete(entry.id);
-			total -= entry.bytes - entry.immutableBytes;
-			const versionId = entry.versionId;
-			const version = versions.get(versionId)!;
-			if (--version.references === 0) {
-				total -= version.bytes;
-				versions.delete(versionId);
-			}
-			count--;
-		}
-		const snapshots = tx.objectStore('snapshots');
-		for (const id of await result(snapshots.getAllKeys()))
-			if (!versions.has(String(id))) snapshots.delete(id);
-	}
-	put(entry: SnapshotEntry, valid: () => boolean) {
-		const { data, bytes, immutableBytes } = entry;
-		this.enqueue(data.id, { kind: 'put', entry: { data, bytes, immutableBytes }, valid });
-	}
-	updateContract(
-		id: string,
-		contract: ReadyContract['contract'],
-		bytes: number,
-		valid: () => boolean
-	) {
-		this.enqueue(id, { kind: 'update', contract, bytes, valid });
-	}
-	delete(id: string, valid: () => boolean = () => true) {
-		this.enqueue(id, { kind: 'delete', valid });
+	private releaseDisk() {
+		this.lease?.release();
+		this.lease = undefined;
 	}
 }

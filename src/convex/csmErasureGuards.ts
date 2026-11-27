@@ -14,6 +14,7 @@ import { guardTerminal } from './csmErasureGuardValidators';
 import { isSenderExecutionTerminal } from './csmBookingValidators';
 import { safeFailedEvidence } from './csmAttemptState';
 import schema from './schema';
+import { internal } from './_generated/api';
 
 type Guard = Doc<'csmErasedInitialGuards'>;
 export async function blockingInitialGuard(ctx: QueryCtx, companyId: Id<'company'>) {
@@ -69,6 +70,11 @@ async function observe(ctx: MutationCtx, g: Guard) {
 		reviewReason: job ? 'senderNotTerminal' : 'senderUnobservable'
 	};
 	await ctx.db.patch('csmErasedInitialGuards', g._id, fields);
+	if (fields.observeAt !== undefined)
+		await ctx.scheduler.runAt(fields.observeAt, internal.csmErasureGuards.observeDue, {
+			id: g._id,
+			observeAt: fields.observeAt
+		});
 	return { ...g, ...fields };
 }
 export async function preserveErasedInitial(ctx: MutationCtx, a: Doc<'csmBookingAttempts'>) {
@@ -220,6 +226,20 @@ export const resolve = internalMutation({
 			}
 		});
 		// A positive disposition deliberately creates no appointment, profile, receipt or qualification.
+		return null;
+	}
+});
+export const observeDue = internalMutation({
+	args: { id: v.id('csmErasedInitialGuards'), observeAt: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const g = await ctx.db.get('csmErasedInitialGuards', args.id);
+		if (
+			g?.observeAt === args.observeAt &&
+			args.observeAt <= Date.now() &&
+			(await availableCompany(ctx, g.companyId))
+		)
+			await observe(ctx, g);
 		return null;
 	}
 });

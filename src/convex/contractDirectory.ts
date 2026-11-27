@@ -1,13 +1,12 @@
-import type { Contract } from './contractState';
 import type { PaginationOptions } from 'convex/server';
-import { assertStorageCapacity, documentBytes } from './storageCapacity';
-import { textPrefix } from '../lib/text';
 import { canonicalJson } from '../lib/document/canonical-json';
-import type { Id, Doc } from './_generated/dataModel';
+import { textPrefix } from '../lib/text';
+import type { Doc, Id } from './_generated/dataModel';
 import type { MutationCtx, QueryCtx } from './_generated/server';
 import { liveProfile } from './auth';
 import { sellerAuthorName } from './authorPresentation';
-import { installation, blockForConnection } from './contractPolicy';
+import { blockForConnection, installation } from './contractPolicy';
+import type { Contract } from './contractState';
 
 /** Update in the same transaction as every contract metadata write. */
 export async function writeDirectory(
@@ -23,14 +22,15 @@ export async function writeDirectory(
 			.unique());
 	const value = {
 		contractId: contract.root._id,
+		templateVersionId: contract.root.templateVersionId,
 		companyId: contract.root.companyId,
 		creatorId: contract.root.creatorId,
 		hubspot: contract.hubspot,
 		title: contract.root.title,
 		savedAt: contract.root.savedAt,
 		hasUnreadComment: options.hasUnreadComment ?? row?.hasUnreadComment ?? false,
-		hasBuyerLink: row?.hasBuyerLink ?? false,
-		buyerLinkCreatedAt: row?.buyerLinkCreatedAt,
+		buyerLinkToken: row?.buyerLinkToken,
+		buyerLinkCreatorId: row?.buyerLinkCreatorId,
 		createdAt: contract.root._creationTime
 	};
 	if (!row) await ctx.db.insert('contractDirectory', value);
@@ -43,7 +43,7 @@ export async function writeDirectory(
 		await ctx.db.replace('contractDirectory', row._id, value);
 }
 
-/** Discussion writers update the unread priority without changing link creation time. */
+/** Discussion writers update the unread priority without changing contract timestamps. */
 export async function writeDirectoryUnread(
 	ctx: MutationCtx,
 	contractId: Id<'savedContracts'>,
@@ -62,23 +62,24 @@ export async function writeDirectoryUnread(
 		await ctx.db.patch('contractDirectory', row._id, { hasUnreadComment });
 }
 
-/** Publishing a link records its creation time for the buyer links list. */
+/** Publishing a link records its token and creator on the contract directory entry. */
 export async function markDirectoryBuyerLinkPublished(
 	ctx: MutationCtx,
 	contractId: Id<'savedContracts'>,
-	buyerLinkCreatedAt: number
+	buyerLinkToken: string,
+	buyerLinkCreatorId: Id<'profiles'>
 ) {
 	const row = await ctx.db
 		.query('contractDirectory')
 		.withIndex('by_contractId', (q) => q.eq('contractId', contractId))
 		.unique();
 	if (!row) throw new Error('The contract directory is missing.');
-	if (row.hasBuyerLink && row.buyerLinkCreatedAt === buyerLinkCreatedAt) return;
-	await assertStorageCapacity(ctx, {
-		documents: 1,
-		bytes: documentBytes({ ...row, hasBuyerLink: true, buyerLinkCreatedAt })
+	if (row.buyerLinkToken === buyerLinkToken && row.buyerLinkCreatorId === buyerLinkCreatorId)
+		return;
+	await ctx.db.patch('contractDirectory', row._id, {
+		buyerLinkToken,
+		buyerLinkCreatorId
 	});
-	await ctx.db.patch('contractDirectory', row._id, { hasBuyerLink: true, buyerLinkCreatedAt });
 }
 
 export async function removeDirectoryEntry(ctx: MutationCtx, id: Id<'savedContracts'>) {
@@ -96,10 +97,10 @@ export async function readDirectory(
 	search: string,
 	paginationOpts: PaginationOptions
 ) {
-	const connection = await installation(ctx, companyId);
 	const term = textPrefix(search.trim(), 200);
-	const result = await (
-		term
+	const [connection, result] = await Promise.all([
+		installation(ctx, companyId),
+		(term
 			? ctx.db
 					.query('contractDirectory')
 					.withSearchIndex('search_title', (q) =>
@@ -107,9 +108,12 @@ export async function readDirectory(
 					)
 			: ctx.db
 					.query('contractDirectory')
-					.withIndex('by_companyId_and_savedAt_and_createdAt', (q) => q.eq('companyId', companyId))
+					.withIndex('by_companyId_and_hasUnreadComment_and_savedAt_and_createdAt', (q) =>
+						q.eq('companyId', companyId)
+					)
 					.order('desc')
-	).paginate(paginationOpts);
+		).paginate(paginationOpts)
+	]);
 	const creators = new Map<Id<'profiles'>, Promise<{ name: string; avatarUrl: string | null }>>();
 	function resolveCreator(id: Id<'profiles'>) {
 		let creator = creators.get(id);
@@ -130,12 +134,14 @@ export async function readDirectory(
 		page: await Promise.all(
 			result.page.map(async (contract) => ({
 				_id: contract.contractId,
+				templateVersionId: contract.templateVersionId,
 				_creationTime: contract.createdAt,
 				hubspot: contract.hubspot,
 				workBlock: blockForConnection(connection, contract.hubspot),
 				title: contract.title,
 				savedAt: contract.savedAt,
 				hasUnreadComment: contract.hasUnreadComment,
+				buyerLinkToken: contract.buyerLinkToken ?? null,
 				creator: await resolveCreator(contract.creatorId)
 			}))
 		)

@@ -1,11 +1,9 @@
 import type { Id } from '../../../src/convex/_generated/dataModel';
-import { getFunctionName } from 'convex/server';
 import { mount, onDestroy, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { StartupHome } from '../../../src/lib/auth/startup-data';
 import type { StartupSetup } from '../../../src/lib/auth/startup-data';
-import { WorkspaceReadSnapshots } from '../../../src/lib/auth/workspace-read-snapshots.svelte';
-import type { WorkspaceDirectory } from '../../../src/lib/auth/workspace-read-storage';
+import type { WorkspaceLists } from '../../../src/lib/auth/workspace-lists.svelte';
 import { csmState } from '../../support/csm-state.svelte';
 import Harness from './HomeSnappinessHarness.svelte';
 import { observe, reactive } from '../../support/observers.svelte';
@@ -15,8 +13,6 @@ import { navigating, page } from '../../support/navigation.svelte';
 
 const context = vi.hoisted(() => ({
 	query: undefined as unknown,
-	buyerQuery: undefined as unknown,
-	buyerPresence: undefined as unknown,
 	cache: undefined as unknown,
 	setup: undefined as unknown,
 	load: vi.fn(),
@@ -33,12 +29,41 @@ vi.mock('convex-svelte', () => ({
 		args: () => 'skip' | { membershipId: string; search?: string },
 		options: { initialNumItems: number }
 	) => {
+		const pager = context.query as {
+			status: string;
+			results: unknown[];
+			error: unknown;
+			loadMore: (numItems: number) => void;
+		};
+		let previous: string | undefined;
 		onDestroy(
-			observe(args, (value) =>
-				context.arguments.push({ kind: options.initialNumItems, args: value })
-			)
+			observe(args, (value) => {
+				context.arguments.push({ kind: options.initialNumItems, args: value });
+				const key = JSON.stringify(value);
+				if (key === previous) return;
+				previous = key;
+				if (value !== 'skip') {
+					pager.status = 'LoadingFirstPage';
+					pager.results = [];
+				}
+			})
 		);
-		return options.initialNumItems === 24 ? context.query : context.buyerQuery;
+		return {
+			// The installed SDK rebuilds its aggregate array on reads, including status updates.
+			get results() {
+				return [...pager.results];
+			},
+			get status() {
+				return pager.status;
+			},
+			get error() {
+				return pager.error;
+			},
+			loadMore: (numItems: number) => {
+				pager.status = 'LoadingMore';
+				pager.loadMore(numItems);
+			}
+		};
 	},
 	useQuery: () => ({ data: undefined, error: undefined, isLoading: false })
 }));
@@ -47,8 +72,7 @@ vi.mock('$lib/contract/snapshot-cache', async (importOriginal) => ({
 	getContractSnapshotCache: () => context.cache
 }));
 vi.mock('$lib/auth/read-query.svelte', () => ({
-	useReadQuery: (ref: Parameters<typeof getFunctionName>[0]) =>
-		getFunctionName(ref) === 'buyerLinks:dashboardPresence' ? context.buyerPresence : context.setup
+	useReadQuery: () => context.setup
 }));
 vi.mock(
 	'$lib/components/workspace/IntegrationCatalog.svelte',
@@ -61,7 +85,6 @@ vi.mock(
 let component: ReturnType<typeof mount> | undefined;
 let clock: ReturnType<typeof frameClock>;
 let visibility: PropertyDescriptor | undefined;
-let reads: WorkspaceReadSnapshots | undefined;
 beforeEach(() => {
 	vi.useFakeTimers();
 	context.arguments = [];
@@ -94,8 +117,6 @@ beforeEach(() => {
 });
 afterEach(async () => {
 	if (component) await unmount(component);
-	reads?.destroy();
-	reads = undefined;
 	document.body.innerHTML = '';
 	if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
 	else Reflect.deleteProperty(document, 'visibilityState');
@@ -108,9 +129,7 @@ async function fixture(
 		startup?: boolean;
 		setup?: 'complete' | 'pending' | 'integrations';
 		retained?: boolean;
-		owner?: boolean;
 		returning?: boolean;
-		buyerLinksAvailable?: boolean | null;
 	} = {}
 ) {
 	const state = csmState();
@@ -118,7 +137,9 @@ async function fixture(
 	state.session.workspaceAdmitted = true;
 	const card = {
 		hasUnreadComment: false,
+		buyerLinkToken: null as string | null,
 		_id: 'contract-a' as Id<'savedContracts'>,
+		templateVersionId: 'version-a' as Id<'templateVersions'>,
 		title: 'Synthetic Buyer',
 		_creationTime: 1,
 		hubspot: undefined,
@@ -138,30 +159,10 @@ async function fixture(
 		pauseBackground: vi.fn(),
 		suspendBackground: vi.fn(),
 		allowBackground: vi.fn(),
-		backgroundCandidates: vi.fn()
+		backgroundCandidates: vi.fn(),
+		hint: vi.fn(),
+		loadFrozenVersion: vi.fn().mockResolvedValue({})
 	};
-	const buyerQuery = reactive({
-		status: 'LoadingFirstPage',
-		results: [] as {
-			id: string;
-			contractId: Id<'savedContracts'>;
-			token: string;
-			title: string;
-			createdAt: number;
-			hasUnreadComment: boolean;
-		}[],
-		error: undefined,
-		loadMore: vi.fn()
-	});
-	const buyerPresence = reactive({
-		data: {
-			hasActive: options.buyerLinksAvailable === undefined ? true : options.buyerLinksAvailable,
-			hasCreatedOneLink: false
-		},
-		error: undefined,
-		isLoading: false,
-		retry: vi.fn()
-	});
 	let resolveModule!: (value: typeof Contracts) => void;
 	let rejectModule!: (cause: Error) => void;
 	const module = new Promise<typeof Contracts>((resolve, reject) => {
@@ -171,8 +172,6 @@ async function fixture(
 	context.load.mockReturnValue(module);
 	if (!options.deferModule) resolveModule(Contracts);
 	context.query = query;
-	context.buyerQuery = buyerQuery;
-	context.buyerPresence = buyerPresence;
 	context.cache = cache;
 	const startup: StartupHome = {
 		sessionId: 'session',
@@ -200,37 +199,58 @@ async function fixture(
 							? { complete: false, nextStep: 'integrations', contractId: null }
 							: { complete: true, nextStep: null, contractId: null }
 				};
-	if (options.retained || options.owner) {
-		const link = {
-			id: 'link-a' as Id<'buyerLinks'>,
-			contractId: card._id,
-			token: 'Ab3Cd4Ef5Gh6I',
-			title: card.title,
-			createdAt: 1_000,
-			hasUnreadComment: false
-		};
-		reads = new WorkspaceReadSnapshots(
-			{
-				profileId: state.viewer.profile.id,
-				membershipId: state.viewer.membership.id,
-				companyId: state.viewer.company.id
-			},
-			'user'
-		);
-		if (options.retained) {
-			reads.rememberBrowse('contracts', '', [card], false);
-			reads.rememberBrowse('buyerLinks', '', [link], false);
-			reads.confirm('contracts', [card], false);
-			reads.confirm('buyerLinks', [link], false);
-		}
+	if (options.retained) {
+		query.results = [card];
+		query.status = 'Exhausted';
 	}
+	const home = {
+		get data() {
+			return query.status !== 'LoadingFirstPage' && !query.error
+				? { page: query.results, isDone: query.status === 'Exhausted', continueCursor: '' }
+				: undefined;
+		},
+		get currentData() {
+			return this.data;
+		},
+		get error() {
+			return query.error;
+		},
+		get rejected() {
+			return Boolean(query.error);
+		},
+		get isLoading() {
+			return query.status === 'LoadingFirstPage';
+		},
+		get isStale() {
+			return false;
+		},
+		retry: vi.fn()
+	};
+	const unusedTeam = {
+		results: [],
+		status: 'LoadingFirstPage' as const,
+		isLoading: true,
+		error: undefined,
+		loadMore: vi.fn()
+	};
+	const lists: WorkspaceLists = {
+		home,
+		colleagues: unusedTeam,
+		invitations: unusedTeam,
+		openTeam: vi.fn(),
+		retryColleagues: vi.fn(),
+		retryInvitations: vi.fn()
+	};
+	const startupData = reactive({ home: options.startup === false ? null : startup });
 	component = mount(Harness, {
 		target: document.body,
 		props: {
 			state,
-			startup: options.startup === false ? null : startup,
+			get startup() {
+				return startupData.home;
+			},
 			setup,
-			reads,
+			lists,
 			returning: options.returning
 		}
 	});
@@ -238,12 +258,11 @@ async function fixture(
 	return {
 		state,
 		query,
-		buyerQuery,
-		buyerPresence,
 		card,
 		cache,
-		reads,
+		lists,
 		resolveModule,
+		provideStartup: () => (startupData.home = startup),
 		rejectModule
 	};
 }
@@ -265,7 +284,7 @@ it('shows a scoped startup card before the live contracts page arrives', async (
 	expect(f.cache.allowBackground).not.toHaveBeenCalled();
 });
 
-it('warms visible contracts after live readiness and pauses during interaction', async () => {
+it('warms the shared template on idle without per-card state reads and pauses during interaction', async () => {
 	const f = await fixture();
 	await revealFirstVisit();
 	f.query.results = [f.card];
@@ -278,7 +297,12 @@ it('warms visible contracts after live readiness and pauses during interaction',
 	await vi.advanceTimersByTimeAsync(100);
 	await settle();
 	expect(f.cache.allowBackground).toHaveBeenCalled();
-	expect(f.cache.backgroundCandidates).toHaveBeenLastCalledWith(['contract-a'], []);
+	expect(f.cache.backgroundCandidates).toHaveBeenLastCalledWith([], []);
+	expect(f.cache.loadFrozenVersion).toHaveBeenCalledTimes(1);
+	expect(f.cache.loadFrozenVersion).toHaveBeenCalledWith(
+		f.card.templateVersionId,
+		f.state.viewer.company.id
+	);
 	const calls = f.cache.allowBackground.mock.calls.length;
 	window.dispatchEvent(new Event('scroll'));
 	await settle();
@@ -291,7 +315,7 @@ it('warms visible contracts after live readiness and pauses during interaction',
 	expect(f.cache.allowBackground.mock.calls.length).toBeGreaterThan(calls);
 });
 
-it('filters displayed cards immediately without declaring a final empty result while search is pending', async () => {
+it('hides unmatched displayed cards immediately without declaring a final empty result while search is pending', async () => {
 	const f = await fixture();
 	await revealFirstVisit();
 	f.query.results = [f.card];
@@ -303,7 +327,6 @@ it('filters displayed cards immediately without declaring a final empty result w
 	input.dispatchEvent(new Event('input', { bubbles: true }));
 	f.query.status = 'LoadingFirstPage';
 	f.query.results = [];
-	await vi.advanceTimersByTimeAsync(200);
 	await settle();
 	expect(contractCard()).toBeNull();
 	expect(document.body.textContent).not.toContain('No contracts');
@@ -324,9 +347,7 @@ it.each([
 });
 
 function searchInput() {
-	return document.querySelector<HTMLInputElement>(
-		'[aria-label="Search contracts and buyer links"]'
-	)!;
+	return document.querySelector<HTMLInputElement>('[aria-label="Search contracts"]')!;
 }
 function typeSearch(input: HTMLInputElement, value: string) {
 	input.focus();
@@ -339,10 +360,7 @@ function contractRequests() {
 		.map((entry) => entry.args);
 }
 function contractCard() {
-	return document.querySelector('a[aria-label="Open contract for Synthetic Buyer"]');
-}
-function buyerLink() {
-	return document.querySelector('a[aria-label^="Open buyer link for Synthetic Buyer"]');
+	return document.querySelector('a[aria-label^="Open contract for Synthetic Buyer"]');
 }
 
 it('stages a cold entry from toolbar to setup, headings, and then rows only when each is ready', async () => {
@@ -382,12 +400,12 @@ it('stages a cold entry from toolbar to setup, headings, and then rows only when
 	expect(document.activeElement).toBe(input);
 });
 
-it('makes retained contracts usable for search before the results module or live page arrives', async () => {
+it('filters the hoisted live Home list before the results module or search page arrives', async () => {
 	const f = await fixture({}, { startup: false, deferModule: true, retained: true });
 	expect(contractCard()).toBeNull();
 	await revealFirstVisit();
 	expect(contractCard()).not.toBeNull();
-	expect(f.query.status).toBe('LoadingFirstPage');
+	expect(f.query.status).toBe('Exhausted');
 	const input = searchInput();
 	typeSearch(input, '  synthetic  ');
 	await settle();
@@ -399,26 +417,19 @@ it('makes retained contracts usable for search before the results module or live
 	expect(document.activeElement).toBe(input);
 	expect(document.body.textContent).not.toContain('No contracts');
 	f.resolveModule(Contracts);
-	await vi.advanceTimersByTimeAsync(200);
+	await vi.advanceTimersByTimeAsync(500);
 	await settle();
-	expect(contractRequests()).toEqual([{ membershipId: 'member', search: 'Missing' }]);
+	expect(contractRequests()).toEqual([{ search: 'Missing' }]);
 });
 
-it('reveals saved contracts from a delayed directory read and searches them while live data is pending', async () => {
-	const f = await fixture({}, { startup: false, deferModule: true, owner: true });
-	expect(contractCard()).toBeNull();
-	let completeRead!: (value: WorkspaceDirectory<'contracts'>) => void;
-	const diskRead = new Promise<WorkspaceDirectory<'contracts'>>((resolve) => {
-		completeRead = resolve;
-	});
-	vi.spyOn(f.reads!.storage, 'readDirectory').mockReturnValue(diskRead as never);
-	const hydration = f.reads!.hydrateDirectory('contracts');
+it('reveals a delayed scoped startup page and filters matching titles while live search is pending', async () => {
+	const f = await fixture({}, { startup: false, deferModule: true });
 	expect(contractCard()).toBeNull();
 	await revealFirstVisit();
-	completeRead({ savedAt: Date.now(), rows: [f.card] });
-	await hydration;
+	f.provideStartup();
 	await settle();
 	expect(contractCard()).not.toBeNull();
+
 	const input = searchInput();
 	typeSearch(input, 'Synthetic');
 	await settle();
@@ -426,63 +437,22 @@ it('reveals saved contracts from a delayed directory read and searches them whil
 	typeSearch(input, 'Other');
 	await settle();
 	expect(contractCard()).toBeNull();
+	expect(document.body.textContent).not.toContain('No contracts');
 	expect(f.query.status).toBe('LoadingFirstPage');
 });
 
-it('shows retained rows together on return without the cold-entry staging', async () => {
-	const f = await fixture(
-		{},
-		{ startup: false, retained: true, returning: true, buyerLinksAvailable: null }
-	);
+it('shows hoisted live rows together on return without the cold-entry staging', async () => {
+	const f = await fixture({}, { startup: false, retained: true, returning: true });
 	expect(document.querySelector('#contracts-heading')).not.toBeNull();
 	expect(contractCard()).not.toBeNull();
-	expect(document.querySelector('#buyer-links-heading')).not.toBeNull();
-	expect(buyerLink()).not.toBeNull();
-	expect(f.query.status).toBe('LoadingFirstPage');
-	expect(f.buyerQuery.status).toBe('LoadingFirstPage');
-	expect(
-		context.arguments.filter((entry) => entry.kind === 10).map((entry) => entry.args)
-	).toContainEqual({
-		membershipId: 'member',
-		search: ''
-	});
+	expect(f.query.status).toBe('Exhausted');
 	expect(document.body.textContent).not.toContain('Still getting your contracts');
 });
 
-it('reveals a newly available buyer-link heading before its delayed row', async () => {
-	const f = await fixture({}, { startup: false, buyerLinksAvailable: false });
-	await vi.advanceTimersByTimeAsync(80);
-	await settle();
-	expect(document.querySelector('#buyer-links-heading')).toBeNull();
-	f.buyerQuery.results = [
-		{
-			id: 'link-a',
-			contractId: f.card._id,
-			token: 'Ab3Cd4Ef5Gh6I',
-			title: 'Synthetic Buyer',
-			createdAt: 1_000,
-			hasUnreadComment: false
-		}
-	];
-	f.buyerQuery.status = 'Exhausted';
-	f.buyerPresence.data = { hasActive: true, hasCreatedOneLink: false };
-	await settle();
-	expect(document.querySelector('#buyer-links-heading')).not.toBeNull();
-	expect(buyerLink()).toBeNull();
-	await clock.frame();
-	await clock.frame();
-	expect(buyerLink()).not.toBeNull();
-});
-
-it('admits independent contract and buyer-link reads with their required page sizes', async () => {
-	await fixture({}, { startup: false });
-	expect(contractRequests()).toEqual([{ membershipId: 'member', search: '' }]);
-	expect(
-		context.arguments.filter((entry) => entry.kind === 10).map((entry) => entry.args)
-	).toContainEqual({
-		membershipId: 'member',
-		search: ''
-	});
+it('uses the hoisted plain Home query and skips duplicate empty browse reads', async () => {
+	const f = await fixture({}, { startup: false, retained: true });
+	expect(contractRequests()).toEqual([]);
+	expect(f.lists.home.currentData?.page).toEqual([f.card]);
 });
 
 it('keeps the actual focused input through module arrival and skips empty browse until pre-arrival typing settles', async () => {
@@ -500,13 +470,12 @@ it('keeps the actual focused input through module arrival and skips empty browse
 	expect(input.value).toBe('  Acme  ');
 	expect(context.arguments).toContainEqual({ kind: 24, args: 'skip' });
 	expect(contractRequests()).toEqual([]);
-	expect(context.arguments).toContainEqual({ kind: 10, args: 'skip' });
 	expect(document.body.textContent).not.toContain('No contracts');
-	await vi.advanceTimersByTimeAsync(149);
+	await vi.advanceTimersByTimeAsync(449);
 	expect(contractRequests()).toEqual([]);
 	await vi.advanceTimersByTimeAsync(1);
 	await settle();
-	expect(contractRequests()).toEqual([{ membershipId: 'member', search: 'Acme' }]);
+	expect(contractRequests()).toEqual([{ search: 'Acme' }]);
 	expect(searchInput()).toBe(input);
 	expect(document.activeElement).toBe(input);
 });
@@ -516,10 +485,10 @@ it('uses the already settled term when the module arrives after debounce', async
 	const input = searchInput();
 	typeSearch(input, 'Buyer');
 	await settle();
-	await vi.advanceTimersByTimeAsync(200);
+	await vi.advanceTimersByTimeAsync(500);
 	f.resolveModule(Contracts);
 	await settle();
-	expect(contractRequests()).toEqual([{ membershipId: 'member', search: 'Buyer' }]);
+	expect(contractRequests()).toEqual([{ search: 'Buyer' }]);
 	expect(searchInput()).toBe(input);
 	expect(document.activeElement).toBe(input);
 });
@@ -537,7 +506,7 @@ it('retains the same usable focused input, value and query across failed module 
 	expect(document.activeElement).toBe(input);
 	typeSearch(input, 'After failure');
 	await settle();
-	await vi.advanceTimersByTimeAsync(200);
+	await vi.advanceTimersByTimeAsync(500);
 	context.load.mockResolvedValue(Contracts);
 	const retry = [...document.querySelectorAll('button')].find(
 		(button) => button.textContent === 'Try again'
@@ -548,10 +517,10 @@ it('retains the same usable focused input, value and query across failed module 
 	expect(searchInput()).toBe(input);
 	expect(document.activeElement).toBe(input);
 	expect(input.value).toBe('After failure');
-	expect(contractRequests()).toEqual([{ membershipId: 'member', search: 'After failure' }]);
+	expect(contractRequests()).toEqual([{ search: 'After failure' }]);
 });
 
-it('enables creation from real prerequisites while results code, contracts and links remain pending', async () => {
+it('enables creation from real prerequisites while results code and contracts remain pending', async () => {
 	const f = await fixture({}, { deferModule: true, startup: false });
 	f.state.viewer.instructionsReady = false;
 	await settle();
@@ -567,7 +536,6 @@ it('enables creation from real prerequisites while results code, contracts and l
 	f.resolveModule(Contracts);
 	await settle();
 	expect(f.query.status).toBe('LoadingFirstPage');
-	expect(f.buyerQuery.status).toBe('LoadingFirstPage');
 	expect(document.querySelector('a[href="/contracts/new"]')).not.toBeNull();
 	f.state.session.blocked = true;
 	await settle();

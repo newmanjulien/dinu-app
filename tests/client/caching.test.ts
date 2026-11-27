@@ -60,9 +60,14 @@ function fixture(): ReadyContract {
 
 function networkFixture() {
 	const data = fixture();
-	const state = vi
-		.fn()
-		.mockResolvedValue({ ...data.contract, buyerName: null, requestDelivery: null });
+	const state = vi.fn().mockResolvedValue({
+		...data.contract,
+		buyerName: null,
+		requestDelivery: null,
+		buyerLink: null,
+		hasUnreadComment: false,
+		latestQuote: null
+	});
 	const version = vi.fn().mockResolvedValue(data.snapshot);
 	const versionReleased = vi.fn();
 	const client: SnapshotClient = {
@@ -71,7 +76,11 @@ function networkFixture() {
 			.mockImplementation((reference, _args, callback, onError) => {
 				let subscribed = true;
 				const work =
-					getFunctionName(reference) === getFunctionName(api.contracts.state) ? state() : version();
+					getFunctionName(reference) === getFunctionName(api.contracts.state)
+						? state()
+						: getFunctionName(reference) === getFunctionName(api.contracts.batchState)
+							? state().then((value: unknown) => [value])
+							: version();
 				void work.then(
 					(value: never) => {
 						if (subscribed) callback(value);
@@ -98,9 +107,10 @@ describe('snapshot caching work', () => {
 	beforeEach(() => {
 		storage = observeSnapshotStorage();
 		vi.stubGlobal('document', Object.assign(new EventTarget(), { hidden: false }));
-		vi.stubGlobal('window', {});
+		vi.stubGlobal('window', new EventTarget());
 		replaceContractCacheScope(
 			createCacheScope({
+				userId: 'synthetic-user',
 				profileId: 'synthetic-profile' as Id<'profiles'>,
 				membershipId: 'synthetic-membership' as Id<'memberships'>
 			})
@@ -154,7 +164,7 @@ describe('snapshot caching work', () => {
 			const opened = cache.load(id, client);
 			finishNavigation();
 			if (phase === 'navigation') expect(versionReleased).not.toHaveBeenCalled();
-			const commit = storage.committedRevision(0);
+			const commit = storage.committedVersion('synthetic-template');
 			response.resolve(fixture().snapshot);
 			expect(await opened).toEqual(fixture());
 			await commit;
@@ -166,9 +176,9 @@ describe('snapshot caching work', () => {
 		}
 	);
 
-	it('reopens from memory and restores initial and confirmed state from IndexedDB without another download or immutable write', async () => {
+	it('reopens from memory and revalidates mutable state while restoring immutable content without another download or write', async () => {
 		const { client, state, version } = networkFixture();
-		const initialCommit = storage.committedRevision(0);
+		const initialCommit = storage.committedVersion('synthetic-template');
 		const first = await getContractSnapshotCache().load(id, client);
 		expect(first.status).toBe('ready');
 		await initialCommit;
@@ -181,7 +191,7 @@ describe('snapshot caching work', () => {
 		const cache = getContractSnapshotCache();
 		const reopened = await cache.load(id, client);
 		expect(reopened).toEqual(first);
-		expect(state).toHaveBeenCalledTimes(1);
+		expect(state).toHaveBeenCalledTimes(2);
 		expect(version).toHaveBeenCalledTimes(1);
 		expect(storage.immutableWrites).toBe(1);
 		if (reopened.status !== 'ready') throw new Error('Expected a ready fixture.');
@@ -193,15 +203,20 @@ describe('snapshot caching work', () => {
 			metadataRevision: 1,
 			lastOperationId: 'confirmed-operation'
 		};
-		const updatedCommit = storage.committedRevision(1);
 		const updated = cache.updateState(id, confirmedState);
 		expect(updated?.snapshot).toBe(reopened.snapshot);
 		expect(updated?.contract).toMatchObject(confirmedState);
-		await updatedCommit;
 		expect(await cache.load(id, client)).toEqual(updated);
+		state.mockResolvedValue({
+			...confirmedState,
+			buyerName: null,
+			requestDelivery: null,
+			buyerLink: null,
+			hasUnreadComment: false
+		});
 		releaseContractSnapshotCache();
 		expect(await getContractSnapshotCache().load(id, client)).toEqual(updated);
-		expect(state).toHaveBeenCalledTimes(1);
+		expect(state).toHaveBeenCalledTimes(3);
 		expect(version).toHaveBeenCalledTimes(1);
 		expect(storage.immutableWrites).toBe(1);
 	});
@@ -209,7 +224,7 @@ describe('snapshot caching work', () => {
 	it('seeds confirmed content without a download, keeps newer revisions and rejects deleted seeds', async () => {
 		const cache = getContractSnapshotCache();
 		const data = fixture();
-		const commit = storage.committedRevision(0);
+		const commit = storage.committedVersion('synthetic-template');
 		expect(cache.seedConfirmed(data)).toBe(data);
 		await commit;
 		const { client, state, version } = networkFixture();

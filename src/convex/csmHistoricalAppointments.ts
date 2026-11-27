@@ -1,6 +1,6 @@
 /** Historical admission and bounded rollout tools; never a current client protocol. */
 import { v } from 'convex/values';
-import type { Doc, Id } from './_generated/dataModel';
+import type { Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
 import { internalAction, internalMutation, type ActionCtx } from './_generated/server';
 import { calRead, calRequest, object, parseSetupBooking, validBookingUid } from './csmCal';
@@ -9,14 +9,12 @@ import { parseCompanyReference, historicalProviderScope, HISTORICAL_EVENT_ID } f
 import { coversSetupProof, proveSetupChain, SetupChainError } from './csmSetupChain';
 import {
 	ownerState,
-	remove,
 	represented,
 	compatibleLegacy,
 	oldest,
 	enqueue,
 	initializeAppointment
 } from './csmSetupAppointments';
-type Appointment = Doc<'csmSetupAppointments'>;
 
 export const seedLegacy = internalMutation({
 	args: {

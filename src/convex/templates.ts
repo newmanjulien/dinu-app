@@ -1,3 +1,4 @@
+import { readCompanySetup, patchCompanySetup } from './companySetupState';
 import { isRepItem } from '../lib/playbook/model';
 import { ConvexError, v, getConvexSize } from 'convex/values';
 import { buildSourceIndex } from '../lib/document/source-index';
@@ -66,7 +67,7 @@ export async function readLiveSnapshot(
 		readTemplateSource(ctx, company.templateSourceId, companyId),
 		ctx.db
 			.query('playbookItems')
-			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.withIndex('by_companyId_and_audience', (q) => q.eq('companyId', companyId))
 			.take(MAX_PLAYBOOK_ITEMS + 1),
 		ctx.db.get('templateVersions', pointer.versionId)
 	]);
@@ -187,12 +188,19 @@ export async function saveTemplateVersion(
 	};
 	const versionId = await writeTemplateVersion(ctx, pointer, captured.templateSource, version);
 	await ctx.scheduler.runAfter(0, internal.authoringValidation.certify, { companyId, versionId });
+	const hasRepInstructions = captured.items.some((item) => item.audience === 'rep');
+	if (company.templateSourceId && company.hasRepInstructions !== hasRepInstructions)
+		await ctx.db.patch('company', companyId, { hasRepInstructions });
 	if (!company.templateSourceId) {
 		await assertStorageCapacity(ctx, {
 			documents: 1,
 			bytes: documentBytes({ ...company, templateSourceId })
 		});
-		await ctx.db.patch('company', companyId, { templateSourceId });
+		await ctx.db.patch('company', companyId, {
+			templateSourceId,
+			templateSourceFingerprint: captured.templateSource.fingerprint,
+			hasRepInstructions: captured.items.some((item) => item.audience === 'rep')
+		});
 		await retireCompanySetupAppointments(ctx, companyId);
 	}
 	return versionId;
@@ -282,12 +290,14 @@ export async function writeTemplateVersion(
 	templateSource: Doc<'templateSources'>,
 	version: TemplateVersionContent,
 	structuralChanged = true,
-	knownCertificate?: Doc<'templateSourceCertificates'>
+	knownCertificate?: Doc<'templateSourceCertificates'>,
+	knownCurrent?: Doc<'templateVersions'>
 ) {
 	const certificate =
 		knownCertificate ??
 		(await readValidationCertificate(ctx, templateSource.companyId, templateSource._id));
-	const current = pointer ? await ctx.db.get('templateVersions', pointer.versionId) : null;
+	const current =
+		knownCurrent ?? (pointer ? await ctx.db.get('templateVersions', pointer.versionId) : null);
 	if (
 		templateSource.companyId !== version.companyId ||
 		templateSource._id !== version.templateSourceId ||
@@ -326,28 +336,6 @@ export async function writeTemplateVersion(
 	if (pointer) await ctx.db.replace('currentTemplate', pointer._id, nextPointer);
 	else await ctx.db.insert('currentTemplate', nextPointer);
 	return versionId;
-}
-
-/** Late revision marking and its owning total remain in the template save transaction. */
-export async function addTemplateReadBytes(
-	ctx: MutationCtx,
-	versionId: Id<'templateVersions'>,
-	templateSource: Doc<'templateSources'>,
-	delta: number
-) {
-	if (delta === 0) return;
-	const version = await ctx.db.get('templateVersions', versionId);
-	if (
-		!version ||
-		version.companyId !== templateSource.companyId ||
-		version.templateSourceId !== templateSource._id ||
-		version.mutability !== 'mutable'
-	)
-		throw templateRejected('The template is not available.');
-	const contentReadBytes = version.contentReadBytes + delta;
-	const bytes = templateReadCapacity({ ...version, contentReadBytes }, templateSource);
-	await assertStorageCapacity(ctx, { documents: 1, bytes });
-	await ctx.db.patch('templateVersions', versionId, { contentReadBytes });
 }
 
 export function isMutableTemplateVersion(version: Doc<'templateVersions'> | null) {
@@ -453,7 +441,8 @@ export async function saveChangedVersion(
 			items
 		},
 		structuralChanged,
-		captured.certificate
+		captured.certificate,
+		captured.version
 	);
 }
 export async function readVersion(
@@ -463,38 +452,11 @@ export async function readVersion(
 ) {
 	return (await versionReader(ctx, versionId, companyId)).read();
 }
-export const current = query({
-	args: { membershipId: v.id('memberships') },
-	returns: v.union(v.null(), v.object({ versionId: v.id('templateVersions') })),
-	handler: async (ctx, args) => {
-		const { companyId } = await requireMembership(ctx, args.membershipId);
-		const pointer = await currentPointer(ctx, companyId);
-		return pointer ? { versionId: pointer.versionId } : null;
-	}
-});
-export const content = query({
-	args: { membershipId: v.id('memberships'), versionId: v.id('templateVersions') },
-	returns: templateContent,
-	handler: async (ctx, { versionId, membershipId }) => {
-		const { companyId } = await requireMembership(ctx, membershipId);
-		return readVersion(ctx, versionId, companyId);
-	}
-});
-/** Current authoring content is reactive and must never enter the frozen snapshot cache. */
-export const preview = query({
-	args: { membershipId: v.id('memberships') },
-	returns: v.union(v.null(), templateContent),
-	handler: async (ctx, { membershipId }) => {
-		const { companyId } = await requireMembership(ctx, membershipId);
-		const pointer = await currentPointer(ctx, companyId);
-		return pointer ? readVersion(ctx, pointer.versionId, companyId) : null;
-	}
-});
 export const frozenContent = query({
-	args: { membershipId: v.id('memberships'), versionId: v.id('templateVersions') },
+	args: { versionId: v.id('templateVersions') },
 	returns: templateContent,
-	handler: async (ctx, { versionId, membershipId }) => {
-		const { companyId } = await requireMembership(ctx, membershipId);
+	handler: async (ctx, { versionId }) => {
+		const { companyId } = await requireMembership(ctx);
 		return (await versionReader(ctx, versionId, companyId, true)).read();
 	}
 });
@@ -650,7 +612,10 @@ export async function activatePendingTemplate(
 			return version._id;
 		throw templateRejected('The released template version is unavailable.');
 	}
-	if (company.pendingTemplateSourceId !== templateSource._id || templateSource.state !== 'pending')
+	if (
+		(await readCompanySetup(ctx, company)).row?.pendingTemplateSourceId !== templateSource._id ||
+		templateSource.state !== 'pending'
+	)
 		throw templateRejected(
 			'This upload is no longer the current pending template. Inspect it again.'
 		);
@@ -663,7 +628,7 @@ export async function activatePendingTemplate(
 	const [items, versions, active, revisions, receipts] = await Promise.all([
 		ctx.db
 			.query('playbookItems')
-			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.withIndex('by_companyId_and_audience', (q) => q.eq('companyId', companyId))
 			.take(1),
 		ctx.db
 			.query('templateVersions')
@@ -681,7 +646,7 @@ export async function activatePendingTemplate(
 			.take(1),
 		ctx.db
 			.query('playbookItemCreationReceipts')
-			.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+			.withIndex('by_companyId_and_renderKey', (q) => q.eq('companyId', companyId))
 			.take(1)
 	]);
 	if (
@@ -702,7 +667,8 @@ export async function activatePendingTemplate(
 			ctx,
 			pendingTemplateSourceId,
 			companyId,
-			templateSource
+			templateSource,
+			{ verifyFingerprint: true }
 		);
 		blocks = parsed.blocks;
 	} catch (error) {
@@ -730,7 +696,7 @@ export async function activatePendingTemplate(
 		},
 		company
 	);
-	await ctx.db.patch('company', companyId, { pendingTemplateSourceId: undefined });
+	await patchCompanySetup(ctx, companyId, { pendingTemplateSourceId: undefined });
 	return versionId;
 }
 

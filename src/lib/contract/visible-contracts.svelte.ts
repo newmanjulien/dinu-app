@@ -4,16 +4,18 @@ import { observeHomeWarming } from '$lib/document/runtime/render-perf';
 import { getDocumentResources } from '$lib/document/runtime/resources.svelte';
 import { onMount, untrack } from 'svelte';
 import type { Action } from 'svelte/action';
+import type { Id } from '../../convex/_generated/dataModel';
 import type { SavedContractCard } from './card';
-import { getContractOpenings, getContractSnapshotCache } from './snapshot-cache';
+import { getContractSnapshotCache } from './snapshot-cache';
 
 /** One viewport observer and one preparation policy for both Home and search. */
-export function createVisibleContractWarming() {
+export function createVisibleContractWarming(companyId: Id<'company'>) {
 	const resources = getDocumentResources();
-	const openings = getContractOpenings();
 	const cards = new Map<Element, SavedContractCard>();
 	const visible = new Set<string>();
 	const promoted = new Set<string>();
+	let searching = $state(false);
+	const warmedVersions = new Map<string, number>();
 	let pending = $state(true);
 	let enabled = $state(false);
 	let busy = $state(false);
@@ -39,7 +41,7 @@ export function createVisibleContractWarming() {
 	let observer: IntersectionObserver | undefined;
 	let cache: ReturnType<typeof getContractSnapshotCache> | undefined;
 	$effect(() => {
-		const allowed = enabled && !pending && !busy && !hidden;
+		const allowed = !hidden && (urgentDownloads.length > 0 || (enabled && !pending && !busy));
 		const ids = resources?.preparationCandidates ?? [];
 		const urgentIds = urgentDownloads;
 		// Give promoted cards first claim, then include the next preparation target.
@@ -117,16 +119,34 @@ export function createVisibleContractWarming() {
 		});
 	}
 	function publishCandidates() {
-		const ranked = openings.rank(
-			[...cards.entries()]
-				.filter(([, card]) => visible.has(card._id))
-				.sort(([a], [b]) =>
-					a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
-				)
-				.map(([, card]) => card),
-			[...promoted]
+		// Preparation order only; rendered cards keep their supplied server order.
+		const ranked = [...cards.entries()]
+			.filter(([, card]) => visible.has(card._id))
+			.sort(([a], [b]) =>
+				a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+			)
+			.map(([, card], order) => ({ card, order }))
+			.sort(
+				(a, b) =>
+					Number(promoted.has(b.card._id)) - Number(promoted.has(a.card._id)) ||
+					b.card.savedAt - a.card.savedAt ||
+					a.order - b.order
+			)
+			.map(({ card }) => card);
+		const shared = enabled && !pending ? ranked[0] : undefined;
+		if (shared && cache && Date.now() >= (warmedVersions.get(shared.templateVersionId) ?? 0)) {
+			warmedVersions.set(shared.templateVersionId, Infinity);
+			void cache.loadFrozenVersion(shared.templateVersionId, companyId).catch(() => {
+				if (!destroyed) warmedVersions.set(shared.templateVersionId, Date.now() + 5000);
+			});
+		}
+		const urgentCards = ranked.filter((card) => promoted.has(card._id));
+		const backgroundCards = ranked.filter(
+			(card) => !promoted.has(card._id) && (searching || card.hasUnreadComment)
 		);
-		const ids = !enabled || pending ? [] : ranked;
+		const ids = [...urgentCards, ...(enabled && !pending ? backgroundCards : [])].map(
+			(card) => card._id
+		);
 		const selected = ids.slice(0, downloadLimit);
 		if (
 			downloads.length !== selected.length ||
@@ -159,6 +179,7 @@ export function createVisibleContractWarming() {
 				candidates();
 			});
 		}
+		cache.hint(card._id, card.templateVersionId, companyId);
 		cards.set(node, card);
 		if (observer) observer.observe(node);
 		else {
@@ -168,6 +189,7 @@ export function createVisibleContractWarming() {
 		return {
 			update(next) {
 				card = next;
+				cache?.hint(next._id, next.templateVersionId, companyId);
 				cards.set(node, next);
 				candidates();
 			},
@@ -182,6 +204,12 @@ export function createVisibleContractWarming() {
 	};
 	return {
 		observe,
+		searching(value: boolean) {
+			if (searching !== value) {
+				searching = value;
+				candidates();
+			}
+		},
 		pending(value: boolean) {
 			if (pending === value) return;
 			pending = value;

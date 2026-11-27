@@ -3,47 +3,63 @@ import { env } from '$env/dynamic/public';
 import { readDraft, type ContractDraft } from './draft-values';
 export type { ContractDraft } from './draft-values';
 
-const memory = new Map<string, ContractDraft | null>();
-const deletedUsers = new Set<string>();
-const removedMemberships = new Set<string>();
 type DraftOwner = { flush: () => Promise<boolean>; hasLocalIntent: () => boolean };
-const owners = new Map<string, DraftOwner>();
+type UserDrafts = {
+	active: boolean;
+	storageReadable: boolean;
+	memory: Map<string, ContractDraft | null>;
+	owners: Map<string, DraftOwner>;
+};
+const users = new Map<string, UserDrafts>();
 const prefix = (userId: string) =>
 	`dinu:drafts:v7:${encodeURIComponent(env.PUBLIC_CONVEX_URL ?? '')}:${encodeURIComponent(userId)}:`;
+
+function userDrafts(userId: string): UserDrafts {
+	let user = users.get(userId);
+	if (!user) {
+		user = { active: true, storageReadable: true, memory: new Map(), owners: new Map() };
+		users.set(userId, user);
+	}
+	return user;
+}
 
 /** Lightweight sessionStorage draft backup for unsaved contract selections. */
 export class DraftJournal {
 	private key: string;
-	private namespace: string;
+	private user: UserDrafts;
 	constructor(
-		private userId: string,
+		userId: string,
 		private contractId: string,
 		membershipId: string
 	) {
-		this.namespace = prefix(userId) + encodeURIComponent(membershipId) + ':';
-		this.key = this.namespace + encodeURIComponent(contractId);
+		this.user = userDrafts(userId);
+		this.key =
+			prefix(userId) + encodeURIComponent(membershipId) + ':' + encodeURIComponent(contractId);
+	}
+	private get active() {
+		return this.user.active;
 	}
 	registerOwner(owner: DraftOwner) {
-		owners.set(this.key, owner);
+		if (this.active) this.user.owners.set(this.key, owner);
 		return () => {
-			if (owners.get(this.key) === owner) owners.delete(this.key);
+			if (this.user.owners.get(this.key) === owner) this.user.owners.delete(this.key);
 		};
 	}
 	get owner() {
-		return owners.get(this.key);
+		return this.active ? this.user.owners.get(this.key) : undefined;
 	}
 	get hasStoredIntent() {
 		return Boolean(this.read());
 	}
 	read(): ContractDraft | null {
-		if (!browser || deletedUsers.has(this.userId) || removedMemberships.has(this.namespace))
-			return null;
-		if (memory.has(this.key)) return structuredClone(memory.get(this.key)!);
+		if (!browser || !this.active) return null;
+		if (this.user.memory.has(this.key)) return structuredClone(this.user.memory.get(this.key)!);
+		if (!this.user.storageReadable) return null;
 		try {
 			const stored = sessionStorage.getItem(this.key);
 			const value = readDraft(JSON.parse(stored ?? 'null'), this.contractId);
 			if (value) {
-				memory.set(this.key, value);
+				this.user.memory.set(this.key, value);
 				return structuredClone(value);
 			}
 			if (stored) sessionStorage.removeItem(this.key);
@@ -56,8 +72,8 @@ export class DraftJournal {
 		this.write(null);
 	}
 	write(draft: ContractDraft | null) {
-		if (!browser || deletedUsers.has(this.userId) || removedMemberships.has(this.namespace)) return;
-		memory.set(this.key, draft ? structuredClone(draft) : null);
+		if (!browser || !this.active) return;
+		this.user.memory.set(this.key, draft ? structuredClone(draft) : null);
 		try {
 			if (draft) sessionStorage.setItem(this.key, JSON.stringify(draft));
 			else sessionStorage.removeItem(this.key);
@@ -71,7 +87,8 @@ export type DraftRecovery = { id: string; journal: DraftJournal; draft: Contract
 
 export function discoverContractDrafts(userId: string, membershipId: string): DraftRecovery[] {
 	const namespace = prefix(userId) + encodeURIComponent(membershipId) + ':';
-	if (!browser || deletedUsers.has(userId) || removedMemberships.has(namespace)) return [];
+	if (!browser) return [];
+	const user = userDrafts(userId);
 	const ids = new Set<string>();
 	const collect = (key: string | null) => {
 		if (!key?.startsWith(namespace)) return;
@@ -83,9 +100,10 @@ export function discoverContractDrafts(userId: string, membershipId: string): Dr
 			/* Invalid key cannot be replayed. */
 		}
 	};
-	for (const key of memory.keys()) collect(key);
+	for (const key of user.memory.keys()) collect(key);
 	try {
-		for (let i = 0; i < sessionStorage.length; i++) collect(sessionStorage.key(i));
+		if (user.storageReadable)
+			for (let i = 0; i < sessionStorage.length; i++) collect(sessionStorage.key(i));
 	} catch {
 		/* Memory remains usable. */
 	}
@@ -99,25 +117,45 @@ export function discoverContractDrafts(userId: string, membershipId: string): Dr
 }
 
 export function discardUserDrafts(userId: string) {
-	deletedUsers.add(userId);
-	discardNamespace(prefix(userId));
+	const user = users.get(userId);
+	if (user) {
+		user.active = false;
+		user.memory.clear();
+		user.owners.clear();
+	}
+	users.delete(userId);
+	if (!discardNamespace(prefix(userId))) {
+		// A returning user may create new intent, but cannot recover the failed purge's records.
+		userDrafts(userId).storageReadable = false;
+	}
 }
 
-export function discardMembershipDrafts(userId: string, membershipId: string) {
-	const namespace = prefix(userId) + encodeURIComponent(membershipId) + ':';
-	removedMemberships.add(namespace);
-	discardNamespace(namespace);
+/** Capture before an async exit; a retired owner cannot clear a replacement's drafts. */
+export function captureUserDraftCleanup(userId: string): () => void {
+	const user = userDrafts(userId);
+	return () => {
+		if (user.active) discardUserDrafts(userId);
+	};
 }
 
-function discardNamespace(namespace: string) {
-	for (const key of memory.keys()) if (key.startsWith(namespace)) memory.delete(key);
-	if (!browser) return;
+function discardNamespace(namespace: string): boolean {
+	if (!browser) return true;
+	const keys: string[] = [];
 	try {
-		for (let i = sessionStorage.length - 1; i >= 0; i--) {
+		for (let i = 0; i < sessionStorage.length; i++) {
 			const key = sessionStorage.key(i);
-			if (key?.startsWith(namespace)) sessionStorage.removeItem(key);
+			if (key?.startsWith(namespace)) keys.push(key);
 		}
 	} catch {
-		/* Namespace remains invalidated. */
+		return false;
 	}
+	let removed = true;
+	for (const key of keys) {
+		try {
+			sessionStorage.removeItem(key);
+		} catch {
+			removed = false;
+		}
+	}
+	return removed;
 }

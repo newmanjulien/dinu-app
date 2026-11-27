@@ -1,11 +1,15 @@
+import { credentialConnection } from './hubspotCredentials';
 import { markDealUnavailable } from './contractPolicy';
 import { Workpool, vOnCompleteArgs } from '@convex-dev/workpool';
 import { v } from 'convex/values';
+import { paginationResultValidator, type PaginationResult } from 'convex/server';
 import { components, internal } from './_generated/api';
 import { env, internalMutation, internalQuery } from './_generated/server';
 import { availableCompany } from './auth';
 import { readContract } from './contractState';
 import schema from './schema';
+import type { Doc, Id } from './_generated/dataModel';
+import type { MutationCtx } from './_generated/server';
 import { blockLink } from './hubspotRecords';
 import { requireReconnect } from './hubspotConnections';
 import {
@@ -22,6 +26,56 @@ export const pool = new Workpool(components.hubspotPool, {
 	retryActionsByDefault: false
 });
 const pumpStatuses = ['pending', 'uncertain', 'working', 'blocked'] as const;
+function wakeAt(row: Doc<'hubspotEvents'>) {
+	return row.workId ? (row.leaseUntil ?? row.dueAt) + 30_000 : row.dueAt;
+}
+export async function scheduleDelivery(ctx: MutationCtx, id: Id<'hubspotEvents'>) {
+	const row = await ctx.db.get('hubspotEvents', id);
+	if (row && pumpStatuses.some((status) => status === row.status)) {
+		const at = wakeAt(row);
+		await ctx.scheduler.runAt(at, internal.hubspotDelivery.wake, { id, at });
+	}
+}
+/** A stale retry or lease job never starts a fresh pass. */
+export const wake = internalMutation({
+	args: { id: v.id('hubspotEvents'), at: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const row = await ctx.db.get('hubspotEvents', args.id);
+		if (
+			row &&
+			pumpStatuses.some((status) => status === row.status) &&
+			wakeAt(row) === args.at &&
+			args.at <= Date.now()
+		)
+			await ctx.scheduler.runAfter(0, internal.hubspotDelivery.pump, {});
+		return null;
+	}
+});
+
+/** Native pagination has one-query-per-execution scope; the parent shares its row budget. */
+export const duePage = internalQuery({
+	args: {
+		status: v.union(...pumpStatuses.map((status) => v.literal(status))),
+		cutoff: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		limit: v.number()
+	},
+	returns: paginationResultValidator(schema.doc('hubspotEvents')),
+	handler: (ctx, args) =>
+		ctx.db
+			.query('hubspotEvents')
+			.withIndex('by_status_and_dueAt', (q) =>
+				q.eq('status', args.status).lte('dueAt', args.cutoff)
+			)
+			.paginate({
+				cursor: args.cursor,
+				numItems: Math.max(1, Math.min(20, args.limit)),
+				maximumRowsRead: Math.max(1, Math.min(20, args.limit)),
+				maximumBytesRead: 1024 * 1024
+			})
+});
+
 /** Each fixed-cutoff pass advances past skipped rows before visiting the next status. */
 export const pump = internalMutation({
 	args: {
@@ -34,75 +88,91 @@ export const pump = internalMutation({
 		if (env.HUBSPOT_ENABLED !== 'true' || env.HUBSPOT_DELIVERY_ENABLED !== 'true') return null;
 		const now = Date.now();
 		const cutoff = args.cutoff ?? now;
-		const status = args.status ?? pumpStatuses[0];
-		const page = await ctx.db
-			.query('hubspotEvents')
-			.withIndex('by_status_and_dueAt', (q) => q.eq('status', status).lte('dueAt', cutoff))
-			.paginate({
-				cursor: args.cursor ?? null,
-				numItems: 20,
-				maximumRowsRead: 20,
-				maximumBytesRead: 1024 * 1024
-			});
-		for (const row of page.page) {
-			if (!(await availableCompany(ctx, row.companyId))) continue;
-			// Cancellation cannot stop a running action. Its lease and request reserve must retire first.
-			if (row.workId && (row.leaseUntil ?? row.dueAt) + 30_000 > now) continue;
-			if (row.workId) await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
-			const mode = deliveryMode(row, await deliveryFacts(ctx, row), now);
-			const reset = {
-				workId: undefined,
-				execution: undefined,
-				claim: undefined,
-				leaseUntil: undefined
-			};
-			if (mode !== 'fresh' && mode !== 'observe') {
-				await ctx.db.patch('hubspotEvents', row._id, {
-					...reset,
-					status: mode,
-					dueAt: now + CLAIM_MS,
-					diagnostic:
-						mode === 'paused'
-							? 'Linked HubSpot deal unavailable or replaced'
-							: mode === 'attention'
-								? 'Original write observation horizon ended'
-								: 'Reconnect HubSpot'
-				});
+		let remaining = 20;
+		for (
+			let index = pumpStatuses.indexOf(args.status ?? pumpStatuses[0]);
+			index < pumpStatuses.length;
+			index++
+		) {
+			const status = pumpStatuses[index];
+			const rows = () =>
+				ctx.db
+					.query('hubspotEvents')
+					.withIndex('by_status_and_dueAt', (q) => q.eq('status', status).lte('dueAt', cutoff));
+			if (remaining === 0) {
+				if (await rows().first()) {
+					await ctx.scheduler.runAfter(0, internal.hubspotDelivery.pump, { status, cutoff });
+					break;
+				}
 				continue;
 			}
-			const execution = `${row._id}:${now}:${Math.random()}`;
-			const workId = await pool.enqueueAction(
-				ctx,
-				internal.hubspotSender.send,
-				{ id: row._id, execution },
+			const page: PaginationResult<Doc<'hubspotEvents'>> = await ctx.runQuery(
+				internal.hubspotDelivery.duePage,
 				{
-					retry: false,
-					onComplete: internal.hubspotDelivery.completed,
-					context: { id: row._id, execution }
+					status,
+					cutoff,
+					cursor: status === args.status ? (args.cursor ?? null) : null,
+					limit: remaining
 				}
 			);
-			await ctx.db.patch('hubspotEvents', row._id, {
-				...reset,
-				execution,
-				workId,
-				status: row.dispatch ? 'uncertain' : 'pending',
-				dueAt: now + CLAIM_MS
-			});
-		}
-		if (!page.isDone)
-			await ctx.scheduler.runAfter(0, internal.hubspotDelivery.pump, {
-				status,
-				cutoff,
-				cursor: page.continueCursor
-			});
-		else {
-			const nextStatus = pumpStatuses[pumpStatuses.indexOf(status) + 1];
-			if (nextStatus)
-				await ctx.scheduler.runAfter(0, internal.hubspotDelivery.pump, {
-					status: nextStatus,
-					cutoff
+			remaining -= page.page.length;
+			for (const row of page.page) {
+				if (!(await availableCompany(ctx, row.companyId))) continue;
+				// Cancellation cannot stop a running action. Its lease and request reserve must retire first.
+				if (row.workId && (row.leaseUntil ?? row.dueAt) + 30_000 > now) continue;
+				if (row.workId) await pool.cancel(ctx, row.workId as import('@convex-dev/workpool').WorkId);
+				const mode = deliveryMode(row, await deliveryFacts(ctx, row), now);
+				const reset = {
+					workId: undefined,
+					execution: undefined,
+					claim: undefined,
+					leaseUntil: undefined
+				};
+				if (mode !== 'fresh' && mode !== 'observe') {
+					await ctx.db.patch('hubspotEvents', row._id, {
+						...reset,
+						status: mode,
+						dueAt: now + CLAIM_MS,
+						diagnostic:
+							mode === 'paused'
+								? 'Linked HubSpot deal unavailable or replaced'
+								: mode === 'attention'
+									? 'Original write observation horizon ended'
+									: 'Reconnect HubSpot'
+					});
+					await scheduleDelivery(ctx, row._id);
+					continue;
+				}
+				const execution = `${row._id}:${now}:${Math.random()}`;
+				const workId = await pool.enqueueAction(
+					ctx,
+					internal.hubspotSender.send,
+					{ id: row._id, execution },
+					{
+						retry: false,
+						onComplete: internal.hubspotDelivery.completed,
+						context: { id: row._id, execution }
+					}
+				);
+				await ctx.db.patch('hubspotEvents', row._id, {
+					...reset,
+					execution,
+					workId,
+					status: row.dispatch ? 'uncertain' : 'pending',
+					dueAt: now + CLAIM_MS
 				});
+				await scheduleDelivery(ctx, row._id);
+			}
+			if (!page.isDone) {
+				await ctx.scheduler.runAfter(0, internal.hubspotDelivery.pump, {
+					status,
+					cutoff,
+					cursor: page.continueCursor
+				});
+				break;
+			}
 		}
+
 		return null;
 	}
 });
@@ -125,6 +195,7 @@ export const claim = internalMutation({
 		const mode = deliveryMode(row, await deliveryFacts(ctx, row), now);
 		if (mode !== 'fresh' && mode !== 'observe') {
 			await ctx.db.patch('hubspotEvents', row._id, { status: mode, dueAt: now + CLAIM_MS });
+			await scheduleDelivery(ctx, row._id);
 			return null;
 		}
 		const changes = {
@@ -136,6 +207,7 @@ export const claim = internalMutation({
 			operatorObservation: undefined
 		};
 		await ctx.db.patch('hubspotEvents', row._id, changes);
+		await scheduleDelivery(ctx, row._id);
 		// Operator authority is returned once, consumed transactionally; it never resets the horizon.
 		return { ...row, ...changes, operatorObservation: row.operatorObservation };
 	}
@@ -174,7 +246,7 @@ export const authorizeRead = internalQuery({
 			env.HUBSPOT_DELIVERY_ENABLED !== 'true'
 		)
 			return false;
-		const c = await ctx.db.get('hubspotConnections', row.destination.connectionId);
+		const c = await credentialConnection(ctx, row.destination.connectionId);
 		return Boolean(
 			c &&
 			c.generation === args.generation &&
@@ -203,7 +275,7 @@ export const checkpoint = internalMutation({
 			!(await availableCompany(ctx, row.companyId))
 		)
 			return false;
-		const connection = await ctx.db.get('hubspotConnections', row.destination.connectionId);
+		const connection = await credentialConnection(ctx, row.destination.connectionId);
 		if (!connection || connection.status === 'retiring') return false;
 		await ctx.db.patch('hubspotEvents', row._id, { observation: args.observation });
 		return true;
@@ -307,6 +379,7 @@ export const settle = internalMutation({
 					leaseUntil: undefined,
 					operatorObservation: undefined
 				});
+				await scheduleDelivery(ctx, row._id);
 			} else {
 				if (row.attemptId) await confirmUpload(ctx, row.attemptId, args.remoteId!);
 				const canContinue =
@@ -334,6 +407,7 @@ export const settle = internalMutation({
 						? undefined
 						: 'File reconciled; fresh Note requires the original live link'
 				});
+				await scheduleDelivery(ctx, row._id);
 			}
 			return null;
 		}
@@ -381,6 +455,7 @@ export const settle = internalMutation({
 			dueAt: now + Math.max(1000, args.delay ?? 60_000),
 			diagnostic: args.diagnostic
 		});
+		await scheduleDelivery(ctx, row._id);
 		return null;
 	}
 });
@@ -404,6 +479,7 @@ export const completed = internalMutation({
 					}
 				: {})
 		});
+		await scheduleDelivery(ctx, row._id);
 		return null;
 	}
 });

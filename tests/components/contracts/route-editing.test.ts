@@ -1,4 +1,4 @@
-import { contract, concessionsAfter, settle, fixture, show } from './fixtures';
+import { contract, concessionsAfter, settle, waitForChoiceSave, fixture, show } from './fixtures';
 import { getFunctionName } from 'convex/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { Id } from '../../../src/convex/_generated/dataModel';
@@ -38,9 +38,10 @@ describe('route and editing lifetimes', () => {
 			.click();
 		await settle();
 		const original = f.owner.entries[0];
-		expect(f.writes).toHaveLength(1);
+		expect(f.writes).toHaveLength(0);
 		(target.querySelector('button') as HTMLButtonElement).click();
 		await settle();
+		expect(f.writes).toHaveLength(1);
 		expect(target.textContent).toContain('Contracts content');
 		expect(original.pending).toBe(true);
 		expect(f.active('contract-a')).toBe(1);
@@ -55,10 +56,9 @@ describe('route and editing lifetimes', () => {
 		screen.home = true;
 		await settle();
 		expect(f.owner.entries).toHaveLength(0);
-		expect(f.active()).toBe(0);
-		expect(f.onSaved).toHaveBeenCalledWith(
-			expect.objectContaining({ id: 'contract-a', status: 'Saved' })
-		);
+		expect(f.active('contract-a')).toBe(1); // The visited metadata subscription stays live.
+		expect(original.persistence?.confirmed.stateRevision).toBe(2);
+		expect(original.pending).toBe(false);
 		expect(f.feedback.statusFor('contract-a')).toBeUndefined();
 	});
 	it('waits for the write response when metadata acknowledges first', async () => {
@@ -66,7 +66,7 @@ describe('route and editing lifetimes', () => {
 		const a = f.owner.acquire('contract-a');
 		await settle();
 		a.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		a.release();
 		const request = f.writes[0].request;
 		f.publish(
@@ -88,7 +88,7 @@ describe('route and editing lifetimes', () => {
 		await settle();
 		expect(await flushed).toBe(true);
 		expect(f.owner.entries).toHaveLength(0);
-		expect(f.active()).toBe(0);
+		expect(f.active('contract-a')).toBe(1);
 	});
 	it('saves contracts independently without a host or rendering resources', async () => {
 		const f = fixture();
@@ -97,10 +97,16 @@ describe('route and editing lifetimes', () => {
 		await settle();
 		for (const acquired of [a, b]) {
 			acquired.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
+			if (acquired === a) {
+				acquired.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, null);
+				acquired.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
+			}
 			acquired.release();
 		}
-		await settle();
+		expect(f.writes).toHaveLength(0);
+		await waitForChoiceSave();
 		expect(f.writes).toHaveLength(2);
+		expect(f.writes[0].request.selections).toEqual({ 'item-a': 'preferred' });
 		f.ack(1);
 		await settle();
 		expect(f.owner.entries.map((entry) => entry.id)).toEqual(['contract-a']);
@@ -163,6 +169,6 @@ describe('route and editing lifetimes', () => {
 		acquired.release();
 		await settle();
 		expect(f.owner.entries).toHaveLength(0);
-		expect(f.active()).toBe(0);
+		expect(f.active('contract-a')).toBe(0);
 	});
 });

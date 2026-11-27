@@ -83,13 +83,13 @@ it.each([
 	],
 	[
 		{ kind: 'account', token: 'seller-credential' },
-		{ kind: 'current', audience: 'seller', buyerName: 'Ocean Buyer' },
-		'Leave comments for Ocean Buyer'
+		{ kind: 'current', audience: 'seller', contractId: 'saved-a', buyerName: 'Ocean Buyer' },
+		'View contract as buyer'
 	],
 	[
 		{ kind: 'account', token: 'seller-credential' },
-		{ kind: 'current', audience: 'seller', buyerName: null },
-		'Leave comments'
+		{ kind: 'current', audience: 'seller', contractId: 'saved-a', buyerName: null },
+		'View contract as buyer'
 	],
 	[{ kind: 'anonymous' }, { kind: 'unavailable' }, 'Link unavailable'],
 	[

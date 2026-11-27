@@ -5,6 +5,7 @@ import { controlledClient, deferred } from '../../support/transport';
 import { csmState } from '../../support/csm-state.svelte';
 import { page, navigating, setNavigate } from '../../support/navigation.svelte';
 import type { Availability } from '../../../src/lib/components/chrome/csm-availability';
+import type { ConvexClient, OptimisticLocalStore } from 'convex/browser';
 
 const context = vi.hoisted(() => ({ client: undefined as unknown, getToken: vi.fn() }));
 vi.mock('convex-svelte', () => ({ useConvexClient: () => context.client }));
@@ -32,9 +33,14 @@ const ready: Availability = {
 };
 let network: ReturnType<typeof controlledClient>;
 let setupStatus: unknown;
+let setupAttempt: unknown;
 let frames: Map<number, FrameRequestCallback>;
 let mounted: ReturnType<typeof mount>[];
-let action: ReturnType<typeof vi.fn>, mutation: ReturnType<typeof vi.fn>;
+let action: ReturnType<typeof vi.fn>;
+let mutation = vi.fn<
+	(reference: unknown, args: { operationId: string }, options?: unknown) => Promise<unknown>
+>(async () => null);
+let preferenceState: ReturnType<typeof csmState>;
 async function settle() {
 	for (let i = 0; i < 8; i++) {
 		flushSync();
@@ -73,13 +79,16 @@ function button(label: string) {
 	)!;
 }
 function attach(state = csmState()) {
+	preferenceState = state;
 	const target = document.createElement('div');
 	document.body.append(target);
 	mounted.push(mount(Harness, { target, props: { state } }));
 	return state;
 }
 function receipt(value: unknown) {
+	setupAttempt = value;
 	network.publish('csmBookings:attempt', value);
+	network.publish('csmBookings:setupOpening', { progress: sharedSetup(), attempt: value });
 }
 function sharedSetup() {
 	const status = setupStatus as { kind: string; booking?: { state: string } };
@@ -91,6 +100,7 @@ function setup(value: unknown) {
 	setupStatus = value;
 	network.publish('templateSetup:status', value);
 	network.publish('csmBookings:setupStatus', sharedSetup());
+	network.publish('csmBookings:setupOpening', { progress: sharedSetup(), attempt: setupAttempt });
 }
 const pending = {
 	filename: 'contract.docx'
@@ -149,16 +159,29 @@ beforeEach(() => {
 		this.open = false;
 	};
 	setupStatus = { kind: 'booking', booking: { kind: 'initial', state: 'ready' }, pending: null };
+	setupAttempt = null;
 	mounted = [];
 	action = vi.fn(async () => ready);
-	mutation = vi.fn(async () => null);
+	mutation.mockReset();
+	mutation.mockResolvedValue(null);
 	network = controlledClient((observation) => {
 		if (observation.name === 'templateSetup:status') observation.update(setupStatus);
 		if (observation.name === 'csmBookings:setupStatus') observation.update(sharedSetup());
+		if (observation.name === 'csmBookings:setupOpening')
+			observation.update({ progress: sharedSetup(), attempt: setupAttempt });
 	});
 	context.client = {
 		action,
-		mutation,
+		mutation: ((reference, args, options) => {
+			const store = {
+				getQuery: () => preferenceState.preferences,
+				setQuery: (_reference: unknown, _args: unknown, value: object) =>
+					Object.assign(preferenceState.preferences, value),
+				getAllQueries: () => []
+			} as OptimisticLocalStore;
+			options?.optimisticUpdate?.(store, args);
+			return mutation(reference, args as { operationId: string }, options);
+		}) as ConvexClient['mutation'],
 		connectionState: () => ({ isWebSocketConnected: false }),
 		subscribeToConnectionState: () => () => {},
 		onUpdate: network.onUpdate
@@ -180,7 +203,7 @@ it('renders no support widget before template release, and keeps post-release he
 	route('/template/setup');
 	const state = csmState();
 	state.viewer.templateReady = false;
-	state.viewer.membership.supportWidgetCollapsed = true;
+	state.preferences.supportWidgetCollapsed = true;
 	action.mockRejectedValue(new Error('optional failure'));
 	attach(state);
 	await paint();
@@ -198,19 +221,22 @@ it('renders no support widget before template release, and keeps post-release he
 	expect(document.querySelector('dialog[open]')).toBeNull();
 	button('Expand support widget').click();
 	await settle();
-	expect(action).toHaveBeenCalledTimes(1);
+	expect(action).not.toHaveBeenCalled();
 	state.revision++;
 	await paint();
-	expect(action).toHaveBeenCalledTimes(1);
+	expect(action).not.toHaveBeenCalled();
 	route('/integrations');
 	await paint();
 	route('/contracts');
 	await paint();
-	expect(action).toHaveBeenCalledTimes(1);
+	expect(action).not.toHaveBeenCalled();
 	document.querySelector('.widget-action')!.dispatchEvent(new Event('pointerenter'));
 	await settle();
-	expect(action).toHaveBeenCalledTimes(2);
+	expect(action).not.toHaveBeenCalled();
 	expect(document.querySelector('dialog[open]')).toBeNull();
+	await open();
+	// The failed first dialog read is retried by the mounted booking owner.
+	expect(action).toHaveBeenCalledTimes(2);
 });
 it('waits for an unblocked owner to warm times and a fresh usable receipt to enable submission', async () => {
 	const state = csmState();
@@ -442,5 +468,5 @@ it('submission invalidates before waiting and preserves expanded widget after bo
 	expect(button('Dismiss support widget')).toBeDefined();
 	document.querySelector('.widget-action')!.dispatchEvent(new Event('pointerenter'));
 	await settle();
-	expect(action).toHaveBeenCalledTimes(2);
+	expect(action).toHaveBeenCalledTimes(1);
 });

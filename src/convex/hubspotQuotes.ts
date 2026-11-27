@@ -1,5 +1,8 @@
-import { ConvexError, v, type Infer } from 'convex/values';
 import type { WorkId } from '@convex-dev/workpool';
+import { paginationResultValidator, type PaginationResult } from 'convex/server';
+import { ConvexError, v, type Infer } from 'convex/values';
+import { approvedConcessionMap, contractReadiness } from '../lib/contract/changes';
+import { sourceBlock } from '../lib/document/source-validators';
 import { internal } from './_generated/api';
 import type { Doc, Id } from './_generated/dataModel';
 import {
@@ -11,13 +14,12 @@ import {
 	type MutationCtx,
 	type QueryCtx
 } from './_generated/server';
-import { approvedConcessionMap, contractReadiness } from '../lib/contract/changes';
-import { sourceBlock } from '../lib/document/source-validators';
 import { accessibleContract, availableCompany, liveCompanyMember, requireMembership } from './auth';
 import { appliedOverlay } from './buyerValidators';
 import { installation, requireContractWork } from './contractPolicy';
 import { accessibleContractState, readContract, type Contract } from './contractState';
 import { hubspotErrorIdentifier } from './hubspotApi';
+import { attachCredentials, connectionWithCredentials, credentialsFor } from './hubspotCredentials';
 import { pool } from './hubspotDelivery';
 import { quoteInstallationFor } from './hubspotQuotesInstallation';
 import {
@@ -235,6 +237,7 @@ export const commit = internalMutation({
 		if (priorReceipt) {
 			if (priorReceipt.companyId !== access.companyId || priorReceipt.contractId !== args.id)
 				throw new ConvexError('This push operation was already used.');
+			if (args.fileId) await deleteUnownedFile(ctx, args.fileId);
 			return {
 				kind: 'reused' as const,
 				summary: await resolveCommittedReceipt(ctx, access.companyId, args.id, priorReceipt.result)
@@ -335,7 +338,8 @@ export const commit = internalMutation({
 				latest: { requestedAt, pushId: id }
 			}
 		});
-		if (!prior) await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
+		if (prior && args.fileId) await deleteUnownedFile(ctx, args.fileId);
+		if (!prior) await ctx.scheduler.runAt(now, internal.hubspotQuotes.wake, { id, at: now });
 		return {
 			kind: 'reused' as const,
 			summary: summary((await ctx.db.get('hubspotQuotePushes', id))!)
@@ -345,13 +349,12 @@ export const commit = internalMutation({
 
 export const latest = query({
 	args: {
-		membershipId: v.id('memberships'),
 		id: v.id('savedContracts'),
 		pushId: v.optional(v.id('hubspotQuotePushes'))
 	},
 	returns: v.union(quoteSummary, v.null()),
 	handler: async (ctx, args) => {
-		const access = await requireMembership(ctx, args.membershipId);
+		const access = await requireMembership(ctx);
 		const root = await ctx.db.get('savedContracts', args.id);
 		if (!root || !accessibleContract(root, access)) return null;
 		const pushId = args.pushId ?? root.quoteRequests?.latest?.pushId;
@@ -376,17 +379,118 @@ async function stop(ctx: MutationCtx, row: Push, message: string) {
 	});
 }
 
-export const pump = internalMutation({
-	args: {},
+const pumpStates = ['queued', 'dispatched', 'verifying'] as const;
+const quoteWakeAt = (row: Push) =>
+	row.dueAt === undefined ? undefined : Math.max(row.dueAt, quoteRunningUntil(row));
+async function scheduleQuote(ctx: MutationCtx, id: Id<'hubspotQuotePushes'>) {
+	const row = await ctx.db.get('hubspotQuotePushes', id);
+	const at = row && pumpStates.some((state) => state === row.state) ? quoteWakeAt(row) : undefined;
+	if (at !== undefined) await ctx.scheduler.runAt(at, internal.hubspotQuotes.wake, { id, at });
+}
+export const wake = internalMutation({
+	args: { id: v.id('hubspotQuotePushes'), at: v.number() },
 	returns: v.null(),
-	handler: async (ctx) => {
+	handler: async (ctx, args) => {
+		const row = await ctx.db.get('hubspotQuotePushes', args.id);
+		if (
+			row &&
+			pumpStates.some((state) => state === row.state) &&
+			quoteWakeAt(row) === args.at &&
+			args.at <= Date.now()
+		)
+			await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
+		return null;
+	}
+});
+
+export const duePage = internalQuery({
+	args: {
+		state: v.union(...pumpStates.map((state) => v.literal(state))),
+		cutoff: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		limit: v.number()
+	},
+	returns: paginationResultValidator(schema.doc('hubspotQuotePushes')),
+	handler: (ctx, args) =>
+		ctx.db
+			.query('hubspotQuotePushes')
+			.withIndex('by_state_and_dueAt', (q) =>
+				q.eq('state', args.state).gt('dueAt', 0).lte('dueAt', args.cutoff)
+			)
+			.paginate({
+				cursor: args.cursor,
+				numItems: Math.max(1, Math.min(20, args.limit)),
+				maximumRowsRead: Math.max(1, Math.min(20, args.limit)),
+				maximumBytesRead: 1024 * 1024
+			})
+});
+
+export const expiryPage = internalQuery({
+	args: {
+		kind: v.union(v.literal('payload'), v.literal('diagnostic')),
+		cutoff: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		limit: v.number()
+	},
+	returns: paginationResultValidator(schema.doc('hubspotQuotePushes')),
+	handler: (ctx, args) =>
+		(args.kind === 'payload'
+			? ctx.db
+					.query('hubspotQuotePushes')
+					.withIndex('by_payloadExpiresAt', (q) =>
+						q.gt('payloadExpiresAt', 0).lte('payloadExpiresAt', args.cutoff)
+					)
+			: ctx.db
+					.query('hubspotQuotePushes')
+					.withIndex('by_providerFailure_expiresAt', (q) =>
+						q.gt('providerFailure.expiresAt', 0).lte('providerFailure.expiresAt', args.cutoff)
+					)
+		).paginate({
+			cursor: args.cursor,
+			numItems: Math.max(1, Math.min(25, args.limit)),
+			maximumRowsRead: Math.max(1, Math.min(25, args.limit)),
+			maximumBytesRead: 1024 * 1024
+		})
+});
+
+export const pump = internalMutation({
+	args: {
+		state: v.optional(v.union(...pumpStates.map((state) => v.literal(state)))),
+		cutoff: v.optional(v.number()),
+		cursor: v.optional(v.string())
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
 		const now = Date.now();
-		for (const state of ['queued', 'dispatched', 'verifying'] as const) {
-			const rows = await ctx.db
-				.query('hubspotQuotePushes')
-				.withIndex('by_state_and_dueAt', (q) => q.eq('state', state).lte('dueAt', now))
-				.take(20);
-			for (const row of rows) {
+		const cutoff = args.cutoff ?? now;
+		let remaining = 20;
+		for (
+			let index = pumpStates.indexOf(args.state ?? pumpStates[0]);
+			index < pumpStates.length;
+			index++
+		) {
+			const state = pumpStates[index];
+			const due = () =>
+				ctx.db
+					.query('hubspotQuotePushes')
+					.withIndex('by_state_and_dueAt', (q) =>
+						q.eq('state', state).gt('dueAt', 0).lte('dueAt', cutoff)
+					);
+			if (remaining === 0) {
+				if (await due().first()) {
+					await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, { state, cutoff });
+					break;
+				}
+				continue;
+			}
+			const page: PaginationResult<Push> = await ctx.runQuery(internal.hubspotQuotes.duePage, {
+				state,
+				cutoff,
+				cursor: state === args.state ? (args.cursor ?? null) : null,
+				limit: remaining
+			});
+			remaining -= page.page.length;
+			for (const row of page.page) {
 				const metrics = await ctx.meta.getTransactionMetrics();
 				if (
 					metrics.bytesRead.remaining < 3_000_000 ||
@@ -427,6 +531,7 @@ export const pump = internalMutation({
 					const status = await pool.status(ctx, row.workId as WorkId);
 					if (status.state !== 'finished') {
 						await ctx.db.patch('hubspotQuotePushes', row._id, { dueAt: now + 60_000 });
+						await scheduleQuote(ctx, row._id);
 						continue;
 					}
 				}
@@ -444,6 +549,15 @@ export const pump = internalMutation({
 					leaseUntil: undefined,
 					dueAt: now + 60_000
 				});
+				await scheduleQuote(ctx, row._id);
+			}
+			if (!page.isDone) {
+				await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {
+					state,
+					cutoff,
+					cursor: page.continueCursor
+				});
+				break;
 			}
 		}
 		return null;
@@ -456,7 +570,7 @@ export const start = internalMutation({
 	returns: v.union(
 		v.object({
 			push: schema.doc('hubspotQuotePushes'),
-			connection: schema.doc('hubspotConnections'),
+			connection: connectionWithCredentials,
 			title: v.string()
 		}),
 		v.null()
@@ -493,7 +607,10 @@ export const start = internalMutation({
 		}
 		const leaseUntil = Date.now() + 90_000;
 		await ctx.db.patch('hubspotQuotePushes', row._id, { leaseUntil, dueAt: leaseUntil + 30_000 });
-		return { push: { ...row, leaseUntil }, connection, title: row.title };
+		await scheduleQuote(ctx, row._id);
+		const authorized = await attachCredentials(ctx, connection);
+		if (!authorized) return null;
+		return { push: { ...row, leaseUntil }, connection: authorized, title: row.title };
 	}
 });
 
@@ -510,7 +627,7 @@ export const dispatch = internalMutation({
 			row.claim !== args.claim ||
 			(row.leaseUntil ?? 0) <= Date.now() ||
 			!gate ||
-			gate.connection.generation !== args.generation
+			(await credentialsFor(ctx, gate.connection._id))?.generation !== args.generation
 		)
 			return false;
 		const now = Date.now();
@@ -520,11 +637,7 @@ export const dispatch = internalMutation({
 			updatedAt: now
 		});
 		// A lost execution is observed, never retried as a second POST.
-		await ctx.scheduler.runAfter(
-			Math.max(0, quoteRunningUntil(row) - now),
-			internal.hubspotQuotes.pump,
-			{}
-		);
+		await scheduleQuote(ctx, row._id);
 		return true;
 	}
 });
@@ -600,12 +713,7 @@ export const settle = internalMutation({
 			leaseUntil: undefined,
 			workId: undefined
 		});
-		if (dueAt !== undefined)
-			await ctx.scheduler.runAfter(
-				Math.max(0, dueAt - Date.now()),
-				internal.hubspotQuotes.pump,
-				{}
-			);
+		if (dueAt !== undefined) await scheduleQuote(ctx, row._id);
 		return null;
 	}
 });
@@ -635,7 +743,7 @@ export const check = mutation({
 			dueAt: Date.now(),
 			leaseUntil: undefined
 		});
-		await ctx.scheduler.runAfter(0, internal.hubspotQuotes.pump, {});
+		await scheduleQuote(ctx, row._id);
 		return null;
 	}
 });
@@ -650,80 +758,94 @@ export const expire = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const kind = args.kind ?? 'payload';
+		const kinds = ['payload', 'diagnostic'] as const;
 		const cutoff = args.cutoff ?? Date.now();
-		let blockedUntil = args.blockedUntil;
-		if (!args.kind)
-			await ctx.scheduler.runAfter(0, internal.hubspotQuotes.expire, {
-				kind: 'diagnostic',
-				cutoff
-			});
-		const due = ctx.db.query('hubspotQuotePushes');
-		const page = await (
-			kind === 'payload'
-				? due.withIndex('by_payloadExpiresAt', (q) =>
-						q.gt('payloadExpiresAt', 0).lte('payloadExpiresAt', cutoff)
-					)
-				: due.withIndex('by_providerFailure_expiresAt', (q) =>
-						q.gt('providerFailure.expiresAt', 0).lte('providerFailure.expiresAt', cutoff)
-					)
-		).paginate({ cursor: args.cursor ?? null, numItems: 25 });
-		for (const row of page.page) {
-			if (kind === 'diagnostic') {
-				if (!conclusiveQuote(row) || row.workId || row.claim || row.leaseUntil !== undefined)
-					continue;
-				await ctx.db.patch('hubspotQuotePushes', row._id, {
-					providerFailure: undefined
-				});
+		let remaining = 25;
+		for (let index = kinds.indexOf(args.kind ?? 'payload'); index < kinds.length; index++) {
+			const kind = kinds[index];
+			let blockedUntil = kind === 'payload' ? args.blockedUntil : undefined;
+			const due = () =>
+				kind === 'payload'
+					? ctx.db
+							.query('hubspotQuotePushes')
+							.withIndex('by_payloadExpiresAt', (q) =>
+								q.gt('payloadExpiresAt', 0).lte('payloadExpiresAt', cutoff)
+							)
+					: ctx.db
+							.query('hubspotQuotePushes')
+							.withIndex('by_providerFailure_expiresAt', (q) =>
+								q.gt('providerFailure.expiresAt', 0).lte('providerFailure.expiresAt', cutoff)
+							);
+			if (remaining === 0) {
+				if (await due().first()) {
+					await ctx.scheduler.runAfter(0, internal.hubspotQuotes.expire, { kind, cutoff });
+					break;
+				}
 				continue;
 			}
-			const runningUntil = quoteRunningUntil(row);
-			if (runningUntil > Date.now()) {
-				blockedUntil = Math.min(blockedUntil ?? Infinity, runningUntil);
-				continue;
-			}
-			if (row.workId) await pool.cancel(ctx, row.workId as WorkId);
-			const active = ['queued', 'dispatched', 'verifying'].includes(row.state);
-			const fileToDelete = row.fileId;
-			await ctx.db.patch('hubspotQuotePushes', row._id, {
-				fileId: undefined,
-				payloadExpiresAt: undefined,
-				workId: undefined,
-				leaseUntil: undefined,
-				// An already dispatched worker may truthfully identify its result later.
-				claim: row.state === 'dispatched' || row.state === 'unknown' ? row.claim : undefined,
-				...(active
-					? {
-							state:
-								row.state === 'dispatched'
-									? ('unknown' as const)
-									: row.quoteId
-										? ('attention' as const)
-										: ('retired' as const),
-							dueAt: undefined,
-							updatedAt: Date.now(),
-							message:
-								row.state === 'dispatched'
-									? 'HubSpot may have created this quote. Contact Dinu support before pushing this version again.'
-									: 'The transfer verification period ended. Existing HubSpot quotes are retained.'
-						}
-					: {})
-			});
-			if (fileToDelete) await deleteUnownedFile(ctx, fileToDelete);
-		}
-		if (!page.isDone)
-			await ctx.scheduler.runAfter(0, internal.hubspotQuotes.expire, {
+			const page: PaginationResult<Push> = await ctx.runQuery(internal.hubspotQuotes.expiryPage, {
 				kind,
 				cutoff,
-				cursor: page.continueCursor,
-				...(blockedUntil !== undefined ? { blockedUntil } : {})
+				cursor: kind === args.kind ? (args.cursor ?? null) : null,
+				limit: remaining
 			});
-		else if (blockedUntil !== undefined)
-			await ctx.scheduler.runAfter(
-				Math.max(1000, blockedUntil - Date.now()),
-				internal.hubspotQuotes.expire,
-				{ kind }
-			);
+			remaining -= page.page.length;
+			for (const row of page.page) {
+				if (kind === 'diagnostic') {
+					if (!conclusiveQuote(row) || row.workId || row.claim || row.leaseUntil !== undefined)
+						continue;
+					await ctx.db.patch('hubspotQuotePushes', row._id, {
+						providerFailure: undefined
+					});
+					continue;
+				}
+				const runningUntil = quoteRunningUntil(row);
+				if (runningUntil > Date.now()) {
+					blockedUntil = Math.min(blockedUntil ?? Infinity, runningUntil);
+					continue;
+				}
+				if (row.workId) await pool.cancel(ctx, row.workId as WorkId);
+				const active = ['queued', 'dispatched', 'verifying'].includes(row.state);
+				const fileToDelete = row.fileId;
+				await ctx.db.patch('hubspotQuotePushes', row._id, {
+					fileId: undefined,
+					payloadExpiresAt: undefined,
+					workId: undefined,
+					leaseUntil: undefined,
+					// An already dispatched worker may truthfully identify its result later.
+					claim: row.state === 'dispatched' || row.state === 'unknown' ? row.claim : undefined,
+					...(active
+						? {
+								state:
+									row.state === 'dispatched'
+										? ('unknown' as const)
+										: row.quoteId
+											? ('attention' as const)
+											: ('retired' as const),
+								dueAt: undefined,
+								updatedAt: Date.now(),
+								message:
+									row.state === 'dispatched'
+										? 'HubSpot may have created this quote. Contact Dinu support before pushing this version again.'
+										: 'The transfer verification period ended. Existing HubSpot quotes are retained.'
+							}
+						: {})
+				});
+				if (fileToDelete) await deleteUnownedFile(ctx, fileToDelete);
+			}
+			if (!page.isDone) {
+				await ctx.scheduler.runAfter(0, internal.hubspotQuotes.expire, {
+					kind,
+					cutoff,
+					cursor: page.continueCursor,
+					...(blockedUntil !== undefined ? { blockedUntil } : {})
+				});
+				break;
+			}
+			if (blockedUntil !== undefined)
+				await ctx.scheduler.runAt(blockedUntil, internal.hubspotQuotes.expire, { kind: 'payload' });
+		}
+
 		return null;
 	}
 });

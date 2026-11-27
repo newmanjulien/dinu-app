@@ -1,54 +1,48 @@
-import { ConvexError, v, type Infer } from 'convex/values';
 import { RateLimiter } from '@convex-dev/rate-limiter';
+import { v, type Infer } from 'convex/values';
 import { components, internal } from './_generated/api';
 import type { Doc, Id } from './_generated/dataModel';
 import {
 	internalAction,
 	internalMutation,
-	internalQuery,
 	mutation,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx
 } from './_generated/server';
 import { companyDeletion, liveProfile, requirePermission } from './auth';
-import { cancelJob } from './emailDeliveries';
-import {
-	calRead,
-	object,
-	parseSetupBooking,
-	validBookingUid,
-	type ProviderBooking
-} from './csmCal';
+import { readCompanySetup, setSetupAppointment } from './companySetupState';
 import { providerBooking, providerScope } from './csmBookingValidators';
+import { calRead, parseSetupBooking, validBookingUid, type ProviderBooking } from './csmCal';
+import { appointmentEvidence, completeAppointmentEvidence } from './csmEvidence';
+import { ingressResult } from './csmEvidenceValidators';
 import { attemptReference } from './csmHistory';
+import { validProviderScope } from './csmIdentity';
+import { EVIDENCE_PASSES, evidenceRetry } from './csmRecoveryPolicy';
 import { replacementAware } from './csmReplacements';
+import {
+	coversSetupProof,
+	pendingSuccessors,
+	proveSetupChain,
+	SetupChainError,
+	SetupDeferredError
+} from './csmSetupChain';
+import {
+	retireCompanySetupAppointments,
+	retirePendingSetupJobs,
+	retireReleasedSetupAppointment,
+	retireSupersededSetupAppointment,
+	type SetupFiring
+} from './csmSetupLifecycle';
 import {
 	clearSetupAppointment,
 	readConfirmedSetupBooking,
 	resolveSetupBooking,
 	transferSetupAppointment
 } from './csmSetupState';
-import {
-	retirePendingSetupJobs,
-	retireSupersededSetupAppointment,
-	retireReleasedSetupAppointment,
-	retireCompanySetupAppointments,
-	type SetupFiring
-} from './csmSetupLifecycle';
-import { setupSyncIssue, setupReviewAttestation } from './csmSetupValidators';
+import { setupReviewAttestation, setupSyncIssue } from './csmSetupValidators';
+import { cancelJob } from './emailDeliveries';
 import schema from './schema';
-import { ingressResult } from './csmEvidenceValidators';
-import { appointmentEvidence, completeAppointmentEvidence } from './csmEvidence';
-import { EVIDENCE_PASSES, evidenceRetry } from './csmRecoveryPolicy';
-import { validProviderScope } from './csmIdentity';
-import {
-	pendingSuccessors,
-	proveSetupChain,
-	coversSetupProof,
-	SetupChainError,
-	SetupDeferredError
-} from './csmSetupChain';
 
 type Appointment = Doc<'csmSetupAppointments'>;
 function selectionFor(
@@ -112,6 +106,7 @@ async function pause(ctx: MutationCtx, a: Appointment, hint?: string, firing?: S
 		repairAt: Date.now() + 60_000,
 		selection: selectionFor(a, Date.now())
 	});
+	await scheduleRepair(ctx, a._id);
 }
 /** Bounded identity lookup, including one-sided legacy chains. Nonunique locators fail closed. */
 export async function represented(ctx: QueryCtx, uids: string[]): Promise<Appointment[] | null> {
@@ -257,10 +252,11 @@ export async function enqueue(
 		reviewSession: invalidate ? undefined : a.reviewSession,
 		refreshJobId,
 		leaseUntil: abandoned ? undefined : a.leaseUntil,
-		repairAt: a.leaseUntil && a.leaseUntil > now ? a.leaseUntil : now,
+		repairAt: a.leaseUntil && a.leaseUntil > now ? a.leaseUntil : now + LEASE_TIME,
 		pendingSuccessors: pending,
 		successorHint: undefined
 	});
+	await scheduleRepair(ctx, a._id);
 }
 async function scheduleDeadline(ctx: MutationCtx, a: Appointment) {
 	if ((await ownerState(ctx, a)) === 'released' || a.maintenanceRetired) {
@@ -369,6 +365,7 @@ export async function seedSetupAppointment(
 		a.confirmation
 	);
 	const company = await ctx.db.get('company', a.companyId);
+	const setup = bindCurrent && company ? await readCompanySetup(ctx, company) : null;
 	const source = a.replacement
 		? await ctx.db.get('csmSetupAppointments', a.replacement.appointmentId)
 		: null;
@@ -377,12 +374,12 @@ export async function seedSetupAppointment(
 		bindCurrent &&
 		company &&
 		(a.replacement
-			? company.setupAppointmentId === a.replacement.appointmentId &&
+			? setup?.setupAppointmentId === a.replacement.appointmentId &&
 				source?.companyId === a.companyId &&
 				source.replacementAttemptId === a._id
-			: company.setupAppointmentId === undefined)
+			: setup?.setupAppointmentId === undefined)
 	) {
-		await ctx.db.patch('company', company._id, { setupAppointmentId: id });
+		await setSetupAppointment(ctx, company, setup!, id);
 		if (source) await retireSupersededSetupAppointment(ctx, source);
 	}
 	return true;
@@ -636,6 +633,7 @@ export async function claimSetupAppointment(
 		pendingSuccessors: pending,
 		successorHint: undefined
 	});
+	await scheduleRepair(ctx, id);
 	return {
 		appointment: {
 			...a,
@@ -895,6 +893,7 @@ export async function applySetupProof(
 					: evidenceRetry(failures, now),
 			selection: selectionFor(a, now)
 		});
+		await scheduleRepair(ctx, a._id);
 		return null;
 	}
 	if (
@@ -970,6 +969,7 @@ export async function applySetupProof(
 					? undefined
 					: Math.min(now + ACTIVE_INTERVAL, ended ? now + ACTIVE_INTERVAL : Date.parse(b.end))
 	});
+	await scheduleRepair(ctx, a._id);
 	if (reviewed)
 		await ctx.scheduler.runAfter(0, internal.csmSetupReview.completeEvidence, {
 			id: a._id,
@@ -1073,6 +1073,33 @@ export const expire = internalMutation({
 		return null;
 	}
 });
+async function repairAppointment(ctx: MutationCtx, a: Appointment) {
+	const ownership = await ownerState(ctx, a);
+	if (ownership === 'erased') await remove(ctx, a);
+	else if (a.superseded) await retireSupersededSetupAppointment(ctx, a);
+	else if (ownership === 'released' || a.maintenanceRetired)
+		await retireReleasedSetupAppointment(ctx, a);
+	else if (ownership === 'paused') await pause(ctx, a);
+	else await enqueue(ctx, a, { invalidate: false });
+}
+async function scheduleRepair(ctx: MutationCtx, id: Id<'csmSetupAppointments'>) {
+	const a = await ctx.db.get('csmSetupAppointments', id);
+	if (a?.repairAt !== undefined)
+		await ctx.scheduler.runAt(a.repairAt, internal.csmSetupAppointments.repair, {
+			id,
+			repairAt: a.repairAt
+		});
+}
+export const repair = internalMutation({
+	args: { id: v.id('csmSetupAppointments'), repairAt: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const a = await ctx.db.get('csmSetupAppointments', args.id);
+		if (a?.repairAt === args.repairAt && args.repairAt <= Date.now())
+			await repairAppointment(ctx, a);
+		return null;
+	}
+});
 export const repairDue = internalMutation({
 	args: {},
 	returns: v.null(),
@@ -1081,15 +1108,7 @@ export const repairDue = internalMutation({
 			.query('csmSetupAppointments')
 			.withIndex('by_repairAt', (q) => q.gt('repairAt', 0).lte('repairAt', Date.now()))
 			.take(5);
-		for (const a of rows) {
-			const ownership = await ownerState(ctx, a);
-			if (ownership === 'erased') await remove(ctx, a);
-			else if (a.superseded) await retireSupersededSetupAppointment(ctx, a);
-			else if (ownership === 'released' || a.maintenanceRetired)
-				await retireReleasedSetupAppointment(ctx, a);
-			else if (ownership === 'paused') await pause(ctx, a);
-			else await enqueue(ctx, a, { invalidate: false });
-		}
+		for (const a of rows) await repairAppointment(ctx, a);
 		return null;
 	}
 });

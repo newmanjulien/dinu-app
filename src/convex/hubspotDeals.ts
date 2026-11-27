@@ -1,41 +1,45 @@
-import { requestBuyerRefresh } from './hubspotRecipients';
 import { ConvexError, v } from 'convex/values';
+import { internal } from './_generated/api';
+import type { Doc } from './_generated/dataModel';
 import {
 	action,
+	env,
 	internalMutation,
 	internalQuery,
 	query,
-	type QueryCtx,
-	type MutationCtx
+	type MutationCtx,
+	type QueryCtx
 } from './_generated/server';
-import { internal } from './_generated/api';
-import type { Doc } from './_generated/dataModel';
 import { accessibleContract, requireMembership, type CompanyAccess } from './auth';
-import {
-	connectionToken,
-	hubspot,
-	resolveDeal,
-	readDeal,
-	record,
-	objectId,
-	nextCursor as decodeNextCursor,
-	HubSpotError
-} from './hubspotApi';
-import { activity, blockLink } from './hubspotRecords';
-import { actionKey, actorOf, receipt, remember, validateOperationId } from './operationReceipts';
-import { createContract, metadataOf } from './contracts';
-import { contractMetadata } from './savedContractValidators';
-import { env } from './_generated/server';
-import schema from './schema';
-import { hubspotLink } from './hubspotValidators';
 import { installation, markDealUnavailable } from './contractPolicy';
-import { lifecycle } from './hubspotInstallation';
+import { createContract, metadataOf } from './contracts';
 import {
 	accessibleContractState,
 	hasOtherHubspotAssociation,
 	patchContract,
 	type Contract
 } from './contractState';
+import {
+	connectionToken,
+	nextCursor as decodeNextCursor,
+	hubspot,
+	HubSpotError,
+	objectId,
+	readDeal,
+	record,
+	resolveDeal
+} from './hubspotApi';
+import {
+	attachCredentials,
+	connectionWithCredentials,
+	credentialConnection
+} from './hubspotCredentials';
+import { lifecycle } from './hubspotInstallation';
+import { requestBuyerRefresh } from './hubspotRecipients';
+import { activity, blockLink } from './hubspotRecords';
+import { hubspotLink } from './hubspotValidators';
+import { actionKey, actorOf, receipt, remember, validateOperationId } from './operationReceipts';
+import { contractMetadata } from './savedContractValidators';
 
 const operationArgs = {
 	membershipId: v.id('memberships'),
@@ -112,7 +116,7 @@ async function operationOutcome(
 	const prior = await receipt(ctx, key, inputs);
 	if (prior) return receiptOutcome(ctx, prior.result, access);
 	const targetId = args.expectedConnectionId ?? actualConnectionId;
-	const target = targetId ? await ctx.db.get('hubspotConnections', targetId) : null;
+	const target = targetId ? await credentialConnection(ctx, targetId) : null;
 	if (target && target.companyId !== access.companyId)
 		throw new ConvexError('HubSpot changed. Reload before linking a deal.');
 	if (
@@ -130,10 +134,18 @@ async function operationOutcome(
 const operationValidator = v.object(operationArgs);
 export const prepare = internalMutation({
 	args: operationArgs,
-	returns: v.union(linkOutcome, v.null()),
+	returns: v.union(
+		linkOutcome,
+		v.object({ status: v.literal('ready'), connection: connectionWithCredentials })
+	),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
-		return operationOutcome(ctx, args, access);
+		const outcome = await operationOutcome(ctx, args, access);
+		if (outcome) return outcome;
+		const connection = await attachCredentials(ctx, await installation(ctx, access.companyId));
+		if (!connection || connection.status !== 'connected')
+			throw new ConvexError('HubSpot is not connected.');
+		return { status: 'ready' as const, connection };
 	}
 });
 export const commit = internalMutation({
@@ -152,7 +164,7 @@ export const commit = internalMutation({
 		if (prior) return prior;
 		if (args.expectedConnectionId && args.expectedConnectionId !== args.connectionId)
 			throw new ConvexError('HubSpot changed. Reload before linking a deal.');
-		const connection = await ctx.db.get('hubspotConnections', args.connectionId);
+		const connection = await credentialConnection(ctx, args.connectionId);
 		if (
 			!connection ||
 			connection.companyId !== access.companyId ||
@@ -231,14 +243,9 @@ export const link = action({
 	returns: result,
 	handler: async (ctx, args): Promise<import('convex/values').Infer<typeof result>> => {
 		const previous = await ctx.runMutation(internal.hubspotDeals.prepare, args);
-		if (previous) return publicOutcome(previous);
+		if (previous.status !== 'ready') return publicOutcome(previous);
 		try {
-			const connection = await connectionToken(
-				ctx,
-				await ctx.runQuery(internal.hubspotConnections.forMember, {
-					membershipId: args.membershipId
-				})
-			);
+			const connection = await connectionToken(ctx, previous.connection);
 			if (args.expectedConnectionId && args.expectedConnectionId !== connection._id)
 				throw new ConvexError('HubSpot changed. Reload before linking a deal.');
 			const deal = await resolveDeal(ctx, connection, args.dealId);
@@ -252,7 +259,7 @@ export const link = action({
 		} catch (cause) {
 			// Resolve retirement/accepted work atomically even if token/provider work failed first.
 			const final = await ctx.runMutation(internal.hubspotDeals.prepare, args);
-			if (final) return publicOutcome(final);
+			if (final.status !== 'ready') return publicOutcome(final);
 			throw cause;
 		}
 	}
@@ -290,7 +297,7 @@ export const eligibility = query({
 			!accessibleContract(await ctx.db.get('savedContracts', args.contractId), access)
 		)
 			throw new ConvexError('This contract was deleted.');
-		const connection = await installation(ctx, access.companyId);
+		const connection = await attachCredentials(ctx, await installation(ctx, access.companyId));
 		if (
 			!connection ||
 			connection.status !== 'connected' ||
@@ -365,7 +372,9 @@ export const list = action({
 							limit
 						})
 					},
-			!browsing
+			!browsing,
+			'read',
+			{ skipLiveCheck: true }
 		);
 		const page = record(data);
 		if (!Array.isArray(page.results)) throw new HubSpotError(502);
@@ -407,14 +416,14 @@ export const list = action({
 export const checkTarget = internalQuery({
 	args: { membershipId: v.id('memberships'), contractId: v.id('savedContracts') },
 	returns: v.union(
-		v.object({ connection: schema.doc('hubspotConnections'), link: hubspotLink }),
+		v.object({ connection: connectionWithCredentials, link: hubspotLink }),
 		v.null()
 	),
 	handler: async (ctx, args) => {
 		const access = await requireMembership(ctx, args.membershipId);
 		const contract = await accessibleContractState(ctx, args.contractId, access);
 		if (!contract) throw new ConvexError('This contract was deleted.');
-		const connection = await installation(ctx, access.companyId);
+		const connection = await attachCredentials(ctx, await installation(ctx, access.companyId));
 		if (
 			!contract.hubspot ||
 			!connection ||
@@ -439,7 +448,7 @@ export const unavailable = internalMutation({
 		const access = await requireMembership(ctx, args.membershipId);
 		const contract = await accessibleContractState(ctx, args.contractId, access);
 		if (!contract) return false;
-		const connection = await installation(ctx, access.companyId);
+		const connection = await attachCredentials(ctx, await installation(ctx, access.companyId));
 		const link = contract.hubspot;
 		if (
 			!link ||

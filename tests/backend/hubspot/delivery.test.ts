@@ -1,3 +1,4 @@
+import { readTestConnection, patchTestConnection } from '../../support/hubspot-credentials';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
 import { RateLimiter } from '@convex-dev/rate-limiter';
@@ -172,6 +173,13 @@ describe('execution and credential fences', () => {
 		);
 		vi.stubGlobal('fetch', fetcher);
 		await f.t.mutation(internal.hubspotDelivery.pump, {});
+		// Let Workpool finish before advancing to the future lease watchdogs.
+		await vi.waitFor(async () => {
+			const delivered = await event(f);
+			expect(delivered).toMatchObject({ status: 'sent', noteId: '204' });
+			expect(delivered.workId).toBeUndefined();
+			expect(delivered.execution).toBeUndefined();
+		});
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 		expect(await event(f)).toMatchObject({ status: 'sent', noteId: '204' });
 		expect((await event(f)).workId).toBeUndefined();
@@ -197,7 +205,7 @@ describe('execution and credential fences', () => {
 		const f = await fixture();
 		const fetcher = vi.fn(async () => {
 			await f.t.run(({ db }) =>
-				db.patch('hubspotConnections', f.connectionId, {
+				patchTestConnection(db, f.connectionId, {
 					generation: 2,
 					accessToken: 'new-synthetic-access'
 				})
@@ -206,7 +214,7 @@ describe('execution and credential fences', () => {
 		});
 		vi.stubGlobal('fetch', fetcher);
 		const sent = await send(f);
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
 			generation: 2,
 			status: 'connected'
 		});
@@ -217,7 +225,7 @@ describe('execution and credential fences', () => {
 		await complete(f, sent);
 		vi.setSystemTime(NOW + 60_000);
 		const owned = await claim(f);
-		await f.t.run(({ db }) => db.patch('hubspotConnections', f.connectionId, { generation: 3 }));
+		await f.t.run(({ db }) => patchTestConnection(db, f.connectionId, { generation: 3 }));
 		await f.t.mutation(internal.hubspotDelivery.settle, {
 			id: owned._id,
 			claim: owned.claim!,
@@ -235,7 +243,7 @@ describe('execution and credential fences', () => {
 		expect(await currentContract(f)).toMatchObject({
 			hubspot: { availability: 'available' }
 		});
-		expect(await f.t.run(({ db }) => db.get('hubspotConnections', f.connectionId))).toMatchObject({
+		expect(await f.t.run(({ db }) => readTestConnection(db, f.connectionId))).toMatchObject({
 			status: 'connected',
 			generation: 3
 		});

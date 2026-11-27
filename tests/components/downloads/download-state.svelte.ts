@@ -34,6 +34,8 @@ export function downloadState() {
 		documentInput: { kind: 'records' },
 		buyerName: null,
 		requestDelivery: null,
+		buyerLink: null,
+		hasUnreadComment: false,
 		notice: null,
 		pending: false,
 		savePending

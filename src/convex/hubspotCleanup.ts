@@ -1,3 +1,4 @@
+import { deleteCredentials } from './hubspotCredentials';
 import { quoteRunningUntil } from './hubspotQuoteValidators';
 import { v } from 'convex/values';
 import type { MutationCtx } from './_generated/server';
@@ -54,7 +55,13 @@ export async function retireCompanyHubSpot(
 			'hubspotConnections',
 			ctx.db
 				.query('hubspotConnections')
-				.withIndex('by_companyId', (q) => q.eq('companyId', companyId))
+				.withIndex('by_companyId', (q) => q.eq('companyId', companyId)),
+			{
+				beforeDelete: async (row) => {
+					await deleteCredentials(ctx, row._id);
+					return true;
+				}
+			}
 		))
 	)
 		return false;

@@ -1,5 +1,5 @@
 import { ConvexError, v } from 'convex/values';
-import { pool } from './hubspotDelivery';
+import { pool, scheduleDelivery } from './hubspotDelivery';
 import type { WorkId } from '@convex-dev/workpool';
 import { deliveryFacts } from './hubspotDeliveryPolicy';
 import { internalMutation } from './_generated/server';
@@ -48,6 +48,7 @@ export const recover = internalMutation({
 					}
 				: {})
 		});
+		await scheduleDelivery(ctx, event._id);
 		return null;
 	}
 });

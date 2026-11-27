@@ -1,25 +1,32 @@
-import { quoteRunningUntil } from './hubspotQuoteValidators';
-import { ConvexError, v, type Infer } from 'convex/values';
 import type { WorkId } from '@convex-dev/workpool';
+import { ConvexError, v, type Infer } from 'convex/values';
 import { internal } from './_generated/api';
 import type { Doc, Id } from './_generated/dataModel';
 import { internalAction, internalMutation, mutation, type MutationCtx } from './_generated/server';
 import { availableCompany, requirePermission } from './auth';
-import { lifecycle, otherAttachments, portalLifecycle } from './hubspotInstallation';
-import { pool } from './hubspotDelivery';
-import { hubspotRemovalOutcome } from './hubspotValidators';
 import { tokenExchange } from './hubspotApi';
-import schema from './schema';
-import { disableQuotes } from './hubspotQuotesInstallation';
+import type { CredentialConnection } from './hubspotCredentials';
+import {
+	connectionWithCredentials,
+	credentialConnection,
+	credentialsFor,
+	deleteCredentials
+} from './hubspotCredentials';
+import { pool } from './hubspotDelivery';
 import { retireExportDelivery } from './hubspotExportDeliveries';
+import { lifecycle, otherAttachments, portalLifecycle } from './hubspotInstallation';
+import { disableQuotes } from './hubspotQuotesInstallation';
+import { quoteRunningUntil } from './hubspotQuoteValidators';
+import { hubspotRemovalOutcome } from './hubspotValidators';
 
 // Wait out the bounded provider fetch and refresh claims before purging secrets/files.
 const REQUEST_RESERVE = 30_000;
 const PROVIDER_LEASE = 90_000;
 
 async function schedule(ctx: MutationCtx, id: Id<'hubspotRemovals'>, delay = 0) {
-	await ctx.db.patch('hubspotRemovals', id, { dueAt: Date.now() + delay });
-	await ctx.scheduler.runAfter(delay, internal.hubspotUninstall.progress, { id });
+	const dueAt = Date.now() + delay;
+	await ctx.db.patch('hubspotRemovals', id, { dueAt });
+	await ctx.scheduler.runAt(dueAt, internal.hubspotUninstall.progress, { id, dueAt });
 }
 
 export async function retireInstallation(
@@ -37,13 +44,18 @@ export async function retireInstallation(
 	const shared =
 		source === 'workspace' &&
 		(await otherAttachments(ctx, connection.accountId, connection.companyId));
+	const providerDue = Date.now() + PROVIDER_LEASE;
 	const providerId = await ctx.db.insert('hubspotAccountRemovals', {
 		accountId: connection.accountId,
 		createdAt: Date.now(),
 		provider: source === 'hubspot' ? 'confirmed' : shared ? 'shared' : 'pending',
 		blocking: !shared,
 		detached: false,
-		dueAt: Date.now() + PROVIDER_LEASE
+		dueAt: providerDue
+	});
+	await ctx.scheduler.runAt(providerDue, internal.hubspotUninstall.recoverProvider, {
+		id: providerId,
+		dueAt: providerDue
 	});
 	const id = await ctx.db.insert('hubspotRemovals', {
 		companyId: connection.companyId,
@@ -100,8 +112,9 @@ export const uninstall = mutation({
 });
 
 async function scheduleProvider(ctx: MutationCtx, id: Id<'hubspotAccountRemovals'>, delay = 0) {
-	await ctx.db.patch('hubspotAccountRemovals', id, { dueAt: Date.now() + delay });
-	await ctx.scheduler.runAfter(delay, internal.hubspotUninstall.recoverProvider, { id });
+	const dueAt = Date.now() + delay;
+	await ctx.db.patch('hubspotAccountRemovals', id, { dueAt });
+	await ctx.scheduler.runAt(dueAt, internal.hubspotUninstall.recoverProvider, { id, dueAt });
 }
 
 /** Also works after tenant history/credentials are erased. Never dispatches a DELETE. */
@@ -164,29 +177,38 @@ export async function detachProvider(ctx: MutationCtx, removal: Doc<'hubspotRemo
 }
 
 async function finish(ctx: MutationCtx, removal: Doc<'hubspotRemovals'>) {
-	const connection = await ctx.db.get('hubspotConnections', removal.connectionId);
-	if (connection?.status === 'retiring') await ctx.db.delete('hubspotConnections', connection._id);
+	const connection = await credentialConnection(ctx, removal.connectionId);
+	if (connection?.status === 'retiring') {
+		await deleteCredentials(ctx, connection._id);
+		await ctx.db.delete('hubspotConnections', connection._id);
+	}
 	await ctx.db.patch('hubspotRemovals', removal._id, { done: true, finishedAt: Date.now() });
 	const operation = await ctx.db.get('hubspotAccountRemovals', removal.providerId);
 	if (operation) await advanceProvider(ctx, operation);
 }
 
 export const recoverProvider = internalMutation({
-	args: { id: v.id('hubspotAccountRemovals') },
+	args: { id: v.id('hubspotAccountRemovals'), dueAt: v.optional(v.number()) },
 	returns: v.null(),
-	handler: async (ctx, { id }) => {
+	handler: async (ctx, { id, dueAt }) => {
 		const operation = await ctx.db.get('hubspotAccountRemovals', id);
-		if (operation) await advanceProvider(ctx, operation);
+		if (operation && (dueAt === undefined || (operation.dueAt === dueAt && dueAt <= Date.now())))
+			await advanceProvider(ctx, operation);
 		return null;
 	}
 });
 
 export const progress = internalMutation({
-	args: { id: v.id('hubspotRemovals') },
+	args: { id: v.id('hubspotRemovals'), dueAt: v.optional(v.number()) },
 	returns: v.null(),
-	handler: async (ctx, { id }) => {
+	handler: async (ctx, { id, dueAt }) => {
 		const removal = await ctx.db.get('hubspotRemovals', id);
-		if (!removal || removal.done) return null;
+		if (
+			!removal ||
+			removal.done ||
+			(dueAt !== undefined && (removal.dueAt !== dueAt || dueAt > Date.now()))
+		)
+			return null;
 		if (removal.phase === 'quotes') {
 			const page = await ctx.db
 				.query('hubspotQuotePushes')
@@ -286,13 +308,15 @@ export const progress = internalMutation({
 		const operation = await ctx.db.get('hubspotAccountRemovals', removal.providerId);
 		if (!operation) throw new Error('Missing HubSpot provider operation');
 		if (operation.provider === 'pending') {
-			const connection = await ctx.db.get('hubspotConnections', removal.connectionId);
+			const connection = await credentialConnection(ctx, removal.connectionId);
 			const wait = (connection?.refreshUntil ?? 0) + REQUEST_RESERVE - Date.now();
 			if (wait > 0) {
 				await schedule(ctx, id, wait);
 				return null;
 			}
-			await ctx.db.patch('hubspotRemovals', id, { dueAt: Date.now() + PROVIDER_LEASE });
+			const dueAt = Date.now() + PROVIDER_LEASE;
+			await ctx.db.patch('hubspotRemovals', id, { dueAt });
+			await ctx.scheduler.runAt(dueAt, internal.hubspotUninstall.progress, { id, dueAt });
 			await ctx.scheduler.runAfter(0, internal.hubspotUninstall.removeProvider, {
 				id: operation._id
 			});
@@ -317,7 +341,7 @@ export const progress = internalMutation({
 
 export const claimProvider = internalMutation({
 	args: { id: v.id('hubspotAccountRemovals') },
-	returns: v.union(schema.doc('hubspotConnections'), v.null()),
+	returns: v.union(connectionWithCredentials, v.null()),
 	handler: async (ctx, { id }) => {
 		const operation = await ctx.db.get('hubspotAccountRemovals', id);
 		if (!operation || operation.detached || operation.provider !== 'pending') return null;
@@ -325,7 +349,7 @@ export const claimProvider = internalMutation({
 			? await ctx.db.get('hubspotRemovals', operation.removalId)
 			: null;
 		if (!removal || removal.done || removal.phase !== 'provider') return null;
-		const connection = await ctx.db.get('hubspotConnections', removal.connectionId);
+		const connection = await credentialConnection(ctx, removal.connectionId);
 		if (
 			!connection ||
 			connection.status !== 'retiring' ||
@@ -378,7 +402,7 @@ export const authorizeDelete = internalMutation({
 			? await ctx.db.get('hubspotRemovals', operation.removalId)
 			: null;
 		if (!removal || removal.done) return false;
-		const connection = await ctx.db.get('hubspotConnections', removal.connectionId);
+		const connection = await credentialConnection(ctx, removal.connectionId);
 		if (
 			!connection ||
 			connection.status !== 'retiring' ||
@@ -404,7 +428,7 @@ export const authorizeDelete = internalMutation({
 			return false;
 		}
 		if (args.tokens)
-			await ctx.db.patch('hubspotConnections', connection._id, {
+			await ctx.db.patch('hubspotCredentials', (await credentialsFor(ctx, connection._id))!._id, {
 				...args.tokens,
 				generation: connection.generation + 1
 			});
@@ -449,7 +473,7 @@ export const removeProvider = internalAction({
 	args: { id: v.id('hubspotAccountRemovals') },
 	returns: v.null(),
 	handler: async (ctx, { id }): Promise<null> => {
-		const connection: Doc<'hubspotConnections'> | null = await ctx.runMutation(
+		const connection: CredentialConnection | null = await ctx.runMutation(
 			internal.hubspotUninstall.claimProvider,
 			{ id }
 		);

@@ -52,22 +52,31 @@ export default defineSchema({
 		generation: v.number()
 	})
 		.index('by_companyId', ['companyId'])
-		.index('by_contractId', ['contractId'])
 		.index('by_contractId_and_generation', ['contractId', 'generation']),
 	hubspotQuoteInstallations: defineTable(quoteInstallation).index('by_companyId', ['companyId']),
 	hubspotQuotePushes: defineTable(quotePush)
 		.index('by_companyId', ['companyId'])
 		.index('by_contractId', ['contractId'])
-		.index('by_canonicalKey', ['canonicalKey'])
 		.index('by_canonicalKey_and_state', ['canonicalKey', 'state'])
 		.index('by_destination_connectionId', ['destination.connectionId'])
 		.index('by_state_and_dueAt', ['state', 'dueAt'])
 		.index('by_fileId', ['fileId'])
 		.index('by_payloadExpiresAt', ['payloadExpiresAt'])
 		.index('by_providerFailure_expiresAt', ['providerFailure.expiresAt']),
+	hubspotCredentials: defineTable({
+		companyId: v.id('company'),
+		connectionId: v.id('hubspotConnections'),
+		generation: v.number(),
+		accessToken: v.string(),
+		refreshToken: v.string(),
+		expiresAt: v.number(),
+		refreshClaim: v.optional(v.string()),
+		refreshUntil: v.optional(v.number())
+	})
+		.index('by_connectionId', ['connectionId'])
+		.index('by_companyId', ['companyId']),
 	hubspotConnections: defineTable(hubspotConnection)
 		.index('by_companyId', ['companyId'])
-		.index('by_accountId', ['accountId'])
 		.index('by_accountId_and_status', ['accountId', 'status']),
 	hubspotJournal: defineTable({
 		name: v.literal('lifecycle'),
@@ -128,7 +137,7 @@ export default defineSchema({
 
 	// Accounts and companies
 	profiles: defineTable({
-		helpPreferences,
+		deletedAt: v.optional(v.number()),
 		identity: v.string(),
 		issuer: v.string(),
 		clerkId: v.string(),
@@ -140,6 +149,10 @@ export default defineSchema({
 		.index('by_email', ['email'])
 		.index('by_issuer_and_clerkId', ['issuer', 'clerkId'])
 		.index('by_avatarId', ['avatarId']),
+	profileUiPreferences: defineTable({
+		profileId: v.id('profiles'),
+		helpPreferences
+	}).index('by_profileId', ['profileId']),
 	// A missing owner permits operator recovery; a missing templateSource means setup is incomplete.
 	company: defineTable({
 		ownerProfileId: v.optional(v.id('profiles')),
@@ -147,10 +160,16 @@ export default defineSchema({
 		name: v.string(),
 		avatarId: v.optional(v.id('_storage')),
 		templateSourceId: v.optional(v.id('templateSources')),
-		pendingTemplateSourceId: v.optional(v.id('templateSources')),
-		colleaguesInvitedAt: v.optional(v.number()),
-		setupAppointmentId: v.optional(v.id('csmSetupAppointments')),
-		setupIntake: v.optional(storedSetupIntake)
+		hasRepInstructions: v.boolean(),
+		templateSourceFingerprint: v.optional(v.string()),
+		deletion: v.optional(
+			v.object({
+				status: v.union(v.literal('deleting'), v.literal('cleaning')),
+				inFlight: v.boolean(),
+				issuer: v.string(),
+				clerkId: v.string()
+			})
+		)
 	})
 		.index('by_ownerProfileId', ['ownerProfileId'])
 		.index('by_avatarId', ['avatarId']),
@@ -158,13 +177,25 @@ export default defineSchema({
 	memberships: defineTable({
 		profileId: v.id('profiles'),
 		companyId: v.id('company'),
-		setupCompletedAt: v.optional(v.number()),
-		firstBuyerLinkHintShowing: v.optional(v.object({ visitId: v.string(), shownAt: v.number() })),
-		supportWidgetCollapsed: v.boolean(),
 		role
 	})
 		.index('by_profileId', ['profileId'])
 		.index('by_companyId', ['companyId']),
+	membershipSetupState: defineTable({
+		membershipId: v.id('memberships'),
+		setupCompletedAt: v.optional(v.number())
+	}).index('by_membershipId', ['membershipId']),
+	companySetupState: defineTable({
+		companyId: v.id('company'),
+		pendingTemplateSourceId: v.optional(v.id('templateSources')),
+		colleaguesInvitedAt: v.optional(v.number()),
+		setupAppointmentId: v.optional(v.id('csmSetupAppointments')),
+		setupIntake: v.optional(storedSetupIntake)
+	}).index('by_companyId', ['companyId']),
+	membershipUiPreferences: defineTable({
+		membershipId: v.id('memberships'),
+		supportWidgetCollapsed: v.boolean()
+	}).index('by_membershipId', ['membershipId']),
 	csmErasedInitialGuards: defineTable(storedErasureGuard)
 		.index('by_companyId_and_blocking', ['companyId', 'blocking'])
 		.index('by_dispatchId', ['dispatchId'])
@@ -173,10 +204,7 @@ export default defineSchema({
 		.index('by_identity', ['identity'])
 		.index('by_dueAt', ['dueAt'])
 		.index('by_completedAt', ['completedAt'])
-		.index('by_attemptId', ['attemptId'])
 		.index('by_attemptId_and_state', ['attemptId', 'state'])
-		.index('by_appointmentId', ['appointmentId'])
-		.index('by_appointmentId_and_state', ['appointmentId', 'state'])
 		.index('by_appointmentId_and_state_and_evidenceGeneration', [
 			'appointmentId',
 			'state',
@@ -205,10 +233,8 @@ export default defineSchema({
 	csmBookingAttempts: defineTable(storedCsmAttempt)
 		.index('by_companyId_and_mode_and_state', ['companyId', 'mode', 'state'])
 		.index('by_membershipId_and_operationId', ['membershipId', 'operationId'])
-		.index('by_membershipId_and_state', ['membershipId', 'state'])
 		.index('by_membershipId_and_state_and_confirmation', ['membershipId', 'state', 'confirmation'])
 		.index('by_membershipId_and_state_and_format', ['membershipId', 'state', 'format'])
-		.index('by_companyId', ['companyId'])
 		.index('by_profileId', ['profileId'])
 		.index('by_recoveryDue', ['recoveryDue']),
 	companyInvitations: defineTable(storedInvitation)
@@ -229,7 +255,6 @@ export default defineSchema({
 
 	// Template authoring and captured history
 	templateSources: defineTable(storedTemplateSource)
-		.index('by_companyId', ['companyId'])
 		.index('by_companyId_and_state', ['companyId', 'state'])
 		.index('by_state_and_expiresAt', ['state', 'expiresAt'])
 		.index('by_originalFileId', ['originalFileId']),
@@ -264,9 +289,10 @@ export default defineSchema({
 		'templateSourceId',
 		'order'
 	]),
-	playbookItems: defineTable(storedTemplateItem)
-		.index('by_companyId', ['companyId'])
-		.index('by_companyId_and_audience', ['companyId', 'audience']),
+	playbookItems: defineTable(storedTemplateItem).index('by_companyId_and_audience', [
+		'companyId',
+		'audience'
+	]),
 	// Historical item IDs remain valid after the live item is deleted.
 	playbookItemRevisions: defineTable({
 		companyId: v.id('company'),
@@ -320,38 +346,16 @@ export default defineSchema({
 		itemId: v.id('playbookItems')
 	})
 		.index('by_operationId', ['operationId'])
-		.index('by_companyId_and_renderKey', ['companyId', 'renderKey'])
-		.index('by_companyId', ['companyId']),
+		.index('by_companyId_and_renderKey', ['companyId', 'renderKey']),
 
 	// Permanent buyer link with auto-synced approved-concessions view.
 	buyerLinks: defineTable(buyerLink)
 		.index('by_token', ['token'])
 		.index('by_contractId', ['contractId'])
-		.index('by_companyId_and_creatorId', ['companyId', 'creatorId'])
-		.index('by_companyId', ['companyId']),
-	buyerLinkBarShowings: defineTable({
-		membershipId: v.id('memberships'),
-		companyId: v.id('company'),
-		contractId: v.id('savedContracts'),
-		visitId: v.string(),
-		shownAt: v.number()
-	})
-		.index('by_membershipId_and_contractId', ['membershipId', 'contractId'])
-		.index('by_membershipId', ['membershipId'])
-		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId']),
-	buyerLinkShowingCleanups: defineTable({
-		membershipId: v.id('memberships'),
-		companyId: v.id('company'),
-		generation: v.number(),
-		jobId: v.optional(v.id('_scheduled_functions'))
-	})
-		.index('by_membershipId', ['membershipId'])
 		.index('by_companyId', ['companyId']),
 	buyerActivityOpenings: defineTable(activityOpening)
 		.index('by_contractId_and_openingId', ['contractId', 'openingId'])
 		.index('by_contractId_and_visitId_and_expiresAt', ['contractId', 'visitId', 'expiresAt'])
-		.index('by_contractId_and_expiresAt', ['contractId', 'expiresAt'])
 		.index('by_contractId_and_browserId_and_profileId_and_acceptedAt', [
 			'contractId',
 			'browserId',
@@ -361,13 +365,11 @@ export default defineSchema({
 		.index('by_contractId_and_profileId_and_acceptedAt', ['contractId', 'profileId', 'acceptedAt'])
 		.index('by_profileId', ['profileId'])
 		.index('by_expiresAt', ['expiresAt'])
-		.index('by_contractId', ['contractId'])
 		.index('by_companyId', ['companyId']),
 	buyerActivityReceipts: defineTable(activityReceipt)
 		.index('by_contractId_and_eventId', ['contractId', 'eventId'])
 		.index('by_openingId_and_itemId', ['openingId', 'itemId'])
 		.index('by_expiresAt', ['expiresAt'])
-		.index('by_contractId', ['contractId'])
 		.index('by_companyId', ['companyId']),
 	buyerActivityCounters: defineTable({
 		companyId: v.id('company'),
@@ -390,6 +392,15 @@ export default defineSchema({
 		.index('by_contractId', ['contractId'])
 		.index('by_contractId_and_hasUnread', ['contractId', 'hasUnread'])
 		.index('by_companyId', ['companyId']),
+	discussionCapacity: defineTable({
+		companyId: v.id('company'),
+		contractId: v.id('savedContracts'),
+		threads: v.number(),
+		messages: v.number(),
+		bytes: v.number()
+	})
+		.index('by_contractId', ['contractId'])
+		.index('by_companyId', ['companyId']),
 	discussionMessages: defineTable(storedMessage)
 		.index('by_threadId_and_reply', ['threadId', 'reply'])
 		.index('by_contractId', ['contractId'])
@@ -399,7 +410,6 @@ export default defineSchema({
 	savedContracts: defineTable(storedContract).index('by_companyId', ['companyId']),
 	contractHubspotAssociations: defineTable(storedContractHubspotAssociation)
 		.index('by_contractId', ['contractId'])
-		.index('by_companyId', ['companyId'])
 		.index('by_companyId_and_connectionId_and_dealId', ['companyId', 'connectionId', 'dealId']),
 	contractBuyerRefreshes: defineTable(contractBuyerRefresh)
 		.index('by_contractId', ['contractId'])
@@ -407,6 +417,7 @@ export default defineSchema({
 	// Derived by contractDirectory.writeDirectory; one row per contract.
 	contractDirectory: defineTable({
 		contractId: v.id('savedContracts'),
+		templateVersionId: v.id('templateVersions'),
 		companyId: v.id('company'),
 		creatorId: v.id('profiles'),
 		hubspot: v.optional(hubspotLink),
@@ -414,26 +425,21 @@ export default defineSchema({
 		savedAt: v.number(),
 		createdAt: v.number(),
 		hasUnreadComment: v.boolean(),
-		buyerLinkCreatedAt: v.optional(v.number()),
-		hasBuyerLink: v.boolean()
+		buyerLinkToken: v.optional(v.string()),
+		buyerLinkCreatorId: v.optional(v.id('profiles'))
 	})
 		.index('by_contractId', ['contractId'])
 		.index('by_companyId_and_creatorId_and_createdAt', ['companyId', 'creatorId', 'createdAt'])
-		.index('by_companyId_and_hubspot_connectionId_and_hubspot_dealId', [
+		.index('by_companyId_and_buyerLinkCreatorId', ['companyId', 'buyerLinkCreatorId'])
+		.index('by_companyId_and_hasUnreadComment_and_savedAt_and_createdAt', [
 			'companyId',
-			'hubspot.connectionId',
-			'hubspot.dealId'
-		])
-		.index('by_companyId_and_savedAt_and_createdAt', ['companyId', 'savedAt', 'createdAt'])
-		.index('by_companyId_hasBuyerLink_hasUnreadComment_buyerLinkCreatedAt', [
-			'companyId',
-			'hasBuyerLink',
 			'hasUnreadComment',
-			'buyerLinkCreatedAt'
+			'savedAt',
+			'createdAt'
 		])
 		.searchIndex('search_title', {
 			searchField: 'title',
-			filterFields: ['companyId', 'hasBuyerLink']
+			filterFields: ['companyId']
 		}),
 	contractCleanups: defineTable({
 		companyId: v.id('company'),
@@ -445,7 +451,6 @@ export default defineSchema({
 		jobId: v.optional(v.id('_scheduled_functions'))
 	})
 		.index('by_contractId', ['contractId'])
-		.index('by_waitingDueAt', ['waitingDueAt'])
 		.index('by_companyId', ['companyId']),
 
 	// Email delivery

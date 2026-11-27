@@ -1,6 +1,6 @@
 # Account entry and workspace routes
 
-Updated October 21, 2026. This describes the current route and session architecture. Route groups do not change public URLs.
+Updated November 26, 2026. This describes the current route and session architecture. Route groups do not change public URLs. The [local data architecture](local-first-architecture.md) explains the storage split and remaining acceptance limits.
 
 ## Route ownership
 
@@ -16,13 +16,13 @@ Account authentication and company membership are separate requirements. The roo
 
 The authenticated account host mounts after Clerk supplies an identity. It remains mounted when moving between invitation/onboarding and workspace routes for the same session. Switching sessions destroys the old account host. The root session controller persists across those route changes and coordinates recovery, logout, account deletion, and registered editor/resources without importing workspace caches into the initial login graph.
 
-`AccountGate` owns the live `profiles.viewer` subscription. Only a confirmed missing-state result permits profile initialization, once per transport generation. Account readiness admits signed-in entry screens; membership is not required. Temporary connection failure retains the admitted account subtree and blocks interaction while recovery runs.
+`AccountGate` owns the live `accounts.viewer` subscription. After backend authentication, an eligible initialized server startup viewer can assist first admission while the live read is pending. The assistance is fenced by user/session/generation and cannot re-admit recovery or return after a live result/rejection. Only confirmed live missing state permits `profiles.initialize`, once per transport generation. Account readiness admits signed-in entry screens; membership is not required. Same-scope connection uncertainty retains save owners while blocking interaction; delivered rejection hides private display, and confirmed identity/membership replacement retires the old scope.
 
-`AccountGate` sets the cache identity from the confirmed viewer before workspace children mount. Account or membership changes release the old snapshot cache and discard its persistent namespace. The root session owns cache cleanup on logout, account switching, and teardown; its resource registration survives route changes. Navigation to entry screens preserves confirmed snapshots and opening history.
+`AccountGate` sets cache identity from the admitted account result before workspace children mount, with live revalidation continuing. Account or membership replacement releases the old snapshot cache and retires its persistent namespace. The root session owns identity/exit cleanup independently of mounted workspace resources; membership replacement and departure share captured retirement, while account deletion remains user-wide; persisted inventory finds historical scopes. Ordinary teardown closes local owners without a session-wide disk purge. Navigation to entry screens preserves confirmed snapshots. Opening history is not persisted; prepared-resource reuse belongs to the bounded workspace document owner.
 
 `AccountSession` owns shared workspace presentation hints for loading. A bounded,
 versioned cookie stores membership/company IDs, role, template readiness,
-instructions readiness, and optional buyer-link presence. It expires after 24 hours
+and instructions readiness. It expires after 24 hours
 and is scoped to the Convex deployment, user, and session. The workspace server
 layout reads it only after its existing authentication check and returns matching
 hints as page data, without a backend query. Initial server rendering and hydration
@@ -37,14 +37,24 @@ server startup assistance) takes precedence. Otherwise the hint owner reads the
 cookie and matching session/membership/company-scoped local display fields (names
 and avatar URLs, bounded to 16 KiB and 24 hours). Layout facts live only in the
 cookie; larger display fields never enter request headers. If no layout hints are
-available, one bounded `accounts.workspaceRole` request runs independently of full
-account startup, including during sign-in. Retries follow the transport generation.
-Confirmed membership updates persistence after rendering and retains buyer-link
-presence only for the same membership and company. Membership loss, company
-departure, and account deletion remove the current records. Ordinary sign-out
-clears active hints and cancels queued writes; the previous session's cookie cannot
-seed a new session. Late results cannot cross identities or overwrite confirmed
-membership. Storage failure leaves in-memory hints usable.
+available, the common skeleton remains until the existing startup or live viewer
+provides the role. This path does not start a separate role query. Confirmed
+membership updates persistence after rendering. Confirmed absence and
+successful session exit remove both the cookie and matching display records,
+including pending writes; removal uses ownership fields even when hints expired.
+AuthBridge performs persisted retirement independently of mounted hint owners,
+including on an initially signed-out reload. Identity replacement preserves the
+new session's records. Successful company departure captures the initiating owner lifetimes, membership and session
+so late cleanup preserves another membership in the same session or a newer session; account deletion targets all
+hints for the affected user. Ordinary teardown, canceled/failed sign-out, and
+transient same-session recovery retain persistence. Deferred callbacks cannot
+rewrite storage after cancellation or replacement. Storage failure leaves in-memory
+hints usable and cleanup can retry at later identity/retirement opportunities.
+The same retirement pass removes this deployment's obsolete `dinu:v9` localStorage
+`:cards`/`:openings` keys without reading history values. Other deployments, draft
+journals, registry metadata, and IndexedDB snapshots are outside this removal.
+Cookie/localStorage cleanup is best-effort rather than atomic across tabs; runtime
+acceptance remains unverified in the [final evidence record](local-first-baseline.md#acceptance-limits).
 
 `WorkspaceSkeleton` consumes these hints at every account/workspace/module loading
 boundary. `/template/setup` uses `TemplateSetupLayout` / `TemplateSetupBookingFrame`, including the
@@ -63,7 +73,9 @@ presence or rows found while presence is unknown. The sidebar keeps its 450px
 desktop column and stacks below contracts on smaller screens. Buyer-link loading
 never gates the contract list. Skeletons do not fetch or read storage.
 
-`WorkspaceBoundary` requires a live profile, membership, and company. `WorkspaceScope` is keyed by profile and membership and supplies viewer context plus the contract editing sessions that survive route changes. Each workspace captures its own cache instance, cancels its pending reads, and destroys its document resources on teardown; an old workspace cannot cancel a replacement's cache. Membership loss clears the previous membership's draft journal and removes the workspace. Role changes preserve its identity and mounted drafts.
+`WorkspaceBoundary` requires an admitted account profile, membership, and company, with current backend authentication and live revalidation. Eligible startup assistance is limited to first admission. `WorkspaceScope` is keyed by profile and membership and supplies viewer context plus contract editing sessions that survive route changes. Each workspace captures its own cache instance, cancels its pending reads, and destroys its document resources on teardown; an old workspace cannot cancel a replacement's cache. Confirmed null/profile/member/company replacement clears the previous account user’s journals, including historical/unmounted contracts, and removes the old workspace. Role changes preserve its identity and mounted drafts.
+
+AuthBridge clears draft journals synchronously for the departing user after successful save-or-discard logout, on identity replacement, after successful company departure, and on account deletion. AccountLifecycle captures the old user before clearing its fields; AccountGate retains the previous account's owning user for confirmed membership loss. With one membership per profile, all matching user journals share one cleanup path. Normal teardown, same-user transport/auth recovery, company holds, failed/canceled exit, and role-only changes retain unconfirmed intent. Each editor has one readonly journal; retired owners cannot recreate intent or release a fresh owner's registration, and returning users can draft again. Company exit captures its draft owner before asynchronous work and cannot clear a replacement after earlier cleanup. SessionStorage removal snapshots matching keys and isolates failures. Failed cleanup suppresses old physical records for this page lifetime while allowing fresh memory-backed intent, with retry at later user cleanup; erasure/suppression after reload and sibling-tab cleanup are not promised. Envelope/save behavior stays unchanged; physical cleanup acceptance remains unverified in the [final evidence record](local-first-baseline.md#acceptance-limits).
 
 `WorkspaceShell` mounts the shared header and interaction dispatcher as soon as membership is admitted, including while workspace or document code is loading or has failed. Document chrome contributes its search and status content through a scoped header registration. `auth/routes.ts` supplies titles, navigation selection, template source requirements, and document classification to both mounted routes and URL-only preload/performance callers. The root is the only title writer; entry flows can register a title override scoped to the current route. Titles therefore update at navigation commit even when an editor cannot mount, which also gives SvelteKit's navigation announcer the destination title.
 
@@ -253,4 +265,4 @@ discussions are independent of activity delivery. See [activity storage](cookies
 
 `/contracts` is the contracts list and the default workspace destination. `/` redirects to it, preserving query parameters. Login and onboarding normalize old root return destinations to `/contracts` while retaining requested contract URLs.
 
-The list owns its streamed startup loader and lazy Contracts module. New and saved contracts share the persistent `contracts/(document)` layout, preserving the naming-dialog handoff to the saved workspace. Contract settings sits outside that layout and needs no editor-bypass condition. The route catalog uses URL patterns and strips layout groups from mounted route IDs, so layout organization does not change navigation policy. The existing `accounts.startupHome` backend query and startup snapshot data contract remain in use.
+The list owns its streamed startup loader and lazy Contracts module. New and saved contracts share the persistent `contracts/(document)` layout, preserving the naming-dialog handoff to the saved workspace. Contract settings sits outside that layout and needs no editor-bypass condition. The route catalog uses URL patterns and strips layout groups from mounted route IDs, so layout organization does not change navigation policy. Authenticated full loads return independently settling `accounts.viewer`, `accounts.startupHome` and `accounts.setupStartup` assists with one shared token request and separate five-second deadlines. Data-request navigation skips these assists. Startup contracts do not wait for setup; current live reads revalidate admission and lists.

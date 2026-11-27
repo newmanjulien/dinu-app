@@ -52,7 +52,6 @@ export const identity = {
 
 export async function initializeViewer(ctx: MutationCtx) {
 	const id = await ctx.db.insert('profiles', {
-		helpPreferences: { contract: false, buyerLink: false },
 		identity: identity.tokenIdentifier,
 		issuer: identity.issuer,
 		clerkId: identity.subject,
@@ -60,6 +59,7 @@ export async function initializeViewer(ctx: MutationCtx) {
 		name: 'Rep'
 	});
 	const companyId = await ctx.db.insert('company', {
+		hasRepInstructions: false,
 		name: 'Synthetic company',
 		ownerProfileId: id,
 		approvalEmail: 'approver@example.com'
@@ -67,8 +67,7 @@ export async function initializeViewer(ctx: MutationCtx) {
 	const membershipId = await ctx.db.insert('memberships', {
 		companyId,
 		profileId: id,
-		role: 'admin',
-		supportWidgetCollapsed: false
+		role: 'admin'
 	});
 	return { profileId: id, companyId, membershipId };
 }

@@ -1,3 +1,4 @@
+import { patchTestConnection } from '../../support/hubspot-credentials';
 import { fixtureOperationId } from '../../support/operation';
 // @vitest-environment edge-runtime
 import { describe, expect, it, vi } from 'vitest';
@@ -160,9 +161,7 @@ describe('HubSpot Quotes workflow', () => {
 				destination: { ...args.destination, dealId: '202' }
 			})
 		).rejects.toThrow('deal changed');
-		await f.t.run(({ db }) =>
-			db.patch('hubspotConnections', f.connectionId, { scopes: ['oauth'] })
-		);
+		await f.t.run(({ db }) => patchTestConnection(db, f.connectionId, { scopes: ['oauth'] }));
 		await expect(pushQuote(f)).rejects.toThrow('reconnect HubSpot Quotes');
 		expect(await f.t.run(({ db }) => db.query('hubspotQuotePushes').collect())).toEqual([]);
 		expect(fetch).not.toHaveBeenCalled();

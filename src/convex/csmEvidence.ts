@@ -90,11 +90,13 @@ export async function eraseTargetEvidence(
 	const rows = target.attemptId
 		? await ctx.db
 				.query('csmWebhookEvidence')
-				.withIndex('by_attemptId', (q) => q.eq('attemptId', target.attemptId))
+				.withIndex('by_attemptId_and_state', (q) => q.eq('attemptId', target.attemptId))
 				.take(26)
 		: await ctx.db
 				.query('csmWebhookEvidence')
-				.withIndex('by_appointmentId', (q) => q.eq('appointmentId', target.appointmentId))
+				.withIndex('by_appointmentId_and_state_and_evidenceGeneration', (q) =>
+					q.eq('appointmentId', target.appointmentId)
+				)
 				.take(26);
 	for (const row of rows.slice(0, 25)) await scrub(ctx, row, 'erased');
 	return rows.length <= 25;
@@ -249,6 +251,7 @@ export const claim = internalMutation({
 			dueAt: Date.now() + RECOVERY_LEASE
 		};
 		await ctx.db.patch('csmWebhookEvidence', id, fields);
+		await ctx.scheduler.runAt(fields.dueAt, internal.csmEvidence.work, { id });
 		return { ...row, ...fields };
 	}
 });
@@ -318,12 +321,17 @@ export const finish = internalMutation({
 		}
 		const failures = row.failures + (d.kind === 'retry' ? 1 : 0);
 		const review = d.kind === 'review' || (d.kind === 'retry' && failures >= EVIDENCE_PASSES);
+		const dueAt = review ? undefined : d.kind === 'deferred' ? d.dueAt : evidenceRetry(failures);
+		const jobId =
+			dueAt === undefined
+				? undefined
+				: await ctx.scheduler.runAt(dueAt, internal.csmEvidence.work, { id: row._id });
 		await ctx.db.patch('csmWebhookEvidence', row._id, {
 			state: review ? 'review' : 'queued',
 			failures,
 			leaseUntil: undefined,
-			jobId: undefined,
-			dueAt: review ? undefined : d.kind === 'deferred' ? d.dueAt : evidenceRetry(failures),
+			jobId,
+			dueAt,
 			reviewReason: review ? (d.kind === 'review' ? d.reason : 'evidenceHorizon') : undefined
 		});
 		return null;

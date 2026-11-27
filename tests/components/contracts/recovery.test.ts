@@ -6,6 +6,7 @@ import {
 	draft,
 	controllers,
 	settle,
+	waitForChoiceSave,
 	fixture
 } from './fixtures';
 import { getFunctionName } from 'convex/server';
@@ -33,7 +34,7 @@ describe('recovery and account exits', () => {
 		const a = f.owner.acquire('contract-a');
 		await settle();
 		a.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		const original = f.writes[0].request;
 		const exiting = controller.signOut();
 		await settle();
@@ -119,11 +120,11 @@ describe('recovery and account exits', () => {
 		const a = f.owner.acquire('contract-a');
 		await settle();
 		a.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		a.release();
 		f.writes[0].result.reject(new Error('Offline'));
 		await settle();
-		expect(f.active()).toBe(0);
+		expect(f.active()).toBe(1); // Only the bounded visited metadata read stays live.
 		expect(a.editor.snapshot).toBeUndefined();
 		expect(f.feedback.statusFor('contract-a')).toBe('Save failed');
 		f.owner.retry('contract-a');
@@ -139,7 +140,7 @@ describe('recovery and account exits', () => {
 		const a = f.owner.acquire('contract-a');
 		await settle();
 		a.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		const request = f.writes[0].request;
 		f.owner.configure(false, true, 1);
 		a.release();
@@ -183,19 +184,19 @@ describe('recovery and account exits', () => {
 		a.release();
 		b.release();
 	});
-	it('keeps conflict intent and stops detached subscriptions', async () => {
+	it('keeps conflict intent while releasing detached editor content', async () => {
 		const f = fixture();
 		const a = f.owner.acquire('contract-a');
 		await settle();
 		a.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		const remote = contract('contract-a', 2, [], 'other-operation');
 		f.publish('contract-a', remote);
 		f.writes[0].result.resolve({ status: 'conflict', state: remote });
 		a.release();
 		await settle();
 		expect(f.feedback.statusFor('contract-a')).toBe('Conflict');
-		expect(f.active()).toBe(0);
+		expect(f.active()).toBe(1); // Only the bounded visited metadata read stays live.
 		expect(a.editor.snapshot).toBeUndefined();
 		const reopened = f.owner.acquire('contract-a');
 		await settle();
@@ -212,7 +213,7 @@ describe('recovery and account exits', () => {
 		const a = f.owner.acquire('contract-a');
 		await settle();
 		a.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		a.release();
 		f.aggregate.discard();
 		await settle();
@@ -228,7 +229,7 @@ describe('recovery and account exits', () => {
 		const a = f.owner.acquire('contract-a');
 		await settle();
 		a.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		a.release();
 		const removing = f.owner.remove('contract-a' as Id<'savedContracts'>);
 		f.removal.resolve(null);
@@ -240,7 +241,7 @@ describe('recovery and account exits', () => {
 		const b = g.owner.acquire('contract-b');
 		await settle();
 		b.editor.persistence!.setOption('item-a' as Id<'playbookItems'>, 'preferred');
-		await settle();
+		await waitForChoiceSave();
 		b.release();
 		const failed = g.owner.remove('contract-b' as Id<'savedContracts'>);
 		const rejected = expect(failed).rejects.toThrow('Delete failed');

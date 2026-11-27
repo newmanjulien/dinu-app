@@ -1,18 +1,19 @@
-import { createReadQuery } from '$lib/auth/read-query.svelte';
+import { ReadAttempt } from '$lib/auth/attempt';
+import { queryOnce } from '$lib/query-once';
 import type { SnapshotClient } from '$lib/query-once';
 import type { Id } from '../../convex/_generated/dataModel';
 import { api } from '../../convex/_generated/api';
-import { getContext, setContext, untrack } from 'svelte';
+import { getContext, setContext } from 'svelte';
 import type { StructureSnapshot } from './structure';
 import type { TemplateProse, WorkspaceReadStorage } from '$lib/auth/workspace-read-storage';
 import { afterStartupPaint } from '$lib/auth/startup-perf';
 import { immutable } from '$lib/immutable';
 
-/** One admitted membership's prose; observations and retained display have separate lifetimes. */
+/** A fingerprint selects immutable prose; subscriptions own mutable source identity. */
 export class TemplateSource {
-	private readers = $state(0);
-	private available = $state(true);
-	private generation = $state(0);
+	private readers = 0;
+	private available = true;
+	private generation = 0;
 	private accepted = $state.raw<TemplateProse>();
 	private envelope =
 		$state.raw<
@@ -21,9 +22,10 @@ export class TemplateSource {
 				'templateSourceId' | 'templateSourceFingerprint' | 'authoringGeneration'
 			>
 		>();
-	private epoch = 0;
-	private observed = false;
-	private hydrated = false;
+	private identity = $state.raw<{ id: Id<'templateSources'>; fingerprint: string } | null>();
+	private error = $state.raw<Error>();
+	private rejected = $state(false);
+	private attempt?: ReadAttempt;
 	private disposed = false;
 	private presented = false;
 	private cooldownUntil = 0;
@@ -37,37 +39,34 @@ export class TemplateSource {
 		readonly rejected: boolean;
 		retry: () => void;
 	};
-	private releaseEffects: () => void;
 	constructor(
-		client: SnapshotClient,
-		membershipId: Id<'memberships'>,
+		private client: SnapshotClient,
+		private membershipId: Id<'memberships'>,
 		readonly storage?: WorkspaceReadStorage
 	) {
-		let live!: ReturnType<typeof createReadQuery<typeof api.templateSources.authoringSource>>;
-		this.releaseEffects = $effect.root(() => {
-			const active = $derived(this.available && this.readers > 0);
-			live = createReadQuery(
-				client,
-				api.templateSources.authoringSource,
-				() => (active ? { membershipId } : 'skip'),
-				() => this.generation
-			);
-			$effect(() => {
-				const value = live.data,
-					rejected = live.rejected;
-				untrack(() => {
-					if (rejected) {
-						this.epoch++;
-						this.observed = true;
-						this.accepted = undefined;
-						this.storage?.clearTemplates();
-					} else if (value) {
-						this.observed = true;
-						this.accept(value);
-					}
-				});
-			});
-		});
+		const owner = this;
+		this.read = {
+			get data() {
+				const fingerprint =
+					owner.identity?.fingerprint ?? owner.envelope?.templateSourceFingerprint;
+				return owner.available &&
+					!owner.rejected &&
+					(!fingerprint || owner.accepted?.templateSourceFingerprint === fingerprint)
+					? owner.accepted
+					: undefined;
+			},
+			get error() {
+				return owner.error;
+			},
+			get rejected() {
+				return owner.rejected;
+			},
+			retry: () => {
+				owner.attempt?.abort();
+				owner.attempt = undefined;
+				owner.fetch(true);
+			}
+		};
 		if (typeof window !== 'undefined') {
 			const input = () => {
 				this.cooldownUntil = Date.now() + 250;
@@ -79,46 +78,38 @@ export class TemplateSource {
 					window.removeEventListener(type, input, true);
 			};
 		}
-		const owner = this;
-		this.read = {
-			get data() {
-				return live.rejected ? undefined : owner.accepted;
-			},
-			get error() {
-				return live.error;
-			},
-			get rejected() {
-				return live.rejected;
-			},
-			retry: () => live.retry()
-		};
 	}
-	private accept(value: TemplateProse) {
-		// A fingerprint certifies prose reuse only; it carries no fabricated source ID.
+	observeSource(identity: { id: Id<'templateSources'>; fingerprint: string } | null) {
+		const previous = this.identity;
 		if (
-			!this.accepted ||
-			this.accepted.templateSourceFingerprint !== value.templateSourceFingerprint
+			previous !== undefined &&
+			previous?.id === identity?.id &&
+			previous?.fingerprint === identity?.fingerprint
 		)
-			this.accepted = immutable(value) as TemplateProse;
+			return;
+		this.identity = identity;
+		if (previous !== undefined) {
+			this.attempt?.abort();
+			this.attempt = undefined;
+		}
+		this.fetch();
 	}
-	/** A complete live audience observation may revoke the other audience's old source ID. */
 	observeEnvelope(value: StructureSnapshot) {
 		if (
 			!value.ready ||
 			(this.envelope && value.authoringGeneration < this.envelope.authoringGeneration)
 		)
 			return;
-		if (
-			!this.envelope ||
-			this.envelope.templateSourceId !== value.templateSourceId ||
-			this.envelope.templateSourceFingerprint !== value.templateSourceFingerprint ||
-			this.envelope.authoringGeneration < value.authoringGeneration
-		)
-			this.envelope = {
-				templateSourceId: value.templateSourceId,
-				templateSourceFingerprint: value.templateSourceFingerprint,
-				authoringGeneration: value.authoringGeneration
-			};
+		this.envelope = {
+			templateSourceId: value.templateSourceId,
+			templateSourceFingerprint: value.templateSourceFingerprint,
+			authoringGeneration: value.authoringGeneration
+		};
+		if (value.templateSourceId)
+			this.observeSource({
+				id: value.templateSourceId,
+				fingerprint: value.templateSourceFingerprint
+			});
 	}
 	matchesEnvelope(value: StructureSnapshot) {
 		return (
@@ -127,33 +118,77 @@ export class TemplateSource {
 				this.envelope.templateSourceFingerprint === value.templateSourceFingerprint)
 		);
 	}
-
-	acceptStored(value: TemplateProse) {
-		if (!this.disposed && this.available && !this.observed && !this.accepted) this.accept(value);
+	private fetch(force = false) {
+		if (this.disposed || !this.available || !this.readers || this.attempt) return;
+		const fingerprint = this.identity?.fingerprint ?? this.envelope?.templateSourceFingerprint;
+		if (
+			!force &&
+			this.accepted &&
+			(!fingerprint || this.accepted.templateSourceFingerprint === fingerprint)
+		)
+			return;
+		if (this.identity === null) {
+			this.accepted = { templateSourceFingerprint: '', blocks: [] };
+			return;
+		}
+		const attempt = (this.attempt = new ReadAttempt(15_000));
+		this.error = undefined;
+		this.rejected = false;
+		const owns = () =>
+			!this.disposed && this.available && this.attempt === attempt && !attempt.signal.aborted;
+		void (async () => {
+			try {
+				let value =
+					!force && fingerprint ? await this.storage?.readTemplateSource(fingerprint) : undefined;
+				if (!owns()) return;
+				if (!value)
+					value = await queryOnce(
+						this.client,
+						api.templateSources.authoringSource,
+						{},
+						attempt.signal
+					);
+				if (!owns()) return;
+				const expected = this.identity?.fingerprint ?? this.envelope?.templateSourceFingerprint;
+				if (expected && value.templateSourceFingerprint !== expected)
+					throw new Error('The template source changed. Try again.');
+				this.accepted = immutable(value) as TemplateProse;
+				const accepted = this.accepted;
+				this.scheduleStorage('source:' + accepted.templateSourceFingerprint, () =>
+					this.storage?.writeTemplateSource(accepted, () => !this.disposed && this.available)
+				);
+			} catch (cause) {
+				if (this.attempt === attempt && !this.disposed) {
+					this.error =
+						cause instanceof Error
+							? cause
+							: new Error('The template source could not load. Try again.');
+					this.rejected = true;
+				}
+			} finally {
+				attempt.complete();
+				if (this.attempt === attempt) this.attempt = undefined;
+			}
+		})();
 	}
 	configure(available: boolean, generation: number) {
 		if (this.disposed) return;
-		if (!available && this.available) {
-			this.epoch++;
-			this.hydrated = false;
+		const changed = generation !== this.generation;
+		if (!available || changed) {
+			this.attempt?.abort();
+			this.attempt = undefined;
 		}
+		if (!available) this.accepted = undefined;
 		this.available = available;
 		this.generation = generation;
-		if (available) this.scheduleWork();
-	}
-	retain(hydrate = true) {
-		this.readers++;
-		if (hydrate && this.available && !this.accepted && !this.hydrated && this.storage) {
-			this.hydrated = true;
-			const epoch = this.epoch;
-			// The live subscription is dispatched first; optional disk never delays it.
-			queueMicrotask(() => {
-				if (this.disposed || !this.available || epoch !== this.epoch) return;
-				void this.storage!.readTemplateSource().then((value) => {
-					if (value && epoch === this.epoch) this.acceptStored(value);
-				});
-			});
+		if (available) {
+			this.fetch(changed);
+			this.scheduleWork();
 		}
+	}
+	retain(_hydrate = true) {
+		this.readers++;
+		this.fetch();
 		let released = false;
 		return () => {
 			if (!released) {
@@ -200,13 +235,12 @@ export class TemplateSource {
 
 	destroy() {
 		this.disposed = true;
-		this.epoch++;
 		this.accepted = undefined;
 		this.cancelPaint?.();
 		clearTimeout(this.workTimer);
 		this.work.clear();
 		this.releaseInput?.();
-		this.releaseEffects();
+		this.attempt?.abort();
 	}
 }
 const key = Symbol('template-source');

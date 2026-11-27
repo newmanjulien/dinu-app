@@ -1,13 +1,12 @@
 <script lang="ts">
-	import { useWorkspaceReadSnapshots } from '$lib/auth/workspace-read-snapshots.svelte';
-	import type { WorkspaceReadRows } from '$lib/auth/workspace-read-storage';
 	import TeamLayout from '$lib/components/workspace/TeamLayout.svelte';
 	import WorkspacePresentationReporter from '$lib/auth/WorkspacePresentationReporter.svelte';
 	import { page } from '$app/state';
 	import { localReturn } from '$lib/auth/navigation';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { useViewer, useViewerSession } from '$lib/auth/viewer-session.svelte';
-	import { useConvexClient, usePaginatedQuery } from 'convex-svelte';
+	import { useWorkspaceLists } from '$lib/auth/workspace-lists.svelte';
+	import { useConvexClient } from 'convex-svelte';
 	import { api } from '../../../convex/_generated/api';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
 	import Avatar from '$lib/components/ui/Avatar.svelte';
@@ -19,7 +18,9 @@
 	const client = useConvexClient();
 	const session = useViewerSession();
 	const viewer = useViewer();
-	const reads = useWorkspaceReadSnapshots();
+	const lists = useWorkspaceLists();
+	lists.openTeam();
+	const { colleagues, invitations } = lists;
 	const returnTo = $derived(page.url.searchParams.get('returnTo'));
 	const invitationReturn = $derived(
 		returnTo && new URL(localReturn(returnTo), page.url).pathname === '/invitation'
@@ -32,92 +33,30 @@
 	let now = $state(Date.now());
 	onMount(() => {
 		now = Date.now();
-		void reads?.hydrate('colleagues');
-		if (canManage) void reads?.hydrate('invitations');
 		const timer = setInterval(() => (now = Date.now()), 60_000);
 		return () => clearInterval(timer);
 	});
-	let colleaguesRetry = $state(0),
-		invitationsRetry = $state(0);
 	let colleaguesTimedOut = $state(false),
 		invitationsTimedOut = $state(false);
-	const colleagues = usePaginatedQuery(
-		api.profiles.colleagues,
-		() => {
-			void colleaguesRetry;
-			return { membershipId };
-		},
-		{ initialNumItems: 50 }
-	);
-	const invitations = usePaginatedQuery(
-		api.companyInvitations.list,
-		() => {
-			void invitationsRetry;
-			return canManage ? { membershipId } : 'skip';
-		},
-		{ initialNumItems: 50 }
-	);
-	let colleaguePage = $state.raw<WorkspaceReadRows['colleagues']>();
-	let invitationPage = $state.raw<WorkspaceReadRows['invitations']>();
-	// Paging keeps the historical first page; merged results never replace that snapshot.
-	let colleaguesPaged = false;
-	let invitationsPaged = false;
-	$effect(() => {
-		if (colleagues.error) {
-			untrack(() => {
-				colleaguePage = undefined;
-				reads?.invalidate('colleagues');
-			});
-			return;
-		}
-		if (colleagues.status === 'LoadingFirstPage') return;
-		const rows = colleagues.results;
-		const hasMore = colleagues.status !== 'Exhausted';
-		untrack(() => {
-			colleaguePage = rows;
-			if (!colleaguesPaged) reads?.confirm('colleagues', rows, hasMore);
-		});
-	});
-	$effect(() => {
-		if (!canManage || invitations.error) {
-			untrack(() => {
-				invitationPage = undefined;
-				reads?.invalidate('invitations');
-			});
-			return;
-		}
-		untrack(() => void reads?.hydrate('invitations'));
-		if (invitations.status === 'LoadingFirstPage') return;
-		const rows = invitations.results;
-		const hasMore = invitations.status !== 'Exhausted';
-		untrack(() => {
-			invitationPage = rows;
-			if (!invitationsPaged) reads?.confirm('invitations', rows, hasMore);
-		});
-	});
-	const colleagueRows = $derived(
-		colleagues.error ? [] : (colleaguePage ?? reads?.get('colleagues')?.rows ?? [])
-	);
-	const invitationSnapshot = $derived(reads?.get('invitations'));
-	const invitationRows = $derived(
-		!canManage || invitations.error ? [] : (invitationPage ?? invitationSnapshot?.rows ?? [])
-	);
 	const colleaguesCurrent = $derived(!colleagues.error && colleagues.status !== 'LoadingFirstPage');
 	const invitationsCurrent = $derived(
 		canManage && !invitations.error && invitations.status !== 'LoadingFirstPage'
 	);
+	const colleagueRows = $derived(
+		colleaguesCurrent && !session.blocked && !session.closing ? colleagues.results : []
+	);
+	const invitationRows = $derived(
+		invitationsCurrent && !session.blocked && !session.closing ? invitations.results : []
+	);
 	function loadMoreColleagues() {
 		if (!colleaguesCurrent || colleagues.status !== 'CanLoadMore') return;
-		colleaguesPaged = true;
 		colleagues.loadMore(50);
 	}
 	function loadMoreInvitations() {
 		if (!invitationsCurrent || invitations.status !== 'CanLoadMore') return;
-		invitationsPaged = true;
 		invitations.loadMore(50);
 	}
 	$effect(() => {
-		void colleaguesRetry;
 		void session.transportGeneration;
 		const pending = colleagues.status === 'LoadingFirstPage' || colleagues.status === 'LoadingMore';
 		untrack(() => (colleaguesTimedOut = false));
@@ -126,7 +65,6 @@
 		return () => clearTimeout(timer);
 	});
 	$effect(() => {
-		void invitationsRetry;
 		void session.transportGeneration;
 		const pending =
 			canManage &&
@@ -138,21 +76,19 @@
 	});
 	const colleaguesLoading = $derived(
 		colleagues.status === 'LoadingFirstPage' &&
-			!colleagueRows.length &&
 			!colleagues.error &&
-			!colleaguesTimedOut
+			!colleaguesTimedOut &&
+			!colleagueRows.length
 	);
 	const invitationsLoading = $derived(
 		canManage &&
 			invitations.status === 'LoadingFirstPage' &&
-			!invitationSnapshot &&
 			!invitations.error &&
-			!invitationsTimedOut
+			!invitationsTimedOut &&
+			!invitationRows.length
 	);
 	const invitationsEmptyConfirmed = $derived(
-		!invitations.error &&
-			(invitations.status === 'Exhausted' ||
-				(invitations.status === 'LoadingFirstPage' && invitationSnapshot?.hasMore === false))
+		invitationsCurrent && invitations.status === 'Exhausted'
 	);
 	let invitationsSkeletonVisible = $state(false);
 	$effect(() => {
@@ -192,7 +128,6 @@
 		else error = '';
 		try {
 			await action();
-			reads?.invalidate('colleagues', 'invitations');
 			if (alive && confirmation) confirmAction = undefined;
 		} catch (e) {
 			if (alive) {
@@ -210,6 +145,7 @@
 		leaveError = null;
 		try {
 			await session.exitCompany(
+				membershipId,
 				() => client.mutation(api.companies.leave, { membershipId }),
 				discard
 			);
@@ -246,7 +182,6 @@
 		emailInput = emails.join(', ');
 		try {
 			const result = await client.action(api.invitationEmail.invite, { membershipId, emails });
-			reads?.invalidate('invitations');
 			if (!alive) return;
 			if (session.blocked || !canManage || generation !== session.transportGeneration)
 				throw new Error('Your connection changed. Please try again.');
@@ -360,7 +295,7 @@
 			</TeamListLayout>
 		{/if}
 		{#if colleagues.error || colleaguesTimedOut}<p role="alert" class="mt-3 text-sm text-danger">
-				Unable to load colleagues. <button class="underline" onclick={() => colleaguesRetry++}
+				Unable to load colleagues. <button class="underline" onclick={lists.retryColleagues}
 					>Try again</button
 				>
 			</p>{/if}
@@ -424,7 +359,7 @@
 			</TeamListLayout>
 		{/if}
 		{#if invitations.error || invitationsTimedOut}<p role="alert" class="mt-3 text-sm text-danger">
-				Unable to load invitations. <button class="underline" onclick={() => invitationsRetry++}
+				Unable to load invitations. <button class="underline" onclick={lists.retryInvitations}
 					>Try again</button
 				>
 			</p>{/if}

@@ -42,7 +42,8 @@ export async function generateWordExport(
 			expectedStateRevision: prepared.stateRevision,
 			expectedTitle: prepared.title
 		});
-	} finally {
+	} catch (error) {
 		await ctx.runMutation(internal.storageOwnership.discardFile, { fileId });
+		throw error;
 	}
 }

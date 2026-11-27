@@ -1,5 +1,7 @@
 import { cancelPreparationJobs } from './csmMeetingPreparation';
-import { cleanupMembershipShowings } from './buyerLinkShowingCleanup';
+import { deleteMembershipUiPreferences } from './membershipUiPreferences';
+import { deleteMembershipSetup } from './membershipSetupState';
+import { deleteProfileUiPreferences } from './profileUiPreferences';
 import { cancelJob } from './emailDeliveries';
 import { cancelAppointmentJobs } from './csmSetupAppointments';
 import { clearSetupAppointment } from './csmSetupState';
@@ -192,6 +194,14 @@ export const beginExecution = internalMutation({
 					requestedAt,
 					inFlight: true
 				});
+			await ctx.db.patch('company', options.companyId, {
+				deletion: {
+					status: 'deleting',
+					inFlight: true,
+					issuer: options.profile.issuer,
+					clerkId: options.profile.clerkId
+				}
+			});
 			await ctx.scheduler.runAfter(DELETING_RECOVERY_DELAY, internal.clerk.resolveDeleting, {
 				id,
 				executionId: args.executionId
@@ -214,8 +224,17 @@ export const markExecutionUncertain = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const marker = await ctx.db.get('companyDeletions', args.id);
-		if (marker?.status === 'deleting' && marker.executionId === args.executionId)
+		if (marker?.status === 'deleting' && marker.executionId === args.executionId) {
 			await ctx.db.patch('companyDeletions', marker._id, { inFlight: false });
+			await ctx.db.patch('company', marker.companyId, {
+				deletion: {
+					status: 'deleting',
+					inFlight: false,
+					issuer: marker.issuer,
+					clerkId: marker.clerkId
+				}
+			});
+		}
 		return null;
 	}
 });
@@ -226,6 +245,7 @@ export const abortExecution = internalMutation({
 		const marker = await ctx.db.get('companyDeletions', args.id);
 		if (!marker || marker.status !== 'deleting' || marker.executionId !== args.executionId)
 			return false;
+		await ctx.db.patch('company', marker.companyId, { deletion: undefined });
 		await ctx.db.delete('companyDeletions', marker._id);
 		return true;
 	}
@@ -274,10 +294,12 @@ async function markDeleted(ctx: MutationCtx, issuer: string, clerkId: string) {
 			.query('profiles')
 			.withIndex('by_issuer_and_clerkId', (q) => q.eq('issuer', issuer).eq('clerkId', clerkId))
 			.unique();
+		const deletedAt = Date.now();
+		if (profile) await ctx.db.patch('profiles', profile._id, { deletedAt });
 		const markerId = await ctx.db.insert('deletedUsers', {
 			issuer,
 			clerkId,
-			deletedAt: Date.now(),
+			deletedAt,
 			cleanupGeneration: 0,
 			successorCursor: null,
 			...(profile ? { complete: false, profileId: profile._id } : { complete: true })
@@ -459,11 +481,15 @@ export const clean = internalMutation({
 			await ctx.db.patch('company', owned._id, { ownerProfileId: successor?.profileId });
 		}
 		if (membership) {
-			await cleanupMembershipShowings(ctx, membership._id, membership.companyId);
+			await deleteMembershipUiPreferences(ctx, membership._id);
+			await deleteMembershipSetup(ctx, membership._id);
 			await ctx.db.delete('memberships', membership._id);
 		}
 		const profile = await ctx.db.get('profiles', profileId);
-		if (profile) await ctx.db.delete('profiles', profile._id);
+		if (profile) {
+			await deleteProfileUiPreferences(ctx, profile._id);
+			await ctx.db.delete('profiles', profile._id);
+		}
 		if (profile?.avatarId) await deleteUnownedFile(ctx, profile.avatarId);
 		await ctx.db.patch('deletedUsers', markerId, { complete: true, cleanupJobId: undefined });
 		return null;
